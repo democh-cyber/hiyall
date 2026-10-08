@@ -126,6 +126,27 @@ func (s *Store) CreateReport(ctx context.Context, reporter string, r domain.NewR
 	case "comment":
 		err = s.Pool.QueryRow(ctx, `SELECT c.author_id::text FROM comments c JOIN posts p ON p.post_id=c.post_id
  WHERE c.comment_id=$2 AND c.deleted_at IS NULL AND (NOT c.hidden OR c.author_id=$1) AND p.deleted_at IS NULL AND `+visibleTo("p.author_id", "p.audience"), reporter, r.TargetID).Scan(&subject)
+	case "space":
+		x, e := s.Space(ctx, reporter, r.TargetID)
+		err = e
+		subject = x.Owner.UserID
+	case "space_entry":
+		var spaceID string
+		err = s.Pool.QueryRow(ctx, `SELECT space_id::text,author_id::text FROM space_entries WHERE entry_id=$1 AND deleted_at IS NULL AND `+adultSQL("author_id"), r.TargetID).Scan(&spaceID, &subject)
+		if err == nil {
+			x, e := s.Space(ctx, reporter, spaceID)
+			err = e
+			if err == nil && x.MyState != "active" {
+				err = domain.ErrNotFound
+			}
+			if err == nil {
+				var blocked bool
+				err = s.Pool.QueryRow(ctx, `SELECT NOT (`+unblockedSQL("$1::uuid", "$2::uuid")+`)`, reporter, subject).Scan(&blocked)
+				if blocked {
+					err = domain.ErrNotFound
+				}
+			}
+		}
 	case "story":
 		err = s.Pool.QueryRow(ctx, `SELECT st.author_id::text FROM stories st WHERE st.story_id=$2 AND st.deleted_at IS NULL AND `+visibleTo("st.author_id", "st.audience"), reporter, r.TargetID).Scan(&subject)
 	}

@@ -63,7 +63,7 @@ func ParseReport(raw []byte) (NewReport, error) {
 		return r, invalid("body", "send targetType, targetId and reasonCode")
 	}
 	switch r.TargetType {
-	case "user", "conversation", "message", "post", "comment", "story":
+	case "user", "conversation", "message", "post", "comment", "story", "space", "space_entry":
 	default:
 		return r, invalid("targetType", "must be user, conversation, message, post, comment or story")
 	}

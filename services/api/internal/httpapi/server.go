@@ -426,7 +426,7 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 		a.ok(w, r, map[string]bool{"revoked": true})
 		return
 	}
-	if a.chatRoute(w, r, p, parts) || a.socialRoute(w, r, p, parts) || a.safetyRoute(w, r, p, parts) || a.pulseRoute(w, r, p, parts) {
+	if a.chatRoute(w, r, p, parts) || a.socialRoute(w, r, p, parts) || a.safetyRoute(w, r, p, parts) || a.pulseRoute(w, r, p, parts) || a.spacesRoute(w, r, p, parts) {
 		return
 	}
 	a.failure(w, r, 404, "NOT_FOUND", "Endpoint unavailable")

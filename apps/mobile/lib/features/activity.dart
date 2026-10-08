@@ -10,9 +10,11 @@ import '../shared/widgets.dart';
 // contract. They are not new categories or fields in notification records.
 const _groups = {
   'like': 'Social',
+  'reaction': 'Social',
   'comment': 'Social',
   'follow': 'Connections',
   'friend_request': 'Connections',
+  'community': 'Circles',
   'message': 'Messages',
   'message_request': 'Messages',
   'security': 'System',
@@ -71,7 +73,13 @@ class _ActivityViewState extends State<ActivityView> {
     final groups = items.map((item) => _groups[item['type']]).toSet();
     final filters = [
       'All',
-      for (final group in ['Social', 'Connections', 'Messages', 'System'])
+      for (final group in [
+        'Social',
+        'Connections',
+        'Circles',
+        'Messages',
+        'System',
+      ])
         if (groups.contains(group)) group,
     ];
     final filter = filters.contains(selected) ? selected : 'All';
@@ -556,10 +564,11 @@ class _ActivityRow extends StatelessWidget {
     final timestamp = _timeLabel(item, now, context);
     final type = item['type'] as String? ?? '';
     final (icon, tint) = switch (type) {
-      'like' => (Icons.favorite_border_rounded, VibeColors.pink),
+      'like' || 'reaction' => (Icons.favorite_border_rounded, VibeColors.pink),
       'comment' => (Icons.chat_bubble_outline_rounded, VibeColors.lilac),
       'follow' ||
       'friend_request' => (Icons.person_add_alt_1_outlined, VibeColors.lime),
+      'community' => (Icons.groups_outlined, VibeColors.lime),
       'message' || 'message_request' => (Icons.forum_outlined, VibeColors.mint),
       'security' => (Icons.shield_outlined, VibeColors.peach),
       'moderation' => (Icons.info_outline_rounded, VibeColors.lilac),

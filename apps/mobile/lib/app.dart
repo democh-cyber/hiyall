@@ -15,6 +15,7 @@ import 'features/privacy.dart';
 import 'features/pulse.dart';
 import 'features/safety.dart';
 import 'features/settings.dart';
+import 'features/spaces.dart';
 import 'features/design_studio.dart';
 import 'shared/widgets.dart';
 import 'shared/navigation_dock.dart';
@@ -47,6 +48,38 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/story/new',
         redirect: (context, state) => signedIn() ? null : '/home',
         builder: (context, state) => const StoryComposerScreen(),
+      ),
+      GoRoute(
+        path: '/spaces/new',
+        redirect: (context, state) => signedIn() ? null : '/home',
+        builder: (context, state) => CreateSpaceScreen(
+          kind: state.uri.queryParameters['kind'] ?? 'community',
+          parentId: state.uri.queryParameters['parent'],
+        ),
+      ),
+      GoRoute(
+        path: '/spaces',
+        builder: (context, state) =>
+            SpacesScreen(parentId: state.uri.queryParameters['parent']),
+        routes: [
+          GoRoute(
+            path: ':id',
+            builder: (context, state) =>
+                SpaceScreen(id: state.pathParameters['id']!),
+            routes: [
+              GoRoute(
+                path: 'edit',
+                builder: (context, state) =>
+                    EditSpaceScreen(id: state.pathParameters['id']!),
+              ),
+              GoRoute(
+                path: 'members',
+                builder: (context, state) =>
+                    SpaceMembersScreen(id: state.pathParameters['id']!),
+              ),
+            ],
+          ),
+        ],
       ),
       ShellRoute(
         builder: (context, state, child) =>

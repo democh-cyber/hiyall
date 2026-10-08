@@ -254,7 +254,11 @@ class NotificationsScreen extends ConsumerWidget {
               () => controller.markRead(item['notificationId'] as String),
             );
           }
-          context.go('/discover/person/$actor');
+          if (item['targetType'] == 'space') {
+            context.push('/spaces/${item['targetId']}');
+          } else {
+            context.go('/discover/person/$actor');
+          }
         };
       },
       actions: (item) => isPendingRequest(item)
@@ -289,7 +293,20 @@ class NotificationsScreen extends ConsumerWidget {
 class DiscoverScreen extends StatelessWidget {
   const DiscoverScreen({super.key});
   @override
-  Widget build(BuildContext context) => const PeopleDiscovery();
+  Widget build(BuildContext context) => Column(
+    children: [
+      Align(
+        alignment: Alignment.centerRight,
+        child: TextButton.icon(
+          key: const Key('explore-spaces'),
+          onPressed: () => context.push('/spaces'),
+          icon: const Icon(Icons.groups_outlined),
+          label: const Text('Communities · Moments · Events'),
+        ),
+      ),
+      const Expanded(child: PeopleDiscovery()),
+    ],
+  );
 }
 
 class PersonScreen extends ConsumerStatefulWidget {

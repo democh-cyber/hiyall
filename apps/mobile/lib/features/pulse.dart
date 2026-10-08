@@ -86,6 +86,15 @@ Future<void> showCreateSheet(BuildContext context) =>
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
+                leading: const Icon(Icons.groups_outlined),
+                title: const Text('Start a circle'),
+                subtitle: const Text('Community, Moment or event'),
+                onTap: () {
+                  Navigator.pop(sheet);
+                  context.push('/spaces');
+                },
+              ),
+              ListTile(
                 key: const Key('create-post'),
                 leading: const Icon(Icons.edit_note_rounded),
                 title: const Text('New post'),

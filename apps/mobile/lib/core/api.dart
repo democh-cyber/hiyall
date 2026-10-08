@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'realtime/realtime_client.dart';
 
 part 'pulse.dart';
+part 'spaces.dart';
 
 const apiBaseUrl = String.fromEnvironment('API_BASE_URL');
 const devLoginEnabled = kDebugMode && bool.fromEnvironment('ENABLE_DEV_LOGIN');
@@ -215,6 +216,12 @@ const _policyCodes = {
   'MEDIA_UNAVAILABLE',
   'UNSUPPORTED_MEDIA',
   'TOO_LARGE',
+  'SPACE_CLOSED',
+  'SPACE_FULL',
+  'SPACE_OWNER',
+  'SPACE_ROLE_REQUIRED',
+  'SPACE_MEMBER_REQUIRED',
+  'ADULT_SPACE_REQUIRED',
 };
 
 /// Reported on sign-in so the sessions list can say where each one is.
@@ -226,7 +233,7 @@ String get clientPlatform => kIsWeb
         _ => 'unknown',
       };
 
-class ApiClient with PulseApi {
+class ApiClient with PulseApi, SpacesApi {
   final Dio _dio;
 
   /// Sends photo bytes straight to object storage; no API base URL or token.
@@ -295,12 +302,17 @@ class ApiClient with PulseApi {
       final code = failure['code'] as String?;
       if (status == 401 && token != null) onUnauthorized?.call();
       // Policy refusals carry server copy written to be shown as-is.
-      if (_policyCodes.contains(code) && failure['message'] is String) {
+      if ((_policyCodes.contains(code) ||
+              (path.startsWith('/v1/spaces') && code == 'VALIDATION')) &&
+          failure['message'] is String) {
         throw ApiFailure(failure['message'] as String, status, code);
       }
       final message = switch (status) {
         401 => 'Your session has expired. Sign in again.',
-        404 => 'This profile is unavailable.',
+        404 =>
+          path.startsWith('/v1/spaces')
+              ? 'This space is unavailable.'
+              : 'This profile is unavailable.',
         409 => 'That username is already taken.',
         412 => 'Your settings changed. Reload before saving.',
         422 => 'Check your entries and try again.',

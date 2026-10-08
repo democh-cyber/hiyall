@@ -98,11 +98,11 @@ schemas['Connection'] = obj({'user':ref('UserSummary'),'since':when})
 schemas['FriendRequest'] = obj({'requestId':uuid_t,'sender':ref('UserSummary'),'recipient':ref('UserSummary'),'status':{'type':'string','enum':['pending','accepted','declined','cancelled','removed']},'createdAt':when})
 schemas['Notification'] = obj({
     'notificationId':uuid_t,
-    'type':{'type':'string','enum':['follow','friend_request']},
-    'event':{'type':'string','enum':['follow.started','follow.requested','follow.accepted','friend.requested','friend.accepted']},
+    'type':{'type':'string','enum':['follow','friend_request','reaction','comment','community']},
+    'event':{'type':'string','enum':['follow.started','follow.requested','follow.accepted','friend.requested','friend.accepted','post.reacted','post.commented','space.invited','space.requested','space.approved']},
     'actors':{'type':'array','minItems':1,'maxItems':1,'items':ref('UserSummary')},
     'count':{'type':'integer','const':1},
-    'targetType':{'type':'string','enum':['profile','request']},
+    'targetType':{'type':'string','enum':['profile','request','post','space']},
     'targetId':uuid_t,
     'createdAt':when,
     'readAt':when,
@@ -195,5 +195,37 @@ operation('/v1/conversations/{conversationId}','get','DirectConversation','Chat'
 operation('/v1/conversations/{conversationId}/messages','post','MessageAccepted','Chat','Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId','EncryptedMessageSend',parameters=[cid])
 operation('/v1/devices/{deviceId}/inbox','get','Inbox','Chat','Undelivered ciphertext for your device, oldest first',parameters=[did,{'name':'limit','in':'query','schema':{'type':'integer','minimum':1,'maximum':100,'default':50}}])
 operation('/v1/devices/{deviceId}/inbox/ack','post','Acknowledged','Chat','Mark delivered; the server deletes the ciphertext','InboxAck',parameters=[did])
-spec = {'openapi':'3.1.1','info':{'title':'Kairova foundation API','version':'0.1.0','description':'Implemented local foundation. The MVP contract is a separate roadmap. Profile/privacy data is not E2EE; chat is disabled.','license':{'name':'Private project','identifier':'LicenseRef-Proprietary'}},'servers':[{'url':'http://127.0.0.1:8080','description':'Local development only; production must terminate HTTPS'}],'tags':[{'name':name,'description':description} for name,description in [('Health','Service probes'),('Development','Explicit local development fixtures'),('Profile','Profile, privacy and blocks'),('Sessions','Account access and revocation'),('Discovery','Adult-eligible public people search'),('Graph','Follows, friend requests and connection lists'),('Activity','Recipient-only notifications'),('Chat','End-to-end encrypted direct chat relay (Olm via vodozemac); ciphertext only')]],'paths':paths,'components':{'securitySchemes':{'bearerAuth':{'type':'http','scheme':'bearer','description':'Opaque local token or verified OIDC access JWT; ID tokens are rejected.'}},'schemas':schemas}}
+# Phase 6: adult-only shared spaces (server-readable discussions).
+space_input = {'kind':{'type':'string','enum':['community','moment','event']},'title':{**text(80),'minLength':1},'description':text(2000),'rules':text(2000),'visibility':{'type':'string','enum':['public','private','invite']},'parentId':{'type':['string','null'],'format':'uuid'},'capacity':{'type':'integer','minimum':2,'maximum':10000},'startsAt':{'type':['string','null'],'format':'date-time'},'endsAt':{'type':['string','null'],'format':'date-time'},'timezone':text(100),'location':text(240)}
+schemas['NewSpace']=obj(copy.deepcopy(space_input),['kind','title','visibility','capacity'])
+schemas['SharedSpace']=obj({**copy.deepcopy(space_input),'spaceId':uuid_t,'owner':ref('UserSummary'),'status':{'type':'string','enum':['open','closed','archived']},'memberCount':{'type':'integer','minimum':1},'myRole':{'type':'string','enum':['','owner','admin','moderator','member']},'myState':{'type':'string','enum':['','active','pending','invited','banned']},'myRsvp':{'type':'string','enum':['','going','interested']},'canDiscuss':{'type':'boolean'},'createdAt':when})
+schemas['SpaceMember']=obj({'user':ref('UserSummary'),'role':{'type':'string','enum':['owner','admin','moderator','member']},'state':{'type':'string','enum':['active','pending','invited','banned']},'rsvp':{'type':'string','enum':['going','interested']},'createdAt':when})
+schemas['SpaceEntry']=obj({'entryId':uuid_t,'author':ref('UserSummary'),'body':{**text(2000),'minLength':1},'createdAt':when,'canDelete':{'type':'boolean'}})
+for item in ['SharedSpace','SpaceMember','SpaceEntry']:
+    schemas[item+'Page']=obj({'items':{'type':'array','maxItems':50,'items':ref(item)},'nextCursor':{'type':['string','null'],'maxLength':2048},'hasMore':{'type':'boolean'}})
+schemas['SpaceMembership']=obj({'rsvp':{'type':'string','enum':['going','interested']}},[])
+schemas['SpaceStatus']=obj({'status':{'type':'string','enum':['open','closed','archived']}})
+schemas['SpaceAction']=obj({'action':{'type':'string','enum':['approve','invite','remove','ban','unban','admin','moderator','member']}})
+schemas['SpaceInvite']=obj({'username':{**text(40),'minLength':1}})
+schemas['NewSpaceEntry']=obj({'body':{**text(2000),'minLength':1}})
+schemas['SpaceEntryCreated']=obj({'entryId':uuid_t})
+schemas['SpaceEntryDeleted']=obj({'deleted':{'type':'boolean'}})
+spid={'name':'spaceId','in':'path','required':True,'schema':uuid_t}
+eid={'name':'entryId','in':'path','required':True,'schema':uuid_t}
+operation('/v1/spaces','get','SharedSpacePage','Spaces','Browse adult-only communities, Moments or events; private spaces preview metadata only',parameters=[{'name':'kind','in':'query','schema':{'type':'string','enum':['community','moment','event'],'default':'community'}},{'name':'parentId','in':'query','schema':uuid_t},{'name':'mine','in':'query','schema':{'type':'boolean','default':False}}]+page_params)
+operation('/v1/spaces','post','SharedSpace','Spaces','Create a shared space; scheduled spaces retain UTC plus an IANA host zone','NewSpace')
+operation('/v1/spaces/{spaceId}','get','SharedSpace','Spaces','Read authorized space metadata; invite-only spaces and blocked hosts return 404',parameters=[spid])
+operation('/v1/spaces/{spaceId}','put','SharedSpace','Spaces','Host edits details, capacity and schedule; audience, kind and ancestry are immutable','NewSpace',parameters=[spid])
+operation('/v1/spaces/{spaceId}/membership','put','SharedSpace','Spaces','Join, request approval or accept an invitation; serializes capacity checks','SpaceMembership',parameters=[spid])
+operation('/v1/spaces/{spaceId}/membership','delete','SharedSpace','Spaces','Leave or withdraw your request; owners must retain their membership',parameters=[spid])
+operation('/v1/spaces/{spaceId}/status','put','SharedSpace','Spaces','Host closes, archives or reopens a space; expired Moments remain read-only','SpaceStatus',parameters=[spid])
+operation('/v1/spaces/{spaceId}/invitations','post','SharedSpace','Spaces','Invite an eligible adult by exact username; hosts only','SpaceInvite',parameters=[spid])
+operation('/v1/spaces/{spaceId}/members','get','SpaceMemberPage','Spaces','Member-only participant list; moderation states require moderator role',parameters=[spid,{'name':'state','in':'query','schema':{'type':'string','enum':['active','pending','invited','banned'],'default':'active'}}]+page_params)
+operation('/v1/spaces/{spaceId}/members/{userId}','put','SharedSpace','Spaces','Host or moderator approves, removes or bans; hierarchical roles protect owners and admins','SpaceAction',parameters=[spid,uid])
+operation('/v1/spaces/{spaceId}/entries','get','SpaceEntryPage','Spaces','Member-only shared discussion, with blocks and age eligibility checked on every page',parameters=[spid]+page_params)
+operation('/v1/spaces/{spaceId}/entries','post','SpaceEntryCreated','Spaces','Create a server-readable discussion entry; active membership and an open schedule required','NewSpaceEntry',parameters=[spid])
+operation('/v1/spaces/{spaceId}/entries/{entryId}','delete','SpaceEntryDeleted','Spaces','Author or moderator removes a discussion entry',parameters=[spid,eid])
+for endpoint in ['/v1/spaces','/v1/spaces/{spaceId}/entries']:
+    paths[endpoint]['post']['responses']['201']=paths[endpoint]['post']['responses'].pop('200')
+spec = {'openapi':'3.1.1','info':{'title':'Kairova foundation API','version':'0.1.0','description':'Implemented local foundation. The MVP contract is a separate roadmap. Profile/privacy and shared discussions are server-readable; direct chat relays ciphertext only.','license':{'name':'Private project','identifier':'LicenseRef-Proprietary'}},'servers':[{'url':'http://127.0.0.1:8080','description':'Local development only; production must terminate HTTPS'}],'tags':[{'name':name,'description':description} for name,description in [('Health','Service probes'),('Development','Explicit local development fixtures'),('Profile','Profile, privacy and blocks'),('Sessions','Account access and revocation'),('Discovery','Adult-eligible public people search'),('Graph','Follows, friend requests and connection lists'),('Activity','Recipient-only notifications'),('Chat','End-to-end encrypted direct chat relay (Olm via vodozemac); ciphertext only'),('Spaces','Adult-only communities, bounded Moments and events')]],'paths':paths,'components':{'securitySchemes':{'bearerAuth':{'type':'http','scheme':'bearer','description':'Opaque local token or verified OIDC access JWT; ID tokens are rejected.'}},'schemas':schemas}}
 (root / 'docs/api/openapi-foundation.json').write_text(json.dumps(spec,indent=2)+'\n')

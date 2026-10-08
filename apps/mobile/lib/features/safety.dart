@@ -340,6 +340,8 @@ class _ReportSheetState extends State<_ReportSheet> {
             'post' => 'Report this post',
             'comment' => 'Report this comment',
             'story' => 'Report this story',
+            'space' => 'Report this space',
+            'space_entry' => 'Report this discussion entry',
             _ => 'Report this chat',
           }, style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: 6),
