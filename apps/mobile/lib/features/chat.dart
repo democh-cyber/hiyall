@@ -15,6 +15,7 @@ import '../core/theme.dart';
 import '../shared/widgets.dart';
 import '../src/rust/frb_generated.dart';
 import 'live_sync.dart';
+import 'safety.dart';
 
 /// Keys and ratchet state live in the platform keystore (Android Keystore /
 /// iOS Keychain backed), never in plain app storage.
@@ -248,30 +249,52 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                             )
                           : null,
                     ),
-              trailing: c.unreadCount == 0
+              trailing: c.unreadCount == 0 && !c.muted
                   ? null
-                  : Semantics(
-                      label: '${c.unreadCount} unread',
-                      child: Container(
-                        constraints: const BoxConstraints(minWidth: 24),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 7,
-                          vertical: 3,
-                        ),
-                        decoration: BoxDecoration(
-                          color: VibeColors.lime,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          c.unreadCount > 99 ? '99+' : '${c.unreadCount}',
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            color: VibeColors.ink,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w800,
+                  : Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (c.muted)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 6),
+                            child: Icon(
+                              Icons.notifications_off_outlined,
+                              key: Key('muted-${c.id}'),
+                              semanticLabel: 'Muted',
+                              size: 18,
+                              color: scheme.onSurfaceVariant,
+                            ),
                           ),
-                        ),
-                      ),
+                        if (c.unreadCount > 0)
+                          Semantics(
+                            label: '${c.unreadCount} unread',
+                            child: Container(
+                              constraints: const BoxConstraints(minWidth: 24),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 7,
+                                vertical: 3,
+                              ),
+                              decoration: BoxDecoration(
+                                // Muted chats don't call for attention.
+                                color: c.muted
+                                    ? scheme.surfaceContainerHighest
+                                    : VibeColors.lime,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                c.unreadCount > 99 ? '99+' : '${c.unreadCount}',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: c.muted
+                                      ? scheme.onSurfaceVariant
+                                      : VibeColors.ink,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
               onTap: () => context.go(
                 '/chats/${c.id}?peer=${Uri.encodeQueryComponent(c.peerId)}&name=${Uri.encodeQueryComponent(c.peerName)}',
@@ -332,6 +355,10 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   ChatEngine? engine;
   bool sending = false;
   DateTime? peerReadAt;
+  DateTime? mutedUntil;
+
+  /// From the route when opened from the chat list; otherwise loaded below.
+  late String peerId = widget.peerId, peerName = widget.peerName;
   DateTime lastTyping = DateTime.fromMillisecondsSinceEpoch(0);
 
   Future<void> reload() async {
@@ -358,11 +385,110 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     }
   }
 
+  /// Reloads the server-held state: the peer's read pointer and our mute.
   Future<void> loadReceipt() async {
     try {
-      final at = await engine?.peerReadAt(widget.id);
-      if (mounted && at != peerReadAt) setState(() => peerReadAt = at);
+      final c = await engine?.api.conversation(widget.id);
+      if (c == null || !mounted) return;
+      final at = DateTime.tryParse(c['peerReadAt'] as String? ?? '');
+      final muted = DateTime.tryParse(c['mutedUntil'] as String? ?? '');
+      final peer = c['peer'] as Map? ?? const {};
+      if (peerId.isEmpty && peer['userId'] is String) {
+        final display = (peer['displayName'] as String? ?? '').trim();
+        setState(() {
+          peerId = peer['userId'] as String;
+          peerName = display.isEmpty ? '@${peer['username']}' : display;
+        });
+      }
+      if (at != peerReadAt || muted != mutedUntil) {
+        setState(() {
+          peerReadAt = at;
+          mutedUntil = muted;
+        });
+      }
     } catch (_) {}
+  }
+
+  bool get muted => mutedUntil?.isAfter(DateTime.now()) ?? false;
+
+  Future<void> options() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      useRootNavigator: true,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                key: const Key('chat-mute'),
+                leading: Icon(
+                  muted
+                      ? Icons.notifications_active_outlined
+                      : Icons.notifications_off_outlined,
+                ),
+                title: Text(muted ? 'Unmute chat' : 'Mute chat'),
+                subtitle: const Text(
+                  'No notifications, and it stays out of your unread count.',
+                ),
+                onTap: () => Navigator.pop(context, 'mute'),
+              ),
+              ListTile(
+                key: const Key('chat-profile'),
+                leading: const Icon(Icons.person_outline_rounded),
+                title: Text('View $peerName’s profile'),
+                onTap: () => Navigator.pop(context, 'profile'),
+              ),
+              ListTile(
+                key: const Key('chat-report'),
+                leading: const Icon(Icons.flag_outlined),
+                title: const Text('Report'),
+                onTap: () => Navigator.pop(context, 'report'),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (!mounted || choice == null || engine == null) return;
+    switch (choice) {
+      case 'mute':
+        DateTime? until;
+        if (!muted) {
+          final picked = await pickMuteDuration(
+            context,
+            title: 'Mute this chat',
+          );
+          if (picked == null) return;
+          until = picked.until;
+        }
+        try {
+          await engine!.api.muteConversation(widget.id, !muted, until: until);
+          await loadReceipt();
+          await ref.read(chatUnreadProvider.notifier).refresh();
+          ref.read(chatSignalProvider.notifier).bump();
+          if (mounted) {
+            showMessage(context, muted ? 'Chat muted.' : 'Chat unmuted.');
+          }
+        } catch (e) {
+          if (mounted) showMessage(context, chatError(e));
+        }
+      case 'profile':
+        context.go('/discover/person/$peerId');
+      case 'report':
+        final receipt = await showReportSheet(
+          context,
+          ref,
+          targetType: 'conversation',
+          targetId: widget.id,
+          name: peerName,
+          messages: messages,
+        );
+        if ((receipt?.blocked ?? false) && mounted) context.go('/chats');
+    }
   }
 
   /// At most one typing signal every three seconds while composing.
@@ -380,7 +506,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     String? number;
     Object? failure;
     try {
-      number = await current.safetyNumber(widget.peerId);
+      number = await current.safetyNumber(peerId);
     } catch (e) {
       failure = e;
     }
@@ -409,7 +535,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
               ),
               const SizedBox(height: 12),
               Text(
-                'Compare these numbers with ${widget.peerName} in person or on a call. If they match, nobody is intercepting your chat. They change when either of you adds or removes a device.',
+                'Compare these numbers with $peerName in person or on a call. If they match, nobody is intercepting your chat. They change when either of you adds or removes a device.',
               ),
             ] else
               Text(chatError(failure!)),
@@ -438,10 +564,10 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
 
   Future<void> send() async {
     final text = input.text.trim();
-    if (text.isEmpty || sending || engine == null) return;
+    if (text.isEmpty || sending || engine == null || peerId.isEmpty) return;
     setState(() => sending = true);
     try {
-      await engine!.send(widget.id, widget.peerId, text);
+      await engine!.send(widget.id, peerId, text);
       input.clear();
     } catch (e) {
       if (mounted) showMessage(context, chatError(e));
@@ -501,7 +627,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
                 backgroundColor: VibeColors.lilac,
                 foregroundColor: VibeColors.ink,
                 child: Text(
-                  widget.peerName.characters.firstOrNull?.toUpperCase() ?? '?',
+                  peerName.characters.firstOrNull?.toUpperCase() ?? '?',
                 ),
               ),
               const SizedBox(width: 10),
@@ -510,7 +636,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      widget.peerName,
+                      peerName,
                       style: const TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w800,
@@ -530,11 +656,27 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
                   ],
                 ),
               ),
+              if (muted)
+                Tooltip(
+                  message: 'Muted',
+                  child: Icon(
+                    Icons.notifications_off_outlined,
+                    key: const Key('chat-muted'),
+                    size: 18,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
               IconButton(
                 key: const Key('safety-number-button'),
                 tooltip: 'Verify safety number',
                 onPressed: engine == null ? null : showSafetyNumber,
                 icon: const Icon(Icons.verified_user_outlined),
+              ),
+              IconButton(
+                key: const Key('chat-options'),
+                tooltip: 'Chat options',
+                onPressed: engine == null ? null : options,
+                icon: const Icon(Icons.more_vert_rounded),
               ),
             ],
           ),
@@ -546,7 +688,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
                   child: Padding(
                     padding: const EdgeInsets.all(32),
                     child: Text(
-                      'Messages are encrypted on this phone and only readable on your and ${widget.peerName}’s devices.',
+                      'Messages are encrypted on this phone and only readable on your and $peerName’s devices.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: scheme.onSurfaceVariant),
                     ),

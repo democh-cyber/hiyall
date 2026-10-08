@@ -144,7 +144,7 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 				return true
 			}
 			a.signal(ctx, "activity", nil, target)
-			a.wake("activity", target)
+			a.wakeFrom(ctx, "activity", p.UserID, target)
 			a.ok(w, r, map[string]string{"following": state})
 		case parts[3] == "follow" && method == "DELETE":
 			if err := a.Store.Unfollow(ctx, p.UserID, target); err != nil {
@@ -163,7 +163,7 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 				return true
 			}
 			a.signal(ctx, "activity", nil, target)
-			a.wake("activity", target)
+			a.wakeFrom(ctx, "activity", p.UserID, target)
 			a.ok(w, r, value)
 		case parts[3] == "friendship" && method == "DELETE":
 			if err := a.Store.Unfriend(ctx, p.UserID, target); err != nil {
@@ -184,7 +184,7 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 			return true
 		}
 		a.signal(ctx, "activity", nil, parts[2], p.UserID)
-		a.wake("activity", parts[2])
+		a.wakeFrom(ctx, "activity", p.UserID, parts[2])
 		a.ok(w, r, map[string]string{"follower": "active"})
 		return true
 	case n == 3 && parts[1] == "me" && method == "GET":
@@ -237,7 +237,7 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 			}
 			a.signal(ctx, "activity", nil, value.Sender.UserID, value.Recipient.UserID)
 			if parts[3] == "accept" {
-				a.wake("activity", value.Sender.UserID)
+				a.wakeFrom(ctx, "activity", p.UserID, value.Sender.UserID)
 			}
 			a.ok(w, r, value)
 		case n == 3 && method == "DELETE":

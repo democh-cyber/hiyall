@@ -6,6 +6,7 @@ import 'activity.dart';
 import 'chat.dart';
 import 'discovery.dart';
 import 'relationship.dart';
+import 'safety.dart';
 
 import '../core/activity_state.dart';
 import '../core/api.dart';
@@ -299,6 +300,9 @@ class _PersonState extends ConsumerState<PersonScreen> {
     }
   }
 
+  Future<void> options(Profile profile) =>
+      showPersonOptions(context, ref, profile, onBlock: block);
+
   Future<void> message(String name) async {
     if (!chatSupported) {
       showMessage(context, 'Chats are available in the Android and iOS apps.');
@@ -349,9 +353,10 @@ class _PersonState extends ConsumerState<PersonScreen> {
                     const Spacer(),
                     if (profile.locked)
                       IconButton(
-                        tooltip: 'Block',
-                        onPressed: busy ? null : block,
-                        icon: const Icon(Icons.block_rounded),
+                        key: const Key('profile-options'),
+                        tooltip: 'Profile options',
+                        onPressed: busy ? null : () => options(profile),
+                        icon: const Icon(Icons.more_horiz_rounded),
                       ),
                   ],
                 ),
@@ -366,7 +371,7 @@ class _PersonState extends ConsumerState<PersonScreen> {
                     ? LockedProfile(profile: profile, actions: actions)
                     : ProfileSpace(
                         profile: profile,
-                        onBlock: busy ? null : block,
+                        onOptions: busy ? null : () => options(profile),
                       ),
               ),
             ],

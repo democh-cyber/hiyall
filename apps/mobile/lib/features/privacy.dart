@@ -168,6 +168,24 @@ class _PrivacyFormState extends ConsumerState<PrivacyForm> {
           ],
         ),
       ),
+      const SizedBox(height: 12),
+      Card(
+        child: ListTile(
+          key: const Key('open-controls'),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 20,
+            vertical: 6,
+          ),
+          leading: const Icon(Icons.shield_outlined),
+          title: const Text(
+            'Blocked, muted and restricted',
+            style: TextStyle(fontWeight: FontWeight.w700),
+          ),
+          subtitle: const Text('Only you can see who’s on these lists.'),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: busy ? null : () => context.go('/profile/controls'),
+        ),
+      ),
       const SectionTitle('Who gets to see you?', label: '01 / VISIBILITY'),
       Card(
         child: Padding(

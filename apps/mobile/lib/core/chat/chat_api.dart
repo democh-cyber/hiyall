@@ -91,8 +91,18 @@ class ChatApi {
       Map<String, dynamic>.from(
         await _call('GET', '/v1/conversations/$id') as Map,
       );
-  Future<List<Map<String, dynamic>>> conversations() async =>
-      _items(await _call('GET', '/v1/conversations?limit=50'));
+  Future<List<Map<String, dynamic>>> conversations({int limit = 50}) async =>
+      _items(await _call('GET', '/v1/conversations?limit=$limit'));
+
+  /// Mutes this chat for the caller only, until [until] or until unmuted.
+  Future<void> muteConversation(String id, bool muted, {DateTime? until}) =>
+      _call(
+        muted ? 'POST' : 'DELETE',
+        '/v1/conversations/$id/mute',
+        muted && until != null
+            ? {'until': until.toUtc().toIso8601String()}
+            : null,
+      );
 
   /// Returns the server's createdAt for the stored message.
   Future<DateTime?> send(

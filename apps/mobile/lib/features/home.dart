@@ -21,7 +21,7 @@ final homeChatsProvider = FutureProvider.autoDispose<List<ChatConversation>?>((
   ref.watch(chatSignalProvider);
   final engine = await ref.watch(chatEngineProvider.future);
   if (engine == null) return null;
-  return (await engine.conversations()).take(3).toList();
+  return engine.conversations(limit: 3);
 });
 
 /// A short, unfiltered first page of Discover: the same opted-in adults the
@@ -410,7 +410,9 @@ class _RecentChats extends ConsumerWidget {
                 for (final c in chats)
                   ListTile(
                     key: Key('home-chat-${c.id}'),
-                    onTap: () => context.go('/chats/${c.id}'),
+                    onTap: () => context.go(
+                      '/chats/${c.id}?peer=${Uri.encodeQueryComponent(c.peerId)}&name=${Uri.encodeQueryComponent(c.peerName)}',
+                    ),
                     leading: _Initial(c.peerName),
                     title: Text(
                       c.peerName,

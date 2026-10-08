@@ -61,15 +61,15 @@ so its counts refresh alongside the affected visitor profile. This does not enab
 ## Capabilities waiting for their services
 
 Media upload/delivery, voice introductions, stories/highlights, verification,
-subscriptions, connection creation/approval and member lists, post/media feeds,
-notification settings,
-and mute/restrict/report workflows are not implemented services in this foundation.
+subscriptions, post/media feeds and notification settings are not implemented
+services in this foundation.
 Do not simulate them with random images, badges, counters, playback, or successful
 social actions. The avatar uses an original static orbital composition with the
 real account's initial. It is an identity decoration, not a story/verification
-badge. Connect and Message
-remain unavailable. Posts/Media have honest empty states; Vibes displays the saved
-current vibe, with no fabricated history. Existing block/unblock still works.
+badge. Follow, friend requests and Message are live (see
+`docs/api/13-social-and-activity.md`). Posts/Media have honest empty states; Vibes
+displays the saved current vibe, with no fabricated history. The profile options
+button offers mute, restrict, report and block (see `docs/api/14-safety-controls.md`).
 
 Keep future private account, wallet, analytics, and identity operations separate
 from the profile APIs. Media must use ownership checks and privacy-aware delivery;

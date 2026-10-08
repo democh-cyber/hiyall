@@ -43,6 +43,10 @@ type Relationship struct {
 	FriendRequestID  *string `json:"friendRequestId,omitempty"`
 	CanFollow        bool    `json:"canFollow"`
 	CanFriendRequest bool    `json:"canFriendRequest"`
+	// Muted and Restricted are the viewer's own private controls on the
+	// target. The target's controls on the viewer are never exposed.
+	Muted      bool `json:"muted"`
+	Restricted bool `json:"restricted"`
 }
 
 func (r Relationship) Friends() bool { return r.Friendship == "accepted" }
