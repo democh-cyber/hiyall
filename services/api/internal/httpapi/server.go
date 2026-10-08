@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"strconv"
@@ -19,6 +21,8 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 	"kairova/services/api/internal/domain"
+	"kairova/services/api/internal/push"
+	"kairova/services/api/internal/realtime"
 	"kairova/services/api/internal/store"
 )
 
@@ -34,6 +38,9 @@ type API struct {
 	search    *keyedLimiter
 	graph     *keyedLimiter
 	messages  *keyedLimiter
+	// RT and Push are optional; without them clients fall back to polling.
+	RT   *realtime.Hub
+	Push *push.Dispatcher
 }
 
 func New(s *store.Store, verify Verify, dev bool, origin string) *API {
@@ -64,6 +71,15 @@ func (w *responseStatus) WriteHeader(status int) {
 	w.status = status
 	w.ResponseWriter.WriteHeader(status)
 }
+// Unwrap and Hijack let the WebSocket upgrade reach the underlying connection.
+func (w *responseStatus) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *responseStatus) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err == nil && w.status == 0 {
+		w.status = http.StatusSwitchingProtocols
+	}
+	return conn, rw, err
+}
 func (w *responseStatus) Write(data []byte) (int, error) {
 	if w.status == 0 {
 		w.WriteHeader(200)
@@ -80,6 +96,10 @@ func (a *API) Handler() http.Handler {
 		defer func() {
 			slog.Info("request completed", "requestId", id, "status", response.status, "durationMs", time.Since(start).Milliseconds())
 		}()
+		if r.URL.Path == "/v1/realtime" {
+			a.realtimeGateway(w, r)
+			return
+		}
 		deadline, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 		r = r.WithContext(deadline)
@@ -202,7 +222,9 @@ func (a *API) error(w http.ResponseWriter, r *http.Request, err error) {
 
 // Reject duplicate keys as well as trailing JSON and unknown properties in domain validation.
 func decode(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
-	if r.Header.Get("Content-Type") != "application/json" {
+	// JSON is UTF-8 by definition; a charset parameter is accepted only if it says so.
+	media, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || media != "application/json" || (params["charset"] != "" && !strings.EqualFold(params["charset"], "utf-8")) {
 		return nil, &domain.ValidationError{Field: "body", Message: "use application/json"}
 	}
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 65536))

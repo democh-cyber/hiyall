@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kairova/app.dart';
 import 'package:kairova/core/api.dart';
+import 'package:kairova/core/realtime/realtime_client.dart';
 import 'package:kairova/core/state.dart';
 import 'package:kairova/shared/navigation_dock.dart';
 
@@ -37,6 +38,10 @@ class FakeApi extends ApiClient {
     requestedBlock = value;
     blocked = value;
   }
+
+  // Widget tests never open network sockets.
+  @override
+  RealtimeClient? realtime(Session s) => null;
 
   List<Map<String, dynamic>> activity = [];
   final calls = <String>[];

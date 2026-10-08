@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'api.dart';
@@ -192,39 +191,3 @@ bool isPendingRequest(Map<String, dynamic> item) =>
     item['targetType'] == 'request' &&
     (item['actors'] as List? ?? const []).isNotEmpty &&
     (item['type'] == 'friend_request' || item['type'] == 'follow');
-
-/// Keeps the Activity badge current while mounted: polls every 30 seconds and
-/// on return to the foreground. Server push replaces the timer later.
-class ActivityPoller extends ConsumerStatefulWidget {
-  final Widget child;
-  const ActivityPoller({super.key, required this.child});
-  @override
-  ConsumerState<ActivityPoller> createState() => _ActivityPollerState();
-}
-
-class _ActivityPollerState extends ConsumerState<ActivityPoller> {
-  Timer? timer;
-  AppLifecycleListener? lifecycle;
-
-  void sync() {
-    if (ref.read(sessionProvider).asData?.value == null) return;
-    ref.read(activityProvider.notifier).syncUnread().catchError((_) {});
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    timer = Timer.periodic(const Duration(seconds: 30), (_) => sync());
-    lifecycle = AppLifecycleListener(onResume: sync);
-  }
-
-  @override
-  void dispose() {
-    timer?.cancel();
-    lifecycle?.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => widget.child;
-}

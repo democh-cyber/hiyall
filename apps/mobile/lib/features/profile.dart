@@ -72,6 +72,14 @@ class _ProfileState extends ConsumerState<ProfileScreen> {
                   },
                 ),
                 ListTile(
+                  leading: const Icon(Icons.phonelink_lock_outlined),
+                  title: const Text('Chat devices'),
+                  onTap: () {
+                    Navigator.pop(sheet);
+                    context.go('/profile/devices');
+                  },
+                ),
+                ListTile(
                   leading: const Icon(Icons.palette_outlined),
                   title: const Text('Profile signature'),
                   onTap: () {

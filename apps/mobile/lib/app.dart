@@ -6,6 +6,7 @@ import 'core/theme.dart';
 import 'core/activity_state.dart';
 import 'core/state.dart';
 import 'features/chat.dart';
+import 'features/live_sync.dart';
 import 'features/screens.dart';
 import 'features/profile.dart';
 import 'features/privacy.dart';
@@ -78,6 +79,10 @@ final routerProvider = Provider<GoRouter>((ref) {
               GoRoute(
                 path: 'privacy',
                 builder: (context, state) => const PrivacyScreen(),
+              ),
+              GoRoute(
+                path: 'devices',
+                builder: (context, state) => const ChatDevicesScreen(),
               ),
               GoRoute(
                 path: 'sessions',
@@ -153,6 +158,7 @@ class AppShell extends ConsumerWidget {
     final dark = Theme.of(context).brightness == Brightness.dark;
     final scheme = Theme.of(context).colorScheme;
     final profile = ref.watch(profileProvider).asData?.value;
+    final unreadChats = ref.watch(chatUnreadProvider);
     final unreadActivity = ref.watch(
       activityProvider.select((s) => s.asData?.value.unread ?? 0),
     );
@@ -398,7 +404,7 @@ class AppShell extends ConsumerWidget {
       ),
     );
     return Scaffold(
-      body: ActivityPoller(
+      body: LiveSync(
         child: SafeArea(
           child: Row(
             children: [
@@ -431,6 +437,7 @@ class AppShell extends ConsumerWidget {
               selectedIndex: index,
               profileName: profile?.displayName ?? 'K',
               newActivity: unreadActivity > 0,
+              unreadChats: unreadChats,
               onSelected: (i) => context.go(routes[i]),
             ),
     );

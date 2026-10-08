@@ -107,6 +107,12 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 			a.failure(w, r, 422, "VALIDATION", "send 1–100 messageIds")
 			return true
 		}
+		for _, id := range ids {
+			if !isID(id) {
+				a.failure(w, r, 422, "VALIDATION", "messageIds must be ids")
+				return true
+			}
+		}
 		count, err := a.Store.Ack(ctx, p.UserID, parts[2], ids)
 		respond(map[string]int64{"acknowledged": count}, err)
 	case n == 4 && parts[1] == "users" && isID(parts[2]) && parts[3] == "devices" && method == "GET":
@@ -135,11 +141,48 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		paged(a, w, r, p, "conversations", func(pg page) ([]domain.Conversation, error) {
 			return a.Store.ListConversations(ctx, p.UserID, pg.before, pg.id, pg.limit)
 		}, func(c domain.Conversation) (time.Time, string) {
-			if c.LastMessageAt != nil {
-				return *c.LastMessageAt, c.ConversationID
-			}
-			return c.CreatedAt, c.ConversationID
+			return c.SortAt, c.ConversationID
 		}, nil)
+	case n == 3 && parts[1] == "conversations" && parts[2] == "unread" && method == "GET":
+		respond(a.Store.Unread(ctx, p.UserID))
+	case n == 4 && parts[1] == "conversations" && isID(parts[2]) && parts[3] == "read" && method == "POST":
+		raw, ok := body()
+		if !ok {
+			return true
+		}
+		var upTo time.Time
+		if len(raw) != 1 || json.Unmarshal(raw["readAt"], &upTo) != nil || upTo.IsZero() {
+			a.failure(w, r, 422, "VALIDATION", "readAt is required")
+			return true
+		}
+		peer, readAt, changed, err := a.Store.MarkRead(ctx, p.UserID, parts[2], upTo)
+		if err != nil {
+			a.error(w, r, err)
+			return true
+		}
+		if changed {
+			data := map[string]string{"conversationId": parts[2], "userId": p.UserID, "readAt": readAt.Format(time.RFC3339Nano)}
+			// Own devices always learn the badge changed; the peer only with receipts on both sides.
+			a.signal(ctx, "read", data, p.UserID)
+			if shared, err := a.Store.ReadReceiptsShared(ctx, p.UserID, peer); err == nil && shared {
+				a.signal(ctx, "read", data, peer)
+			}
+		}
+		a.ok(w, r, map[string]any{"readAt": readAt})
+	case n == 4 && parts[1] == "devices" && isID(parts[2]) && parts[3] == "push" && (method == "PUT" || method == "DELETE"):
+		provider, token := "", ""
+		if method == "PUT" {
+			raw, ok := body()
+			if !ok {
+				return true
+			}
+			if len(raw) != 2 || json.Unmarshal(raw["provider"], &provider) != nil || json.Unmarshal(raw["token"], &token) != nil ||
+				(provider != "fcm" && provider != "apns") || len(token) < 8 || len(token) > 4096 {
+				a.failure(w, r, 422, "VALIDATION", "provider (fcm or apns) and token are required")
+				return true
+			}
+		}
+		respond(map[string]bool{"registered": token != ""}, a.Store.SetPushToken(ctx, p.UserID, parts[2], provider, token))
 	case n == 3 && parts[1] == "conversations" && isID(parts[2]) && method == "GET":
 		respond(a.Store.Conversation(ctx, p.UserID, parts[2]))
 	case n == 4 && parts[1] == "conversations" && isID(parts[2]) && parts[3] == "messages" && method == "POST":
@@ -155,8 +198,15 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		if limited(a.messages) {
 			return true
 		}
-		created, err := a.Store.SendMessage(ctx, p.UserID, parts[2], m)
-		respond(map[string]any{"messageId": m.MessageID, "createdAt": created}, err)
+		created, peer, err := a.Store.SendMessage(ctx, p.UserID, parts[2], m)
+		if err != nil {
+			a.error(w, r, err)
+			return true
+		}
+		// The sender's other devices also hold envelopes, so both users are signalled.
+		a.signal(ctx, "inbox", map[string]string{"conversationId": parts[2]}, peer, p.UserID)
+		a.wake("message", peer)
+		a.ok(w, r, map[string]any{"messageId": m.MessageID, "createdAt": created})
 	default:
 		return false
 	}

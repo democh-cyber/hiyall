@@ -14,6 +14,7 @@ import '../core/state.dart';
 import '../core/theme.dart';
 import '../shared/widgets.dart';
 import '../src/rust/frb_generated.dart';
+import 'live_sync.dart';
 
 /// Keys and ratchet state live in the platform keystore (Android Keystore /
 /// iOS Keychain backed), never in plain app storage.
@@ -142,6 +143,8 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
       (value) =>
           WidgetsBinding.instance.addPostFrameCallback((_) => attach(value)),
     );
+    ref.listen(chatSignalProvider, (_, _) => load());
+    final typing = ref.watch(typingProvider);
     if (state.isLoading) {
       return const Center(child: Text('Setting up encryption…'));
     }
@@ -227,13 +230,49 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                 c.peerName,
                 style: const TextStyle(fontWeight: FontWeight.w800),
               ),
-              subtitle: Text(
-                c.last == null
-                    ? '@${c.peerUsername}'
-                    : (c.last!.mine ? 'You: ' : '') + c.last!.text,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
+              subtitle: typing[c.id]?.isAfter(DateTime.now()) ?? false
+                  ? const Text(
+                      'typing…',
+                      style: TextStyle(fontStyle: FontStyle.italic),
+                    )
+                  : Text(
+                      c.last == null
+                          ? '@${c.peerUsername}'
+                          : (c.last!.mine ? 'You: ' : '') + c.last!.text,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: c.unreadCount > 0
+                          ? TextStyle(
+                              fontWeight: FontWeight.w700,
+                              color: scheme.onSurface,
+                            )
+                          : null,
+                    ),
+              trailing: c.unreadCount == 0
+                  ? null
+                  : Semantics(
+                      label: '${c.unreadCount} unread',
+                      child: Container(
+                        constraints: const BoxConstraints(minWidth: 24),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 7,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          color: VibeColors.lime,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          c.unreadCount > 99 ? '99+' : '${c.unreadCount}',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: VibeColors.ink,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ),
               onTap: () => context.go(
                 '/chats/${c.id}?peer=${Uri.encodeQueryComponent(c.peerId)}&name=${Uri.encodeQueryComponent(c.peerName)}',
               ),
@@ -292,6 +331,8 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   StreamSubscription<String>? changes;
   ChatEngine? engine;
   bool sending = false;
+  DateTime? peerReadAt;
+  DateTime lastTyping = DateTime.fromMillisecondsSinceEpoch(0);
 
   Future<void> reload() async {
     final list = await engine!.history(widget.id);
@@ -300,6 +341,88 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (scroll.hasClients) scroll.jumpTo(scroll.position.maxScrollExtent);
     });
+    markRead();
+  }
+
+  /// Reading happens while this screen is open and the app is in front.
+  Future<void> markRead() async {
+    if (engine == null ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
+    try {
+      await engine!.markRead(widget.id);
+      await ref.read(chatUnreadProvider.notifier).refresh();
+    } catch (_) {
+      // Next open or signal retries.
+    }
+  }
+
+  Future<void> loadReceipt() async {
+    try {
+      final at = await engine?.peerReadAt(widget.id);
+      if (mounted && at != peerReadAt) setState(() => peerReadAt = at);
+    } catch (_) {}
+  }
+
+  /// At most one typing signal every three seconds while composing.
+  void typed(String text) {
+    if (text.isEmpty) return;
+    final now = DateTime.now();
+    if (now.difference(lastTyping) < const Duration(seconds: 3)) return;
+    lastTyping = now;
+    ref.read(realtimeProvider)?.sendTyping(widget.id);
+  }
+
+  Future<void> showSafetyNumber() async {
+    final current = engine;
+    if (current == null) return;
+    String? number;
+    Object? failure;
+    try {
+      number = await current.safetyNumber(widget.peerId);
+    } catch (e) {
+      failure = e;
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Verify safety number'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (number != null) ...[
+              SelectableText(
+                [
+                  for (var i = 0; i < number.length; i += 5)
+                    number.substring(i, i + 5),
+                ].join('  '),
+                key: const Key('safety-number'),
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 18,
+                  height: 1.8,
+                  letterSpacing: 1,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Compare these numbers with ${widget.peerName} in person or on a call. If they match, nobody is intercepting your chat. They change when either of you adds or removes a device.',
+              ),
+            ] else
+              Text(chatError(failure!)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Done'),
+          ),
+        ],
+      ),
+    );
   }
 
   void attach(ChatEngine? next) {
@@ -309,6 +432,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         .where((id) => id == widget.id)
         .listen((_) => reload());
     reload();
+    loadReceipt();
     next.pollNow().catchError((_) {});
   }
 
@@ -344,6 +468,23 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
             (_) => attach(value),
           ),
         );
+    ref.listen(chatSignalProvider, (_, _) => loadReceipt());
+    final until = ref.watch(typingProvider)[widget.id];
+    final typing = until != null && until.isAfter(DateTime.now());
+    final lastMine = messages.lastWhere(
+      (m) => m.mine && !m.notice,
+      orElse: () => ChatMessage(
+        messageId: '',
+        senderId: '',
+        text: '',
+        sentAt: DateTime(0),
+        mine: true,
+      ),
+    );
+    final seen =
+        lastMine.serverAt != null &&
+        peerReadAt != null &&
+        !peerReadAt!.isBefore(lastMine.serverAt!);
     return Column(
       children: [
         Padding(
@@ -375,9 +516,25 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
                         fontWeight: FontWeight.w800,
                       ),
                     ),
-                    const EncryptedBadge(),
+                    if (typing)
+                      Text(
+                        'typing…',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontStyle: FontStyle.italic,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      )
+                    else
+                      const EncryptedBadge(),
                   ],
                 ),
+              ),
+              IconButton(
+                key: const Key('safety-number-button'),
+                tooltip: 'Verify safety number',
+                onPressed: engine == null ? null : showSafetyNumber,
+                icon: const Icon(Icons.verified_user_outlined),
               ),
             ],
           ),
@@ -402,7 +559,25 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
                     vertical: 16,
                   ),
                   itemCount: messages.length,
-                  itemBuilder: (context, i) => _Bubble(message: messages[i]),
+                  itemBuilder: (context, i) => Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _Bubble(message: messages[i]),
+                      if (seen && messages[i].messageId == lastMine.messageId)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 6, top: 2),
+                          child: Text(
+                            'Seen',
+                            key: const Key('seen'),
+                            textAlign: TextAlign.right,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
         ),
         SafeArea(
@@ -419,6 +594,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
                     maxLines: 5,
                     maxLength: 4000,
                     textInputAction: TextInputAction.send,
+                    onChanged: typed,
                     onSubmitted: (_) => send(),
                     decoration: InputDecoration(
                       hintText: 'Message',
@@ -527,6 +703,160 @@ class _Bubble extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Devices that can read this account's chats. Removing one stops new
+/// messages reaching it and deletes anything still waiting for it.
+class ChatDevicesScreen extends ConsumerStatefulWidget {
+  const ChatDevicesScreen({super.key});
+  @override
+  ConsumerState<ChatDevicesScreen> createState() => _ChatDevicesState();
+}
+
+class _ChatDevicesState extends ConsumerState<ChatDevicesScreen> {
+  List<Map<String, dynamic>>? devices;
+  Object? error;
+  String? busy;
+
+  Future<void> load(ChatEngine engine) async {
+    try {
+      final next = await engine.myDevices();
+      if (mounted) {
+        setState(() {
+          devices = next;
+          error = null;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => error = e);
+    }
+  }
+
+  Future<void> remove(ChatEngine engine, Map<String, dynamic> d) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove this device?'),
+        content: const Text(
+          'It will stop receiving your chats, and messages waiting for it are deleted. This can’t be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => busy = d['deviceId'] as String);
+    try {
+      await engine.revokeDevice(d['deviceId'] as String);
+      await load(engine);
+      if (mounted) showMessage(context, 'Device removed.');
+    } catch (e) {
+      if (mounted) showMessage(context, chatError(e));
+    } finally {
+      if (mounted) setState(() => busy = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    if (!chatSupported) {
+      return const _ChatNotice(
+        icon: Icons.phone_iphone_rounded,
+        title: 'Chat devices',
+        body: 'Open Kairova on Android or iOS to manage the devices that can read your chats.',
+      );
+    }
+    final engine = ref.watch(chatEngineProvider).asData?.value;
+    if (engine != null && devices == null && error == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => load(engine));
+    }
+    String label(String platform) => switch (platform) {
+      'android' => 'Android phone',
+      'ios' => 'iPhone',
+      'web' => 'Browser',
+      'linux' => 'Computer',
+      _ => 'Other device',
+    };
+    String date(String? raw) {
+      final at = DateTime.tryParse(raw ?? '')?.toLocal();
+      return at == null
+          ? ''
+          : MaterialLocalizations.of(context).formatMediumDate(at);
+    }
+
+    return ReadingWidth(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+        children: [
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => context.go('/profile'),
+              icon: const Icon(Icons.arrow_back),
+              label: const Text('Profile'),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+            child: Text(
+              'Chat devices',
+              style: Theme.of(context).textTheme.headlineMedium,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 0, 8, 16),
+            child: Text(
+              'Each of these can read your chats. Remove any you don’t recognise.',
+              style: TextStyle(color: scheme.onSurfaceVariant),
+            ),
+          ),
+          if (error != null)
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: Text(chatError(error!)),
+            ),
+          if (devices == null && error == null)
+            const Padding(
+              padding: EdgeInsets.all(24),
+              child: Text('Loading devices…'),
+            ),
+          for (final d in devices ?? <Map<String, dynamic>>[])
+            ListTile(
+              leading: Icon(
+                d['platform'] == 'ios' || d['platform'] == 'android'
+                    ? Icons.phone_iphone_rounded
+                    : Icons.computer_rounded,
+              ),
+              title: Text(
+                d['deviceId'] == engine?.deviceId
+                    ? '${label(d['platform'] as String)} · This phone'
+                    : label(d['platform'] as String),
+              ),
+              subtitle: Text(
+                'Added ${date(d['createdAt'] as String?)} · active ${date(d['lastSeenAt'] as String?)}',
+              ),
+              trailing: d['deviceId'] == engine?.deviceId || engine == null
+                  ? null
+                  : TextButton(
+                      onPressed: busy == null ? () => remove(engine, d) : null,
+                      child: Text(
+                        busy == d['deviceId'] ? 'Removing…' : 'Remove',
+                      ),
+                    ),
+            ),
+        ],
       ),
     );
   }

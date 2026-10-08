@@ -62,6 +62,8 @@ type Device struct {
 	Platform    string    `json:"platform"`
 	DisplayName string    `json:"displayName"`
 	CreatedAt   time.Time `json:"createdAt"`
+	// LastSeenAt is shown only to the device's owner, never to peers.
+	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
 }
 
 func ParseDevice(userID string, body map[string]json.RawMessage) (Device, error) {
@@ -174,6 +176,18 @@ type Conversation struct {
 	Status         string      `json:"status"`
 	CreatedAt      time.Time   `json:"createdAt"`
 	LastMessageAt  *time.Time  `json:"lastMessageAt"`
+	// UnreadCount counts the peer's messages after ReadAt, the caller's pointer.
+	UnreadCount int        `json:"unreadCount"`
+	ReadAt      *time.Time `json:"readAt"`
+	// PeerReadAt is set only when both people have read receipts on.
+	PeerReadAt *time.Time `json:"peerReadAt"`
+	SortAt     time.Time  `json:"-"`
+}
+
+// UnreadSummary feeds the Chats badge.
+type UnreadSummary struct {
+	Messages      int `json:"messages"`
+	Conversations int `json:"conversations"`
 }
 
 type InboxItem struct {

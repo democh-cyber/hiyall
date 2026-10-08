@@ -45,11 +45,25 @@
 - **Live:** `test/chat_live_test.dart` runs three real clients against the API: Anjali's phone and laptop, and Niko. It covers both directions, a 10-message burst, a restart from stored state, and pickles that don't expose keys. **Every request and response is captured, and none of the message text appears.**
 - **Android emulator:** Anjali on the real app and Niko on the command-line peer exchanged messages in both directions. A full `pg_dump` of the dev database has no message text, and every delivered envelope's ciphertext is deleted.
 
+## Real-time delivery, receipts and verification
+
+- **Gateway.** `GET /v1/realtime` upgrades to a WebSocket authenticated by the same bearer token (`internal/httpapi/realtime.go`). Events are wake-up signals only: `inbox`, `activity`, `read`, `typing`, `ready`, `resync`. They never carry message text or ciphertext. Clients fetch and decrypt over HTTP as before, so a lost event costs latency, never data.
+- **Fan-out.** `internal/realtime` keeps per-node connections behind a `Bus` interface. Locally and in a single regional cell, `PGBus` uses PostgreSQL LISTEN/NOTIFY on a dedicated connection, with large audiences split under the 8 KB payload limit. Above that, a Redis or NATS bus with per-node routing replaces it without changing callers. After a bus reconnect, every client is told to `resync`.
+- **Limits.** Each connection has a 64-event queue, and a client that falls behind is disconnected rather than buffered. There are 10 sockets per account and 100k per node; above that the client gets a 503 and falls back to polling. Heartbeats run every 25 seconds, the read limit is 4 KB, and typing is limited to 1 per 2 seconds per socket. Shutdown closes sockets so clients move to another node.
+- **Client.** `RealtimeClient` reconnects with jittered exponential backoff (up to 30 seconds). `LiveSync` routes signals. While connected, the inbox poll is a 60-second safety net; without a socket it polls every 10 seconds (web, offline, gateway at capacity). The socket closes in the background and resyncs on resume. Web never opens a socket, because bearer tokens are not put in URLs.
+- **Inbox at scale.** Migration 0008 adds `conversation_members`, one row per participant. Each row holds a sort key, a read pointer and an unread counter maintained on write. A conversation-list page is a single index range, and the unread badge is O(1). Inbox reads update `last_seen_at` at most every 5 minutes, and acknowledgements match on uuid so the primary key is used.
+- **Read receipts and typing** follow the existing `readReceipts` privacy setting and are reciprocal: both people must have it on. Your own devices always learn that you read something, so badges clear everywhere. Read pointers use the relay's clock (`serverAt`), not the sender's.
+- **Push.** `PUT/DELETE /v1/devices/{id}/push` stores an FCM or APNs token. A token is moved when it is reused and cleared when its device is revoked. The `push.Dispatcher` sends content-free wake-ups off the request path from a bounded queue, only to users with no socket on that node. `LogSender` stands in until FCM/APNs credentials exist.
+- **Safety numbers.** The conversation header shows 60 digits derived from both accounts' current device identity keys, each checked against the keys pinned on first contact: 5200 rounds of SHA-512 per side, ordered by user id. Adding or removing a device changes the number.
+- **Devices.** Profile → Chat devices lists the account's devices, with last activity shown only to the owner. Any device other than the current phone can be removed.
+- **Expiry.** An hourly sweep deletes delivered envelope rows after 7 days and undelivered ciphertext after 30 days, in batches of 5,000.
+
 ## Not done yet (before launch)
 
-- Independent review of this integration: key storage, device lists, envelope handling.
-- Real-time delivery: currently polls every 2 seconds. WebSocket or push comes later.
-- Safety numbers or a device-verification UI. Multi-device history sync for new devices.
-- Attachments, reactions, edits, read receipts, message requests from non-allowed senders, and group chat (Megolm or MLS).
+- Independent review of this integration: key storage, device lists, envelope handling, gateway.
+- FCM and APNs senders and the app-side token registration. Needs Firebase and Apple credentials.
+- A Redis or NATS bus and a presence registry before running more than one cell.
+- Multi-device history sync for new devices.
+- Messages sent by a device that is revoked before the recipient fetches them can't be verified and show as undecryptable. Keeping revoked devices' public keys verifiable would fix this.
+- Attachments, reactions, edits, message requests from non-allowed senders, and group chat (Megolm or MLS).
 - iOS build and test (needs macOS). Proxy-certificate rejection tests and release artifact scans.
-- Undelivered-ciphertext expiry (planned: 30 days).

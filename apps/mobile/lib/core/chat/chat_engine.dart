@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:crypto/crypto.dart';
+
 import '../../src/rust/api/e2ee.dart';
 import 'chat_api.dart';
 import 'chat_store.dart';
@@ -22,7 +24,12 @@ String oneTimeKeyStatement(
 
 class ChatMessage {
   final String messageId, senderId, text;
+
+  /// The sender's clock, for display.
   final DateTime sentAt;
+
+  /// The relay's clock, for read pointers and receipts. Null for local notices.
+  final DateTime? serverAt;
   final bool mine, notice;
   const ChatMessage({
     required this.messageId,
@@ -30,6 +37,7 @@ class ChatMessage {
     required this.text,
     required this.sentAt,
     required this.mine,
+    this.serverAt,
     this.notice = false,
   });
   Map<String, dynamic> toJson() => {
@@ -37,6 +45,7 @@ class ChatMessage {
     'from': senderId,
     'text': text,
     'at': sentAt.toIso8601String(),
+    if (serverAt != null) 'srv': serverAt!.toIso8601String(),
     'mine': mine,
     'notice': notice,
   };
@@ -45,6 +54,7 @@ class ChatMessage {
     senderId: j['from'] as String,
     text: j['text'] as String,
     sentAt: DateTime.parse(j['at'] as String),
+    serverAt: DateTime.tryParse(j['srv'] as String? ?? ''),
     mine: j['mine'] as bool,
     notice: j['notice'] as bool? ?? false,
   );
@@ -53,13 +63,20 @@ class ChatMessage {
 class ChatConversation {
   final String id, peerId, peerName, peerUsername;
   final ChatMessage? last;
+  final int unreadCount;
+
+  /// When the peer last read, on the relay's clock; null unless both people
+  /// have read receipts on.
+  final DateTime? peerReadAt;
   const ChatConversation(
     this.id,
     this.peerId,
     this.peerName,
     this.peerUsername,
-    this.last,
-  );
+    this.last, {
+    this.unreadCount = 0,
+    this.peerReadAt,
+  });
 }
 
 class _Device {
@@ -93,6 +110,7 @@ class ChatEngine {
   final _history = <String, List<ChatMessage>>{};
   Timer? _timer;
   bool _started = false;
+  Duration _pollEvery = Duration.zero;
 
   ChatEngine({
     required this.userId,
@@ -162,6 +180,7 @@ class ChatEngine {
         await _replenishKeys();
         _started = true;
         if (poll > Duration.zero) {
+          _pollEvery = poll;
           _timer = Timer.periodic(poll, (_) => pollNow().catchError((_) {}));
         }
       });
@@ -288,6 +307,7 @@ class ChatEngine {
           'senderId': userId,
           'sentAt': sentAt.toIso8601String(),
         });
+        DateTime? serverAt;
         for (var attempt = 0; ; attempt++) {
           final targets = [
             for (final d in await _devices(
@@ -312,7 +332,7 @@ class ChatEngine {
           }
           await _saveSessions();
           try {
-            await api.send(conversationId, {
+            serverAt = await api.send(conversationId, {
               'messageId': messageId,
               'senderDeviceId': deviceId,
               'envelopes': envelopes,
@@ -329,6 +349,7 @@ class ChatEngine {
             senderId: userId,
             text: text,
             sentAt: sentAt,
+            serverAt: serverAt,
             mine: true,
           ),
         );
@@ -337,6 +358,13 @@ class ChatEngine {
   /// Fetches, verifies and decrypts pending envelopes, then acknowledges them.
   Future<void> pollNow() => _locked(() async {
     if (!_started) return;
+    // Drain a backlog page by page, bounded so one call never runs unchecked.
+    for (var page = 0; page < 10; page++) {
+      if (await _pollPage() < 100) break;
+    }
+  });
+
+  Future<int> _pollPage() async {
     final items = await api.inbox(deviceId);
     final delivered = <String>[];
     for (final item in items) {
@@ -401,6 +429,7 @@ class ChatEngine {
             sentAt:
                 DateTime.tryParse(body['sentAt'] as String? ?? '') ??
                 DateTime.now().toUtc(),
+            serverAt: DateTime.tryParse(item['createdAt'] as String? ?? ''),
             mine: senderId == userId,
           ),
         );
@@ -423,7 +452,57 @@ class ChatEngine {
       await api.ack(deviceId, delivered);
       await _replenishKeys();
     }
-  });
+    return items.length;
+  }
+
+  /// Changes how often the inbox is checked. A live socket signals new mail,
+  /// so the timer becomes a slow safety net while connected.
+  void setPollInterval(Duration every) {
+    if (!_started || _pollEvery == every) return;
+    _pollEvery = every;
+    _timer?.cancel();
+    _timer = Timer.periodic(every, (_) => pollNow().catchError((_) {}));
+  }
+
+  final _markedRead = <String, DateTime>{};
+
+  /// Moves the server read pointer to the newest message from the peer.
+  Future<void> markRead(String conversationId) async {
+    final latest = (await history(conversationId))
+        .where((m) => !m.mine && !m.notice && m.serverAt != null)
+        .map((m) => m.serverAt!)
+        .fold<DateTime?>(null, (a, b) => a == null || b.isAfter(a) ? b : a);
+    if (latest == null) return;
+    final done = _markedRead[conversationId];
+    if (done != null && !latest.isAfter(done)) return;
+    await api.markRead(conversationId, latest);
+    _markedRead[conversationId] = latest;
+  }
+
+  /// A 60-digit number both people can compare in person. It covers every
+  /// device on both accounts as the server lists them now, each checked
+  /// against the keys pinned on first contact, so a substituted or added
+  /// device changes it.
+  Future<String> safetyNumber(String peerId) async {
+    final mine = [
+      _account.identityKey(),
+      for (final d in await _devices(userId))
+        if (d.id != deviceId) d.identityKey,
+    ];
+    final theirs = [for (final d in await _devices(peerId)) d.identityKey];
+    return computeSafetyNumber(userId, mine, peerId, theirs);
+  }
+
+  /// This account's devices as the server lists them, newest first.
+  Future<List<Map<String, dynamic>>> myDevices() async =>
+      (await api.myDevices()).reversed.toList();
+
+  Future<void> revokeDevice(String id) async {
+    if (id == deviceId) {
+      throw const ChatFailure('THIS_DEVICE', 'Sign out to remove this phone.');
+    }
+    await api.revokeDevice(id);
+  }
 
   Future<List<ChatMessage>> history(String conversationId) async {
     final cached = _history[conversationId];
@@ -453,6 +532,12 @@ class ChatEngine {
     if (!_changes.isClosed) _changes.add(conversationId);
   }
 
+  /// When the peer last read this conversation, if both share receipts.
+  Future<DateTime?> peerReadAt(String conversationId) async =>
+      DateTime.tryParse(
+        (await api.conversation(conversationId))['peerReadAt'] as String? ?? '',
+      );
+
   Future<List<ChatConversation>> conversations() async => [
     for (final c in await api.conversations())
       ChatConversation(
@@ -461,6 +546,39 @@ class ChatEngine {
         (c['peer'] as Map)['displayName'] as String,
         (c['peer'] as Map)['username'] as String,
         (await history(c['conversationId'] as String)).lastOrNull,
+        unreadCount: c['unreadCount'] as int? ?? 0,
+        peerReadAt: DateTime.tryParse(c['peerReadAt'] as String? ?? ''),
       ),
   ];
+}
+
+/// Safety number in the style of Signal's: each side hashes its user id and
+/// sorted device identity keys 5200 times with SHA-512, and the two 30-digit
+/// halves are ordered by user id so both people see the same 60 digits.
+String computeSafetyNumber(
+  String userA,
+  List<String> keysA,
+  String userB,
+  List<String> keysB,
+) {
+  String half(String user, List<String> keys) {
+    final sorted = [...keys]..sort();
+    final input = utf8.encode('kairova-safety-v1\n$user\n${sorted.join('\n')}');
+    var hash = sha512.convert(input).bytes;
+    for (var i = 1; i < 5200; i++) {
+      hash = sha512.convert([...hash, ...input]).bytes;
+    }
+    final out = StringBuffer();
+    for (var chunk = 0; chunk < 6; chunk++) {
+      var value = 0;
+      for (var j = 0; j < 5; j++) {
+        value = value * 256 + hash[chunk * 5 + j];
+      }
+      out.write((value % 100000).toString().padLeft(5, '0'));
+    }
+    return out.toString();
+  }
+
+  final a = half(userA, keysA), b = half(userB, keysB);
+  return userA.compareTo(userB) < 0 ? a + b : b + a;
 }
