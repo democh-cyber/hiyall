@@ -156,6 +156,23 @@ void main() {
       await niko.pollNow();
       expect((await niko.history(conversation)).last.text, 'after restart');
 
+      // Unread counts come from the relay and clear once Niko reads.
+      Future<int> nikoUnread() async => (await niko.conversations())
+          .firstWhere((c) => c.id == conversation)
+          .unreadCount;
+      expect(await nikoUnread(), greaterThan(0));
+      await niko.markRead(conversation);
+      expect(await nikoUnread(), 0);
+      expect(await niko.api.unreadMessages(), 0);
+      // Messages carry the relay's time, so read pointers ignore clock skew.
+      expect((await niko.history(conversation)).last.serverAt, isNotNull);
+
+      // Every device on both accounts derives the same safety number.
+      final fromNiko = await niko.safetyNumber(anjaliId);
+      expect(fromNiko, matches(RegExp(r'^\d{60}$')));
+      expect(await restarted.safetyNumber(nikoId), fromNiko);
+      expect(await laptop.safetyNumber(nikoId), fromNiko);
+
       // Stored state is encrypted: the pickles never contain the account's keys in clear.
       final pickled = phoneStore.values.entries
           .where((e) => e.key.endsWith('.account'))

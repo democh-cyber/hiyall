@@ -459,13 +459,15 @@ class _VibePainter extends CustomPainter {
         ),
       ),
       textDirection: TextDirection.ltr,
-    )..layout(maxWidth: size.width - 26);
+    )..layout(maxWidth: math.max(0, size.width - 26));
     t.paint(c, Offset(-t.width / 2, -t.height / 2));
     c.restore();
   }
 
   @override
   void paint(Canvas c, Size s) {
+    // The first frame can lay out at zero width; there is nothing to draw yet.
+    if (s.width < 40 || s.height < 40) return;
     final w = s.width, h = s.height;
     final bg = kind == 'chats'
         ? VibeColors.lilac

@@ -63,3 +63,21 @@ func TestOneClientCannotExhaustAnotherClientsBudget(t *testing.T) {
 		t.Fatalf("another client got %d after the flood, want 401", got)
 	}
 }
+
+func TestDecodeAcceptsStandardJSONContentTypes(t *testing.T) {
+	for header, ok := range map[string]bool{
+		"application/json":                true,
+		"application/json; charset=utf-8": true,
+		"application/json; charset=UTF-8": true,
+		"application/json;charset=latin1": false,
+		"text/plain":                      false,
+		"":                                false,
+	} {
+		r := httptest.NewRequest("POST", "/", strings.NewReader(`{"a":1}`))
+		r.Header.Set("Content-Type", header)
+		_, err := decode(httptest.NewRecorder(), r)
+		if (err == nil) != ok {
+			t.Errorf("%q: accepted=%v, want %v", header, err == nil, ok)
+		}
+	}
+}

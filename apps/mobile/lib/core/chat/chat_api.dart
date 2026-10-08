@@ -87,10 +87,43 @@ class ChatApi {
       Map<String, dynamic>.from(
         await _call('POST', '/v1/conversations', {'userId': userId}) as Map,
       );
+  Future<Map<String, dynamic>> conversation(String id) async =>
+      Map<String, dynamic>.from(
+        await _call('GET', '/v1/conversations/$id') as Map,
+      );
   Future<List<Map<String, dynamic>>> conversations() async =>
       _items(await _call('GET', '/v1/conversations?limit=50'));
-  Future<void> send(String conversationId, Map<String, dynamic> message) =>
-      _call('POST', '/v1/conversations/$conversationId/messages', message);
+
+  /// Returns the server's createdAt for the stored message.
+  Future<DateTime?> send(
+    String conversationId,
+    Map<String, dynamic> message,
+  ) async {
+    final data = await _call(
+      'POST',
+      '/v1/conversations/$conversationId/messages',
+      message,
+    );
+    return DateTime.tryParse((data as Map)['createdAt'] as String? ?? '');
+  }
+
+  Future<void> markRead(String conversationId, DateTime upTo) => _call(
+    'POST',
+    '/v1/conversations/$conversationId/read',
+    {'readAt': upTo.toUtc().toIso8601String()},
+  );
+  Future<int> unreadMessages() async =>
+      ((await _call('GET', '/v1/conversations/unread')) as Map)['messages']
+          as int;
+  Future<List<Map<String, dynamic>>> myDevices() async =>
+      _items(await _call('GET', '/v1/me/devices'));
+  Future<void> revokeDevice(String deviceId) =>
+      _call('DELETE', '/v1/devices/$deviceId');
+  Future<void> setPushToken(String deviceId, String provider, String token) =>
+      _call('PUT', '/v1/devices/$deviceId/push', {
+        'provider': provider,
+        'token': token,
+      });
   Future<List<Map<String, dynamic>>> inbox(String deviceId) async =>
       _items(await _call('GET', '/v1/devices/$deviceId/inbox?limit=100'));
   Future<void> ack(String deviceId, List<String> messageIds) => _call(

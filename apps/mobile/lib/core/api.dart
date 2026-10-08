@@ -1,6 +1,8 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
+import 'realtime/realtime_client.dart';
+
 const apiBaseUrl = String.fromEnvironment('API_BASE_URL');
 const devLoginEnabled = kDebugMode && bool.fromEnvironment('ENABLE_DEV_LOGIN');
 
@@ -357,6 +359,11 @@ class ApiClient {
   ) as Map<String, dynamic>;
   Future<void> revokeSession(Session s, String id) async =>
       await _request('DELETE', '/v1/auth/sessions/$id', token: s.token);
+
+  /// The account's live event socket, or null where only polling is used.
+  RealtimeClient? realtime(Session s) => kIsWeb || _dio.options.baseUrl.isEmpty
+      ? null
+      : RealtimeClient(_dio.options.baseUrl, s.token);
 
   // Social graph. Each call returns the server's resulting state.
   Future<String> follow(Session s, String userId) async =>
