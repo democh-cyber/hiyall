@@ -53,6 +53,9 @@ class Relationship {
   final bool followedBy, canFollow, canFriendRequest;
   final String friendship; // none, pending_outgoing, pending_incoming, accepted
   final String? friendRequestId;
+
+  /// The viewer's own private controls on this person; never shown to them.
+  final bool muted, restricted;
   const Relationship({
     this.following = 'none',
     this.followedBy = false,
@@ -60,6 +63,8 @@ class Relationship {
     this.friendRequestId,
     this.canFollow = false,
     this.canFriendRequest = false,
+    this.muted = false,
+    this.restricted = false,
   });
   factory Relationship.fromJson(Map<String, dynamic> json) => Relationship(
     following: json['following'] as String? ?? 'none',
@@ -68,11 +73,15 @@ class Relationship {
     friendRequestId: json['friendRequestId'] as String?,
     canFollow: json['canFollow'] as bool? ?? false,
     canFriendRequest: json['canFriendRequest'] as bool? ?? false,
+    muted: json['muted'] as bool? ?? false,
+    restricted: json['restricted'] as bool? ?? false,
   );
   Relationship copyWith({
     String? following,
     String? friendship,
     String? Function()? friendRequestId,
+    bool? muted,
+    bool? restricted,
   }) => Relationship(
     following: following ?? this.following,
     followedBy: followedBy,
@@ -82,6 +91,8 @@ class Relationship {
         : friendRequestId(),
     canFollow: canFollow,
     canFriendRequest: canFriendRequest,
+    muted: muted ?? this.muted,
+    restricted: restricted ?? this.restricted,
   );
 }
 
@@ -433,4 +444,91 @@ class ApiClient {
       await _request('POST', '/v1/notifications/$id/read', token: s.token);
   Future<void> markAllNotificationsRead(Session s) async =>
       await _request('POST', '/v1/notifications/read-all', token: s.token);
+
+  /// Mutes someone's notifications, until [until] or indefinitely.
+  Future<void> setMuted(
+    Session s,
+    String userId,
+    bool muted, {
+    DateTime? until,
+  }) async => await _request(
+    muted ? 'POST' : 'DELETE',
+    '/v1/users/$userId/mute',
+    token: s.token,
+    body: muted && until != null
+        ? {'until': until.toUtc().toIso8601String()}
+        : null,
+  );
+
+  Future<void> setRestricted(Session s, String userId, bool restricted) async =>
+      await _request(
+        restricted ? 'POST' : 'DELETE',
+        '/v1/users/$userId/restrict',
+        token: s.token,
+      );
+
+  /// The caller's [kind] list: blocked, muted or restricted.
+  Future<ApiPage<Map<String, dynamic>>> controls(
+    Session s,
+    String kind, [
+    String? cursor,
+  ]) async => ApiPage.fromJson(
+    await _request(
+      'GET',
+      '/v1/me/$kind${cursor == null ? '' : '?cursor=${Uri.encodeQueryComponent(cursor)}'}',
+      token: s.token,
+    ) as Map<String, dynamic>,
+    (v) => v,
+  );
+
+  /// Files a report. [evidence] is only what the reporter picked to share,
+  /// with [disclosureConsent] confirming it. Returns whether they're now blocked.
+  Future<ReportReceipt> report(
+    Session s, {
+    required String targetType,
+    required String targetId,
+    required String reasonCode,
+    String description = '',
+    List<Map<String, dynamic>> evidence = const [],
+    bool disclosureConsent = false,
+    bool block = false,
+  }) async {
+    final data = await _request(
+      'POST',
+      '/v1/reports',
+      token: s.token,
+      body: {
+        'targetType': targetType,
+        'targetId': targetId,
+        'reasonCode': reasonCode,
+        if (description.trim().isNotEmpty) 'description': description.trim(),
+        if (evidence.isNotEmpty) ...{
+          'evidence': evidence,
+          'disclosureConsent': disclosureConsent,
+        },
+        if (block) 'block': true,
+      },
+    ) as Map<String, dynamic>;
+    return ReportReceipt(
+      duplicate: data['duplicate'] as bool? ?? false,
+      blocked: data['blocked'] as bool? ?? false,
+    );
+  }
+
+  Future<ApiPage<Map<String, dynamic>>> myReports(
+    Session s, [
+    String? cursor,
+  ]) async => ApiPage.fromJson(
+    await _request(
+      'GET',
+      '/v1/me/reports${cursor == null ? '' : '?cursor=${Uri.encodeQueryComponent(cursor)}'}',
+      token: s.token,
+    ) as Map<String, dynamic>,
+    (v) => v,
+  );
+}
+
+class ReportReceipt {
+  final bool duplicate, blocked;
+  const ReportReceipt({this.duplicate = false, this.blocked = false});
 }

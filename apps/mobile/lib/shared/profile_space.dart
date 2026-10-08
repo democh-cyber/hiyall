@@ -82,14 +82,14 @@ Future<void> shareProfile(BuildContext context, Profile profile) async {
 class ProfileSpace extends StatefulWidget {
   final Profile profile;
   final bool isOwner;
-  final VoidCallback? onEdit, onSettings, onBlock;
+  final VoidCallback? onEdit, onSettings, onOptions;
   const ProfileSpace({
     super.key,
     required this.profile,
     this.isOwner = false,
     this.onEdit,
     this.onSettings,
-    this.onBlock,
+    this.onOptions,
   });
   @override
   State<ProfileSpace> createState() => _ProfileSpaceState();
@@ -132,7 +132,7 @@ class _ProfileSpaceState extends State<ProfileSpace> {
                   height: 56 + (scale - 1) * 20,
                   isOwner: widget.isOwner,
                   onSettings: widget.onSettings,
-                  onBlock: widget.onBlock,
+                  onOptions: widget.onOptions,
                 ),
               ),
               SliverToBoxAdapter(child: _hero(context, p, accent, ink, muted)),
@@ -912,7 +912,7 @@ class _ProfileStickyHeader extends SliverPersistentHeaderDelegate {
   final Color accent;
   final bool dark, isOwner;
   final double height;
-  final VoidCallback? onSettings, onBlock;
+  final VoidCallback? onSettings, onOptions;
   const _ProfileStickyHeader({
     required this.profile,
     required this.scroll,
@@ -921,7 +921,7 @@ class _ProfileStickyHeader extends SliverPersistentHeaderDelegate {
     required this.height,
     required this.isOwner,
     this.onSettings,
-    this.onBlock,
+    this.onOptions,
   });
   @override
   double get minExtent => height;
@@ -1019,13 +1019,12 @@ class _ProfileStickyHeader extends SliverPersistentHeaderDelegate {
             onPressed: onSettings,
             icon: const Icon(Icons.tune_rounded, size: 22),
           ),
-        if (!isOwner && onBlock != null)
-          PopupMenuButton<String>(
+        if (!isOwner && onOptions != null)
+          IconButton(
+            key: const Key('profile-options'),
             tooltip: 'Profile options',
-            onSelected: (_) => onBlock!(),
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'block', child: Text('Block account')),
-            ],
+            onPressed: onOptions,
+            icon: const Icon(Icons.more_horiz_rounded),
           ),
       ],
     ),
@@ -1038,7 +1037,7 @@ class _ProfileStickyHeader extends SliverPersistentHeaderDelegate {
       height != old.height ||
       isOwner != old.isOwner ||
       onSettings != old.onSettings ||
-      onBlock != old.onBlock;
+      onOptions != old.onOptions;
 }
 
 class _ProfileOrbitPainter extends CustomPainter {

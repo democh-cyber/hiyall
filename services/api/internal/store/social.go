@@ -75,10 +75,12 @@ func relationship(ctx context.Context, q querier, viewer, target string, policy 
 	var status, requester, requestID *string
 	err := q.QueryRow(ctx, `SELECT coalesce(fo.state,'none'),
   EXISTS(SELECT 1 FROM follows WHERE follower_id=$2 AND followee_id=$1 AND state='active'),
-  f.status, f.requested_by::text, f.friendship_id::text
+  f.status, f.requested_by::text, f.friendship_id::text,
+  EXISTS(SELECT 1 FROM user_controls WHERE actor_id=$1 AND target_id=$2 AND control='mute' AND (until IS NULL OR until>now())),
+  EXISTS(SELECT 1 FROM user_controls WHERE actor_id=$1 AND target_id=$2 AND control='restrict')
  FROM (SELECT 1) x
  LEFT JOIN follows fo ON fo.follower_id=$1 AND fo.followee_id=$2 AND fo.state<>'removed'
- LEFT JOIN friendships f ON f.user_low_id=least($1::uuid,$2::uuid) AND f.user_high_id=greatest($1::uuid,$2::uuid)`, viewer, target).Scan(&rel.Following, &rel.FollowedBy, &status, &requester, &requestID)
+ LEFT JOIN friendships f ON f.user_low_id=least($1::uuid,$2::uuid) AND f.user_high_id=greatest($1::uuid,$2::uuid)`, viewer, target).Scan(&rel.Following, &rel.FollowedBy, &status, &requester, &requestID, &rel.Muted, &rel.Restricted)
 	if err != nil {
 		return rel, err
 	}
@@ -120,9 +122,13 @@ func canRequest(ctx context.Context, q querier, actor, target string, policy dom
 	return false, nil
 }
 
+// notify records activity for recipient. Activity from someone the recipient
+// muted or restricted is still listed (requests must stay answerable) but
+// arrives already read, so it never raises the badge.
 func notify(ctx context.Context, tx pgx.Tx, recipient, actor, event, target string) error {
-	_, err := tx.Exec(ctx, `INSERT INTO notifications(notification_id,recipient_id,actor_id,event,target_id) VALUES($1,$2,$3,$4,$5)
- ON CONFLICT (recipient_id,actor_id,event) DO UPDATE SET target_id=excluded.target_id,created_at=now(),read_at=NULL`, newID(), recipient, actor, event, target)
+	_, err := tx.Exec(ctx, `INSERT INTO notifications(notification_id,recipient_id,actor_id,event,target_id,read_at)
+ VALUES($1,$2,$3,$4,$5,CASE WHEN `+quietFrom("$2::uuid", "$3::uuid")+` THEN now() END)
+ ON CONFLICT (recipient_id,actor_id,event) DO UPDATE SET target_id=excluded.target_id,created_at=now(),read_at=excluded.read_at`, newID(), recipient, actor, event, target)
 	return err
 }
 

@@ -68,6 +68,9 @@ class ChatConversation {
   /// When the peer last read, on the relay's clock; null unless both people
   /// have read receipts on.
   final DateTime? peerReadAt;
+
+  /// Set while this account has the chat muted.
+  final DateTime? mutedUntil;
   const ChatConversation(
     this.id,
     this.peerId,
@@ -76,7 +79,10 @@ class ChatConversation {
     this.last, {
     this.unreadCount = 0,
     this.peerReadAt,
+    this.mutedUntil,
   });
+
+  bool get muted => mutedUntil?.isAfter(DateTime.now()) ?? false;
 }
 
 class _Device {
@@ -538,8 +544,9 @@ class ChatEngine {
         (await api.conversation(conversationId))['peerReadAt'] as String? ?? '',
       );
 
-  Future<List<ChatConversation>> conversations() async => [
-    for (final c in await api.conversations())
+  /// Most recent first. Only the returned chats' local history is read.
+  Future<List<ChatConversation>> conversations({int limit = 50}) async => [
+    for (final c in await api.conversations(limit: limit))
       ChatConversation(
         c['conversationId'] as String,
         (c['peer'] as Map)['userId'] as String,
@@ -548,6 +555,7 @@ class ChatEngine {
         (await history(c['conversationId'] as String)).lastOrNull,
         unreadCount: c['unreadCount'] as int? ?? 0,
         peerReadAt: DateTime.tryParse(c['peerReadAt'] as String? ?? ''),
+        mutedUntil: DateTime.tryParse(c['mutedUntil'] as String? ?? ''),
       ),
   ];
 }

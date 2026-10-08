@@ -181,6 +181,9 @@ type Conversation struct {
 	ReadAt      *time.Time `json:"readAt"`
 	// PeerReadAt is set only when both people have read receipts on.
 	PeerReadAt *time.Time `json:"peerReadAt"`
+	// MutedUntil is set while the caller has this chat muted; 9999-12-31
+	// means until unmuted.
+	MutedUntil *time.Time `json:"mutedUntil"`
 	SortAt     time.Time  `json:"-"`
 }
 

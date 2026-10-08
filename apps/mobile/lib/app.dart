@@ -11,6 +11,7 @@ import 'features/live_sync.dart';
 import 'features/screens.dart';
 import 'features/profile.dart';
 import 'features/privacy.dart';
+import 'features/safety.dart';
 import 'features/design_studio.dart';
 import 'shared/widgets.dart';
 import 'shared/navigation_dock.dart';
@@ -88,6 +89,10 @@ final routerProvider = Provider<GoRouter>((ref) {
               GoRoute(
                 path: 'sessions',
                 builder: (context, state) => const SessionsScreen(),
+              ),
+              GoRoute(
+                path: 'controls',
+                builder: (context, state) => const ControlsScreen(),
               ),
             ],
           ),

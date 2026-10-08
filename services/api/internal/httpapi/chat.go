@@ -198,14 +198,16 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		if limited(a.messages) {
 			return true
 		}
-		created, peer, err := a.Store.SendMessage(ctx, p.UserID, parts[2], m)
+		created, peer, quiet, err := a.Store.SendMessage(ctx, p.UserID, parts[2], m)
 		if err != nil {
 			a.error(w, r, err)
 			return true
 		}
 		// The sender's other devices also hold envelopes, so both users are signalled.
 		a.signal(ctx, "inbox", map[string]string{"conversationId": parts[2]}, peer, p.UserID)
-		a.wake("message", peer)
+		if !quiet {
+			a.wake("message", peer)
+		}
 		a.ok(w, r, map[string]any{"messageId": m.MessageID, "createdAt": created})
 	default:
 		return false

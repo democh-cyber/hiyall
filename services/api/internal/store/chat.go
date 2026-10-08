@@ -236,12 +236,14 @@ func (s *Store) ClaimKey(ctx context.Context, actor, target, deviceID string) (d
 	return claimed, mapped(err)
 }
 
-// receiptsOn is true when both members allow read receipts; it is reciprocal.
-const receiptsOn = `coalesce((mq.data->>'readReceipts')::boolean,false) AND coalesce((pq.data->>'readReceipts')::boolean,false)`
+// receiptsOn is true when both members allow read receipts and neither has
+// restricted the other; it is reciprocal.
+var receiptsOn = `coalesce((mq.data->>'readReceipts')::boolean,false) AND coalesce((pq.data->>'readReceipts')::boolean,false) AND NOT ` + restrictedPair("m.user_id", "m.peer_id")
 
 // conversationSelect reads the caller's member row ($1) and joins the peer's.
-const conversationSelect = `SELECT c.conversation_id::text,c.status,c.created_at,c.last_message_at,p.user_id::text,p.username,coalesce(p.data->>'displayName',''),
- m.unread_count,m.read_at,CASE WHEN ` + receiptsOn + ` THEN pm.read_at END,m.sort_at
+var conversationSelect = `SELECT c.conversation_id::text,c.status,c.created_at,c.last_message_at,p.user_id::text,p.username,coalesce(p.data->>'displayName',''),
+ m.unread_count,m.read_at,CASE WHEN ` + receiptsOn + ` THEN pm.read_at END,m.sort_at,
+ CASE WHEN m.muted_until>now() THEN m.muted_until END
  FROM conversation_members m
  JOIN conversations c ON c.conversation_id=m.conversation_id
  JOIN conversation_members pm ON pm.conversation_id=m.conversation_id AND pm.user_id=m.peer_id
@@ -254,7 +256,7 @@ const conversationSelect = `SELECT c.conversation_id::text,c.status,c.created_at
 
 func scanConversation(row pgx.Row) (domain.Conversation, error) {
 	var c domain.Conversation
-	err := row.Scan(&c.ConversationID, &c.Status, &c.CreatedAt, &c.LastMessageAt, &c.Peer.UserID, &c.Peer.Username, &c.Peer.DisplayName, &c.UnreadCount, &c.ReadAt, &c.PeerReadAt, &c.SortAt)
+	err := row.Scan(&c.ConversationID, &c.Status, &c.CreatedAt, &c.LastMessageAt, &c.Peer.UserID, &c.Peer.Username, &c.Peer.DisplayName, &c.UnreadCount, &c.ReadAt, &c.PeerReadAt, &c.SortAt, &c.MutedUntil)
 	return c, mapped(err)
 }
 
@@ -320,10 +322,12 @@ func (s *Store) ListConversations(ctx context.Context, user string, before *time
 // exactly the peer's devices plus the sender's other devices, so no device is
 // silently skipped and none can be injected.
 // It returns the peer so callers can signal without another lookup.
-func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m domain.SendMessage) (created time.Time, peer string, err error) {
+// SendMessage relays one message. quiet reports that the peer muted this chat
+// or muted/restricted the sender, so no push should be sent.
+func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m domain.SendMessage) (created time.Time, peer string, quiet bool, err error) {
 	err = s.Pool.QueryRow(ctx, `SELECT (CASE WHEN user_low_id=$2 THEN user_high_id ELSE user_low_id END)::text FROM conversations WHERE conversation_id=$1 AND $2 IN (user_low_id,user_high_id)`, conversationID, user).Scan(&peer)
 	if err != nil {
-		return created, "", mapped(err)
+		return created, "", false, mapped(err)
 	}
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		if err := lockPair(ctx, tx, user, peer); err != nil {
@@ -398,13 +402,30 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 			return err
 		}
 		// The sender has read up to their own message; the peer has one more unread.
-		_, err = tx.Exec(ctx, `UPDATE conversation_members SET sort_at=$2,
+		rows, err = tx.Query(ctx, `UPDATE conversation_members SET sort_at=$2,
  unread_count=CASE WHEN user_id=$3 THEN 0 ELSE unread_count+1 END,
  read_at=CASE WHEN user_id=$3 THEN greatest(read_at,$2) ELSE read_at END
- WHERE conversation_id=$1`, conversationID, created, user)
+ WHERE conversation_id=$1
+ RETURNING user_id=$3,coalesce(muted_until>now(),false) OR `+quietFrom("user_id", "$3::uuid"), conversationID, created, user)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var sender, silenced bool
+			if err = rows.Scan(&sender, &silenced); err != nil {
+				break
+			}
+			if !sender {
+				quiet = silenced
+			}
+		}
+		rows.Close()
+		if err == nil {
+			err = rows.Err()
+		}
 		return err
 	})
-	return created, peer, err
+	return created, peer, quiet, err
 }
 
 // MarkRead moves the caller's read pointer forward to upTo (never past now) and
@@ -435,15 +456,18 @@ func (s *Store) MarkRead(ctx context.Context, user, conversationID string, upTo 
 // ReadReceiptsShared reports whether both people allow read receipts and typing.
 func (s *Store) ReadReceiptsShared(ctx context.Context, a, b string) (bool, error) {
 	var on bool
-	err := s.Pool.QueryRow(ctx, `SELECT coalesce(bool_and(coalesce((data->>'readReceipts')::boolean,false)),false) AND count(*)=2 FROM privacy_settings WHERE user_id IN ($1,$2)`, a, b).Scan(&on)
+	err := s.Pool.QueryRow(ctx, `SELECT coalesce(bool_and(coalesce((data->>'readReceipts')::boolean,false)),false) AND count(*)=2 AND NOT `+restrictedPair("$1::uuid", "$2::uuid")+`
+ FROM privacy_settings WHERE user_id IN ($1,$2)`, a, b).Scan(&on)
 	return on, err
 }
 
-// Unread totals the caller's unread messages across active conversations.
+// Unread totals the caller's unread messages across active conversations,
+// leaving out muted chats and people the caller restricted.
 func (s *Store) Unread(ctx context.Context, user string) (domain.UnreadSummary, error) {
 	var u domain.UnreadSummary
 	err := s.Pool.QueryRow(ctx, `SELECT coalesce(sum(m.unread_count),0)::int,count(*)::int FROM conversation_members m JOIN conversations c ON c.conversation_id=m.conversation_id
- WHERE m.user_id=$1 AND m.unread_count>0 AND c.status='active'`, user).Scan(&u.Messages, &u.Conversations)
+ WHERE m.user_id=$1 AND m.unread_count>0 AND c.status='active' AND (m.muted_until IS NULL OR m.muted_until<=now())
+ AND NOT EXISTS(SELECT 1 FROM user_controls rc WHERE rc.actor_id=$1 AND rc.target_id=m.peer_id AND rc.control='restrict')`, user).Scan(&u.Messages, &u.Conversations)
 	return u, err
 }
 
