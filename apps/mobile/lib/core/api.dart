@@ -7,7 +7,8 @@ const devLoginEnabled = kDebugMode && bool.fromEnvironment('ENABLE_DEV_LOGIN');
 class ApiFailure implements Exception {
   final String message;
   final int? status;
-  const ApiFailure(this.message, [this.status]);
+  final String? code;
+  const ApiFailure(this.message, [this.status, this.code]);
   @override
   String toString() => message;
 }
@@ -44,6 +45,44 @@ class ProfileSocialStats {
       );
 }
 
+/// The viewer's connection to another account, as computed by the server.
+class Relationship {
+  final String following; // none, pending, active
+  final bool followedBy, canFollow, canFriendRequest;
+  final String friendship; // none, pending_outgoing, pending_incoming, accepted
+  final String? friendRequestId;
+  const Relationship({
+    this.following = 'none',
+    this.followedBy = false,
+    this.friendship = 'none',
+    this.friendRequestId,
+    this.canFollow = false,
+    this.canFriendRequest = false,
+  });
+  factory Relationship.fromJson(Map<String, dynamic> json) => Relationship(
+    following: json['following'] as String? ?? 'none',
+    followedBy: json['followedBy'] as bool? ?? false,
+    friendship: json['friendship'] as String? ?? 'none',
+    friendRequestId: json['friendRequestId'] as String?,
+    canFollow: json['canFollow'] as bool? ?? false,
+    canFriendRequest: json['canFriendRequest'] as bool? ?? false,
+  );
+  Relationship copyWith({
+    String? following,
+    String? friendship,
+    String? Function()? friendRequestId,
+  }) => Relationship(
+    following: following ?? this.following,
+    followedBy: followedBy,
+    friendship: friendship ?? this.friendship,
+    friendRequestId: friendRequestId == null
+        ? this.friendRequestId
+        : friendRequestId(),
+    canFollow: canFollow,
+    canFriendRequest: canFriendRequest,
+  );
+}
+
 class Profile {
   final String userId, username, displayName, bio, profession, version;
   final String headline, quote, currentVibe, pronouns, education;
@@ -52,6 +91,12 @@ class Profile {
   final String? country, websiteUrl;
   final List<String> interests;
   final List<ProfileLanguage> languages;
+
+  /// Present only when viewing someone else.
+  final Relationship? relationship;
+
+  /// The owner's profile audience excludes this viewer; only identity is sent.
+  final bool locked;
   const Profile({
     required this.userId,
     required this.username,
@@ -72,6 +117,8 @@ class Profile {
     this.profileAccent = 'lime',
     this.profilePattern = 'glow',
     this.avatarFrame = 'minimal',
+    this.relationship,
+    this.locked = false,
   });
   factory Profile.fromJson(Map<String, dynamic> json) => Profile(
     userId: json['userId'] as String,
@@ -103,7 +150,24 @@ class Profile {
     profileAccent: json['profileAccent'] as String? ?? 'lime',
     profilePattern: json['profilePattern'] as String? ?? 'glow',
     avatarFrame: json['avatarFrame'] as String? ?? 'minimal',
+    relationship: json['relationship'] == null
+        ? null
+        : Relationship.fromJson(json['relationship'] as Map<String, dynamic>),
+    locked: json['locked'] as bool? ?? false,
   );
+}
+
+/// One page of a cursor-paginated list.
+class ApiPage<T> {
+  final List<T> items;
+  final String? nextCursor;
+  const ApiPage(this.items, this.nextCursor);
+  factory ApiPage.fromJson(
+    Map<String, dynamic> json,
+    T Function(Map<String, dynamic>) item,
+  ) => ApiPage([
+    for (final v in json['items'] as List) item(v as Map<String, dynamic>),
+  ], json['nextCursor'] as String?);
 }
 
 class Privacy {
@@ -124,6 +188,14 @@ class Session {
   final String token, userId;
   const Session(this.token, this.userId);
 }
+
+const _policyCodes = {
+  'FOLLOW_NOT_ALLOWED',
+  'REQUEST_NOT_ALLOWED',
+  'REQUEST_COOLDOWN',
+  'CONNECTIONS_PRIVATE',
+  'RATE_LIMITED',
+};
 
 class ApiClient {
   final Dio _dio;
@@ -172,6 +244,15 @@ class ApiClient {
       return response.data!['data'];
     } on DioException catch (error) {
       final status = error.response?.statusCode;
+      final body = error.response?.data;
+      final failure = body is Map && body['error'] is Map
+          ? body['error'] as Map
+          : const {};
+      final code = failure['code'] as String?;
+      // Policy refusals carry server copy written to be shown as-is.
+      if (_policyCodes.contains(code) && failure['message'] is String) {
+        throw ApiFailure(failure['message'] as String, status, code);
+      }
       final message = switch (status) {
         401 => 'Your session has expired. Sign in again.',
         404 => 'This profile is unavailable.',
@@ -181,7 +262,7 @@ class ApiClient {
         429 => 'Please wait a moment and try again.',
         _ => 'Could not connect. Check your connection and retry.',
       };
-      throw ApiFailure(message, status);
+      throw ApiFailure(message, status, code);
     }
   }
 
@@ -276,4 +357,73 @@ class ApiClient {
   ) as Map<String, dynamic>;
   Future<void> revokeSession(Session s, String id) async =>
       await _request('DELETE', '/v1/auth/sessions/$id', token: s.token);
+
+  // Social graph. Each call returns the server's resulting state.
+  Future<String> follow(Session s, String userId) async =>
+      (await _request('POST', '/v1/users/$userId/follow', token: s.token)
+              as Map<String, dynamic>)['following']
+          as String;
+  Future<void> unfollow(Session s, String userId) async =>
+      await _request('DELETE', '/v1/users/$userId/follow', token: s.token);
+  Future<String> sendFriendRequest(Session s, String userId) async =>
+      (await _request(
+            'POST',
+            '/v1/users/$userId/friend-requests',
+            token: s.token,
+          ) as Map<String, dynamic>)['requestId']
+          as String;
+  Future<void> cancelFriendRequest(Session s, String requestId) async =>
+      await _request(
+        'DELETE',
+        '/v1/friend-requests/$requestId',
+        token: s.token,
+      );
+  Future<void> respondFriendRequest(
+    Session s,
+    String requestId,
+    bool accept,
+  ) async => await _request(
+    'POST',
+    '/v1/friend-requests/$requestId/${accept ? 'accept' : 'decline'}',
+    token: s.token,
+  );
+  Future<void> unfriend(Session s, String userId) async =>
+      await _request('DELETE', '/v1/users/$userId/friendship', token: s.token);
+  Future<void> respondFollowRequest(
+    Session s,
+    String followerId,
+    bool accept,
+  ) async => accept
+      ? await _request(
+          'POST',
+          '/v1/users/$followerId/follow-requests/accept',
+          token: s.token,
+        )
+      : await _request(
+          'DELETE',
+          '/v1/me/follow-requests/$followerId',
+          token: s.token,
+        );
+
+  // Activity.
+  Future<(ApiPage<Map<String, dynamic>>, int)> notifications(
+    Session s, [
+    String? cursor,
+  ]) async {
+    final data = await _request(
+      'GET',
+      '/v1/notifications${cursor == null ? '' : '?cursor=${Uri.encodeQueryComponent(cursor)}'}',
+      token: s.token,
+    ) as Map<String, dynamic>;
+    return (ApiPage.fromJson(data, (v) => v), data['unreadCount'] as int? ?? 0);
+  }
+
+  Future<int> unreadNotifications(Session s) async =>
+      (await _request('GET', '/v1/notifications/unread-count', token: s.token)
+              as Map<String, dynamic>)['unreadCount']
+          as int;
+  Future<void> markNotificationRead(Session s, String id) async =>
+      await _request('POST', '/v1/notifications/$id/read', token: s.token);
+  Future<void> markAllNotificationsRead(Session s) async =>
+      await _request('POST', '/v1/notifications/read-all', token: s.token);
 }

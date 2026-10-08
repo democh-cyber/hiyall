@@ -505,7 +505,8 @@ func (s *Store) ListNotifications(ctx context.Context, recipient string, unreadO
 			return nil, err
 		}
 		labels := domain.NotificationCopy[n.Event]
-		n.Type, n.TargetType, n.Text = labels[0], labels[1], labels[2]
+		n.Type, n.TargetType = labels[0], labels[1]
+		n.Text = actor.Name() + " " + labels[2]
 		n.Actors = []domain.UserSummary{actor}
 		n.Count = 1
 		result = append(result, n)

@@ -26,7 +26,7 @@ Every write locks both accounts in id order, so crossing or repeated actions can
 
 ## Activity
 
-`GET /v1/notifications` returns the caller's own rows, newest first, with `unreadCount`; `unreadOnly=true` filters. Events: `follow.started`, `follow.requested`, `follow.accepted`, `friend.requested`, `friend.accepted`, mapped to the contract types `follow` and `friend_request`. Text is rendered by the API, not stored. Repeating an action refreshes one row as unread instead of adding another. Rows from actors who are inactive or blocked with the recipient are hidden. `POST /v1/notifications/{id}/read`, `POST /v1/notifications/read-all` and `GET /v1/notifications/unread-count` complete it. Likes, comments and messages will add events when those modules exist.
+`GET /v1/notifications` returns the caller's own rows, newest first, with `unreadCount`; `unreadOnly=true` filters. Events: `follow.started`, `follow.requested`, `follow.accepted`, `friend.requested`, `friend.accepted`, mapped to the contract types `follow` and `friend_request`. Text is rendered by the API, not stored, as a full sentence naming the first actor ("Niko sent you a friend request"); clients show it as-is. Repeating an action refreshes one row as unread instead of adding another. Rows from actors who are inactive or blocked with the recipient are hidden. `POST /v1/notifications/{id}/read`, `POST /v1/notifications/read-all` and `GET /v1/notifications/unread-count` complete it. Likes, comments and messages will add events when those modules exist.
 
 ## Pagination
 
@@ -39,3 +39,7 @@ Blocking ends follows in both directions, friendships, pending requests and the 
 ## Verification
 
 PostgreSQL integration tests (`social_test.go`) cover every policy value, owner-only approvals, sender/recipient-only request actions, cooldown, crossing requests, friends-of-friends, locked cards for each audience, list privacy and block/inactive filtering, block severing and non-restoration, notification paging with cursor binding, read ownership, read-all, refresh-instead-of-duplicate, hidden actors, concurrent crossing requests and parallel follows, and per-account write limits. They run with the race detector.
+
+## App wiring
+
+The Activity tab (`lib/core/activity_state.dart`, `NotificationsScreen`) loads pages through `GET /v1/notifications`, marks rows read on open or via "Mark all as read", and answers open requests inline with Accept/Decline. Updates are optimistic and roll back if the server refuses. The bell and dock show the unread count, refreshed every 30 seconds and on return to the foreground until server push replaces polling. The person screen (`RelationshipBar`, `LockedProfile`) shows Follow / Follow back / Follow requested / Following and Add friend / Requested / Accept·Decline / Friends from the server's `relationship`, and shows only identity plus those controls when `locked` is true.

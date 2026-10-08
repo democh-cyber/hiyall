@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'core/theme.dart';
+import 'core/activity_state.dart';
 import 'core/state.dart';
 import 'features/chat.dart';
 import 'features/screens.dart';
@@ -152,6 +153,9 @@ class AppShell extends ConsumerWidget {
     final dark = Theme.of(context).brightness == Brightness.dark;
     final scheme = Theme.of(context).colorScheme;
     final profile = ref.watch(profileProvider).asData?.value;
+    final unreadActivity = ref.watch(
+      activityProvider.select((s) => s.asData?.value.unread ?? 0),
+    );
     final avatar = profile?.displayName.characters.first ?? 'K';
     Widget logo() => Row(
       children: [
@@ -341,9 +345,17 @@ class AppShell extends ConsumerWidget {
               icon: const Icon(Icons.design_services_outlined, size: 21),
             ),
           IconButton(
-            tooltip: 'Open notifications',
+            tooltip: unreadActivity > 0
+                ? 'Open notifications, $unreadActivity unread'
+                : 'Open notifications',
             onPressed: () => context.go('/notifications'),
-            icon: const Icon(Icons.notifications_none_rounded, size: 21),
+            icon: Badge(
+              isLabelVisible: unreadActivity > 0,
+              label: Text(unreadActivity > 99 ? '99+' : '$unreadActivity'),
+              backgroundColor: VibeColors.lime,
+              textColor: VibeColors.ink,
+              child: const Icon(Icons.notifications_none_rounded, size: 21),
+            ),
           ),
           IconButton(
             tooltip: dark
@@ -386,19 +398,21 @@ class AppShell extends ConsumerWidget {
       ),
     );
     return Scaffold(
-      body: SafeArea(
-        child: Row(
-          children: [
-            if (wide) sidebar,
-            Expanded(
-              child: Column(
-                children: [
-                  header,
-                  Expanded(child: child),
-                ],
+      body: ActivityPoller(
+        child: SafeArea(
+          child: Row(
+            children: [
+              if (wide) sidebar,
+              Expanded(
+                child: Column(
+                  children: [
+                    header,
+                    Expanded(child: child),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
       floatingActionButton: path == '/home'
@@ -416,6 +430,7 @@ class AppShell extends ConsumerWidget {
           : NavigationDock(
               selectedIndex: index,
               profileName: profile?.displayName ?? 'K',
+              newActivity: unreadActivity > 0,
               onSelected: (i) => context.go(routes[i]),
             ),
     );

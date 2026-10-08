@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // PolicyError is a request the target's settings refuse; the message is safe to show.
 type PolicyError struct {
@@ -22,6 +25,14 @@ type UserSummary struct {
 	UserID      string `json:"userId"`
 	Username    string `json:"username"`
 	DisplayName string `json:"displayName"`
+}
+
+// Name is what a person is called in text: display name, else @username.
+func (u UserSummary) Name() string {
+	if name := strings.TrimSpace(u.DisplayName); name != "" {
+		return name
+	}
+	return "@" + u.Username
 }
 
 // Relationship is always from the viewer's point of view.

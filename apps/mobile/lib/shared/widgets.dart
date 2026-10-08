@@ -395,9 +395,12 @@ class FailureCard extends StatelessWidget {
   );
 }
 
+/// Shows a short status line, replacing any earlier one so quick actions never
+/// leave a queue of stale messages.
 void showMessage(BuildContext context, String message) =>
     ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
 
 /// Decorative, offline vector artwork. It contains no messages or user data.
 class VibeArt extends StatelessWidget {
