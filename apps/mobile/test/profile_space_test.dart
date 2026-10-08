@@ -356,41 +356,40 @@ void main() {
       expect(find.byType(ProfileForm), findsOneWidget);
     },
   );
-  testWidgets(
-    'Settings stay reachable while scrolling and lead to privacy',
-    (tester) async {
-      final api = ProfileApi();
-      await launchEditor(tester, api);
-      final container = ProviderScope.containerOf(
-        tester.element(find.byType(ProfileForm)),
-      );
-      container.read(routerProvider).go('/profile');
-      await tester.pumpAndSettle();
-      expect(find.text('Sign out'), findsNothing);
-      await tester.drag(find.byType(CustomScrollView), const Offset(0, -550));
-      await tester.pumpAndSettle();
-      expect(
-        find.byKey(const ValueKey('collapsed-profile-identity')),
-        findsOneWidget,
-      );
-      await tester.tap(find.byTooltip('Your space settings'));
-      await tester.pumpAndSettle();
-      expect(find.text('Settings'), findsWidgets);
-      await tester.tap(find.byKey(const Key('settings-/profile/privacy')));
-      await tester.pumpAndSettle();
-      expect(find.text('Who can view my profile?'), findsOneWidget);
-      // Privacy leads back to Settings, not straight to the profile.
-      await tester.tap(find.widgetWithText(TextButton, 'Settings'));
-      await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('sign-out')),
-        300,
-        scrollable: find.byType(Scrollable).first,
-      );
-      expect(find.byKey(const Key('sign-out')), findsOneWidget);
-      expect(tester.takeException(), isNull);
-    },
-  );
+  testWidgets('Settings stay reachable while scrolling and lead to privacy', (
+    tester,
+  ) async {
+    final api = ProfileApi();
+    await launchEditor(tester, api);
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(ProfileForm)),
+    );
+    container.read(routerProvider).go('/profile');
+    await tester.pumpAndSettle();
+    expect(find.text('Sign out'), findsNothing);
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -550));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('collapsed-profile-identity')),
+      findsOneWidget,
+    );
+    await tester.tap(find.byTooltip('Your space settings'));
+    await tester.pumpAndSettle();
+    expect(find.text('Settings'), findsWidgets);
+    await tester.tap(find.byKey(const Key('settings-/profile/privacy')));
+    await tester.pumpAndSettle();
+    expect(find.text('Who can view my profile?'), findsOneWidget);
+    // Privacy leads back to Settings, not straight to the profile.
+    await tester.tap(find.widgetWithText(TextButton, 'Settings'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('sign-out')),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.byKey(const Key('sign-out')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('Share copies the profile handle and preserves privacy', (
     tester,

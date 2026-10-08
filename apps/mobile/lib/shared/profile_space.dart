@@ -83,6 +83,9 @@ class ProfileSpace extends StatefulWidget {
   final Profile profile;
   final bool isOwner;
   final VoidCallback? onEdit, onSettings, onOptions;
+
+  /// Content for the Posts (0) and Media (1) tabs; null keeps the empty state.
+  final Widget? Function(int tab)? contentFor;
   const ProfileSpace({
     super.key,
     required this.profile,
@@ -90,6 +93,7 @@ class ProfileSpace extends StatefulWidget {
     this.onEdit,
     this.onSettings,
     this.onOptions,
+    this.contentFor,
   });
   @override
   State<ProfileSpace> createState() => _ProfileSpaceState();
@@ -708,6 +712,13 @@ class _ProfileSpaceState extends State<ProfileSpace> {
     ),
   );
   Widget _content(Profile p, Color accent, Color muted) {
+    final provided = tab < 2 ? widget.contentFor?.call(tab) : null;
+    if (provided != null) {
+      return KeyedSubtree(
+        key: ValueKey('profile-content-$tab'),
+        child: provided,
+      );
+    }
     if (tab == 2 && p.currentVibe.isNotEmpty) {
       return Container(
         key: const ValueKey('saved-vibe-content'),

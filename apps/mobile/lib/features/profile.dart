@@ -6,6 +6,7 @@ import '../core/state.dart';
 import '../shared/widgets.dart';
 import '../shared/profile_space.dart';
 import 'profile_editor.dart';
+import 'pulse.dart';
 
 class ProfileScreen extends ConsumerStatefulWidget {
   const ProfileScreen({super.key});
@@ -25,6 +26,7 @@ class _ProfileState extends ConsumerState<ProfileScreen> {
           isOwner: true,
           onEdit: () => context.go('/profile/edit'),
           onSettings: openSettings,
+          contentFor: (tab) => profileContent(ref, profile.userId, tab),
         ),
         loading: () => const ProfileSkeleton(),
         error: (e, s) => ReadingWidth(

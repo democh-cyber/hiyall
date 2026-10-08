@@ -12,6 +12,7 @@ import 'features/live_sync.dart';
 import 'features/screens.dart';
 import 'features/profile.dart';
 import 'features/privacy.dart';
+import 'features/pulse.dart';
 import 'features/safety.dart';
 import 'features/settings.dart';
 import 'features/design_studio.dart';
@@ -19,6 +20,7 @@ import 'shared/widgets.dart';
 import 'shared/navigation_dock.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
+  bool signedIn() => ref.read(sessionProvider).asData?.value != null;
   final router = GoRouter(
     initialLocation: '/home',
     routes: [
@@ -34,6 +36,17 @@ final routerProvider = Provider<GoRouter>((ref) {
             ),
           ),
         ],
+      ),
+      // Full-screen creation, outside the dock; signed-out visitors go home.
+      GoRoute(
+        path: '/compose',
+        redirect: (context, state) => signedIn() ? null : '/home',
+        builder: (context, state) => const ComposePostScreen(),
+      ),
+      GoRoute(
+        path: '/story/new',
+        redirect: (context, state) => signedIn() ? null : '/home',
+        builder: (context, state) => const StoryComposerScreen(),
       ),
       ShellRoute(
         builder: (context, state, child) =>
@@ -466,7 +479,7 @@ class AppShell extends ConsumerWidget {
               backgroundColor: VibeColors.lime,
               foregroundColor: VibeColors.ink,
               elevation: 2,
-              onPressed: () => showCreationOrbit(context),
+              onPressed: () => showCreateSheet(context),
               child: const Icon(Icons.auto_awesome_rounded),
             )
           : null,

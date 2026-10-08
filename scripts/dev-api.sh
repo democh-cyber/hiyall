@@ -15,6 +15,13 @@ if ! psql -h "$task_root/.runtime/pgsocket" -p 55432 -U kairova -d postgres -Atc
 fi
 export DATABASE_URL="postgresql://kairova@/kairova?host=$task_root/.runtime/pgsocket&port=55432&sslmode=disable"
 export APP_ENV=development ENABLE_DEV_AUTH=true LISTEN_ADDR=127.0.0.1:8080
+# Photos: use local storage when scripts/dev-storage.sh has been started.
+if [[ -f "$task_root/.runtime/storage/credentials" ]]; then
+  set -a
+  source "$task_root/.runtime/storage/credentials"
+  set +a
+  export MEDIA_ENDPOINT=127.0.0.1:8333 MEDIA_BUCKET=kairova-media
+fi
 cd "$task_root/services/api"
 go run ./cmd/migrate
 exec go run ./cmd/api

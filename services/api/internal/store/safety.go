@@ -120,6 +120,17 @@ func (s *Store) CreateReport(ctx context.Context, reporter string, r domain.NewR
 		err = s.Pool.QueryRow(ctx, `SELECT cm.peer_id::text,m.conversation_id::text FROM messages m
  JOIN conversation_members cm ON cm.conversation_id=m.conversation_id AND cm.user_id=$1
  WHERE m.message_id=$2`, reporter, r.TargetID).Scan(&subject, &conversation)
+	// Public content: the reporter must be able to see it; the subject is its author.
+	case "post":
+		err = s.Pool.QueryRow(ctx, `SELECT p.author_id::text FROM posts p WHERE p.post_id=$2 AND p.deleted_at IS NULL AND `+visibleTo("p.author_id", "p.audience"), reporter, r.TargetID).Scan(&subject)
+	case "comment":
+		err = s.Pool.QueryRow(ctx, `SELECT c.author_id::text FROM comments c JOIN posts p ON p.post_id=c.post_id
+ WHERE c.comment_id=$2 AND c.deleted_at IS NULL AND (NOT c.hidden OR c.author_id=$1) AND p.deleted_at IS NULL AND `+visibleTo("p.author_id", "p.audience"), reporter, r.TargetID).Scan(&subject)
+	case "story":
+		err = s.Pool.QueryRow(ctx, `SELECT st.author_id::text FROM stories st WHERE st.story_id=$2 AND st.deleted_at IS NULL AND `+visibleTo("st.author_id", "st.audience"), reporter, r.TargetID).Scan(&subject)
+	}
+	if err == nil && subject == reporter {
+		err = noSelf(reporter, subject)
 	}
 	if err != nil {
 		return domain.Report{}, false, mapped(err)

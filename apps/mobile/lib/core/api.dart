@@ -3,6 +3,8 @@ import 'package:flutter/foundation.dart';
 
 import 'realtime/realtime_client.dart';
 
+part 'pulse.dart';
+
 const apiBaseUrl = String.fromEnvironment('API_BASE_URL');
 const devLoginEnabled = kDebugMode && bool.fromEnvironment('ENABLE_DEV_LOGIN');
 
@@ -208,6 +210,11 @@ const _policyCodes = {
   'REQUEST_COOLDOWN',
   'CONNECTIONS_PRIVATE',
   'RATE_LIMITED',
+  'COMMENTS_NOT_ALLOWED',
+  'MEDIA_NOT_READY',
+  'MEDIA_UNAVAILABLE',
+  'UNSUPPORTED_MEDIA',
+  'TOO_LARGE',
 };
 
 /// Reported on sign-in so the sessions list can say where each one is.
@@ -219,8 +226,17 @@ String get clientPlatform => kIsWeb
         _ => 'unknown',
       };
 
-class ApiClient {
+class ApiClient with PulseApi {
   final Dio _dio;
+
+  /// Sends photo bytes straight to object storage; no API base URL or token.
+  @override
+  final Dio _uploads = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 15),
+      sendTimeout: const Duration(minutes: 2),
+    ),
+  );
 
   /// Called when a signed-in request is refused as unauthenticated: the
   /// session expired or was revoked elsewhere.
@@ -237,6 +253,7 @@ class ApiClient {
               headers: {'X-Client-Platform': clientPlatform},
             ),
           );
+  @override
   Future<dynamic> _request(
     String method,
     String path, {

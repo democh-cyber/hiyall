@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:kairova/app.dart';
 import 'package:kairova/core/api.dart';
 import 'package:kairova/core/realtime/realtime_client.dart';
@@ -42,6 +43,23 @@ class FakeApi extends ApiClient {
   // Widget tests never open network sockets.
   @override
   RealtimeClient? realtime(Session s) => null;
+
+  List<Post> posts = [];
+  List<StoryGroup> stories = [];
+  @override
+  Future<ApiPage<Post>> feed(Session s, String mode, [String? cursor]) async =>
+      ApiPage(posts, null);
+  @override
+  Future<List<StoryGroup>> storyTray(Session s) async => stories;
+  @override
+  Future<ApiPage<Post>> userPosts(
+    Session s,
+    String userId, [
+    String? cursor,
+  ]) async => ApiPage([
+    for (final p in posts)
+      if (p.author.userId == userId) p,
+  ], null);
 
   List<Map<String, dynamic>> activity = [];
   final calls = <String>[];
@@ -201,7 +219,8 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     final api = FakeApi();
     await launch(tester, api);
-    await tester.tap(find.text('Set your privacy'));
+    GoRouter.of(tester.element(find.byType(Scaffold).first))
+        .go('/profile/privacy');
     await tester.pumpAndSettle();
     final control = find.widgetWithText(
       DropdownButtonFormField<String>,
@@ -228,7 +247,8 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     final api = FakeApi()..failSave = true;
     await launch(tester, api);
-    await tester.tap(find.text('Set your privacy'));
+    GoRouter.of(tester.element(find.byType(Scaffold).first))
+        .go('/profile/privacy');
     await tester.pumpAndSettle();
     final control = find.widgetWithText(
       DropdownButtonFormField<String>,
