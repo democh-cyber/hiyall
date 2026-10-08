@@ -1,0 +1,21 @@
+[package]
+name = "kairova_e2ee"
+version = "0.1.0"
+edition = "2021"
+license = "LicenseRef-Proprietary"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+# Olm (Double Ratchet) from Matrix: Apache-2.0, independently audited.
+# See docs/security/12-e2ee-library-evaluation.md before changing the version.
+vodozemac = "=0.11.1"
+flutter_rust_bridge = "=2.13.0"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

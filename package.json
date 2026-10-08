@@ -1,0 +1,20 @@
+{
+  "name": "kairova-foundation",
+  "version": "0.1.0",
+  "description": "Kairova API contract tooling",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "contracts:build": "python3 scripts/build_foundation_contract.py && openapi-typescript docs/api/openapi-foundation.json -o packages/api-contracts/foundation.d.ts",
+    "contracts:lint": "redocly lint docs/api/openapi-foundation.json",
+    "check": "bash scripts/check.sh"
+  },
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "devDependencies": {
+    "@redocly/cli": "2.59.0",
+    "openapi-typescript": "7.13.0"
+  },
+  "private": true
+}
