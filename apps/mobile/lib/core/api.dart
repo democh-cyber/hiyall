@@ -210,8 +210,21 @@ const _policyCodes = {
   'RATE_LIMITED',
 };
 
+/// Reported on sign-in so the sessions list can say where each one is.
+String get clientPlatform => kIsWeb
+    ? 'web'
+    : switch (defaultTargetPlatform) {
+        TargetPlatform.android => 'android',
+        TargetPlatform.iOS => 'ios',
+        _ => 'unknown',
+      };
+
 class ApiClient {
   final Dio _dio;
+
+  /// Called when a signed-in request is refused as unauthenticated: the
+  /// session expired or was revoked elsewhere.
+  void Function()? onUnauthorized;
   ApiClient({Dio? dio})
     : _dio =
           dio ??
@@ -221,6 +234,7 @@ class ApiClient {
               connectTimeout: const Duration(seconds: 8),
               receiveTimeout: const Duration(seconds: 12),
               contentType: 'application/json',
+              headers: {'X-Client-Platform': clientPlatform},
             ),
           );
   Future<dynamic> _request(
@@ -262,6 +276,7 @@ class ApiClient {
           ? body['error'] as Map
           : const {};
       final code = failure['code'] as String?;
+      if (status == 401 && token != null) onUnauthorized?.call();
       // Policy refusals carry server copy written to be shown as-is.
       if (_policyCodes.contains(code) && failure['message'] is String) {
         throw ApiFailure(failure['message'] as String, status, code);
@@ -370,6 +385,12 @@ class ApiClient {
   ) as Map<String, dynamic>;
   Future<void> revokeSession(Session s, String id) async =>
       await _request('DELETE', '/v1/auth/sessions/$id', token: s.token);
+
+  /// Signs out every other session; returns how many ended.
+  Future<int> revokeOtherSessions(Session s) async =>
+      (await _request('POST', '/v1/auth/sessions/revoke-others', token: s.token)
+              as Map<String, dynamic>)['revoked']
+          as int;
 
   /// The account's live event socket, or null where only polling is used.
   RealtimeClient? realtime(Session s) => kIsWeb || _dio.options.baseUrl.isEmpty

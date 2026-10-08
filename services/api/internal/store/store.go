@@ -93,10 +93,19 @@ func (s *Store) Seed(ctx context.Context) error {
 	return tx.Commit(ctx)
 }
 
-func (s *Store) CreateDevSession(ctx context.Context, userID, token string) (Principal, error) {
+// Platforms a session can report; anything else is stored as unknown.
+func SessionPlatform(value string) string {
+	switch value {
+	case "android", "ios", "web":
+		return value
+	}
+	return "unknown"
+}
+
+func (s *Store) CreateDevSession(ctx context.Context, userID, token, platform string) (Principal, error) {
 	hash := sha256.Sum256([]byte(token))
 	sid := newID()
-	tag, err := s.Pool.Exec(ctx, `INSERT INTO sessions(session_id,user_id,access_token_hash,expires_at) SELECT $1,user_id,$2,now()+interval '30 minutes' FROM users WHERE user_id=$3 AND status='active'`, sid, hash[:], userID)
+	tag, err := s.Pool.Exec(ctx, `INSERT INTO sessions(session_id,user_id,access_token_hash,expires_at,platform) SELECT $1,user_id,$2,now()+interval '30 minutes',$4 FROM users WHERE user_id=$3 AND status='active'`, sid, hash[:], userID, SessionPlatform(platform))
 	if err != nil {
 		return Principal{}, err
 	}
@@ -108,9 +117,16 @@ func (s *Store) CreateDevSession(ctx context.Context, userID, token string) (Pri
 func (s *Store) VerifyDevSession(ctx context.Context, token string) (Principal, error) {
 	hash := sha256.Sum256([]byte(token))
 	var p Principal
-	err := s.Pool.QueryRow(ctx, `UPDATE sessions s SET last_seen_at=now() FROM users u WHERE u.user_id=s.user_id AND s.access_token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.status='active' RETURNING s.user_id::text,s.session_id::text`, hash[:]).Scan(&p.UserID, &p.SessionID)
+	// Every request authenticates, so the session row is read, not written;
+	// last_seen_at is refreshed at most once a minute.
+	var stale bool
+	err := s.Pool.QueryRow(ctx, `SELECT s.user_id::text,s.session_id::text,s.last_seen_at<now()-interval '1 minute' FROM sessions s JOIN users u ON u.user_id=s.user_id
+ WHERE s.access_token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.status='active'`, hash[:]).Scan(&p.UserID, &p.SessionID, &stale)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, domain.ErrUnauthorized
+	}
+	if err == nil && stale {
+		_, err = s.Pool.Exec(ctx, `UPDATE sessions SET last_seen_at=now() WHERE session_id=$1 AND last_seen_at<now()-interval '1 minute'`, p.SessionID)
 	}
 	return p, err
 }
@@ -450,8 +466,23 @@ func (s *Store) RevokeSession(ctx context.Context, p Principal, target string) e
 	}
 	return nil
 }
+
+// RevokeOtherSessions signs the account out everywhere except this session.
+func (s *Store) RevokeOtherSessions(ctx context.Context, p Principal) (int64, error) {
+	tag, err := s.Pool.Exec(ctx, `UPDATE sessions SET revoked_at=now() WHERE user_id=$1 AND session_id<>$2 AND revoked_at IS NULL AND expires_at>now()`, p.UserID, p.SessionID)
+	return tag.RowsAffected(), err
+}
+
+// PurgeSessions deletes sessions that expired more than retain ago, at most
+// batch rows per call. Revoked sessions still expire, so this covers them.
+func (s *Store) PurgeSessions(ctx context.Context, retain time.Duration, batch int) (int64, error) {
+	tag, err := s.Pool.Exec(ctx, `DELETE FROM sessions WHERE ctid IN (SELECT ctid FROM sessions WHERE expires_at<now()-$1::interval ORDER BY expires_at LIMIT $2)`, retain, batch)
+	return tag.RowsAffected(), err
+}
+
 func (s *Store) ListSessions(ctx context.Context, p Principal, limit int, before *time.Time, beforeID string) ([]Session, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT session_id::text,created_at,last_seen_at,expires_at,platform,revoked_at FROM sessions WHERE user_id=$1 AND ($3::timestamptz IS NULL OR (created_at,session_id)<($3,$4::uuid)) ORDER BY created_at DESC,session_id DESC LIMIT $2`, p.UserID, limit, before, beforeID)
+	// Only live sessions; revoked and expired ones are history, not access.
+	rows, err := s.Pool.Query(ctx, `SELECT session_id::text,created_at,last_seen_at,expires_at,platform,revoked_at FROM sessions WHERE user_id=$1 AND revoked_at IS NULL AND expires_at>now() AND ($3::timestamptz IS NULL OR (created_at,session_id)<($3,$4::uuid)) ORDER BY created_at DESC,session_id DESC LIMIT $2`, p.UserID, limit, before, beforeID)
 	if err != nil {
 		return nil, err
 	}

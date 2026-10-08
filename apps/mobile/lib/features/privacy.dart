@@ -4,7 +4,6 @@ import 'package:go_router/go_router.dart';
 
 import '../core/api.dart';
 import '../core/state.dart';
-import '../core/theme.dart';
 import '../shared/widgets.dart';
 
 class PrivacyScreen extends ConsumerWidget {
@@ -126,217 +125,331 @@ class _PrivacyFormState extends ConsumerState<PrivacyForm> {
     }
   }
 
+  void discard() => setState(() {
+    draft
+      ..clear()
+      ..addAll(widget.privacy.values);
+    fields
+      ..clear()
+      ..addAll(
+        Map<String, dynamic>.from(
+          widget.privacy.values['fieldAudiences'] as Map,
+        ),
+      );
+    dirty = false;
+    error = null;
+  });
+
+  Widget toggle(String key, String title, String subtitle) => SwitchListTile(
+    key: Key('privacy-$key'),
+    contentPadding: EdgeInsets.zero,
+    title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+    subtitle: Text(subtitle),
+    value: draft[key] as bool,
+    onChanged: busy ? null : (value) => change(key, value),
+  );
+
+  Widget fieldPicker(String key, String label) => Padding(
+    padding: const EdgeInsets.only(bottom: 14),
+    child: DropdownButtonFormField<String>(
+      initialValue: fields[key] as String? ?? 'nobody',
+      isExpanded: true,
+      decoration: InputDecoration(labelText: label),
+      items: audiences.entries
+          .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
+          .toList(),
+      onChanged: busy
+          ? null
+          : (value) {
+              if (value != null) {
+                setState(() {
+                  fields[key] = value;
+                  dirty = true;
+                });
+              }
+            },
+    ),
+  );
+
+  static const profileAudiences = {
+    'public': 'Public',
+    'friends': 'Friends',
+    'followers': 'Followers',
+    'private': 'Only me',
+  };
+
   @override
-  Widget build(BuildContext context) => ListView(
-    padding: const EdgeInsets.all(24),
-    children: [
-      Align(
-        alignment: AlignmentDirectional.centerStart,
-        child: TextButton.icon(
-          onPressed: busy ? null : () => context.go('/profile'),
-          icon: const Icon(Icons.arrow_back),
-          label: const Text('Profile'),
-        ),
-      ),
-      const VibePanel(
-        color: VibeColors.lilac,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            VibeTag(
-              'Your boundaries',
-              color: Colors.white,
-              icon: Icons.tune_rounded,
-            ),
-            SizedBox(height: 22),
-            Text(
-              'Good vibes.\nClear boundaries.',
-              style: TextStyle(
-                fontFamily: 'SpaceGrotesk',
-                fontSize: 36,
-                height: 1.08,
-                letterSpacing: -1.5,
-                fontWeight: FontWeight.w700,
-                color: VibeColors.ink,
-              ),
-            ),
-            SizedBox(height: 16),
-            Text(
-              'Choose who gets a window into your world. Changes take effect only after you save.',
-              style: TextStyle(color: VibeColors.ink, height: 1.6),
-            ),
-          ],
-        ),
-      ),
-      const SizedBox(height: 12),
-      Card(
-        child: ListTile(
-          key: const Key('open-controls'),
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 20,
-            vertical: 6,
-          ),
-          leading: const Icon(Icons.shield_outlined),
-          title: const Text(
-            'Blocked, muted and restricted',
-            style: TextStyle(fontWeight: FontWeight.w700),
-          ),
-          subtitle: const Text('Only you can see who’s on these lists.'),
-          trailing: const Icon(Icons.chevron_right_rounded),
-          onTap: busy ? null : () => context.go('/profile/controls'),
-        ),
-      ),
-      const SectionTitle('Who gets to see you?', label: '01 / VISIBILITY'),
-      Card(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final hiddenFromDiscover =
+        draft['discoverable'] == true && draft['profileAudience'] != 'public';
+    return Column(
+      children: [
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
             children: [
-              Text(
-                'Profile visibility',
-                style: Theme.of(context).textTheme.titleLarge
-                    ?.copyWith(fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Public profiles can be viewed by other signed-in people. Friends and follower access will open when those connections are available.',
-              ),
-              const SizedBox(height: 24),
-              picker('Who can view my profile?', 'profileAudience', {
-                'public': 'Public',
-                'friends': 'Friends',
-                'followers': 'Followers',
-                'private': 'Only me',
-              }),
-              for (final entry in {
-                'pronouns': 'Pronouns',
-                'location': 'Country',
-                'profession': 'Profession',
-                'education': 'Education',
-                'website': 'Website',
-                'timezone': 'Time zone',
-                'languages': 'Languages',
-                'interests': 'Interests',
-                'vibe': 'Current Vibe',
-                'connections': 'Social counts',
-              }.entries)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 18),
-                  child: DropdownButtonFormField<String>(
-                    initialValue: fields[entry.key] as String? ?? 'nobody',
-                    isExpanded: true,
-                    decoration: InputDecoration(
-                      labelText: '${entry.value} visibility',
-                    ),
-                    items: audiences.entries
-                        .map(
-                          (e) => DropdownMenuItem(
-                            value: e.key,
-                            child: Text(e.value),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: busy
-                        ? null
-                        : (value) {
-                            if (value != null) {
-                              setState(() {
-                                fields[entry.key] = value;
-                                dirty = true;
-                              });
-                            }
-                          },
-                  ),
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: TextButton.icon(
+                  onPressed: busy
+                      ? null
+                      : () => context.go('/profile/settings'),
+                  icon: const Icon(Icons.arrow_back),
+                  label: const Text('Settings'),
                 ),
-            ],
-          ),
-        ),
-      ),
-      const SectionTitle('Keep your circle comfy', label: '02 / CONNECTIONS'),
-      Card(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+              ),
               Text(
-                'Connection preferences',
-                style: Theme.of(context).textTheme.titleLarge
-                    ?.copyWith(fontWeight: FontWeight.w700),
+                'Privacy',
+                style: Theme.of(context).textTheme.headlineMedium,
               ),
-              const SizedBox(height: 12),
-              const Text(
-                'Set your preferences ahead of discovery, sharing, and chat becoming available.',
+              const SizedBox(height: 6),
+              Text(
+                'Choose who gets a window into your world. Nothing changes until you save.',
+                style: TextStyle(color: scheme.onSurfaceVariant, height: 1.5),
               ),
-              const SizedBox(height: 20),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Include me in discovery'),
-                value: draft['discoverable'] as bool,
-                onChanged: busy
-                    ? null
-                    : (value) => change('discoverable', value),
+              _Section(
+                title: 'Your profile',
+                children: [
+                  picker(
+                    'Who can view my profile?',
+                    'profileAudience',
+                    profileAudiences,
+                  ),
+                  Theme(
+                    data: Theme.of(context)
+                        .copyWith(dividerColor: Colors.transparent),
+                    child: ExpansionTile(
+                      key: const Key('privacy-fields'),
+                      tilePadding: EdgeInsets.zero,
+                      childrenPadding: const EdgeInsets.only(top: 8),
+                      title: const Text(
+                        'Field by field',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      subtitle: const Text(
+                        'Hide details even from people who can see your profile.',
+                      ),
+                      children: [
+                        for (final entry in {
+                          'pronouns': 'Pronouns',
+                          'location': 'Country',
+                          'profession': 'Profession',
+                          'education': 'Education',
+                          'website': 'Website',
+                          'timezone': 'Time zone',
+                          'languages': 'Languages',
+                          'interests': 'Interests',
+                          'vibe': 'Current vibe',
+                          'connections': 'Friends and follower lists',
+                        }.entries)
+                          fieldPicker(entry.key, '${entry.value} visibility'),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Show shared interests'),
-                value: draft['showInterestOverlap'] as bool,
-                onChanged: busy
-                    ? null
-                    : (value) => change('showInterestOverlap', value),
+              _Section(
+                title: 'Connections',
+                children: [
+                  picker('Follow requests', 'followPolicy', {
+                    'everyone': 'Anyone can follow me',
+                    'approval': 'Ask me first',
+                    'nobody': 'Nobody can follow me',
+                  }),
+                  picker('Who can send me friend requests?', 'requestsFrom', {
+                    'everyone': 'Everyone',
+                    'followers': 'People who follow me',
+                    'friends': 'Friends of friends',
+                    'nobody': 'Nobody',
+                  }),
+                  picker('Who can message me?', 'messagesFrom', audiences),
+                ],
               ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Read receipts'),
-                value: draft['readReceipts'] as bool,
-                onChanged: busy
-                    ? null
-                    : (value) => change('readReceipts', value),
+              _Section(
+                title: 'Discover',
+                children: [
+                  toggle(
+                    'discoverable',
+                    'Show me in Discover',
+                    'Other adults can find you by interests and language.',
+                  ),
+                  if (hiddenFromDiscover)
+                    Padding(
+                      key: const Key('discover-needs-public'),
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.info_outline_rounded,
+                            size: 18,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Discover only shows public profiles, so you won’t appear until your profile is Public.',
+                              style: TextStyle(color: scheme.onSurfaceVariant),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  toggle(
+                    'showInterestOverlap',
+                    'Show shared interests',
+                    'Let people see which interests you have in common.',
+                  ),
+                ],
               ),
-              const SizedBox(height: 16),
-              picker('Who can message me?', 'messagesFrom', audiences),
-              picker('Follow requests', 'followPolicy', {
-                'everyone': 'Allow everyone',
-                'approval': 'Ask me first',
-                'nobody': 'Allow nobody',
-              }),
-              picker('Connection requests', 'requestsFrom', audiences),
-              picker('Who can comment?', 'commentsFrom', audiences),
-              picker('Who can mention me?', 'mentionsFrom', audiences),
-              picker('Stories', 'storyAudience', {
-                'public': 'Public',
-                'friends': 'Friends',
-                'followers': 'Followers',
-                'private': 'Only me',
-              }),
-              picker('Activity', 'activityAudience', audiences),
-              picker('Online status', 'onlineAudience', audiences),
-              picker('Last seen', 'lastSeenAudience', audiences),
-              picker('Location sharing', 'locationAudience', audiences),
+              _Section(
+                title: 'Chats',
+                children: [
+                  toggle(
+                    'readReceipts',
+                    'Read receipts and typing',
+                    'It works both ways: you see when people read and type only if they can see yours.',
+                  ),
+                ],
+              ),
+              _Section(
+                title: 'Safety',
+                children: [
+                  ListTile(
+                    key: const Key('open-controls'),
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.shield_outlined),
+                    title: const Text(
+                      'Blocked, muted and restricted',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    subtitle: const Text(
+                      'Only you can see who’s on these lists.',
+                    ),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: busy ? null : () => context.go('/profile/controls'),
+                  ),
+                  ListTile(
+                    key: const Key('open-reports'),
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.flag_outlined),
+                    title: const Text(
+                      'Your reports',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    subtitle: const Text(
+                      'See what happened with reports you sent.',
+                    ),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: busy ? null : () => context.go('/profile/reports'),
+                  ),
+                ],
+              ),
+              Theme(
+                data: Theme.of(context)
+                    .copyWith(dividerColor: Colors.transparent),
+                child: ExpansionTile(
+                  key: const Key('privacy-upcoming'),
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: const EdgeInsets.only(top: 8),
+                  title: const Text(
+                    'For features on the way',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: const Text(
+                    'Stories, comments, mentions and presence aren’t live yet. Choices you save here apply when they launch.',
+                  ),
+                  children: [
+                    picker('Stories', 'storyAudience', profileAudiences),
+                    picker('Who can comment?', 'commentsFrom', audiences),
+                    picker('Who can mention me?', 'mentionsFrom', audiences),
+                    picker('Activity status', 'activityAudience', audiences),
+                    picker('Online status', 'onlineAudience', audiences),
+                    picker('Last seen', 'lastSeenAudience', audiences),
+                    picker('Location sharing', 'locationAudience', audiences),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
-      ),
-      const SizedBox(height: 20),
-      if (error != null)
+        if (dirty || error != null || conflict)
+          Material(
+            color: scheme.surface,
+            elevation: 6,
+            child: SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (error != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          error!,
+                          style: TextStyle(color: scheme.error),
+                        ),
+                      ),
+                    Row(
+                      children: [
+                        if (conflict)
+                          TextButton(
+                            onPressed: () => ref.invalidate(privacyProvider),
+                            child: const Text('Reload latest settings'),
+                          )
+                        else
+                          TextButton(
+                            key: const Key('privacy-discard'),
+                            onPressed: busy || !dirty ? null : discard,
+                            child: const Text('Discard'),
+                          ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: FilledButton(
+                            onPressed: busy || !dirty || conflict ? null : save,
+                            child: Text(
+                              busy ? 'Saving…' : 'Save privacy settings',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _Section extends StatelessWidget {
+  final String title;
+  final List<Widget> children;
+  const _Section({required this.title, required this.children});
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 24),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
         Padding(
-          padding: const EdgeInsets.only(bottom: 16),
-          child: Text(
-            error!,
-            style: TextStyle(color: Theme.of(context).colorScheme.error),
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Text(title, style: Theme.of(context).textTheme.titleLarge),
+        ),
+        VibePanel(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: children,
           ),
         ),
-      if (conflict)
-        TextButton(
-          onPressed: () => ref.invalidate(privacyProvider),
-          child: const Text('Reload latest settings'),
-        ),
-      FilledButton(
-        onPressed: busy || !dirty || conflict ? null : save,
-        child: Text(busy ? 'Saving…' : 'Save privacy settings'),
-      ),
-      const SizedBox(height: 32),
-    ],
+      ],
+    ),
   );
 }

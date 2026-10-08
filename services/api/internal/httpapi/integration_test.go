@@ -212,11 +212,11 @@ func TestAPIIntegration(t *testing.T) {
 		t.Fatalf("outbox order: %d %v", duplicateClocks, err)
 	}
 	// Issue enough sessions for a cursor, then verify it cannot cross account boundaries.
-	_, _ = db.CreateDevSession(ctx, alice, "extra-token")
+	_, _ = db.CreateDevSession(ctx, alice, "extra-token", "")
 	status, result = call("GET", "/v1/auth/sessions?limit=1", tokenA, "", "")
 	expect(status, 200)
 	cursor := result["data"].(map[string]any)["nextCursor"].(string)
-	_, _ = db.CreateDevSession(ctx, bob, "fresh-bob")
+	_, _ = db.CreateDevSession(ctx, bob, "fresh-bob", "")
 	status, _ = call("GET", "/v1/auth/sessions?cursor="+cursor, "fresh-bob", "", "")
 	expect(status, 422)
 	status, _ = call("GET", "/v1/auth/sessions?cursor="+cursor, tokenA, "", "")
