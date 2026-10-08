@@ -6,6 +6,7 @@ import 'core/theme.dart';
 import 'core/activity_state.dart';
 import 'core/state.dart';
 import 'features/chat.dart';
+import 'features/home.dart';
 import 'features/live_sync.dart';
 import 'features/screens.dart';
 import 'features/profile.dart';
