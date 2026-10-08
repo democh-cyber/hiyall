@@ -93,6 +93,9 @@ type Notification struct {
 
 // NotificationCopy maps a stored event to its contract type, target and text.
 var NotificationCopy = map[string][3]string{
+	"space.invited":    {"community", "space", "invited you to a shared space"},
+	"space.requested":  {"community", "space", "requested to join your space"},
+	"space.approved":   {"community", "space", "approved your join request"},
 	"follow.started":   {"follow", "profile", "started following you"},
 	"follow.requested": {"follow", "request", "requested to follow you"},
 	"follow.accepted":  {"follow", "profile", "accepted your follow request"},

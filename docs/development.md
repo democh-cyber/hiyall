@@ -116,3 +116,17 @@ Posts, stories, uploads, social graph, interest matching, notifications, admin t
 Production API startup rejects dev authentication, non-HTTPS OIDC and database connections without `sslmode=verify-full`. It still requires a correctly configured HTTPS ingress, trusted provider access tokens, managed secrets, encrypted disks/backups, per-user/distributed limits, monitoring and deployment validation. Profile/public social data and routing metadata are server-visible; end-to-end encryption will protect private chat content. Traffic cannot be made invisible on a compromised endpoint.
 
 Android debug APK and browser debug/release builds passed. A release web bundle built with `ENABLE_DEV_LOGIN=true` contained none of the development login labels; the compile-time debug guard removes those controls. The browser preview builds successfully. Automated browser access was declined by browser security policy; no browser visual/interactivity review was completed. Native iOS builds, Android device runs, proxy/pin bypass tests, independent security review and capacity tests remain unverified.
+
+## Shared spaces (Phase 6)
+
+Discover → Communities · Moments · Events opens adult-only spaces.
+Use `./scripts/seed-demo-spaces.sh` after starting `./scripts/dev-api.sh` to add
+local Anjali/Niko communities, a one-hour Moment and an upcoming event. Fixtures
+are idempotent and require the local `kairova` database and existing adult demo
+accounts. Expired demo Moments stay read-only; the host can extend their schedule.
+
+Run `./scripts/check.sh` for the whole repository, including shared-space
+admission, role hierarchy, reporting and concurrent-capacity integration tests.
+Details and current feature limits are in `docs/api/17-shared-spaces.md`.
+Shared discussions are readable by members and the service; private
+conversation continues through the existing E2EE chat.
