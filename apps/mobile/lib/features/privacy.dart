@@ -304,6 +304,24 @@ class _PrivacyFormState extends ConsumerState<PrivacyForm> {
                 ],
               ),
               _Section(
+                title: 'Posts and stories',
+                children: [
+                  picker(
+                    'Who can comment on my posts?',
+                    'commentsFrom',
+                    audiences,
+                  ),
+                  picker('New stories are shared with', 'storyAudience', {
+                    'public': 'Everyone',
+                    'followers': 'Followers',
+                    'friends': 'Friends',
+                    // Older accounts may hold this; stories then go to friends.
+                    if (widget.privacy.values['storyAudience'] == 'private')
+                      'private': 'Only me (stories go to friends)',
+                  }),
+                ],
+              ),
+              _Section(
                 title: 'Chats',
                 children: [
                   toggle(
@@ -358,11 +376,9 @@ class _PrivacyFormState extends ConsumerState<PrivacyForm> {
                     style: TextStyle(fontWeight: FontWeight.w700),
                   ),
                   subtitle: const Text(
-                    'Stories, comments, mentions and presence aren’t live yet. Choices you save here apply when they launch.',
+                    'Mentions and presence aren’t live yet. Choices you save here apply when they launch.',
                   ),
                   children: [
-                    picker('Stories', 'storyAudience', profileAudiences),
-                    picker('Who can comment?', 'commentsFrom', audiences),
                     picker('Who can mention me?', 'mentionsFrom', audiences),
                     picker('Activity status', 'activityAudience', audiences),
                     picker('Online status', 'onlineAudience', audiences),

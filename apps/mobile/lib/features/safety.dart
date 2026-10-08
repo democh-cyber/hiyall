@@ -93,7 +93,7 @@ Future<void> showPersonOptions(
               ),
               title: Text(rel.muted ? 'Unmute $name' : 'Mute $name'),
               subtitle: const Text(
-                'Their activity arrives quietly, with no notifications. They won’t know.',
+                'Their posts and stories leave your Pulse, and their activity arrives without notifications. They won’t know.',
               ),
               onTap: () => Navigator.pop(context, 'mute'),
             ),
@@ -335,12 +335,13 @@ class _ReportSheetState extends State<_ReportSheet> {
         shrinkWrap: true,
         padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
         children: [
-          Text(
-            widget.targetType == 'user'
-                ? 'Report ${widget.name}'
-                : 'Report this chat',
-            style: Theme.of(context).textTheme.headlineSmall,
-          ),
+          Text(switch (widget.targetType) {
+            'user' => 'Report ${widget.name}',
+            'post' => 'Report this post',
+            'comment' => 'Report this comment',
+            'story' => 'Report this story',
+            _ => 'Report this chat',
+          }, style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: 6),
           Text('${widget.name} won’t know who reported them.', style: muted),
           const SizedBox(height: 16),

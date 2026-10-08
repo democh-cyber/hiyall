@@ -15,6 +15,7 @@ import (
 	"kairova/services/api/internal/config"
 	"kairova/services/api/internal/httpapi"
 	"kairova/services/api/internal/identity"
+	"kairova/services/api/internal/media"
 	"kairova/services/api/internal/push"
 	"kairova/services/api/internal/realtime"
 	"kairova/services/api/internal/store"
@@ -66,7 +67,16 @@ func run() error {
 		return targets, err
 	}, api.RT.Connected, 4096)
 	api.Push.Run(background, 4)
-	go maintain(background, db)
+	if cfg.MediaEndpoint != "" {
+		objects, err := media.NewS3(ctx, media.S3Config{Endpoint: cfg.MediaEndpoint, AccessKey: cfg.MediaAccessKey, SecretKey: cfg.MediaSecretKey, Bucket: cfg.MediaBucket, Region: cfg.MediaRegion, Secure: cfg.MediaSecure})
+		if err != nil {
+			return errors.New("media storage unavailable; check MEDIA_* configuration")
+		}
+		api.Media = objects
+	} else {
+		slog.Warn("media storage not configured; photo uploads are off")
+	}
+	go maintain(background, db, api.Media)
 	srv := &http.Server{Addr: cfg.Listen, Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32768}
 	srv.RegisterOnShutdown(api.RT.CloseAll)
 	shutdown, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -98,7 +108,7 @@ func backoff(attempt int) time.Duration {
 // maintain runs hourly cleanup in small batches so it never holds long locks:
 // delivered envelope rows after 7 days, undelivered ciphertext after 30, and
 // sessions 30 days after they expired.
-func maintain(ctx context.Context, db *store.Store) {
+func maintain(ctx context.Context, db *store.Store, objects media.Store) {
 	tick := time.NewTicker(time.Hour)
 	defer tick.Stop()
 	jobs := []struct {
@@ -107,6 +117,17 @@ func maintain(ctx context.Context, db *store.Store) {
 	}{
 		{"ciphertext expiry", func() (int64, error) { return db.ExpireEnvelopes(ctx, 7*24*time.Hour, 30*24*time.Hour, 5000) }},
 		{"session purge", func() (int64, error) { return db.PurgeSessions(ctx, 30*24*time.Hour, 5000) }},
+		{"story purge", func() (int64, error) { return db.PurgeStories(ctx, 5000) }},
+		{"media cleanup", func() (int64, error) {
+			if objects == nil {
+				return 0, nil
+			}
+			keys, rows, err := db.MediaGarbage(ctx, 5000)
+			if err == nil {
+				err = objects.Delete(ctx, keys...)
+			}
+			return rows, err
+		}},
 	}
 	for {
 		for _, job := range jobs {

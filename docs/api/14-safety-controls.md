@@ -6,9 +6,9 @@ Implemented in migration `0009_safety_controls.sql`, `services/api/internal/stor
 
 | Action | Endpoint | Effect |
 |---|---|---|
-| Mute | `POST /v1/users/{id}/mute` with optional `{"until": RFC3339}` | Their new activity still lists but arrives already read, so it never raises the badge, and nothing about them is pushed (activity or messages). Their messages still count as unread. Without `until` the mute lasts until removed; an `until` in the past is 422. |
+| Mute | `POST /v1/users/{id}/mute` with optional `{"until": RFC3339}` | Their posts and stories leave the caller's Pulse. Their new activity still lists but arrives already read, so it never raises the badge, and nothing about them is pushed (activity or messages). Their messages still count as unread. Without `until` the mute lasts until removed; an `until` in the past is 422. |
 | Unmute | `DELETE /v1/users/{id}/mute` | Idempotent. |
-| Restrict | `POST /v1/users/{id}/restrict` | Everything mute does, plus their chats leave the caller's unread badge (the chat row still counts), and read receipts and typing are off in both directions, as if either person had turned receipts off. No expiry. Comment hiding arrives with Pulse. |
+| Restrict | `POST /v1/users/{id}/restrict` | Their activity and pushes are silenced as with mute, their chats leave the caller's unread badge (the chat row still counts), read receipts and typing are off in both directions, and their comments on the caller's posts are visible only to them. Their posts still show. No expiry. |
 | Unrestrict | `DELETE /v1/users/{id}/restrict` | Idempotent. |
 
 Self-targets are 422, and unknown or inactive accounts are 404. Writes share the per-account graph rate limit. `relationship` on `GET /v1/users/{id}/profile` gains `muted` and `restricted`, which describe only the viewer's own controls. The target's controls on the viewer are never returned.

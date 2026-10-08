@@ -200,7 +200,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('Make a little space'));
+    // Home's button now creates real posts; the design orbit stays in the gallery.
+    showCreationOrbit(tester.element(find.byType(Scaffold).first));
     await tester.pumpAndSettle();
     final vibe = find.widgetWithText(ListTile, 'Vibe');
     await tester.ensureVisible(vibe);

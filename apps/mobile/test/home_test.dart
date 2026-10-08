@@ -123,13 +123,6 @@ void main() {
     expect(find.bySemanticsLabel('1 request'), findsOneWidget);
     expect(find.bySemanticsLabel('1 activity'), findsOneWidget);
     expect(find.text('Niko sent you a friend request'), findsOneWidget);
-    // Home reuses Discover's unfiltered query rather than a wider one.
-    expect(api.searches.single, {
-      'interests': [],
-      'languages': [],
-      'country': '',
-      'vibe': '',
-    });
 
     await tester.tap(find.byKey(const Key('home-accept-n1')));
     await tester.pumpAndSettle();
@@ -145,6 +138,13 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('home-person-$anjaliId')), findsNothing);
+    // Home reuses Discover's unfiltered query rather than a wider one.
+    expect(api.searches.single, {
+      'interests': [],
+      'languages': [],
+      'country': '',
+      'vibe': '',
+    });
     expect(find.text('1 shared interest'), findsOneWidget);
     expect(find.text('Film photos and late trains'), findsOneWidget);
     expect(tester.takeException(), isNull);

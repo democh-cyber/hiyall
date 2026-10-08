@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 	"kairova/services/api/internal/domain"
+	"kairova/services/api/internal/media"
 	"kairova/services/api/internal/push"
 	"kairova/services/api/internal/realtime"
 	"kairova/services/api/internal/store"
@@ -39,6 +40,12 @@ type API struct {
 	graph     *keyedLimiter
 	messages  *keyedLimiter
 	reports   *keyedLimiter
+	uploads   *keyedLimiter
+	content   *keyedLimiter
+	// mediaSlots bounds concurrent photo processing on this node.
+	mediaSlots chan struct{}
+	// Media is optional; without it photo uploads answer 503.
+	Media media.Store
 	// RT and Push are optional; without them clients fall back to polling.
 	RT   *realtime.Hub
 	Push *push.Dispatcher
@@ -47,12 +54,15 @@ type API struct {
 func New(s *store.Store, verify Verify, dev bool, origin string) *API {
 	a := &API{Store: s, Verify: verify, DevAuth: dev, Origin: origin,
 		// The instance budget is a backstop; each client address gets its own bucket.
-		budget:   rate.NewLimiter(2000, 4000),
-		clients:  newKeyedLimiter(50, 100, 16384),
-		search:   newKeyedLimiter(rate.Every(2*time.Second), 10, 4096),
-		graph:    newKeyedLimiter(rate.Every(2*time.Second), 20, 4096),
-		messages: newKeyedLimiter(5, 40, 4096),
-		reports:  newKeyedLimiter(rate.Every(time.Minute), 10, 4096),
+		budget:     rate.NewLimiter(2000, 4000),
+		clients:    newKeyedLimiter(50, 100, 16384),
+		search:     newKeyedLimiter(rate.Every(2*time.Second), 10, 4096),
+		graph:      newKeyedLimiter(rate.Every(2*time.Second), 20, 4096),
+		messages:   newKeyedLimiter(5, 40, 4096),
+		reports:    newKeyedLimiter(rate.Every(time.Minute), 10, 4096),
+		uploads:    newKeyedLimiter(rate.Every(2*time.Second), 30, 4096),
+		content:    newKeyedLimiter(1, 30, 4096),
+		mediaSlots: make(chan struct{}, 4),
 	}
 	if _, err := rand.Read(a.cursorKey[:]); err != nil {
 		panic(err)
@@ -416,7 +426,7 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 		a.ok(w, r, map[string]bool{"revoked": true})
 		return
 	}
-	if a.chatRoute(w, r, p, parts) || a.socialRoute(w, r, p, parts) || a.safetyRoute(w, r, p, parts) {
+	if a.chatRoute(w, r, p, parts) || a.socialRoute(w, r, p, parts) || a.safetyRoute(w, r, p, parts) || a.pulseRoute(w, r, p, parts) {
 		return
 	}
 	a.failure(w, r, 404, "NOT_FOUND", "Endpoint unavailable")

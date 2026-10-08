@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'activity.dart';
 import 'chat.dart';
 import 'discovery.dart';
+import 'pulse.dart';
 import 'relationship.dart';
 import 'safety.dart';
 
@@ -395,6 +396,8 @@ class _PersonState extends ConsumerState<PersonScreen> {
                     : ProfileSpace(
                         profile: profile,
                         onOptions: busy ? null : () => options(profile),
+                        contentFor: (tab) =>
+                            profileContent(ref, profile.userId, tab),
                       ),
               ),
             ],

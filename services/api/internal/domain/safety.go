@@ -62,8 +62,10 @@ func ParseReport(raw []byte) (NewReport, error) {
 	if err := decoder.Decode(&r); err != nil {
 		return r, invalid("body", "send targetType, targetId and reasonCode")
 	}
-	if r.TargetType != "user" && r.TargetType != "conversation" && r.TargetType != "message" {
-		return r, invalid("targetType", "must be user, conversation or message")
+	switch r.TargetType {
+	case "user", "conversation", "message", "post", "comment", "story":
+	default:
+		return r, invalid("targetType", "must be user, conversation, message, post, comment or story")
 	}
 	if _, err := uuid.Parse(r.TargetID); err != nil {
 		return r, invalid("targetId", "must be an id")
@@ -75,7 +77,7 @@ func ParseReport(raw []byte) (NewReport, error) {
 	if utf8.RuneCountInString(r.Description) > maxDescription {
 		return r, invalid("description", "keep it under 1000 characters")
 	}
-	if len(r.Evidence) > 0 && r.TargetType == "user" {
+	if len(r.Evidence) > 0 && r.TargetType != "conversation" && r.TargetType != "message" {
 		return r, invalid("evidence", "messages can be shared only when reporting a chat or message")
 	}
 	if len(r.Evidence) > maxEvidence {

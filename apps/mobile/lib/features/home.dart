@@ -1,28 +1,19 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/activity_state.dart';
 import '../core/api.dart';
-import '../core/chat/chat_engine.dart';
+import '../core/feed_state.dart';
 import '../core/discovery.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
 import '../shared/profile_space.dart';
 import '../shared/widgets.dart';
-import 'chat.dart';
 import 'live_sync.dart';
-
-/// The three most recent conversations. Reloads whenever LiveSync signals
-/// that conversation metadata changed. Null where encrypted chat can't run.
-final homeChatsProvider = FutureProvider.autoDispose<List<ChatConversation>?>((
-  ref,
-) async {
-  ref.watch(chatSignalProvider);
-  final engine = await ref.watch(chatEngineProvider.future);
-  if (engine == null) return null;
-  return engine.conversations(limit: 3);
-});
+import 'pulse.dart';
 
 /// A short, unfiltered first page of Discover: the same opted-in adults the
 /// Discover tab would show, so Home never widens who can be found. Kept for the
@@ -63,14 +54,41 @@ String greetingFor(DateTime now) => switch (now.hour) {
   _ => 'WINDING DOWN',
 };
 
-class HomeScreen extends ConsumerWidget {
+class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
+  @override
+  ConsumerState<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends ConsumerState<HomeScreen> {
+  String mode = 'following';
+
+  Future<void> refresh() async {
+    ref.invalidate(homeSuggestionsProvider);
+    ref.invalidate(profileProvider);
+    ref.invalidate(storyTrayProvider);
+    try {
+      await ref.read(feedProvider(mode).notifier).refresh();
+      await ref.read(activityProvider.notifier).refresh();
+      await ref.read(chatUnreadProvider.notifier).refresh();
+    } catch (_) {}
+  }
+
+  bool onScroll(ScrollNotification n) {
+    // Fetch the next page while a screen or two of posts is still left.
+    if (n.metrics.axis == Axis.vertical && n.metrics.extentAfter < 1200) {
+      ref.read(feedProvider(mode).notifier).loadMore().catchError((_) {});
+    }
+    return false;
+  }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final profile = ref.watch(profileProvider).asData?.value;
     final activity = ref.watch(activityProvider).asData?.value;
     final unreadChats = ref.watch(chatUnreadProvider);
+    final feed = ref.watch(feedProvider(mode));
+    final posts = feed.asData?.value.items ?? const <Post>[];
     final requests = [
       for (final i in activity?.items ?? const <Map<String, dynamic>>[])
         if (isPendingRequest(i)) i,
@@ -78,46 +96,127 @@ class HomeScreen extends ConsumerWidget {
     final missing = profile == null
         ? const <String>[]
         : missingProfileParts(profile);
-
-    Future<void> refresh() async {
-      ref.invalidate(homeSuggestionsProvider);
-      ref.invalidate(profileProvider);
-      ref.invalidate(homeChatsProvider);
-      try {
-        await ref.read(activityProvider.notifier).refresh();
-        await ref.read(chatUnreadProvider.notifier).refresh();
-      } catch (_) {}
-    }
+    // Suggestions sit after the third post, or under a quiet feed.
+    final suggestAt = posts.isEmpty ? -1 : math.min(3, posts.length);
 
     return ReadingWidth(
       child: RefreshIndicator(
         onRefresh: refresh,
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 8, 20, 120),
-          children: [
-            _Greeting(name: profile?.displayName),
-            const SizedBox(height: 18),
-            _PulseStrip(
-              unreadChats: unreadChats,
-              requests: requests.length,
-              newActivity: activity?.unread ?? 0,
-            ),
-            if (requests.isNotEmpty) ...[
-              _Heading(
-                'Waiting on you',
-                action: requests.length > 2 ? 'See all' : null,
-                onAction: () => context.go('/notifications'),
+        child: NotificationListener<ScrollNotification>(
+          onNotification: onScroll,
+          child: CustomScrollView(
+            slivers: [
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                sliver: SliverList.list(
+                  children: [
+                    _Greeting(name: profile?.displayName),
+                    const SizedBox(height: 16),
+                    const StoryTray(),
+                    const SizedBox(height: 14),
+                    _PulseStrip(
+                      unreadChats: unreadChats,
+                      requests: requests.length,
+                      newActivity: activity?.unread ?? 0,
+                    ),
+                    if (requests.isNotEmpty) ...[
+                      _Heading(
+                        'Waiting on you',
+                        action: requests.length > 2 ? 'See all' : null,
+                        onAction: () => context.go('/notifications'),
+                      ),
+                      for (final r in requests.take(2)) _RequestRow(item: r),
+                    ],
+                    if (profile != null && missing.isNotEmpty)
+                      _ProfileProgress(missing: missing),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 26, bottom: 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Text(
+                            'Pulse',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 10),
+                          SegmentedButton<String>(
+                            key: const Key('feed-mode'),
+                            showSelectedIcon: false,
+                            segments: const [
+                              ButtonSegment(
+                                value: 'following',
+                                label: Text('Your people'),
+                              ),
+                              ButtonSegment(
+                                value: 'everyone',
+                                label: Text('Everyone'),
+                              ),
+                            ],
+                            selected: {mode},
+                            onSelectionChanged: (s) =>
+                                setState(() => mode = s.single),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (feed.hasError && posts.isEmpty)
+                      FailureCard(
+                        error: feed.error!,
+                        retry: () => ref.invalidate(feedProvider(mode)),
+                      )
+                    else if (feed.isLoading && posts.isEmpty)
+                      const Padding(
+                        padding: EdgeInsets.all(32),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    else if (posts.isEmpty) ...[
+                      EmptyCard(
+                        key: const Key('feed-empty'),
+                        icon: Icons.auto_awesome_rounded,
+                        title: mode == 'following'
+                            ? 'Your Pulse is quiet'
+                            : 'Nothing public yet',
+                        description: mode == 'following'
+                            ? 'Follow a few people or share something of your own.'
+                            : 'Public posts from everyone show up here.',
+                        action: FilledButton.icon(
+                          onPressed: () => context.push('/compose'),
+                          icon: const Icon(Icons.edit_note_rounded),
+                          label: const Text('Share a post'),
+                        ),
+                      ),
+                      const _Suggestions(),
+                    ],
+                  ],
+                ),
               ),
-              for (final r in requests.take(2)) _RequestRow(item: r),
+              SliverPadding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                sliver: SliverList.builder(
+                  itemCount: posts.length,
+                  itemBuilder: (context, i) => Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      PostCard(post: posts[i], mode: mode),
+                      if (i + 1 == suggestAt)
+                        const Padding(
+                          padding: EdgeInsets.only(bottom: 14),
+                          child: _Suggestions(),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 8, bottom: 120),
+                  child: feed.asData?.value.loadingMore ?? false
+                      ? const Center(child: CircularProgressIndicator())
+                      : const SizedBox.shrink(),
+                ),
+              ),
             ],
-            const _RecentChats(),
-            const _Suggestions(),
-            if (profile != null && missing.isNotEmpty)
-              _ProfileProgress(missing: missing),
-            const _PrivacyCard(),
-            const SizedBox(height: 16),
-            const _PulseTeaser(),
-          ],
+          ),
         ),
       ),
     );
@@ -366,91 +465,6 @@ class _RequestRow extends ConsumerWidget {
   }
 }
 
-class _RecentChats extends ConsumerWidget {
-  const _RecentChats();
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    if (!chatSupported) return const SizedBox.shrink();
-    final chats = ref.watch(homeChatsProvider).asData?.value;
-    if (chats == null) return const SizedBox.shrink();
-    final typing = ref.watch(typingProvider);
-    final scheme = Theme.of(context).colorScheme;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _Heading(
-          'Pick up the conversation',
-          action: chats.isEmpty ? null : 'All chats',
-          onAction: () => context.go('/chats'),
-        ),
-        if (chats.isEmpty)
-          VibePanel(
-            padding: const EdgeInsets.all(18),
-            child: Row(
-              children: [
-                const Icon(Icons.lock_outline_rounded),
-                const SizedBox(width: 12),
-                const Expanded(
-                  child: Text(
-                    'Your chats are end-to-end encrypted. Say hi to someone new.',
-                  ),
-                ),
-                TextButton(
-                  onPressed: () => context.go('/discover'),
-                  child: const Text('Find people'),
-                ),
-              ],
-            ),
-          )
-        else
-          VibePanel(
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: Column(
-              children: [
-                for (final c in chats)
-                  ListTile(
-                    key: Key('home-chat-${c.id}'),
-                    onTap: () => context.go(
-                      '/chats/${c.id}?peer=${Uri.encodeQueryComponent(c.peerId)}&name=${Uri.encodeQueryComponent(c.peerName)}',
-                    ),
-                    leading: _Initial(c.peerName),
-                    title: Text(
-                      c.peerName,
-                      style: const TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    subtitle: Text(
-                      typing[c.id]?.isAfter(DateTime.now()) ?? false
-                          ? 'typing…'
-                          : c.last == null
-                          ? 'Say hi 👋'
-                          : (c.last!.mine ? 'You: ' : '') + c.last!.text,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontWeight: c.unreadCount > 0
-                            ? FontWeight.w700
-                            : FontWeight.w400,
-                        color: c.unreadCount > 0
-                            ? scheme.onSurface
-                            : scheme.onSurfaceVariant,
-                      ),
-                    ),
-                    trailing: c.unreadCount == 0
-                        ? null
-                        : Badge.count(
-                            count: c.unreadCount,
-                            backgroundColor: VibeColors.lime,
-                            textColor: VibeColors.ink,
-                          ),
-                  ),
-              ],
-            ),
-          ),
-      ],
-    );
-  }
-}
-
 class _Suggestions extends ConsumerWidget {
   const _Suggestions();
   @override
@@ -654,119 +668,4 @@ class _ProfileProgress extends StatelessWidget {
       ),
     );
   }
-}
-
-class _PrivacyCard extends ConsumerWidget {
-  const _PrivacyCard();
-  static const _audience = {
-    'public': 'Everyone',
-    'friends': 'Friends only',
-    'followers': 'Followers',
-    'private': 'Only you',
-  };
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final privacy = ref.watch(privacyProvider).asData?.value;
-    final audience = privacy?.values['profileAudience'] as String?;
-    final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(top: 28),
-      child: VibePanel(
-        padding: const EdgeInsets.fromLTRB(18, 16, 12, 16),
-        child: Row(
-          children: [
-            const CircleAvatar(
-              backgroundColor: VibeColors.mint,
-              foregroundColor: VibeColors.ink,
-              child: Icon(Icons.shield_outlined),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Your circle, your call',
-                    style: TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    audience == null
-                        ? 'Choose who sees your world.'
-                        : 'Profile visible to: ${_audience[audience] ?? audience}',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-
-                  TextButton.icon(
-                    style: TextButton.styleFrom(
-                      padding: EdgeInsets.zero,
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    onPressed: () => context.go('/profile/privacy'),
-                    icon: const Icon(Icons.arrow_outward, size: 16),
-                    label: const Text('Set your privacy'),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _PulseTeaser extends StatelessWidget {
-  const _PulseTeaser();
-  @override
-  Widget build(BuildContext context) => VibePanel(
-    color: VibeColors.ink,
-    padding: const EdgeInsets.all(20),
-    child: Row(
-      children: [
-        const Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              VibeTag('PULSE / SOON', color: VibeColors.peach),
-              SizedBox(height: 12),
-              Text(
-                'Posts and stories from your people will land right here.',
-                style: TextStyle(
-                  color: VibeColors.cream,
-                  fontFamily: 'SpaceGrotesk',
-                  fontSize: 18,
-                  height: 1.3,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(width: 12),
-        SizedBox(
-          width: 72,
-          height: 72,
-          child: CustomPaint(painter: _StarPainter()),
-        ),
-      ],
-    ),
-  );
-}
-
-class _StarPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final c = size.center(Offset.zero);
-    canvas.drawPath(
-      starPath(c, size.shortestSide / 2, size.shortestSide / 5),
-      Paint()..color = VibeColors.lime,
-    );
-  }
-
-  @override
-  bool shouldRepaint(_StarPainter oldDelegate) => false;
 }
