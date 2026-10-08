@@ -121,84 +121,84 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets(
-    'Actual Activity route stays empty and uses existing navigation only',
-    (tester) async {
-      tester.view.devicePixelRatio = 1;
-      tester.view.physicalSize = const Size(390, 844);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      addTearDown(tester.view.resetPhysicalSize);
-      final container = ProviderContainer(
-        overrides: [
-          apiProvider.overrideWithValue(FakeApi()),
-          sessionProvider.overrideWith(SignedIn.new),
-        ],
-      );
-      addTearDown(container.dispose);
-      final capture = GlobalKey();
-      await tester.pumpWidget(
-        UncontrolledProviderScope(
-          container: container,
-          child: RepaintBoundary(key: capture, child: const KairovaApp()),
-        ),
-      );
-      container.read(routerProvider).go('/notifications');
+  testWidgets('Activity route with no notifications shows the caught-up state', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    final container = ProviderContainer(
+      overrides: [
+        apiProvider.overrideWithValue(FakeApi()),
+        sessionProvider.overrideWith(SignedIn.new),
+      ],
+    );
+    addTearDown(container.dispose);
+    final capture = GlobalKey();
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: RepaintBoundary(key: capture, child: const KairovaApp()),
+      ),
+    );
+    container.read(routerProvider).go('/notifications');
+    await tester.pumpAndSettle();
+    for (final dark in [true, false]) {
+      container.read(themeProvider.notifier).toggle(dark);
       await tester.pumpAndSettle();
-      for (final dark in [true, false]) {
-        container.read(themeProvider.notifier).toggle(dark);
-        await tester.pumpAndSettle();
-        expect(find.text('All caught up.'), findsOneWidget);
-        expect(find.text('All'), findsOneWidget);
-        expect(find.text('Social'), findsNothing);
-        expect(find.text('Mentions'), findsNothing);
-        expect(find.textContaining('COMING SOON'), findsNothing);
-        expect(find.text('Your kind of updates.'), findsNothing);
-        expect(find.text('A quieter frequency.'), findsNothing);
-        expect(find.byType(RefreshIndicator), findsNothing);
-        final destination = tester.widget<DockDestination>(
-          find.widgetWithText(DockDestination, 'Activity'),
-        );
-        expect(destination.selected, isTrue);
-        if (const bool.fromEnvironment('CAPTURE_ACTIVITY')) {
-          void repaint(RenderObject node) {
-            node.markNeedsPaint();
-            node.visitChildren(repaint);
-          }
-
-          repaint(capture.currentContext!.findRenderObject()!);
-          await tester.pump();
-          await tester.runAsync(() async {
-            final img =
-                await (capture.currentContext!.findRenderObject()!
-                        as RenderRepaintBoundary)
-                    .toImage(pixelRatio: 1);
-            final data = await img.toByteData(format: ui.ImageByteFormat.png);
-            final file = File(
-              '../../.runtime/activity-previews/empty-${dark ? 'dark' : 'light'}.png',
-            );
-            await file.parent.create(recursive: true);
-            await file.writeAsBytes(data!.buffer.asUint8List());
-            img.dispose();
-          });
+      expect(find.text('All caught up.'), findsOneWidget);
+      expect(find.text('All'), findsOneWidget);
+      expect(find.text('Social'), findsNothing);
+      expect(find.text('Mentions'), findsNothing);
+      expect(find.textContaining('COMING SOON'), findsNothing);
+      expect(find.text('Your kind of updates.'), findsNothing);
+      expect(find.text('A quieter frequency.'), findsNothing);
+      // Pull to refresh fetches from the server now that the feed is wired.
+      expect(find.byType(RefreshIndicator), findsOneWidget);
+      final destination = tester.widget<DockDestination>(
+        find.widgetWithText(DockDestination, 'Activity'),
+      );
+      expect(destination.selected, isTrue);
+      if (const bool.fromEnvironment('CAPTURE_ACTIVITY')) {
+        void repaint(RenderObject node) {
+          node.markNeedsPaint();
+          node.visitChildren(repaint);
         }
+
+        repaint(capture.currentContext!.findRenderObject()!);
+        await tester.pump();
+        await tester.runAsync(() async {
+          final img =
+              await (capture.currentContext!.findRenderObject()!
+                      as RenderRepaintBoundary)
+                  .toImage(pixelRatio: 1);
+          final data = await img.toByteData(format: ui.ImageByteFormat.png);
+          final file = File(
+            '../../.runtime/activity-previews/empty-${dark ? 'dark' : 'light'}.png',
+          );
+          await file.parent.create(recursive: true);
+          await file.writeAsBytes(data!.buffer.asUint8List());
+          img.dispose();
+        });
       }
-      await tester.tap(find.text('Find your people'));
-      await tester.pumpAndSettle();
-      expect(
-        container.read(routerProvider).routeInformationProvider.value.uri.path,
-        '/discover',
-      );
-      container.read(routerProvider).go('/notifications');
-      await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Activity visibility'));
-      await tester.pumpAndSettle();
-      expect(
-        container.read(routerProvider).routeInformationProvider.value.uri.path,
-        '/profile/privacy',
-      );
-      expect(tester.takeException(), isNull);
-    },
-  );
+    }
+    await tester.tap(find.text('Find your people'));
+    await tester.pumpAndSettle();
+    expect(
+      container.read(routerProvider).routeInformationProvider.value.uri.path,
+      '/discover',
+    );
+    container.read(routerProvider).go('/notifications');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Activity visibility'));
+    await tester.pumpAndSettle();
+    expect(
+      container.read(routerProvider).routeInformationProvider.value.uri.path,
+      '/profile/privacy',
+    );
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'Activity layouts fit phones, the user viewport, desktop and double text',
@@ -428,4 +428,78 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('Activity loads server notifications and answers requests', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 844);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    final api = FakeApi()
+      ..activity = [
+        {
+          'notificationId': '019a4000-0000-7000-8000-00000000a001',
+          'type': 'friend_request',
+          'event': 'friend.requested',
+          'actors': [
+            {'userId': nikoId, 'username': 'niko', 'displayName': 'Niko'},
+          ],
+          'count': 1,
+          'targetType': 'request',
+          'targetId': '019a4000-0000-7000-8000-00000000f001',
+          'createdAt': DateTime.now().toUtc().toIso8601String(),
+          'text': 'Niko sent you a friend request',
+        },
+        {
+          'notificationId': '019a4000-0000-7000-8000-00000000a002',
+          'type': 'follow',
+          'event': 'follow.started',
+          'actors': [
+            {'userId': anjaliId, 'username': 'anjali', 'displayName': 'A'},
+          ],
+          'count': 1,
+          'targetType': 'profile',
+          'targetId': anjaliId,
+          'createdAt': DateTime.now().toUtc().toIso8601String(),
+          'readAt': DateTime.now().toUtc().toIso8601String(),
+          'text': 'A started following you',
+        },
+      ];
+    final container = ProviderContainer(
+      overrides: [
+        apiProvider.overrideWithValue(api),
+        sessionProvider.overrideWith(SignedIn.new),
+      ],
+    );
+    addTearDown(container.dispose);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const KairovaApp(),
+      ),
+    );
+    container.read(routerProvider).go('/notifications');
+    await tester.pumpAndSettle();
+
+    expect(find.text('Niko sent you a friend request'), findsOneWidget);
+    expect(find.text('A started following you'), findsOneWidget);
+    // One unread item: the dock shows new activity and the bell counts it.
+    expect(
+      tester
+          .widget<DockDestination>(
+            find.widgetWithText(DockDestination, 'Activity'),
+          )
+          .activityDot,
+      isTrue,
+    );
+    expect(find.byTooltip('Open notifications, 1 unread'), findsOneWidget);
+    // Only the open request offers Accept/Decline.
+    expect(find.text('Accept'), findsOneWidget);
+    await tester.tap(find.text('Accept'));
+    await tester.pumpAndSettle();
+    expect(api.calls, ['friend 019a4000-0000-7000-8000-00000000f001 true']);
+    expect(find.text('Niko sent you a friend request'), findsNothing);
+    expect(find.byTooltip('Open notifications'), findsOneWidget);
+  });
 }

@@ -5,7 +5,9 @@ import 'package:go_router/go_router.dart';
 import 'activity.dart';
 import 'chat.dart';
 import 'discovery.dart';
+import 'relationship.dart';
 
+import '../core/activity_state.dart';
 import '../core/api.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
@@ -268,16 +270,79 @@ class HomeScreen extends ConsumerWidget {
   }
 }
 
-class NotificationsScreen extends StatelessWidget {
+class NotificationsScreen extends ConsumerWidget {
   const NotificationsScreen({super.key});
   @override
-  Widget build(BuildContext context) => ActivityView(
-    // Preserve the foundation's existing empty state. A notification feed is
-    // not implemented, so this view does not fetch or synthesize any records.
-    activity: const AsyncData(<Map<String, dynamic>>[]),
-    onExplore: () => context.go('/discover'),
-    onSettings: () => context.go('/profile/privacy'),
-  );
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(activityProvider);
+    final controller = ref.read(activityProvider.notifier);
+    final data = state.asData?.value;
+    Future<void> guarded(Future<void> Function() action) async {
+      try {
+        await action();
+      } catch (e) {
+        if (context.mounted) showMessage(context, e.toString());
+      }
+    }
+
+    return ActivityView(
+      activity: state.whenData((value) => value.items),
+      onExplore: () => context.go('/discover'),
+      onSettings: () => context.go('/profile/privacy'),
+      onRetry: () => ref.invalidate(activityProvider),
+      onRefresh: () => guarded(controller.refresh),
+      onLoadMore: data?.nextCursor == null
+          ? null
+          : () => guarded(controller.loadMore),
+      loadingMore: data?.loadingMore ?? false,
+      onMarkAllRead: (data?.unread ?? 0) == 0
+          ? null
+          : () => guarded(controller.markAllRead),
+      markRead: (item) => item['readAt'] != null
+          ? null
+          : () => guarded(
+              () => controller.markRead(item['notificationId'] as String),
+            ),
+      openNotification: (item) {
+        final actors = item['actors'] as List? ?? const [];
+        if (actors.isEmpty) return null;
+        final actor = (actors.first as Map)['userId'] as String;
+        return () {
+          if (item['readAt'] == null) {
+            guarded(
+              () => controller.markRead(item['notificationId'] as String),
+            );
+          }
+          context.go('/discover/person/$actor');
+        };
+      },
+      actions: (item) => isPendingRequest(item)
+          ? Wrap(
+              spacing: 8,
+              children: [
+                FilledButton(
+                  key: ValueKey('accept-${item['notificationId']}'),
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  onPressed: () =>
+                      guarded(() => controller.respond(item, true)),
+                  child: const Text('Accept'),
+                ),
+                OutlinedButton(
+                  key: ValueKey('decline-${item['notificationId']}'),
+                  style: OutlinedButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  onPressed: () =>
+                      guarded(() => controller.respond(item, false)),
+                  child: const Text('Decline'),
+                ),
+              ],
+            )
+          : null,
+    );
+  }
 }
 
 class DiscoverScreen extends StatelessWidget {
@@ -343,38 +408,54 @@ class _PersonState extends ConsumerState<PersonScreen> {
   Widget build(BuildContext context) => ref
       .watch(otherProfileProvider(widget.id))
       .when(
-        data: (profile) => Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  TextButton.icon(
-                    onPressed: () => context.go('/discover'),
-                    icon: const Icon(Icons.arrow_back),
-                    label: const Text('Discover'),
-                  ),
-                  const Spacer(),
-                  FilledButton.icon(
-                    key: const Key('message-person'),
-                    onPressed: busy ? null : () => message(profile.displayName),
-                    icon: const Icon(
-                      Icons.chat_bubble_outline_rounded,
-                      size: 18,
+        data: (profile) {
+          final messageButton = FilledButton.tonalIcon(
+            key: const Key('message-person'),
+            onPressed: busy ? null : () => message(profile.displayName),
+            icon: const Icon(Icons.chat_bubble_outline_rounded, size: 18),
+            label: const Text('Message'),
+          );
+          final actions = RelationshipBar(
+            profile: profile,
+            trailing: messageButton,
+          );
+          return Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    TextButton.icon(
+                      onPressed: () => context.go('/discover'),
+                      icon: const Icon(Icons.arrow_back),
+                      label: const Text('Discover'),
                     ),
-                    label: const Text('Message'),
-                  ),
-                ],
+                    const Spacer(),
+                    if (profile.locked)
+                      IconButton(
+                        tooltip: 'Block',
+                        onPressed: busy ? null : block,
+                        icon: const Icon(Icons.block_rounded),
+                      ),
+                  ],
+                ),
               ),
-            ),
-            Expanded(
-              child: ProfileSpace(
-                profile: profile,
-                onBlock: busy ? null : block,
+              if (!profile.locked)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 4, 24, 8),
+                  child: Align(alignment: Alignment.centerLeft, child: actions),
+                ),
+              Expanded(
+                child: profile.locked
+                    ? LockedProfile(profile: profile, actions: actions)
+                    : ProfileSpace(
+                        profile: profile,
+                        onBlock: busy ? null : block,
+                      ),
               ),
-            ),
-          ],
-        ),
+            ],
+          );
+        },
         error: (e, s) => ReadingWidth(
           child: ListView(
             padding: const EdgeInsets.all(24),

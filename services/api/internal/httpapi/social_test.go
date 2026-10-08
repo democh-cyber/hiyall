@@ -193,6 +193,9 @@ func TestFollowPoliciesRequestsAndVisibility(t *testing.T) {
 	}
 	inbox := h.ok(bob, "GET", "/v1/notifications")
 	same(t, ids(inbox), alice+":follow.requested")
+	if text := inbox["items"].([]any)[0].(map[string]any)["text"]; text != "Anjali requested to follow you" {
+		t.Fatalf("notification text should name the actor: %q", text)
+	}
 	if inbox["unreadCount"] != float64(1) {
 		t.Fatalf("repeat follow duplicated activity: %v", inbox["unreadCount"])
 	}
@@ -422,7 +425,7 @@ func TestActivityFeedPagingReadStateAndOwnership(t *testing.T) {
 		t.Fatalf("first page wrong: %v", first)
 	}
 	row := items(first)[0]
-	if row["type"] != "follow" || row["targetType"] != "request" || row["text"] != "requested to follow you" || row["count"] != float64(1) {
+	if row["type"] != "follow" || row["targetType"] != "request" || row["text"] != "Xan requested to follow you" || row["count"] != float64(1) {
 		t.Fatalf("contract fields wrong: %v", row)
 	}
 	seen := map[string]bool{}

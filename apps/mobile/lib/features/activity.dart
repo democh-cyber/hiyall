@@ -28,6 +28,14 @@ class ActivityView extends StatefulWidget {
   final VoidCallback? Function(Map<String, dynamic>)? openNotification;
   final VoidCallback? Function(Map<String, dynamic>)? markRead, dismiss;
   final ImageProvider? Function(Map<String, dynamic>)? avatarImage;
+
+  /// Inline controls under a row, such as Accept/Decline on a request.
+  final Widget? Function(Map<String, dynamic>)? actions;
+
+  /// Called near the end of the list to fetch the next page.
+  final VoidCallback? onLoadMore;
+  final bool loadingMore;
+  final VoidCallback? onMarkAllRead;
   final DateTime? now;
 
   const ActivityView({
@@ -41,6 +49,10 @@ class ActivityView extends StatefulWidget {
     this.markRead,
     this.dismiss,
     this.avatarImage,
+    this.actions,
+    this.onLoadMore,
+    this.loadingMore = false,
+    this.onMarkAllRead,
     this.now,
   });
 
@@ -112,6 +124,7 @@ class _ActivityViewState extends State<ActivityView> {
                       selected: filter,
                       onSelect: (value) => setState(() => selected = value),
                       onSettings: widget.onSettings,
+                      onMarkAllRead: widget.onMarkAllRead,
                     ),
                   ),
                   ...widget.activity.when(
@@ -150,6 +163,14 @@ class _ActivityViewState extends State<ActivityView> {
                               sliver: SliverList.builder(
                                 itemCount: filtered.length,
                                 itemBuilder: (context, index) {
+                                  if (index >= filtered.length - 3) {
+                                    // Ask for the next page before the end is reached.
+                                    final more = widget.onLoadMore;
+                                    if (more != null && !widget.loadingMore) {
+                                      WidgetsBinding.instance
+                                          .addPostFrameCallback((_) => more());
+                                    }
+                                  }
                                   final item = filtered[index];
                                   final day = _dayLabel(item, now, context);
                                   final showDay =
@@ -190,6 +211,7 @@ class _ActivityViewState extends State<ActivityView> {
                                         onMarkRead: widget.markRead?.call(item),
                                         onDismiss: widget.dismiss?.call(item),
                                         avatarImage: widget.avatarImage,
+                                        actions: widget.actions?.call(item),
                                       ),
                                     ],
                                   );
@@ -239,7 +261,7 @@ class _ActivityHeader extends SliverPersistentHeaderDelegate {
   final List<String> filters;
   final String selected;
   final ValueChanged<String> onSelect;
-  final VoidCallback? onSettings;
+  final VoidCallback? onSettings, onMarkAllRead;
   const _ActivityHeader({
     required this.captionHeight,
     required this.headingHeight,
@@ -248,6 +270,7 @@ class _ActivityHeader extends SliverPersistentHeaderDelegate {
     required this.selected,
     required this.onSelect,
     this.onSettings,
+    this.onMarkAllRead,
   });
   @override
   double get minExtent => 12 + headingHeight + filterHeight + 8;
@@ -285,6 +308,12 @@ class _ActivityHeader extends SliverPersistentHeaderDelegate {
                     ),
                   ),
                 ),
+                if (onMarkAllRead != null)
+                  IconButton(
+                    tooltip: 'Mark all as read',
+                    onPressed: onMarkAllRead,
+                    icon: const Icon(Icons.done_all_rounded, size: 22),
+                  ),
                 if (onSettings != null)
                   IconButton(
                     tooltip: 'Activity visibility',
@@ -395,7 +424,8 @@ class _ActivityHeader extends SliverPersistentHeaderDelegate {
       filterHeight != old.filterHeight ||
       selected != old.selected ||
       filters != old.filters ||
-      onSettings != old.onSettings;
+      onSettings != old.onSettings ||
+      onMarkAllRead != old.onMarkAllRead;
 }
 
 class _ActivityEmpty extends StatelessWidget {
@@ -505,6 +535,7 @@ class _ActivityRow extends StatelessWidget {
   final DateTime now;
   final VoidCallback? onOpen, onMarkRead, onDismiss;
   final ImageProvider? Function(Map<String, dynamic>)? avatarImage;
+  final Widget? actions;
   const _ActivityRow({
     super.key,
     required this.item,
@@ -513,6 +544,7 @@ class _ActivityRow extends StatelessWidget {
     this.onMarkRead,
     this.onDismiss,
     this.avatarImage,
+    this.actions,
   });
   @override
   Widget build(BuildContext context) {
@@ -652,6 +684,10 @@ class _ActivityRow extends StatelessWidget {
                           ),
                       ],
                     ),
+                    if (actions != null) ...[
+                      const SizedBox(height: 12),
+                      actions!,
+                    ],
                   ],
                 ),
               ),

@@ -38,6 +38,38 @@ class FakeApi extends ApiClient {
     blocked = value;
   }
 
+  List<Map<String, dynamic>> activity = [];
+  final calls = <String>[];
+  @override
+  Future<(ApiPage<Map<String, dynamic>>, int)> notifications(
+    Session s, [
+    String? cursor,
+  ]) async => (
+    ApiPage(activity, null),
+    activity.where((i) => i['readAt'] == null).length,
+  );
+  @override
+  Future<int> unreadNotifications(Session s) async =>
+      activity.where((i) => i['readAt'] == null).length;
+  @override
+  Future<void> markNotificationRead(Session s, String id) async =>
+      calls.add('read $id');
+  @override
+  Future<void> markAllNotificationsRead(Session s) async =>
+      calls.add('read-all');
+  @override
+  Future<void> respondFriendRequest(
+    Session s,
+    String requestId,
+    bool accept,
+  ) async => calls.add('friend $requestId $accept');
+  @override
+  Future<void> respondFollowRequest(
+    Session s,
+    String followerId,
+    bool accept,
+  ) async => calls.add('follow $followerId $accept');
+
   @override
   Future<Map<String, dynamic>> searchPeople(
     Session s,
