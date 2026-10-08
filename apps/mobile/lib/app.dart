@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:go_router/go_router.dart';
 
 import 'core/theme.dart';
@@ -12,6 +13,7 @@ import 'features/screens.dart';
 import 'features/profile.dart';
 import 'features/privacy.dart';
 import 'features/safety.dart';
+import 'features/settings.dart';
 import 'features/design_studio.dart';
 import 'shared/widgets.dart';
 import 'shared/navigation_dock.dart';
@@ -94,6 +96,14 @@ final routerProvider = Provider<GoRouter>((ref) {
                 path: 'controls',
                 builder: (context, state) => const ControlsScreen(),
               ),
+              GoRoute(
+                path: 'settings',
+                builder: (context, state) => const SettingsScreen(),
+              ),
+              GoRoute(
+                path: 'reports',
+                builder: (context, state) => const ReportsScreen(),
+              ),
             ],
           ),
         ],
@@ -107,11 +117,34 @@ final themeProvider = NotifierProvider<ThemeController, ThemeMode>(
   ThemeController.new,
 );
 
+/// The appearance choice, kept on this device.
 class ThemeController extends Notifier<ThemeMode> {
+  static const _key = 'appearance';
+  static const _storage = FlutterSecureStorage();
+
   @override
-  ThemeMode build() => ThemeMode.system;
-  void toggle(bool dark) => state = dark ? ThemeMode.dark : ThemeMode.light;
-  void useSystem() => state = ThemeMode.system;
+  ThemeMode build() {
+    _restore();
+    return ThemeMode.system;
+  }
+
+  Future<void> _restore() async {
+    try {
+      final saved = await _storage.read(key: _key);
+      final mode = ThemeMode.values.where((m) => m.name == saved).firstOrNull;
+      if (mode != null) state = mode;
+    } catch (_) {
+      // No platform storage (tests, some desktops): stay on system.
+    }
+  }
+
+  void set(ThemeMode mode) {
+    state = mode;
+    _storage.write(key: _key, value: mode.name).catchError((_) {});
+  }
+
+  void toggle(bool dark) => set(dark ? ThemeMode.dark : ThemeMode.light);
+  void useSystem() => set(ThemeMode.system);
 }
 
 class KairovaApp extends ConsumerWidget {

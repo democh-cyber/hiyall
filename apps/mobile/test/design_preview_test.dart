@@ -21,14 +21,55 @@ class DesignApi extends FakeApi {
     'items': [
       {
         'sessionId': 'design-test-session',
+        'platform': 'android',
         'current': true,
         'createdAt': '2026-10-07T09:00:00Z',
+        'lastSeenAt': '2026-10-07T09:30:00Z',
         'expiresAt': '2026-10-08T09:00:00Z',
-        'revokedAt': null,
+      },
+      {
+        'sessionId': 'design-other-session',
+        'platform': 'web',
+        'current': false,
+        'createdAt': '2026-10-06T09:00:00Z',
+        'lastSeenAt': '2026-10-06T21:00:00Z',
+        'expiresAt': '2026-10-08T09:00:00Z',
       },
     ],
     'nextCursor': null,
   };
+
+  @override
+  Future<ApiPage<Map<String, dynamic>>> myReports(
+    Session s, [
+    String? cursor,
+  ]) async => const ApiPage([
+    {
+      'reportId': 'r1',
+      'targetType': 'conversation',
+      'targetId': 'c1',
+      'subject': {
+        'userId': nikoId,
+        'username': 'niko',
+        'displayName': 'Niko with a much longer display name',
+      },
+      'reasonCode': 'impersonation',
+      'status': 'open',
+      'createdAt': '2026-10-07T09:00:00Z',
+    },
+  ], null);
+
+  @override
+  Future<ApiPage<Map<String, dynamic>>> controls(
+    Session s,
+    String kind, [
+    String? cursor,
+  ]) async => ApiPage([
+    {
+      'user': {'userId': nikoId, 'username': 'niko', 'displayName': 'Niko'},
+      'since': '2026-10-07T09:00:00Z',
+    },
+  ], null);
 }
 
 class SignedOut extends SessionController {
@@ -57,6 +98,9 @@ void main() {
     '/profile/edit',
     '/profile/privacy',
     '/profile/sessions',
+    '/profile/settings',
+    '/profile/reports',
+    '/profile/controls',
   ];
   for (final size in [
     const Size(390, 844),

@@ -66,7 +66,7 @@ func run() error {
 		return targets, err
 	}, api.RT.Connected, 4096)
 	api.Push.Run(background, 4)
-	go expireCiphertext(background, db)
+	go maintain(background, db)
 	srv := &http.Server{Addr: cfg.Listen, Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32768}
 	srv.RegisterOnShutdown(api.RT.CloseAll)
 	shutdown, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -95,22 +95,32 @@ func backoff(attempt int) time.Duration {
 	return delay/2 + time.Duration(rand.Int64N(int64(delay/2)+1))
 }
 
-// expireCiphertext removes delivered envelope rows after 7 days and
-// undelivered ciphertext after 30, in small batches so it never holds long locks.
-func expireCiphertext(ctx context.Context, db *store.Store) {
+// maintain runs hourly cleanup in small batches so it never holds long locks:
+// delivered envelope rows after 7 days, undelivered ciphertext after 30, and
+// sessions 30 days after they expired.
+func maintain(ctx context.Context, db *store.Store) {
 	tick := time.NewTicker(time.Hour)
 	defer tick.Stop()
+	jobs := []struct {
+		name string
+		run  func() (int64, error)
+	}{
+		{"ciphertext expiry", func() (int64, error) { return db.ExpireEnvelopes(ctx, 7*24*time.Hour, 30*24*time.Hour, 5000) }},
+		{"session purge", func() (int64, error) { return db.PurgeSessions(ctx, 30*24*time.Hour, 5000) }},
+	}
 	for {
-		for {
-			n, err := db.ExpireEnvelopes(ctx, 7*24*time.Hour, 30*24*time.Hour, 5000)
-			if err != nil {
-				if ctx.Err() == nil {
-					slog.Warn("ciphertext expiry failed", "reason", err.Error())
+		for _, job := range jobs {
+			for {
+				n, err := job.run()
+				if err != nil {
+					if ctx.Err() == nil {
+						slog.Warn(job.name+" failed", "reason", err.Error())
+					}
+					break
 				}
-				break
-			}
-			if n < 5000 {
-				break
+				if n < 5000 {
+					break
+				}
 			}
 		}
 		select {

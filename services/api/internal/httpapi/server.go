@@ -73,6 +73,7 @@ func (w *responseStatus) WriteHeader(status int) {
 	w.status = status
 	w.ResponseWriter.WriteHeader(status)
 }
+
 // Unwrap and Hijack let the WebSocket upgrade reach the underlying connection.
 func (w *responseStatus) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (w *responseStatus) Hijack() (net.Conn, *bufio.ReadWriter, error) {
@@ -291,7 +292,7 @@ func (a *API) devSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := base64.RawURLEncoding.EncodeToString(bytes)
-	p, err := a.Store.CreateDevSession(r.Context(), id, token)
+	p, err := a.Store.CreateDevSession(r.Context(), id, token, r.Header.Get("X-Client-Platform"))
 	if err != nil {
 		a.error(w, r, err)
 		return
@@ -367,6 +368,15 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 	}
 	if path == "/v1/auth/sessions" && r.Method == "GET" {
 		a.sessions(w, r, p)
+		return
+	}
+	if path == "/v1/auth/sessions/revoke-others" && r.Method == "POST" {
+		count, err := a.Store.RevokeOtherSessions(ctx, p)
+		if err != nil {
+			a.error(w, r, err)
+			return
+		}
+		a.ok(w, r, map[string]int64{"revoked": count})
 		return
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")

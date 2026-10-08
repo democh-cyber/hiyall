@@ -25,6 +25,29 @@ class WelcomeScreen extends ConsumerWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (ref.watch(sessionExpiredProvider)) ...[
+            Container(
+              key: const Key('session-ended'),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: VibeColors.peach,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.lock_clock_outlined, color: VibeColors.ink),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Your session ended. Sign in again to pick up where you left off.',
+                      style: TextStyle(color: VibeColors.ink),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
           const VibeTag('YOUR NEXT CHAPTER', color: VibeColors.lilac),
           const SizedBox(height: 24),
           Text(

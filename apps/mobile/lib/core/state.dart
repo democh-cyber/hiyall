@@ -4,7 +4,24 @@ import 'api.dart';
 
 const anjaliId = '019a4000-0000-7000-8000-000000000001';
 const nikoId = '019a4000-0000-7000-8000-000000000002';
-final apiProvider = Provider<ApiClient>((ref) => ApiClient());
+final apiProvider = Provider<ApiClient>(
+  (ref) =>
+      ApiClient()
+        ..onUnauthorized = () => ref.read(sessionProvider.notifier).expire(),
+);
+
+/// True after the server ended the session, until the next sign-in, so the
+/// welcome screen can say why the person was signed out.
+final sessionExpiredProvider = NotifierProvider<SessionExpired, bool>(
+  SessionExpired.new,
+);
+
+class SessionExpired extends Notifier<bool> {
+  @override
+  bool build() => false;
+  void set(bool value) => state = value;
+}
+
 final sessionProvider =
     NotifierProvider<SessionController, AsyncValue<Session?>>(
       SessionController.new,
@@ -15,10 +32,18 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
   AsyncValue<Session?> build() => const AsyncData(null);
   Future<void> login(String id) async {
     if (state.isLoading) return;
+    ref.read(sessionExpiredProvider.notifier).set(false);
     state = const AsyncLoading();
     state = await AsyncValue.guard(
       () => ref.read(apiProvider).signInDevelopment(id),
     );
+  }
+
+  /// The server no longer accepts this session; drop it locally.
+  void expire() {
+    if (state.asData?.value == null) return;
+    ref.read(sessionExpiredProvider.notifier).set(true);
+    state = const AsyncData(null);
   }
 
   Future<void> logout() async {
@@ -31,6 +56,7 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
         if (error.status != 401) rethrow;
       }
     }
+    ref.read(sessionExpiredProvider.notifier).set(false);
     state = const AsyncData(null);
   }
 }
@@ -59,10 +85,6 @@ final profileProvider = FutureProvider<Profile>(
 );
 final privacyProvider = FutureProvider<Privacy>(
   (ref) => ref.watch(apiProvider).privacy(requireSession(ref)),
-  retry: apiReadRetry,
-);
-final sessionsProvider = FutureProvider<Map<String, dynamic>>(
-  (ref) => ref.watch(apiProvider).sessions(requireSession(ref)),
   retry: apiReadRetry,
 );
 final otherProfileProvider = FutureProvider.autoDispose.family<Profile, String>(

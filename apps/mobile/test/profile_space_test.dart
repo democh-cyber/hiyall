@@ -357,7 +357,7 @@ void main() {
     },
   );
   testWidgets(
-    'Settings stay reachable while scrolling and close before navigation',
+    'Settings stay reachable while scrolling and lead to privacy',
     (tester) async {
       final api = ProfileApi();
       await launchEditor(tester, api);
@@ -366,7 +366,6 @@ void main() {
       );
       container.read(routerProvider).go('/profile');
       await tester.pumpAndSettle();
-      expect(find.text('Active sessions'), findsNothing);
       expect(find.text('Sign out'), findsNothing);
       await tester.drag(find.byType(CustomScrollView), const Offset(0, -550));
       await tester.pumpAndSettle();
@@ -376,12 +375,19 @@ void main() {
       );
       await tester.tap(find.byTooltip('Your space settings'));
       await tester.pumpAndSettle();
-      expect(find.text('Privacy & visibility'), findsOneWidget);
-      expect(find.text('Sign out'), findsOneWidget);
-      await tester.tap(find.text('Privacy & visibility'));
+      expect(find.text('Settings'), findsWidgets);
+      await tester.tap(find.byKey(const Key('settings-/profile/privacy')));
       await tester.pumpAndSettle();
-      expect(find.text('Your space, your rules.'), findsNothing);
       expect(find.text('Who can view my profile?'), findsOneWidget);
+      // Privacy leads back to Settings, not straight to the profile.
+      await tester.tap(find.widgetWithText(TextButton, 'Settings'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('sign-out')),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.byKey(const Key('sign-out')), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
