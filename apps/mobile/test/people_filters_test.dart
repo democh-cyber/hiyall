@@ -105,6 +105,9 @@ void main() {
         child: RepaintBoundary(key: appCapture, child: const KairovaApp()),
       ),
     );
+    // Home asks for a few suggestions; count only what Discover sends.
+    await tester.pumpAndSettle();
+    api.queries.clear();
     container.read(routerProvider).go('/discover');
     await tester.pumpAndSettle();
     return container;
