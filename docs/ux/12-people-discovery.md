@@ -1,0 +1,51 @@
+# People discovery and temporary filters
+
+The Find People interface uses a full-screen filter surface with a compact header, a removable active-filter summary, interest chips, a single vibe, searchable languages, and progressively disclosed country selection. Lime, lavender, peach, and mint distinguish dimensions without neon effects. Dark and warm light themes share the same layout. Content scrolls above the separate bottom actions, with safe-area space and at least 48 logical-pixel controls. Reduced motion skips size animation entirely.
+
+Filters form a temporary draft. Closing or going back discards changes. Clear all resets only that draft. Find people applies it to the current search; there is no saved-preference write or silent persistence. Genuine shortcuts can copy the owner's actual interests, language codes, or current vibe; Global clears only country. Language names come from the existing ISO label inventory, with duplicate name aliases removed from the picker. Search sends codes, never labels or language proficiency as a search field.
+
+## Implemented service
+
+`POST /v1/discovery/search` consumes optional `interests`, `languages`, `country`, `vibe`, and `cursor`. Collections accept at most 10 distinct values. Interest and vibe comparisons ignore case; language tags normalize case, country uses uppercase codes. Within a collection, at least one selected value must match; different dimensions combine with AND. Vibe matches the existing free-text current-vibe field exactly apart from case. The chips are suggestions, not a new profile enum or personality score.
+
+Search requires authentication and a current trusted adult-eligibility record for the viewer. Every candidate must be active, opted into discovery, public, adult-eligible, and unblocked in both directions. A filtered field must explicitly have the `everyone` audience; matching private fields is forbidden even if the response would omit them. This prevents result-based inference of hidden interests, languages, vibe, or country. Every page repeats these checks against the authoritative database snapshot.
+
+Responses contain only an allowlist: app user ID for profile routing, handle, name, headline, bio, and permitted interests, languages, vibe, and country. No email, phone, exact location, birth date, internal provider UID, account balance, session information, presence, private counts, or age-assurance metadata is returned. Tapping a person opens the existing authorized profile route, which rechecks current access. Returning to results refreshes the search so changed blocks and visibility do not leave stale cards. Changing the signed-in session clears results and drafts and discards obsolete responses.
+
+Results are 20 per page with an HMAC cursor bound to principal, exact filter request, and 15-minute expiry. A search traversal is limited to 10 pages; privacy-filtered global totals are intentionally absent. The instance has a bounded per-principal 30/minute limiter with burst 10 and the existing overall request budget. A multi-instance production deployment still needs distributed enforcement. The current PostgreSQL query is suitable for this foundation and has not been benchmarked at global population scale.
+
+## Eligibility boundary
+
+Migration `0005_discovery_eligibility.sql` introduces trusted `adult`, `minor`, or `unknown` eligibility plus confirmation and expiry timestamps. There is **no consumer endpoint** to assign eligibility. Profile/privacy patches cannot grant it. Missing, future-dated, expired, or minor records fail closed. Development accounts are not automatically granted adulthood, and no people or eligibility records are seeded into the app by this change.
+
+An age-assurance/onboarding integration must populate these records before real accounts can use discovery. That integration is not implemented here; the app displays an honest eligibility error instead of an empty success or fake matches. This search gate does not retrofit age enforcement into unrelated existing profile routes, and messaging/contact flows remain unavailable. A real signup launch requires the separate age-assurance and regional eligibility implementation already identified in the security plan.
+
+No age slider, exact/nearby distance, gender, online status, verification badge, profile-media filter, connection-goal filter, mutual-connection explanation, premium filter, or preference persistence is shown because those capabilities lack suitable authoritative data or workflows. No gender is inferred from pronouns. No ages are guessed from the user's unrelated sample JSON.
+
+## Verification
+
+PostgreSQL integration tests cover public-field matching, AND/OR semantics, private-field inference prevention, opt-in revocation, private audiences, both block directions, account status, adult/minor/unknown/expired eligibility, allowlist canaries, signed pagination, query/principal binding, expiry, validation, and rate limits. Flutter tests cover explicit apply, cancellation, reset isolation, searchable pickers, wire codes, actual result explanations, pagination, eligibility errors, dark/light themes, safe areas, small/large phones, desktop width, and doubled text size. Test people and screenshots are fixtures only, never development database seeds. The design studio retains an explicitly labeled local preview with search disabled.
+
+## Discover and filter refinement
+
+The current UI retains the original hero headline and adds a small static orbital mark, a compact lime action, and a bordered privacy row leading to the existing settings. Discovery opt-in is described as a preference, not proof of eligibility. Internal account links remain behind the unchanged `devLoginEnabled` debug/release guard and are collapsed by default; release builds never render them.
+
+Filters have the new subtitle, genuine owner-based quick shortcuts, a removable active-filter summary and total, and clear actions near the summary and in the sticky footer. All languages now clears only the language dimension; Search languages opens the existing searchable multi-selector. More ways to connect visibly advertises Location and Country and remains collapsed initially. Other dimensions are absent because the unchanged search service does not support them. The service has no total-count endpoint, so the action continues to say Find people rather than inventing a match count or treating the current page as a total.
+
+Result cards present only public fields already returned by the API: name, handle, initial avatar, headline/bio, country, language names, up to four interests, and vibe. Match explanations retain their existing field-backed derivation. View profile uses the existing route; no unavailable friendship or message command is introduced. Static skeleton cards appear only during actual requests, and entry/removal/selection motion respects reduced-motion settings. Empty results use the quiet-orbit copy with explicit Clear filters and Explore everyone actions that run the existing search. Existing filter-widening actions remain available.
+
+Connectivity failures say Couldn’t connect rather than claiming definite offline status: the existing ApiFailure contract cannot distinguish an offline device from an unreachable service. Authentication, eligibility, validation, and rate-limit failures keep their actionable existing messages. Backend services, schemas, API contracts, authentication, search request/pagination methods, core models/state, navigation, and other screens were not modified by this refinement.
+
+## Applied selections on Discover
+
+Applied filters appear directly under the Discover title in a pinned header, above results. Each country, language, interest, and vibe has its own labeled, removable chip; country and language display human-readable names. A true selection count and Clear all sit above the chips. Removing one or clearing all runs the existing search with the remaining selections and resets pagination through its unchanged search method. These selections remain temporary and never write profile preferences.
+
+The summary wraps across rows in both themes with 48-pixel minimum touch targets. For larger selections or enlarged text, the top summary scrolls with a visible scrollbar instead of collapsing values behind a +N count; its minimum height accommodates a complete chip. It stays pinned while the result list scrolls. Controls are disabled during an active request. No additional search dimensions or unsupported matching tabs were introduced from the reference screenshots. Widget tests verify pinned positions, preserved wire filters after removal, Clear all, and accessibility of the last long selection on a 320-pixel phone at doubled text size.
+
+## Discover list redesign
+
+Discover now opens directly on everyone who opted in, as a compact list instead of a landing card. The pinned header holds the title, shortcut tabs and a single horizontally scrolling filter row. Tabs are genuine presets built from the owner's own public profile (Everyone, Same vibe, Your interests, Your languages) and only appear when that profile field exists. The filter row starts with a Filters button showing the applied count, followed by one removable dark chip per applied value and Clear all.
+
+Each person is one row: a pastel initial avatar with a country-code tag, display name, up to three language codes with one to three dots for the self-reported level (basic, conversational, fluent or native), a one-line headline, bio or vibe, and any field-backed match reasons. The trailing lime arrow and the whole row open the existing profile route. Screen readers get one label per row with every public field returned by the API. A lilac notice appears only when the owner's own discovery opt-in is off.
+
+Filters open as a bottom sheet with pill groups: From, Speaks, Into and Vibe. The owner's languages are listed first under Speaks. Reset and Show people sit in a sticky footer. Starting a new search while one is loading now replaces it instead of being silently ignored; only pagination waits for an in-flight request. Age and gender remain absent: they need trusted age bands from age assurance and an opt-in public gender field before they can be offered, and discovery must never let minors and adults search for each other.

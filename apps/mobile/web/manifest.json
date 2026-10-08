@@ -1,0 +1,19 @@
+{
+  "name": "Kairova",
+  "short_name": "Kairova",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#F7F8F2",
+  "theme_color": "#D2F65A",
+  "description": "Your space. Your frequency.",
+  "orientation": "portrait-primary",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "kairova.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

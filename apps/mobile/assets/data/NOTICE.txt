@@ -1,0 +1,6 @@
+Profile display labels use country/language code inventories from the system
+iso-codes package; its attribution and license are in ISO-COPYRIGHT.txt.
+English display names were generated with the installed Node.js ICU
+Intl.DisplayNames implementation. Names are locale labels, not proficiency
+or user data. No third-party user profile data has been imported.
+ICU attribution and data licenses are in ICU-COPYRIGHT.txt.
