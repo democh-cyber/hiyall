@@ -16,3 +16,10 @@ android/key.properties
 **/build/
 **/ios/Pods/
 **/ios/.symlinks/
+
+# Firebase project config written by scripts/firebase-setup.sh
+config/firebase.local.json
+apps/mobile/ios/Flutter/Firebase.xcconfig
+.firebase/
+config/media.local.env
+config/chat-media.local.env

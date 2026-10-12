@@ -1,12 +1,12 @@
-# Kairova — global social + chat platform
+# Hiyall — global social + chat platform
 
-Kairova is a provisional brand for an original, privacy-conscious social network and chat application for Flutter Android/iOS, with future web support. Brand/domain clearance is still needed before public launch.
+Hiyall is a provisional brand for an original, privacy-conscious social network and chat application for Flutter Android/iOS, with future web support. Brand/domain clearance is still needed before public launch.
 
-**Current status: the first runnable foundation is implemented, 7 October 2026.** Flutter navigation, live profile/privacy editing, Go API, PostgreSQL migrations, session revocation, blocks, and privacy-aware people search are implemented. Discovery requires trusted adult eligibility; its age-assurance integration remains pending. The Gen Z visual redesign and a complete interactive screen design studio are supplied; chat, feed and production release backend work remain pending.
+**Current status: the first runnable foundation is implemented, 7 October 2026.** Flutter navigation, live profile/privacy editing, Go API, PostgreSQL migrations, session revocation, blocks, and privacy-aware people search are implemented. Hiyall is for Gen Z and is not adult-only: anyone who declares they are 13 or over can join, every onboarded member is open and discoverable by default, the only member control is a "show when I'm online" setting, and the API has a coarse, expiring Nearby list that takes the people-search filters (the app sends the position automatically with no in-app opt-out, only the OS permission). Minors (13 to 17) and adults are kept apart everywhere blocks apply, based on a birth date members type and that can be falsified, minors get stricter defaults, and people search and Nearby take age and gender filters (see [Nearby and open access](docs/api/19-nearby-and-open-access.md), including a safety note on minors that lists follow-ups that are not done). The old adult-eligibility gate is retired. Firebase Authentication sign-in and server-enforced onboarding (self-declared minimum age of 13, terms, username) are implemented in the API and covered by tests with locally signed tokens; the app side is being connected, and no real Firebase project or provider has been verified end to end. Nearby has been tested through the API only, not from the app. The Gen Z visual redesign is supplied; chat, feed and production release backend work remain pending.
 
-Run `./scripts/dev-api.sh` and `./scripts/dev-mobile.sh` in separate terminals. Open `http://127.0.0.1:49321`. See [development setup, implemented behavior and release boundaries](docs/development.md). Toolchains were installed per-user and are recorded in [toolchains.lock.json](toolchains.lock.json).
+Run `./scripts/dev-api.sh` and `./scripts/dev-mobile.sh` in separate terminals. Open `http://localhost:49321`. To use real sign-in, run `firebase login` and then `./scripts/firebase-setup.sh <project-id>` once; see [sign-in and onboarding](docs/mobile/14-sign-in-and-onboarding.md#supplying-the-firebase-project). See [development setup, implemented behavior and release boundaries](docs/development.md). Toolchains were installed per-user and are recorded in [toolchains.lock.json](toolchains.lock.json).
 
-Open [the screen design studio](http://127.0.0.1:49321/#/design) to explore the full UI brief. Sample screens are explicitly marked and do not send messages, publish content, create accounts or place calls. Read [the brand, full screen inventory, flows, concepts and interaction specification](docs/ux/08-gen-z-experience.md).
+Sign-in and onboarding are described in [Sign-in and onboarding (app)](docs/mobile/14-sign-in-and-onboarding.md). Read [the brand, screen inventory, flows and interaction specification](docs/ux/08-gen-z-experience.md) for the design intent.
 
 ## Review the architecture
 
@@ -23,6 +23,7 @@ Start with the [decision summary and requirement coverage](docs/architecture/10-
 | Security/privacy | [Threat model and privacy](docs/security/08-security-and-privacy.md), [mandatory E2EE and interception protections](docs/security/11-encryption-and-interception.md) |
 | Capacity/deployment | [1K→100M model, AWS/equivalent boundaries, SLOs, RPO/RTO, CI/CD and runbooks](docs/deployment/09-capacity-and-operations.md) |
 | Implementation plan | [Incremental slices, acceptance criteria and approval boundary](docs/architecture/06-implementation-plan.md) |
+| Plans and entitlements | [Per-member limits as data resolved per member; no paid plans yet](docs/architecture/11-plans-and-entitlements.md) |
 
 ## Proposed foundation
 
@@ -42,4 +43,4 @@ Run `python3 scripts/validate_architecture.py` for document links, required enti
 
 ## Next slices
 
-Configure production sign-in and account/device lifecycle, then integrate and review the required E2EE protocol and network pinning before chat opens. Feed/media/social modules follow incrementally. Provider accounts, launch markets and production infrastructure are configured as their integrations are reached. No backend secrets are included here.
+Connect production sign-in to a real Firebase project and add account/device lifecycle, then integrate and review the required E2EE protocol and network pinning before chat opens. Feed/media/social modules follow incrementally. Provider accounts, launch markets and production infrastructure are configured as their integrations are reached. No backend secrets are included here.

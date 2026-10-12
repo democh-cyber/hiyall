@@ -1,1 +1,3 @@
 #include "Generated.xcconfig"
+// Written by scripts/firebase-setup.sh; holds FIREBASE_IOS_URL_SCHEME for Google sign-in.
+#include? "Firebase.xcconfig"

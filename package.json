@@ -1,7 +1,7 @@
 {
-  "name": "kairova-foundation",
+  "name": "hiyall-foundation",
   "version": "0.1.0",
-  "description": "Kairova API contract tooling",
+  "description": "Hiyall API contract tooling",
   "directories": {
     "doc": "docs"
   },

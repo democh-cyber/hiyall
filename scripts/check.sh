@@ -8,7 +8,7 @@ npm run contracts:lint
 python3 scripts/build_foundation_contract.py
 npm run contracts:build
 # A dedicated, disposable database is required; silently skipped integration tests are not a full check.
-export TEST_DATABASE_URL="${TEST_DATABASE_URL:-postgresql://kairova@/kairova_test?host=$task_root/.runtime/pgsocket&port=55432&sslmode=disable}"
+export TEST_DATABASE_URL="${TEST_DATABASE_URL:-postgresql://hiyall@/hiyall_test?host=$task_root/.runtime/pgsocket&port=55432&sslmode=disable}"
 cd "$task_root/services/api"
 export DATABASE_URL="$TEST_DATABASE_URL"
 go run ./cmd/migrate

@@ -1,12 +1,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Approximate location only, for Discover > Nearby. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <application
-        android:label="Kairova"
+        android:label="Hiyall"
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
         android:networkSecurityConfig="@xml/network_security_config"
         android:name="${applicationName}"
-        android:icon="@drawable/kairova_mark">
+        android:icon="@drawable/hiyall_mark">
         <activity
             android:name=".MainActivity"
             android:exported="true"

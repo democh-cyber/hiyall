@@ -1,7 +1,7 @@
 {
   "installedAt": "2026-10-07",
   "host": "Linux x86_64 / Ubuntu 24.04-compatible",
-  "installRoot": "~/.local/share/kairova-tools",
+  "installRoot": "~/.local/share/hiyall-tools",
   "versions": {
     "flutter": "3.47.6",
     "flutterCommit": "5fc346839b5d0eef006ed8404392afb4dfae428d",
@@ -21,7 +21,11 @@
     "gradle": "9.3.1",
     "gcc": "13.3.0",
     "androidCmake": "3.22.1",
-    "govulncheck": "1.8.0"
+    "govulncheck": "1.8.0",
+    "firebaseTools": "15.33.0",
+    "flutterfireCli": "1.4.1",
+    "rust": "1.99.0 (rustup stable, with the rustfmt and clippy components)",
+    "flutterRustBridgeCodegen": "2.13.0"
   },
   "sources": {
     "flutter": "https://github.com/flutter/flutter/tree/3.47.6",
@@ -29,7 +33,11 @@
     "node": "https://nodejs.org/dist/v24.21.0/",
     "java": "https://api.adoptium.net/v3/assets/version/21.0.12.1+1",
     "android": "https://dl.google.com/android/repository/",
-    "postgresRedisCompiler": "Configured Ubuntu noble signed package repositories"
+    "postgresRedisCompiler": "Configured Ubuntu noble signed package repositories",
+    "firebaseTools": "npm install -g firebase-tools (into the toolchain's Node)",
+    "flutterfireCli": "dart pub global activate flutterfire_cli",
+    "rust": "rustup into the toolchain; `rustup component add rustfmt clippy`",
+    "flutterRustBridgeCodegen": "cargo install flutter_rust_bridge_codegen --version '=2.13.0' --locked (into the toolchain's cargo; must equal flutter_rust_bridge in apps/mobile/rust/Cargo.toml and pubspec.yaml)"
   },
   "artifacts": [
     {

@@ -1,4 +1,4 @@
-package app.kairova.kairova
+package app.hiyall.hiyall
 
 import io.flutter.embedding.android.FlutterActivity
 

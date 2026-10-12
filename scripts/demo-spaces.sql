@@ -1,16 +1,16 @@
--- Local fixtures only; requires already provisioned adult demo accounts.
+-- Local fixtures only; requires the Anjali and Niko development accounts (created by the API on start).
 \set ON_ERROR_STOP on
 DO $$ BEGIN
- IF current_database()<>'kairova' THEN RAISE EXCEPTION 'demo spaces require local kairova database';END IF;
+ IF current_database()<>'hiyall' THEN RAISE EXCEPTION 'demo spaces require local hiyall database';END IF;
 END $$;
 BEGIN;
 INSERT INTO spaces(space_id,owner_id,kind,title,description,rules,visibility,capacity,timezone)
 SELECT '019a6000-0000-7000-8000-000000000001',p.user_id,'community','Night owl cafe','Books, playlists and the small things that make a day.','Keep it kind. No spam or unsolicited contact.','public',100,'UTC'
-FROM profiles p JOIN discovery_eligibility e USING(user_id) WHERE p.username='niko' AND e.age_group='adult' AND e.valid_until>now()
+FROM profiles p JOIN onboarding o USING(user_id) WHERE p.username='niko' AND o.completed_at IS NOT NULL
 ON CONFLICT(space_id) DO NOTHING;
 INSERT INTO spaces(space_id,owner_id,kind,title,description,rules,visibility,capacity,timezone)
 SELECT '019a6000-0000-7000-8000-000000000002',p.user_id,'community','Make something together','A small circle for sharing what you are building. Join requests are approved by Anjali.','Share ideas and useful feedback.','private',50,'Asia/Kolkata'
-FROM profiles p JOIN discovery_eligibility e USING(user_id) WHERE p.username='anjali' AND e.age_group='adult' AND e.valid_until>now()
+FROM profiles p JOIN onboarding o USING(user_id) WHERE p.username='anjali' AND o.completed_at IS NOT NULL
 ON CONFLICT(space_id) DO NOTHING;
 INSERT INTO spaces(space_id,owner_id,parent_id,kind,title,description,rules,visibility,capacity,starts_at,ends_at,timezone)
 SELECT '019a6000-0000-7000-8000-000000000003',s.owner_id,s.space_id,'moment','One song that gets you','A one-hour Moment. Share a song and the story behind it.','Listen with curiosity.','public',20,now()-interval '5 minutes',now()+interval '55 minutes','UTC'
