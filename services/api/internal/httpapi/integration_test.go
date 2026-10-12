@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"kairova/services/api/internal/domain"
-	"kairova/services/api/internal/store"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/store"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,8 +31,8 @@ func TestAPIIntegration(t *testing.T) {
 	defer db.Pool.Close()
 	// The test owns a dedicated database; never set this to the development or production DB.
 	var name string
-	if err = db.Pool.QueryRow(ctx, "SELECT current_database()").Scan(&name); err != nil || name != "kairova_test" {
-		t.Fatal("integration tests require database named kairova_test")
+	if err = db.Pool.QueryRow(ctx, "SELECT current_database()").Scan(&name); err != nil || name != "hiyall_test" {
+		t.Fatal("integration tests require database named hiyall_test")
 	}
 	if _, err = db.Pool.Exec(ctx, "TRUNCATE users,auth_identities,profiles,privacy_settings,sessions,blocks,outbox_events CASCADE"); err != nil {
 		t.Fatal(err)
@@ -40,6 +40,8 @@ func TestAPIIntegration(t *testing.T) {
 	if err = db.Seed(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// This test walks every audience from closed to open, so both members start closed.
+	closePrivacy(t, ctx, db, alice, bob)
 	api := New(db, db.VerifyDevSession, true, "")
 	handler := api.Handler()
 	call := func(method, path, token, version, body string) (int, map[string]any) {

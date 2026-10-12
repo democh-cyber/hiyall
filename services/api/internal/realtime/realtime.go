@@ -35,11 +35,15 @@ type Bus interface {
 
 // Client is one live connection. Sends never block: a client whose queue is
 // full is too slow to keep up and is disconnected; it resyncs on reconnect.
+// Session is the session the connection authenticated with, so signing that
+// session out (or the account being suspended) can end the connection.
 type Client struct {
-	User   string
-	Send   chan []byte
-	Closed chan struct{}
-	once   sync.Once
+	User    string
+	Session string
+	Send    chan []byte
+	Closed  chan struct{}
+	once    sync.Once
+	ended   atomic.Bool
 }
 
 func NewClient(user string, queue int) *Client {
@@ -48,6 +52,16 @@ func NewClient(user string, queue int) *Client {
 
 // Close signals the connection's writer to stop. Safe to call more than once.
 func (c *Client) Close() { c.once.Do(func() { close(c.Closed) }) }
+
+// End closes the connection because its session is over (signed out, revoked,
+// expired or the account suspended): the client must not just reconnect.
+func (c *Client) End() {
+	c.ended.Store(true)
+	c.Close()
+}
+
+// Ended reports whether the connection was closed by End.
+func (c *Client) Ended() bool { return c.ended.Load() }
 
 func (c *Client) offer(msg []byte) {
 	select {
@@ -127,7 +141,54 @@ func (h *Hub) Publish(ctx context.Context, typ string, data map[string]string, u
 	}
 }
 
+// disconnectType is a control event that never reaches a client: it ends the
+// listed users' connections on every node (Data "session": only that session;
+// "except": every session but that one; neither: all of them).
+const disconnectType = "_disconnect"
+
+// DisconnectEvent is the control event that ends users' connections, for
+// publishers that are not an API node (the moderation tool notifies through
+// PostgreSQL directly; see Channel).
+func DisconnectEvent(users ...string) Event { return Event{Users: users, Type: disconnectType} }
+
+// Disconnect ends a user's live connections on every node: only session when it
+// is set, every session except except when that is set, otherwise all of them.
+// Local connections end at once, so a bus outage cannot keep them open; other
+// nodes end theirs when the event arrives (a node that misses it still closes
+// the connection at its next heartbeat, when the session is checked again).
+func (h *Hub) Disconnect(ctx context.Context, user, session, except string) {
+	data := map[string]string{}
+	if session != "" {
+		data["session"] = session
+	}
+	if except != "" {
+		data["except"] = except
+	}
+	e := Event{Users: []string{user}, Type: disconnectType, Data: data}
+	h.disconnect(e)
+	if err := h.bus.Publish(ctx, e); err != nil {
+		slog.Warn("realtime disconnect publish failed", "reason", err.Error())
+	}
+}
+
+func (h *Hub) disconnect(e Event) {
+	session, except := e.Data["session"], e.Data["except"]
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, user := range e.Users {
+		for c := range h.clients[user] {
+			if (session == "" || c.Session == session) && (except == "" || c.Session != except) {
+				c.End()
+			}
+		}
+	}
+}
+
 func (h *Hub) deliver(e Event) {
+	if e.Type == disconnectType {
+		h.disconnect(e)
+		return
+	}
 	msg, err := json.Marshal(wire{Type: e.Type, Data: e.Data})
 	if err != nil {
 		return

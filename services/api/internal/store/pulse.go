@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"math/rand/v2"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
-	"kairova/services/api/internal/domain"
+	"hiyall/services/api/internal/domain"
 )
 
 // Signer turns an object key into a short-lived URL. Store methods take one so
@@ -25,7 +26,7 @@ func friendsWith(x string) string {
 // audience col, used for single reads. Feeds use the cheaper per-author form.
 func visibleTo(author, audience string) string {
 	return `EXISTS(SELECT 1 FROM users au WHERE au.user_id=` + author + ` AND au.status='active')
- AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$1 AND b.blocked_id=` + author + `) OR (b.blocker_id=` + author + ` AND b.blocked_id=$1))
+ AND NOT interaction_barred($1::uuid,` + author + `)
  AND (` + author + `=$1 OR ` + audience + `='public'
   OR (` + audience + `='followers' AND (EXISTS(SELECT 1 FROM follows vf WHERE vf.follower_id=$1 AND vf.followee_id=` + author + ` AND vf.state='active') OR ` + friendsWith(author) + `))
   OR (` + audience + `='friends' AND ` + friendsWith(author) + `))`
@@ -40,7 +41,7 @@ const circle = `rel AS (
 ), circle AS (
  SELECT r.id,bool_or(r.friend) AS friend,false AS self FROM rel r JOIN users u ON u.user_id=r.id AND u.status='active'
  WHERE NOT EXISTS(SELECT 1 FROM user_controls m WHERE m.actor_id=$1 AND m.target_id=r.id AND m.control='mute' AND (m.until IS NULL OR m.until>now()))
- AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$1 AND b.blocked_id=r.id) OR (b.blocker_id=r.id AND b.blocked_id=$1))
+ AND NOT interaction_barred($1::uuid,r.id)
  GROUP BY r.id
  UNION ALL SELECT $1::uuid,true,true
 )`
@@ -50,18 +51,46 @@ func audienceFor(col string) string {
 	return `(c.self OR ` + col + `='public' OR ` + col + `='followers' OR (` + col + `='friends' AND c.friend))`
 }
 
-// CreateUpload records a pending upload that expires in an hour if never
-// completed. At most 50 uploads may be pending per account.
-func (s *Store) CreateUpload(ctx context.Context, owner, purpose, contentType string, size int64) (string, string, error) {
+// CreateUpload records a pending upload that expires in an hour if never completed. The member's
+// limits (Entitlements) are checked in the same transaction as the insert, behind their upload lock: at most
+// PendingUploads pending uploads, then UploadsPerDay slots and UploadBytesPerDay declared bytes over a
+// rolling 24 hours counted whatever became of the upload, then StorageBytes of live photos (see
+// checkUploadQuota).
+func (s *Store) CreateUpload(ctx context.Context, owner, purpose, contentType string, size int64, e domain.Entitlements) (string, string, error) {
 	id := newID()
 	key := "uploads/" + owner + "/" + id
-	tag, err := s.Pool.Exec(ctx, `INSERT INTO media_assets(media_id,owner_id,purpose,content_type,size_bytes,upload_key,expires_at)
- SELECT $1,$2,$3,$4,$5,$6,now()+interval '1 hour'
- WHERE (SELECT count(*) FROM media_assets WHERE owner_id=$2 AND status='pending' AND expires_at>now())<50`, id, owner, purpose, contentType, size, key)
-	if err == nil && tag.RowsAffected() == 0 {
-		return "", "", &domain.PolicyError{Status: 429, Code: "RATE_LIMITED", Message: "Finish your current uploads first"}
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := lockQuota(ctx, tx, "upload", owner); err != nil {
+			return err
+		}
+		var pending int
+		var oldest *time.Time
+		if err := tx.QueryRow(ctx, `SELECT count(*),min(expires_at) FROM media_assets WHERE owner_id=$1 AND status='pending' AND expires_at>now()`, owner).Scan(&pending, &oldest); err != nil {
+			return err
+		}
+		if pending >= e.PendingUploads {
+			// A slot frees when the oldest pending upload expires (or is completed sooner).
+			wait := time.Second
+			if oldest != nil {
+				var seconds float64
+				if err := tx.QueryRow(ctx, `SELECT extract(epoch FROM $1::timestamptz-now())`, *oldest).Scan(&seconds); err != nil {
+					return err
+				}
+				wait = time.Duration(math.Ceil(max(seconds, 1))) * time.Second
+			}
+			return domain.RetryAfter(&domain.PolicyError{Status: 429, Code: "RATE_LIMITED", Message: "Finish your current uploads first"}, wait)
+		}
+		if err := checkUploadQuota(ctx, tx, owner, size, e); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO media_assets(media_id,owner_id,purpose,content_type,size_bytes,declared_bytes,upload_key,expires_at)
+ VALUES($1,$2,$3,$4,$5,$5,$6,now()+interval '1 hour')`, id, owner, purpose, contentType, size, key)
+		return err
+	})
+	if err != nil {
+		return "", "", err
 	}
-	return id, key, err
+	return id, key, nil
 }
 
 type PendingUpload struct {
@@ -76,7 +105,9 @@ func (s *Store) PendingUpload(ctx context.Context, owner, id string) (PendingUpl
 	return u, mapped(err)
 }
 
-// MediaReady stores processed variants. Unattached media expires after a day.
+// MediaReady stores processed variants. size is the stored size of both variants: from here on
+// size_bytes is what the storage cap sums (declared_bytes keeps the declared upload size). Unattached
+// media expires after a day.
 func (s *Store) MediaReady(ctx context.Context, owner, id string, width, height int, full, thumb string, size int64) error {
 	variants, _ := json.Marshal(map[string]string{"full": full, "thumb": thumb})
 	tag, err := s.Pool.Exec(ctx, `UPDATE media_assets SET status='ready',width=$3,height=$4,variants=$5,size_bytes=$6,expires_at=now()+interval '1 day'
@@ -104,9 +135,17 @@ func claimMedia(ctx context.Context, tx pgx.Tx, owner, purpose string, ids []str
 	return nil
 }
 
-func (s *Store) CreatePost(ctx context.Context, author string, p domain.NewPost) (string, error) {
+// CreatePost publishes a post. The member's PostsPerDay (deleted posts included) is checked in this
+// transaction behind their post lock, text-only posts count too, and media is validated as before.
+func (s *Store) CreatePost(ctx context.Context, author string, p domain.NewPost, e domain.Entitlements) (string, error) {
 	id := newID()
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := lockQuota(ctx, tx, "post", author); err != nil {
+			return err
+		}
+		if err := checkItemQuota(ctx, tx, "posts", author, e.PostsPerDay, domain.PostQuotaError(e.PostsPerDay)); err != nil {
+			return err
+		}
 		if err := claimMedia(ctx, tx, author, "post", p.MediaIDs); err != nil {
 			return err
 		}
@@ -151,7 +190,7 @@ func (s *Store) Feed(ctx context.Context, viewer, mode string, before *time.Time
 	if mode == "everyone" {
 		rows, err = s.Pool.Query(ctx, `SELECT p.post_id::text,p.created_at FROM posts p JOIN users u ON u.user_id=p.author_id AND u.status='active'
  WHERE p.deleted_at IS NULL AND p.audience='public' AND ($2::timestamptz IS NULL OR (p.created_at,p.post_id)<($2,$3::uuid))
- AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$1 AND b.blocked_id=p.author_id) OR (b.blocker_id=p.author_id AND b.blocked_id=$1))
+ AND NOT interaction_barred($1::uuid,p.author_id)
  AND NOT EXISTS(SELECT 1 FROM user_controls m WHERE m.actor_id=$1 AND m.target_id=p.author_id AND m.control='mute' AND (m.until IS NULL OR m.until>now()))
  ORDER BY p.created_at DESC,p.post_id DESC LIMIT $4`, viewer, before, beforeID, limit)
 	} else {
@@ -222,17 +261,19 @@ func (s *Store) hydrate(ctx context.Context, viewer string, ids []string, sign S
 		return []domain.Post{}, nil
 	}
 	byID := map[string]*domain.Post{}
-	rows, err := s.Pool.Query(ctx, `SELECT p.post_id::text,p.body,p.audience,p.created_at,p.edited_at,a.user_id::text,a.username,coalesce(a.data->>'displayName','')
- FROM posts p JOIN profiles a ON a.user_id=p.author_id WHERE p.post_id=ANY($1::uuid[])`, ids)
+	rows, err := s.Pool.Query(ctx, `SELECT p.post_id::text,p.body,p.audience,p.created_at,p.edited_at,a.user_id::text,a.username,coalesce(a.data->>'displayName',''),`+avatarThumbKey("av")+`
+ FROM posts p JOIN profiles a ON a.user_id=p.author_id`+avatarJoin("av", "a")+`WHERE p.post_id=ANY($1::uuid[])`, ids)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		p := &domain.Post{Media: []domain.MediaView{}}
-		if err = rows.Scan(&p.PostID, &p.Body, &p.Audience, &p.CreatedAt, &p.EditedAt, &p.Author.UserID, &p.Author.Username, &p.Author.DisplayName); err != nil {
+		var avatar *string
+		if err = rows.Scan(&p.PostID, &p.Body, &p.Audience, &p.CreatedAt, &p.EditedAt, &p.Author.UserID, &p.Author.Username, &p.Author.DisplayName, &avatar); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		p.Author.AvatarURL = avatarURL(sign, avatar)
 		p.SortAt, p.Mine = p.CreatedAt, p.Author.UserID == viewer
 		byID[p.PostID] = p
 	}
@@ -415,14 +456,14 @@ func (s *Store) Saved(ctx context.Context, viewer string, before *time.Time, bef
 
 // Comments pages a post's comments oldest first. Hidden comments (from people
 // the author restricted) are shown only to their writer.
-func (s *Store) Comments(ctx context.Context, viewer, post string, after *time.Time, afterID string, limit int) ([]domain.Comment, error) {
+func (s *Store) Comments(ctx context.Context, viewer, post string, after *time.Time, afterID string, limit int, sign Signer) ([]domain.Comment, error) {
 	if err := s.canSeePost(ctx, s.Pool, viewer, post); err != nil {
 		return nil, err
 	}
-	rows, err := s.Pool.Query(ctx, `SELECT c.comment_id::text,c.post_id::text,c.parent_id::text,c.body,c.created_at,a.user_id::text,a.username,coalesce(a.data->>'displayName',''),p.author_id=$1
- FROM comments c JOIN posts p ON p.post_id=c.post_id JOIN profiles a ON a.user_id=c.author_id JOIN users u ON u.user_id=c.author_id AND u.status='active'
+	rows, err := s.Pool.Query(ctx, `SELECT c.comment_id::text,c.post_id::text,c.parent_id::text,c.body,c.created_at,a.user_id::text,a.username,coalesce(a.data->>'displayName',''),p.author_id=$1,`+avatarThumbKey("av")+`
+ FROM comments c JOIN posts p ON p.post_id=c.post_id JOIN profiles a ON a.user_id=c.author_id JOIN users u ON u.user_id=c.author_id AND u.status='active'`+avatarJoin("av", "a")+`
  WHERE c.post_id=$2 AND c.deleted_at IS NULL AND (NOT c.hidden OR c.author_id=$1)
- AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$1 AND b.blocked_id=c.author_id) OR (b.blocker_id=c.author_id AND b.blocked_id=$1))
+ AND NOT interaction_barred($1::uuid,c.author_id)
  AND ($3::timestamptz IS NULL OR (c.created_at,c.comment_id)>($3,$4::uuid))
  ORDER BY c.created_at,c.comment_id LIMIT $5`, viewer, post, after, afterID, limit)
 	if err != nil {
@@ -431,7 +472,9 @@ func (s *Store) Comments(ctx context.Context, viewer, post string, after *time.T
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (domain.Comment, error) {
 		var c domain.Comment
 		var postOwner bool
-		err := row.Scan(&c.CommentID, &c.PostID, &c.ParentID, &c.Body, &c.CreatedAt, &c.Author.UserID, &c.Author.Username, &c.Author.DisplayName, &postOwner)
+		var avatar *string
+		err := row.Scan(&c.CommentID, &c.PostID, &c.ParentID, &c.Body, &c.CreatedAt, &c.Author.UserID, &c.Author.Username, &c.Author.DisplayName, &postOwner, &avatar)
+		c.Author.AvatarURL = avatarURL(sign, avatar)
 		c.Mine = c.Author.UserID == viewer
 		c.CanDelete = c.Mine || postOwner
 		return c, err
@@ -440,7 +483,7 @@ func (s *Store) Comments(ctx context.Context, viewer, post string, after *time.T
 
 // AddComment applies the post author's commentsFrom setting. It returns the
 // comment and the post's author, and whether the comment is hidden.
-func (s *Store) AddComment(ctx context.Context, viewer, post string, in domain.NewComment) (domain.Comment, string, bool, error) {
+func (s *Store) AddComment(ctx context.Context, viewer, post string, in domain.NewComment, sign Signer) (domain.Comment, string, bool, error) {
 	var c domain.Comment
 	var author string
 	var hidden bool
@@ -483,10 +526,12 @@ func (s *Store) AddComment(ctx context.Context, viewer, post string, in domain.N
 		if err != nil {
 			return err
 		}
-		if err = tx.QueryRow(ctx, `SELECT user_id::text,username,coalesce(data->>'displayName','') FROM profiles WHERE user_id=$1`, viewer).
-			Scan(&c.Author.UserID, &c.Author.Username, &c.Author.DisplayName); err != nil {
+		var avatar *string
+		if err = tx.QueryRow(ctx, `SELECT a.user_id::text,a.username,coalesce(a.data->>'displayName',''),`+avatarThumbKey("av")+` FROM profiles a`+avatarJoin("av", "a")+`WHERE a.user_id=$1`, viewer).
+			Scan(&c.Author.UserID, &c.Author.Username, &c.Author.DisplayName, &avatar); err != nil {
 			return err
 		}
+		c.Author.AvatarURL = avatarURL(sign, avatar)
 		if hidden {
 			return nil
 		}
@@ -519,10 +564,22 @@ func (s *Store) DeleteComment(ctx context.Context, viewer, id string) error {
 	})
 }
 
-// CreateStory publishes a story that lives for 24 hours.
-func (s *Store) CreateStory(ctx context.Context, author string, in domain.NewStory) (string, error) {
+// CreateStory publishes a story that lives for the lifetime it asks for (24 hours when it does not
+// say), if the member's entitlements offer it: that is checked before anything is touched. The member's
+// StoriesPerDay (deleted stories included) is checked in this transaction behind their story lock,
+// text-only stories count too.
+func (s *Store) CreateStory(ctx context.Context, author string, in domain.NewStory, e domain.Entitlements) (string, error) {
+	if in.LifetimeHours != nil && !e.AllowsStoryLifetime(*in.LifetimeHours) {
+		return "", domain.StoryLifetimeError(e.StoryLifetimes)
+	}
 	id := newID()
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := lockQuota(ctx, tx, "story", author); err != nil {
+			return err
+		}
+		if err := checkItemQuota(ctx, tx, "stories", author, e.StoriesPerDay, domain.StoryQuotaError(e.StoriesPerDay)); err != nil {
+			return err
+		}
 		var media []string
 		if in.MediaID != nil {
 			media = []string{*in.MediaID}
@@ -530,8 +587,8 @@ func (s *Store) CreateStory(ctx context.Context, author string, in domain.NewSto
 		if err := claimMedia(ctx, tx, author, "story", media); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO stories(story_id,author_id,media_id,body,background,audience,expires_at) VALUES($1,$2,$3,$4,$5,$6,now()+$7::interval)`,
-			id, author, in.MediaID, in.Body, in.Background, in.Audience, domain.StoryLifetime)
+		_, err := tx.Exec(ctx, `INSERT INTO stories(story_id,author_id,media_id,body,background,text_style,audience,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,now()+$8::interval)`,
+			id, author, in.MediaID, in.Body, in.Background, in.TextStyle, in.Audience, in.Lifetime())
 		return err
 	})
 	return id, err
@@ -551,20 +608,41 @@ func (s *Store) DeleteStory(ctx context.Context, author, id string) error {
 	})
 }
 
+// storyViewCountSQL is how many members saw story st: the same people StoryViewers lists, so the count a
+// member reads never differs from the list behind it (inactive accounts and anyone barred from the author
+// are left out).
+const storyViewCountSQL = `(SELECT count(*) FROM story_views v JOIN users vu ON vu.user_id=v.viewer_id AND vu.status='active'
+  WHERE v.story_id=st.story_id AND NOT interaction_barred(st.author_id,v.viewer_id))::int`
+
+// Story tray bounds: at most trayPerAuthor stories per author (their newest) and
+// trayStories in all, own stories first and then the newest.
+const (
+	trayPerAuthor = 100
+	trayStories   = 1500
+)
+
 // StoryTray returns active stories from the viewer's circle that they may see,
 // grouped by author: own first, then authors with unseen stories, newest first.
+// When the bounds above cut the tray, the oldest stories are the ones left out:
+// each author contributes their newest, and the viewer's own always come first.
 func (s *Store) StoryTray(ctx context.Context, viewer string, sign Signer) ([]domain.StoryGroup, error) {
-	rows, err := s.Pool.Query(ctx, `WITH `+circle+`
- SELECT st.story_id::text,st.body,st.background,st.audience,st.created_at,st.expires_at,m.media_id::text,m.variants,coalesce(m.width,0),coalesce(m.height,0),
-  a.user_id::text,a.username,coalesce(a.data->>'displayName',''),c.self,
+	rows, err := s.Pool.Query(ctx, `WITH `+circle+`, picked AS (
+ SELECT * FROM (
+  SELECT st.story_id,st.media_id,st.body,st.background,st.text_style,st.audience,st.created_at,st.expires_at,c.id AS author_id,c.self,
+   row_number() OVER (PARTITION BY c.id ORDER BY st.created_at DESC,st.story_id DESC) AS nth
+  FROM circle c
+  JOIN stories st ON st.author_id=c.id AND st.deleted_at IS NULL AND st.expires_at>now() AND `+audienceFor("st.audience")+`
+ ) ranked WHERE nth<=$2
+ ORDER BY self DESC,created_at DESC,story_id DESC
+ LIMIT $3)
+ SELECT st.story_id::text,st.body,st.background,st.text_style,st.audience,st.created_at,st.expires_at,m.media_id::text,m.variants,coalesce(m.width,0),coalesce(m.height,0),
+  a.user_id::text,a.username,coalesce(a.data->>'displayName',''),`+avatarThumbKey("av")+`,st.self,
   EXISTS(SELECT 1 FROM story_views v WHERE v.story_id=st.story_id AND v.viewer_id=$1),
-  CASE WHEN c.self THEN (SELECT count(*) FROM story_views v WHERE v.story_id=st.story_id)::int END
- FROM circle c
- JOIN stories st ON st.author_id=c.id AND st.deleted_at IS NULL AND st.expires_at>now() AND `+audienceFor("st.audience")+`
- JOIN profiles a ON a.user_id=c.id
+  CASE WHEN st.self THEN `+storyViewCountSQL+` END
+ FROM picked st
+ JOIN profiles a ON a.user_id=st.author_id`+avatarJoin("av", "a")+`
  LEFT JOIN media_assets m ON m.media_id=st.media_id AND m.status='ready'
- ORDER BY st.created_at
- LIMIT 1500`, viewer)
+ ORDER BY st.created_at,st.story_id`, viewer, trayPerAuthor, trayStories)
 	if err != nil {
 		return nil, err
 	}
@@ -577,11 +655,13 @@ func (s *Store) StoryTray(ctx context.Context, viewer string, sign Signer) ([]do
 		var variants map[string]string
 		var w, h int
 		var author domain.UserSummary
+		var avatar *string
 		var self bool
-		if err = rows.Scan(&st.StoryID, &st.Body, &st.Background, &st.Audience, &st.CreatedAt, &st.ExpiresAt, &mediaID, &variants, &w, &h,
-			&author.UserID, &author.Username, &author.DisplayName, &self, &st.Seen, &st.ViewCount); err != nil {
+		if err = rows.Scan(&st.StoryID, &st.Body, &st.Background, &st.TextStyle, &st.Audience, &st.CreatedAt, &st.ExpiresAt, &mediaID, &variants, &w, &h,
+			&author.UserID, &author.Username, &author.DisplayName, &avatar, &self, &st.Seen, &st.ViewCount); err != nil {
 			return nil, err
 		}
+		author.AvatarURL = avatarURL(sign, avatar)
 		if mediaID != nil {
 			st.Media = &domain.MediaView{MediaID: *mediaID, URL: sign(variants["full"]), ThumbURL: sign(variants["thumb"]), Width: w, Height: h}
 		}
@@ -642,8 +722,69 @@ func (s *Store) ViewStory(ctx context.Context, viewer, id string) error {
 	return err
 }
 
+// MyStories pages the author's own active stories (not deleted, not yet expired), newest first, each
+// with how many members saw it. The caller can only ever list their own.
+func (s *Store) MyStories(ctx context.Context, author string, before *time.Time, beforeID string, limit int, sign Signer) ([]domain.Story, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT st.story_id::text,st.body,st.background,st.text_style,st.audience,st.created_at,st.expires_at,m.media_id::text,m.variants,coalesce(m.width,0),coalesce(m.height,0),
+  `+storyViewCountSQL+`
+ FROM stories st LEFT JOIN media_assets m ON m.media_id=st.media_id AND m.status='ready'
+ WHERE st.author_id=$1 AND st.deleted_at IS NULL AND st.expires_at>now()
+ AND ($2::timestamptz IS NULL OR (st.created_at,st.story_id)<($2,$3::uuid))
+ ORDER BY st.created_at DESC,st.story_id DESC LIMIT $4`, author, before, beforeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []domain.Story{}
+	for rows.Next() {
+		var st domain.Story
+		var mediaID *string
+		var variants map[string]string
+		var w, h int
+		if err = rows.Scan(&st.StoryID, &st.Body, &st.Background, &st.TextStyle, &st.Audience, &st.CreatedAt, &st.ExpiresAt, &mediaID, &variants, &w, &h, &st.ViewCount); err != nil {
+			return nil, err
+		}
+		if mediaID != nil {
+			st.Media = &domain.MediaView{MediaID: *mediaID, URL: sign(variants["full"]), ThumbURL: sign(variants["thumb"]), Width: w, Height: h}
+		}
+		result = append(result, st)
+	}
+	return result, rows.Err()
+}
+
+// UserStories pages another member's active stories that the viewer may watch (the same audience, block,
+// age band and inactive-account rules as the tray and ViewStory), newest first, with whether the viewer
+// has seen each. It is what the Stories count on that member's profile counts.
+func (s *Store) UserStories(ctx context.Context, viewer, author string, before *time.Time, beforeID string, limit int, sign Signer) ([]domain.Story, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT st.story_id::text,st.body,st.background,st.text_style,st.audience,st.created_at,st.expires_at,m.media_id::text,m.variants,coalesce(m.width,0),coalesce(m.height,0),
+  EXISTS(SELECT 1 FROM story_views v WHERE v.story_id=st.story_id AND v.viewer_id=$1)
+ FROM stories st LEFT JOIN media_assets m ON m.media_id=st.media_id AND m.status='ready'
+ WHERE st.author_id=$2 AND st.deleted_at IS NULL AND st.expires_at>now() AND `+visibleTo("st.author_id", "st.audience")+`
+ AND ($3::timestamptz IS NULL OR (st.created_at,st.story_id)<($3,$4::uuid))
+ ORDER BY st.created_at DESC,st.story_id DESC LIMIT $5`, viewer, author, before, beforeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []domain.Story{}
+	for rows.Next() {
+		var st domain.Story
+		var mediaID *string
+		var variants map[string]string
+		var w, h int
+		if err = rows.Scan(&st.StoryID, &st.Body, &st.Background, &st.TextStyle, &st.Audience, &st.CreatedAt, &st.ExpiresAt, &mediaID, &variants, &w, &h, &st.Seen); err != nil {
+			return nil, err
+		}
+		if mediaID != nil {
+			st.Media = &domain.MediaView{MediaID: *mediaID, URL: sign(variants["full"]), ThumbURL: sign(variants["thumb"]), Width: w, Height: h}
+		}
+		result = append(result, st)
+	}
+	return result, rows.Err()
+}
+
 // StoryViewers pages who saw the author's own story, most recent first.
-func (s *Store) StoryViewers(ctx context.Context, author, id string, before *time.Time, beforeID string, limit int) ([]domain.Connection, error) {
+func (s *Store) StoryViewers(ctx context.Context, author, id string, before *time.Time, beforeID string, limit int, sign Signer) ([]domain.Connection, error) {
 	var mine bool
 	if err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM stories WHERE story_id=$1 AND author_id=$2 AND deleted_at IS NULL)`, id, author).Scan(&mine); err != nil {
 		return nil, err
@@ -651,16 +792,20 @@ func (s *Store) StoryViewers(ctx context.Context, author, id string, before *tim
 	if !mine {
 		return nil, domain.ErrNotFound
 	}
-	rows, err := s.Pool.Query(ctx, `SELECT p.user_id::text,p.username,coalesce(p.data->>'displayName',''),v.viewed_at FROM story_views v
- JOIN profiles p ON p.user_id=v.viewer_id JOIN users u ON u.user_id=v.viewer_id AND u.status='active'
+	rows, err := s.Pool.Query(ctx, `SELECT p.user_id::text,p.username,coalesce(p.data->>'displayName',''),`+avatarThumbKey("av")+`,v.viewed_at FROM story_views v
+ JOIN profiles p ON p.user_id=v.viewer_id JOIN users u ON u.user_id=v.viewer_id AND u.status='active'`+avatarJoin("av", "p")+`
  WHERE v.story_id=$1 AND ($2::timestamptz IS NULL OR (v.viewed_at,v.viewer_id)<($2,$3::uuid))
- ORDER BY v.viewed_at DESC,v.viewer_id DESC LIMIT $4`, id, before, beforeID, limit)
+ AND NOT interaction_barred($5::uuid,v.viewer_id)
+ ORDER BY v.viewed_at DESC,v.viewer_id DESC LIMIT $4`, id, before, beforeID, limit, author)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (domain.Connection, error) {
 		var c domain.Connection
-		return c, row.Scan(&c.User.UserID, &c.User.Username, &c.User.DisplayName, &c.Since)
+		var avatar *string
+		err := row.Scan(&c.User.UserID, &c.User.Username, &c.User.DisplayName, &avatar, &c.Since)
+		c.User.AvatarURL = avatarURL(sign, avatar)
+		return c, err
 	})
 }
 
@@ -699,11 +844,15 @@ func (s *Store) MediaGarbage(ctx context.Context, batch int) ([]string, int64, e
 }
 
 // PurgeStories deletes stories a day after they expire (views go with them)
-// and marks their media for deletion.
+// and marks their media for deletion. It returns the number of stories deleted,
+// so the maintenance loop keeps going while full batches remain.
 func (s *Store) PurgeStories(ctx context.Context, batch int) (int64, error) {
-	tag, err := s.Pool.Exec(ctx, `WITH gone AS (
+	var deleted int64
+	err := s.Pool.QueryRow(ctx, `WITH gone AS (
   DELETE FROM stories WHERE story_id IN (SELECT story_id FROM stories WHERE expires_at<now()-interval '1 day' ORDER BY expires_at LIMIT $1)
   RETURNING media_id
- ) UPDATE media_assets SET status='deleted',deleted_at=now() WHERE media_id IN (SELECT media_id FROM gone WHERE media_id IS NOT NULL)`, batch)
-	return tag.RowsAffected(), err
+ ), media AS (
+  UPDATE media_assets SET status='deleted',deleted_at=now() WHERE media_id IN (SELECT media_id FROM gone WHERE media_id IS NOT NULL)
+ ) SELECT count(*) FROM gone`, batch).Scan(&deleted)
+	return deleted, err
 }

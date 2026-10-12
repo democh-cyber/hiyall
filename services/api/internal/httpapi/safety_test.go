@@ -191,17 +191,17 @@ func TestReportsTakeOnlyChosenEvidenceAndFeedTheOperatorQueue(t *testing.T) {
 		t.Fatalf("reported person sees reports: %v", theirs)
 	}
 
-	if err = h.db.ResolveReport(h.ctx, queue[0].ReportID, "ops@kairova", "suspend", "credible threat"); err != nil {
+	if err = h.db.ResolveReport(h.ctx, queue[0].ReportID, "ops@hiyall", "suspend", "credible threat"); err != nil {
 		t.Fatal(err)
 	}
 	h.expect(h.call(bob, "GET", "/v1/me/reports"), 401, "UNAUTHENTICATED")
-	if err = h.db.ResolveReport(h.ctx, queue[0].ReportID, "ops@kairova", "dismiss", ""); err == nil {
+	if err = h.db.ResolveReport(h.ctx, queue[0].ReportID, "ops@hiyall", "dismiss", ""); err == nil {
 		t.Fatal("resolved twice")
 	}
 	if mine := items(h.ok(alice, "GET", "/v1/me/reports")); mine[0]["status"] != "actioned" || mine[0]["resolvedAt"] == nil {
 		t.Fatalf("status %v", mine)
 	}
-	if err = h.db.RestoreUser(h.ctx, bob, "ops@kairova", "appeal upheld"); err != nil {
+	if err = h.db.RestoreUser(h.ctx, bob, "ops@hiyall", "appeal upheld"); err != nil {
 		t.Fatal(err)
 	}
 	h.ok(bob, "GET", "/v1/me/reports")
@@ -221,5 +221,54 @@ func TestReportsAreRateLimitedPerAccount(t *testing.T) {
 	}
 	if !limited {
 		t.Fatal("reports were not rate limited")
+	}
+}
+
+// Mute and restrict reach only members whose profile the caller could open: another age band or
+// an unfinished account is 404. A report against them is accepted but names nobody, in the answer
+// and in the caller's list, and the mute and restrict lists leave them out; the blocked list does not.
+func TestSafetyControlsAndReportsDoNotNameBarredMembers(t *testing.T) {
+	h := newSocialHarness(t)
+	h.ageAt(cara, 30)
+	h.ageAt(xan, 15)
+	h.exec(`UPDATE onboarding SET completed_at=NULL WHERE user_id=$1`, eli)
+	for _, target := range []string{xan, eli} {
+		for _, control := range []string{"mute", "restrict"} {
+			h.api.graph.reset(cara)
+			h.expect(h.call(cara, "POST", "/v1/users/"+target+"/"+control), 404, "NOT_FOUND")
+			h.expect(h.call(cara, "DELETE", "/v1/users/"+target+"/"+control), 200, "")
+		}
+		report := h.expect(h.send(cara, "POST", "/v1/reports", map[string]any{"targetType": "user", "targetId": target, "reasonCode": "spam"}), 201, "").data["report"].(map[string]any)
+		if subject := report["subject"].(map[string]any); subject["userId"] != target || subject["username"] != "" || subject["displayName"] != "" {
+			t.Fatalf("report names a barred member: %v", subject)
+		}
+	}
+	for _, r := range items(h.ok(cara, "GET", "/v1/me/reports")) {
+		if subject := r["subject"].(map[string]any); subject["username"] != "" || subject["displayName"] != "" {
+			t.Fatalf("my reports name a barred member: %v", subject)
+		}
+	}
+	// A reachable member is named, and stays listed until they move out of reach.
+	h.ageAt(dev, 31)
+	h.ok(cara, "POST", "/v1/users/"+dev+"/mute")
+	h.ok(cara, "POST", "/v1/users/"+dev+"/restrict")
+	h.ok(cara, "POST", "/v1/users/"+dev+"/block")
+	report := h.expect(h.send(cara, "POST", "/v1/reports", map[string]any{"targetType": "user", "targetId": dev, "reasonCode": "spam"}), 201, "").data["report"].(map[string]any)
+	if report["subject"].(map[string]any)["username"] != "dev_k" {
+		t.Fatalf("reachable subject not named: %v", report)
+	}
+	for _, list := range []string{"muted", "restricted", "blocked"} {
+		if got := ids(h.ok(cara, "GET", "/v1/me/"+list)); !slices.Contains(got, dev) {
+			t.Fatalf("%s %v", list, got)
+		}
+	}
+	h.ageAt(dev, 16)
+	for _, list := range []string{"muted", "restricted"} {
+		if got := ids(h.ok(cara, "GET", "/v1/me/"+list)); slices.Contains(got, dev) {
+			t.Fatalf("%s lists a member in the other band: %v", list, got)
+		}
+	}
+	if got := ids(h.ok(cara, "GET", "/v1/me/blocked")); !slices.Contains(got, dev) {
+		t.Fatalf("blocked list lost a block: %v", got)
 	}
 }

@@ -20,13 +20,38 @@ func TestProfileRejectsIdentityAndUnsafeURL(t *testing.T) {
 	}
 }
 func TestPrivacyDefaultsAndUnknownFields(t *testing.T) {
+	// Hiyall is open by default: public, discoverable, shows presence, anyone may message and follow,
+	// and only the connection lists, stories, comments and mentions stay friends-only.
 	p := DefaultPrivacy()
-	if p.ProfileAudience != "friends" || p.Discoverable || p.ReadReceipts {
-		t.Fatal("unsafe defaults")
+	if p.ProfileAudience != "public" || !p.Discoverable || !p.ShowInterestOverlap || p.OnlineAudience != "everyone" || p.ReadReceipts {
+		t.Fatalf("defaults %+v", p)
 	}
-	for _, audience := range p.FieldAudiences {
-		if audience != "nobody" {
-			t.Fatal("field disclosure")
+	for name, want := range map[string]string{
+		"storyAudience": p.StoryAudience, "commentsFrom": p.CommentsFrom, "mentionsFrom": p.MentionsFrom,
+	} {
+		if want != "friends" {
+			t.Fatalf("%s default %q, want friends", name, want)
+		}
+	}
+	if p.MessagesFrom != "everyone" || p.FollowPolicy != "everyone" {
+		t.Fatalf("messagesFrom %q followPolicy %q, want everyone for both", p.MessagesFrom, p.FollowPolicy)
+	}
+	if p.FieldAudiences["counts"] != "everyone" {
+		t.Fatalf("counts audience %q", p.FieldAudiences["counts"])
+	}
+	if p.RequestsFrom != "everyone" || p.ActivityAudience != "nobody" || p.LastSeenAudience != "nobody" || p.LocationAudience != "nobody" {
+		t.Fatalf("defaults %+v", p)
+	}
+	if len(p.FieldAudiences) != len(Fields) {
+		t.Fatalf("field audiences %v", p.FieldAudiences)
+	}
+	for field, audience := range p.FieldAudiences {
+		want := "everyone"
+		if field == "connections" {
+			want = "followers"
+		}
+		if audience != want {
+			t.Fatalf("field %s audience %q, want %q", field, audience, want)
 		}
 	}
 	for _, input := range []string{`{"readReceipts":null}`, `{"fieldAudiences":{"secret":"everyone"}}`, `{"fieldAudiences":{"profession":"public"}}`, `{"messagesFrom":"all"}`, `{"userId":"other"}`} {
@@ -61,5 +86,43 @@ func TestExpressiveProfileValidation(t *testing.T) {
 	data, _ := json.Marshal(languages)
 	if string(data) != `[{"code":"en"},{"code":"ko"}]` {
 		t.Fatal(string(data))
+	}
+}
+
+// Only bio and quote may contain line breaks; one-line fields refuse them.
+func TestOneLineProfileFieldsRefuseLineBreaks(t *testing.T) {
+	for _, field := range []string{"displayName", "headline", "currentVibe", "pronouns", "profession", "education", "city", "region"} {
+		patch := map[string]json.RawMessage{field: json.RawMessage(`"line one\nline two"`)}
+		if ValidateProfilePatch(patch) == nil {
+			t.Fatalf("%s accepted a line break", field)
+		}
+	}
+	for _, field := range []string{"bio", "quote"} {
+		patch := map[string]json.RawMessage{field: json.RawMessage(`"line one\nline two"`)}
+		if err := ValidateProfilePatch(patch); err != nil {
+			t.Fatalf("%s refused a line break: %v", field, err)
+		}
+	}
+}
+
+func TestProfileAvatarPatchShapes(t *testing.T) {
+	cases := map[string]bool{
+		`{"avatarMediaId":null}`:                                            true,
+		`{"avatarMediaId":"019a4000-0000-7000-8000-000000000001"}`:          true,
+		`{"avatarMediaId":"019A4000-0000-7000-8000-000000000001"}`:          false,
+		`{"avatarMediaId":"urn:uuid:019a4000-0000-7000-8000-000000000001"}`: false,
+		`{"avatarMediaId":"0190a40000007000800000000000000000"}`:            false,
+		`{"avatarMediaId":""}`:                                              false,
+		`{"avatarMediaId":5}`:                                               false,
+		`{"avatarMediaId":["x"]}`:                                           false,
+		`{"coverMediaId":null}`:                                             true,
+		`{"coverMediaId":"019a4000-0000-7000-8000-000000000001"}`:           false,
+	}
+	for input, ok := range cases {
+		var patch map[string]json.RawMessage
+		_ = json.Unmarshal([]byte(input), &patch)
+		if err := ValidateProfilePatch(patch); (err == nil) != ok {
+			t.Errorf("%s: accepted=%v err=%v", input, err == nil, err)
+		}
 	}
 }

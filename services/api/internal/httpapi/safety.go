@@ -6,10 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
-
-	"kairova/services/api/internal/domain"
-	"kairova/services/api/internal/store"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/store"
 )
 
 // wakeFrom pushes to recipient about actor's action unless the recipient has
@@ -25,7 +23,8 @@ func (a *API) wakeFrom(ctx context.Context, kind, actor, recipient string) {
 	a.wake(kind, recipient)
 }
 
-func isID(value string) bool { _, err := uuid.Parse(value); return err == nil }
+// isID accepts only canonical ids (domain.IsID); every id from a path, query or body goes through it.
+func isID(value string) bool { return domain.IsID(value) }
 
 func controlKey(c domain.Control) (time.Time, string) { return c.Since, c.User.UserID }
 func reportKey(r domain.Report) (time.Time, string)   { return r.CreatedAt, r.ReportID }
@@ -102,7 +101,7 @@ func (a *API) safetyRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 	case n == 3 && parts[1] == "me" && (parts[2] == "blocked" || parts[2] == "muted" || parts[2] == "restricted") && method == "GET":
 		kind := parts[2]
 		paged(a, w, r, p, kind, func(pg page) ([]domain.Control, error) {
-			return a.Store.ListControls(ctx, p.UserID, kind, pg.before, pg.id, pg.limit)
+			return a.Store.ListControls(ctx, p.UserID, kind, pg.before, pg.id, pg.limit, a.signer(ctx))
 		}, controlKey, nil)
 	case n == 3 && parts[1] == "me" && parts[2] == "reports" && method == "GET":
 		paged(a, w, r, p, "reports", func(pg page) ([]domain.Report, error) {

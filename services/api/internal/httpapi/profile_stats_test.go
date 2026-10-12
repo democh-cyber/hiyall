@@ -7,8 +7,8 @@ import (
 	"os"
 	"testing"
 
-	"kairova/services/api/internal/domain"
-	"kairova/services/api/internal/store"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/store"
 )
 
 func TestProfileStatsSourceAndVisibility(t *testing.T) {
@@ -23,13 +23,17 @@ func TestProfileStatsSourceAndVisibility(t *testing.T) {
 	}
 	defer db.Pool.Close()
 	var name string
-	if err = db.Pool.QueryRow(ctx, "SELECT current_database()").Scan(&name); err != nil || name != "kairova_test" {
-		t.Fatal("requires dedicated kairova_test DB")
+	if err = db.Pool.QueryRow(ctx, "SELECT current_database()").Scan(&name); err != nil || name != "hiyall_test" {
+		t.Fatal("requires dedicated hiyall_test DB")
 	}
 	if _, err = db.Pool.Exec(ctx, "TRUNCATE users,auth_identities,profiles,privacy_settings,sessions,blocks,outbox_events CASCADE"); err != nil {
 		t.Fatal(err)
 	}
 	if err = db.Seed(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The counts audience defaults to everyone; this test starts from "nobody" to prove each step of the change.
+	if _, err = db.Pool.Exec(ctx, `UPDATE privacy_settings SET data=jsonb_set(data,'{fieldAudiences,counts}','"nobody"')`); err != nil {
 		t.Fatal(err)
 	}
 	// Only integration fixtures: pending/removed edges and inactive peers must not count.
@@ -54,7 +58,7 @@ func TestProfileStatsSourceAndVisibility(t *testing.T) {
 	}
 	assertStats := func(id string, want int64) {
 		t.Helper()
-		p, err := db.GetProfile(ctx, id)
+		p, err := db.GetProfile(ctx, id, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -72,10 +76,10 @@ func TestProfileStatsSourceAndVisibility(t *testing.T) {
 		}
 		return v
 	}
-	if _, err = db.UpdateProfile(ctx, bob, 1, patch(`{"quote":"Small moments matter.","profileAudience":"public"}`)); err != nil {
+	if _, err = db.UpdateProfile(ctx, bob, 1, patch(`{"quote":"Small moments matter.","profileAudience":"public"}`), nil); err != nil {
 		t.Fatal(err)
 	}
-	visible, err := db.VisibleProfile(ctx, alice, bob)
+	visible, err := db.VisibleProfile(ctx, alice, bob, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,20 +89,20 @@ func TestProfileStatsSourceAndVisibility(t *testing.T) {
 	if visible["quote"] != "Small moments matter." {
 		t.Fatal("quote not persisted")
 	}
-	if _, err = db.UpdatePrivacy(ctx, bob, 2, patch(`{"fieldAudiences":{"connections":"everyone"}}`)); err != nil {
+	if _, err = db.UpdatePrivacy(ctx, bob, 2, patch(`{"fieldAudiences":{"counts":"everyone"}}`)); err != nil {
 		t.Fatal(err)
 	}
-	visible, err = db.VisibleProfile(ctx, alice, bob)
+	visible, err = db.VisibleProfile(ctx, alice, bob, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if visible["socialStats"] != (domain.SocialStats{Friends: 1, Following: 1, Followers: 1}) {
 		t.Fatalf("wrong public counts: %+v", visible["socialStats"])
 	}
-	if _, err = db.UpdatePrivacy(ctx, bob, 3, patch(`{"fieldAudiences":{"connections":"nobody"}}`)); err != nil {
+	if _, err = db.UpdatePrivacy(ctx, bob, 3, patch(`{"fieldAudiences":{"counts":"nobody"}}`)); err != nil {
 		t.Fatal(err)
 	}
-	visible, err = db.VisibleProfile(ctx, alice, bob)
+	visible, err = db.VisibleProfile(ctx, alice, bob, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +114,7 @@ func TestProfileStatsSourceAndVisibility(t *testing.T) {
 	}
 	assertStats(alice, 0)
 	assertStats(bob, 0)
-	if _, err = db.VisibleProfile(ctx, alice, bob); !errors.Is(err, domain.ErrNotFound) {
+	if _, err = db.VisibleProfile(ctx, alice, bob, nil, nil); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatal("block did not deny profile")
 	}
 	// Blocking ends the relationships; unblocking does not silently restore them.
@@ -122,7 +126,7 @@ func TestProfileStatsSourceAndVisibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertStats(alice, 0)
-	if _, err = db.UpdateProfile(ctx, alice, 1, patch(`{"socialStats":{"friends":1000}}`)); err == nil {
+	if _, err = db.UpdateProfile(ctx, alice, 1, patch(`{"socialStats":{"friends":1000}}`), nil); err == nil {
 		t.Fatal("client can forge counts")
 	}
 }

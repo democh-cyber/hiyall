@@ -2,17 +2,33 @@ package domain
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	"github.com/google/uuid"
 )
 
 var (
 	ErrCommentsNotAllowed = &PolicyError{403, "COMMENTS_NOT_ALLOWED", "Comments on this post are limited"}
 	ErrMediaNotReady      = &PolicyError{409, "MEDIA_NOT_READY", "Finish uploading your photos first"}
+	// A daily limit lifts by itself, so the store attaches a Retry-After; full storage lifts only
+	// when the member deletes something, so it carries none. The numbers are Entitlements.
+	ErrUploadQuota = &PolicyError{429, "QUOTA", "You’ve reached today’s photo upload limit. Try again later."}
+	ErrStorageFull = &PolicyError{429, "QUOTA", "Your photo storage is full. Delete some posts or stories to free space."}
 )
+
+// PostQuotaError and StoryQuotaError name the member's daily limit of posts or stories.
+func PostQuotaError(limit int) *PolicyError { return dailyLimit(limit, "post", "posts") }
+
+func StoryQuotaError(limit int) *PolicyError { return dailyLimit(limit, "story", "stories") }
+
+func dailyLimit(limit int, one, many string) *PolicyError {
+	noun := many
+	if limit == 1 {
+		noun = one
+	}
+	return &PolicyError{429, "QUOTA", "You’ve reached today’s limit of " + strconv.Itoa(limit) + " " + noun + ". Try again later."}
+}
 
 // Reactions people can leave on a post; one per person.
 var Reactions = map[string]bool{"heart": true, "fire": true, "laugh": true, "wow": true, "sad": true}
@@ -28,7 +44,32 @@ const (
 	StoryLifetime  = 24 * time.Hour
 )
 
-var storyBackgrounds = map[string]bool{"lime": true, "lilac": true, "pink": true, "mint": true, "peach": true, "ink": true}
+// Story backgrounds: the six solid colours the first clients shipped, then gradient presets. Names are
+// what is stored and sent; each client draws its own colours for them and falls back to lime for a name
+// it does not know, so adding one here never breaks an older app.
+var StoryBackgroundNames = []string{
+	"lime", "lilac", "pink", "mint", "peach", "ink",
+	"sunset", "bubblegum", "aurora", "ocean", "grape", "mango", "midnight", "freshmint",
+}
+
+// Text styles for a story's words, drawn by the client from its bundled fonts. "clean" is what a story
+// without one (every story from before they existed) is shown with.
+var StoryTextStyleNames = []string{"clean", "loud", "soft", "glow", "stamp", "type"}
+
+const (
+	DefaultStoryBackground = "lime"
+	DefaultStoryTextStyle  = "clean"
+)
+
+var storyBackgrounds, storyTextStyles = nameSet(StoryBackgroundNames), nameSet(StoryTextStyleNames)
+
+func nameSet(names []string) map[string]bool {
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		set[n] = true
+	}
+	return set
+}
 
 type MediaView struct {
 	MediaID  string `json:"mediaId"`
@@ -71,6 +112,7 @@ type Story struct {
 	StoryID    string     `json:"storyId"`
 	Body       string     `json:"body"`
 	Background string     `json:"background"`
+	TextStyle  string     `json:"textStyle"`
 	Media      *MediaView `json:"media"`
 	Audience   string     `json:"audience"`
 	CreatedAt  time.Time  `json:"createdAt"`
@@ -107,7 +149,7 @@ func ParsePost(raw []byte) (NewPost, error) {
 		return p, invalid("body", "send body, audience and optional mediaIds")
 	}
 	p.Body = strings.TrimSpace(p.Body)
-	if !utf8.ValidString(p.Body) || utf8.RuneCountInString(p.Body) > MaxPostBody {
+	if !CleanText(p.Body) || utf8.RuneCountInString(p.Body) > MaxPostBody {
 		return p, invalid("body", "keep it under 2200 characters")
 	}
 	if !Audiences[p.Audience] {
@@ -118,7 +160,7 @@ func ParsePost(raw []byte) (NewPost, error) {
 	}
 	seen := map[string]bool{}
 	for _, id := range p.MediaIDs {
-		if _, err := uuid.Parse(id); err != nil || seen[id] {
+		if !IsID(id) || seen[id] {
 			return p, invalid("mediaIds", "each photo must be a distinct id")
 		}
 		seen[id] = true
@@ -140,11 +182,11 @@ func ParseComment(raw []byte) (NewComment, error) {
 		return c, invalid("body", "send body and optional parentId")
 	}
 	c.Body = strings.TrimSpace(c.Body)
-	if c.Body == "" || !utf8.ValidString(c.Body) || utf8.RuneCountInString(c.Body) > MaxCommentBody {
+	if c.Body == "" || !CleanText(c.Body) || utf8.RuneCountInString(c.Body) > MaxCommentBody {
 		return c, invalid("body", "comments are 1–1000 characters")
 	}
 	if c.ParentID != nil {
-		if _, err := uuid.Parse(*c.ParentID); err != nil {
+		if !IsID(*c.ParentID) {
 			return c, invalid("parentId", "must be a comment id")
 		}
 	}
@@ -154,8 +196,39 @@ func ParseComment(raw []byte) (NewComment, error) {
 type NewStory struct {
 	Body       string  `json:"body"`
 	Background string  `json:"background"`
+	TextStyle  string  `json:"textStyle"`
 	MediaID    *string `json:"mediaId"`
 	Audience   string  `json:"audience"`
+	// LifetimeHours is how long the story stays up. Parsing only fixes the default (StoryLifetime); the
+	// hours a member may choose are their entitlements (StoryLifetimeError), checked where it is stored.
+	LifetimeHours *int `json:"lifetimeHours"`
+}
+
+// Lifetime is how long the story lives from now.
+func (s NewStory) Lifetime() time.Duration {
+	if s.LifetimeHours == nil {
+		return StoryLifetime
+	}
+	return time.Duration(*s.LifetimeHours) * time.Hour
+}
+
+// StoryLifetimeError is the refusal of a lifetime the member's plan does not offer.
+func StoryLifetimeError(allowed []int) error {
+	hours := make([]string, len(allowed))
+	for i, h := range allowed {
+		hours[i] = strconv.Itoa(h)
+	}
+	return invalid("lifetimeHours", "choose "+joinOr(hours)+" hours")
+}
+
+func joinOr(items []string) string {
+	switch len(items) {
+	case 0:
+		return "a supported number of"
+	case 1:
+		return items[0]
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " or " + items[len(items)-1]
 }
 
 func ParseStory(raw []byte) (NewStory, error) {
@@ -164,20 +237,29 @@ func ParseStory(raw []byte) (NewStory, error) {
 		return s, invalid("body", "send body or mediaId, and audience")
 	}
 	s.Body = strings.TrimSpace(s.Body)
-	if !utf8.ValidString(s.Body) || utf8.RuneCountInString(s.Body) > MaxStoryBody {
+	if !CleanText(s.Body) || utf8.RuneCountInString(s.Body) > MaxStoryBody {
 		return s, invalid("body", "keep it under 280 characters")
 	}
 	if s.Background == "" {
-		s.Background = "lime"
+		s.Background = DefaultStoryBackground
 	}
 	if !storyBackgrounds[s.Background] {
 		return s, invalid("background", "is not a supported colour")
+	}
+	if s.TextStyle == "" {
+		s.TextStyle = DefaultStoryTextStyle
+	}
+	if !storyTextStyles[s.TextStyle] {
+		return s, invalid("textStyle", "is not a supported text style")
+	}
+	if s.LifetimeHours != nil && (*s.LifetimeHours < 1 || *s.LifetimeHours > 24*365) {
+		return s, invalid("lifetimeHours", "must be a whole number of hours")
 	}
 	if !Audiences[s.Audience] {
 		return s, invalid("audience", "must be public, followers or friends")
 	}
 	if s.MediaID != nil {
-		if _, err := uuid.Parse(*s.MediaID); err != nil {
+		if !IsID(*s.MediaID) {
 			return s, invalid("mediaId", "must be an id")
 		}
 	}

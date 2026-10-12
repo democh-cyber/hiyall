@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"kairova/services/api/internal/domain"
-	"kairova/services/api/internal/store"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/store"
 )
 
 func TestDiscoverySearchSecurityAndPagination(t *testing.T) {
@@ -26,8 +26,8 @@ func TestDiscoverySearchSecurityAndPagination(t *testing.T) {
 	}
 	defer db.Pool.Close()
 	var name string
-	if err = db.Pool.QueryRow(ctx, "SELECT current_database()").Scan(&name); err != nil || name != "kairova_test" {
-		t.Fatal("requires dedicated kairova_test database")
+	if err = db.Pool.QueryRow(ctx, "SELECT current_database()").Scan(&name); err != nil || name != "hiyall_test" {
+		t.Fatal("requires dedicated hiyall_test database")
 	}
 	if _, err = db.Pool.Exec(ctx, "TRUNCATE users,auth_identities,profiles,privacy_settings,sessions,blocks,outbox_events CASCADE"); err != nil {
 		t.Fatal(err)
@@ -43,7 +43,7 @@ func TestDiscoverySearchSecurityAndPagination(t *testing.T) {
 	}
 	api := New(db, func(_ context.Context, token string) (store.Principal, error) {
 		if token == alice || token == bob {
-			return store.Principal{UserID: token}, nil
+			return store.Principal{UserID: token, Onboarded: true}, nil
 		}
 		return store.Principal{}, domain.ErrUnauthorized
 	}, false, "")
@@ -81,16 +81,18 @@ func TestDiscoverySearchSecurityAndPagination(t *testing.T) {
 	if status, _ := call("", "{}"); status != 401 {
 		t.Fatal("anonymous search allowed")
 	}
-	if status, _ := call(alice, "{}"); status != 403 {
-		t.Fatal("unknown-age viewer allowed")
+	// Every onboarded member may search: there is no eligibility row for anybody here.
+	if status, _ := call(alice, "{}"); status != 200 {
+		t.Fatalf("a member without an eligibility row could not search: %d", status)
 	}
-	exec(`INSERT INTO discovery_eligibility(user_id,age_group,confirmed_at,valid_until) VALUES($1,'adult',now()-interval '1 day',now()+interval '1 day')`, alice)
+	closePrivacy(t, ctx, db, bob) // start from a closed profile, then open it field by field
 	exec(`UPDATE profiles SET data=data || '{"displayName":"A public person","headline":"A quiet hello","interests":["Music","Books"],"currentVibe":"Chill","languages":[{"code":"ko","level":"basic"},"en"],"country":"IN","email":"private@example.test","phone":"private","birthYear":2004,"city":"private city","coin":999}'::jsonb WHERE user_id=$1`, bob)
 	exec(`UPDATE privacy_settings SET data=data || '{"profileAudience":"public","discoverable":true,"fieldAudiences":{"interests":"everyone","languages":"everyone","vibe":"everyone","location":"everyone"}}'::jsonb WHERE user_id=$1`, bob)
-	expectCount("{}", 0) // public and opted-in is insufficient without adult eligibility
-	exec(`INSERT INTO discovery_eligibility(user_id,age_group,confirmed_at,valid_until) VALUES($1,'minor',now()-interval '1 day',now()+interval '1 day')`, bob)
-	expectCount("{}", 0)
-	exec(`UPDATE discovery_eligibility SET age_group='adult' WHERE user_id=$1`, bob)
+	expectCount("{}", 1) // public and opted-in is all it takes
+	// The retired eligibility table is not read: a row that once meant "minor" or "expired" changes nothing.
+	exec(`INSERT INTO discovery_eligibility(user_id,age_group,confirmed_at,valid_until) VALUES($1,'minor',now()-interval '2 days',now()-interval '1 day')`, bob)
+	exec(`INSERT INTO discovery_eligibility(user_id,age_group,confirmed_at,valid_until) VALUES($1,'unknown',now()-interval '2 days',now()-interval '1 day')`, alice)
+	expectCount("{}", 1)
 	expectCount(`{"interests":["music","Nonmatch"],"languages":["ko"],"vibe":"chill","country":"IN"}`, 1)
 	expectCount(`{"interests":["No match"]}`, 0)
 	expectCount(`{"languages":["es"]}`, 0)
@@ -127,16 +129,19 @@ func TestDiscoverySearchSecurityAndPagination(t *testing.T) {
 	exec(`UPDATE users SET status='suspended' WHERE user_id=$1`, bob)
 	expectCount("{}", 0)
 	exec(`UPDATE users SET status='active' WHERE user_id=$1`, bob)
-	exec(`UPDATE discovery_eligibility SET confirmed_at=now()-interval '2 days',valid_until=now()-interval '1 day' WHERE user_id=$1`, bob)
+	expectCount("{}", 1)
+	// A member who has not finished onboarding is never listed, even with open settings.
+	exec(`UPDATE onboarding SET completed_at=NULL WHERE user_id=$1`, bob)
 	expectCount("{}", 0)
-	exec(`UPDATE discovery_eligibility SET valid_until=now()+interval '1 day' WHERE user_id=$1`, bob)
-	// Enough strictly test-only eligible adults for a bounded, deterministic page.
+	exec(`UPDATE onboarding SET completed_at=now() WHERE user_id=$1`, bob)
+	expectCount("{}", 1)
+	// Enough strictly test-only members for a bounded, deterministic page.
 	for i := 3; i <= 25; i++ {
 		id := fmt.Sprintf("019a4000-0000-7000-8000-%012d", i)
 		exec(`INSERT INTO users(user_id) VALUES($1)`, id)
+		exec(`INSERT INTO onboarding(user_id,completed_at,terms_version) VALUES($1,now(),'fixture')`, id)
 		exec(`INSERT INTO profiles(user_id,username,data) VALUES($1,$2,'{"displayName":"Test person"}')`, id, fmt.Sprintf("test_person_%d", i))
 		exec(`INSERT INTO privacy_settings(user_id,data) VALUES($1,'{"profileAudience":"public","discoverable":true}')`, id)
-		exec(`INSERT INTO discovery_eligibility(user_id,age_group,confirmed_at,valid_until) VALUES($1,'adult',now()-interval '1 day',now()+interval '1 day')`, id)
 	}
 	first := search("{}")
 	if len(first["items"].([]any)) != 20 || first["nextCursor"] == nil {
@@ -180,11 +185,7 @@ func TestDiscoverySearchSecurityAndPagination(t *testing.T) {
 	// Every page re-authorizes; revoking the next candidate removes it immediately.
 	exec(`UPDATE privacy_settings SET data=jsonb_set(data,'{discoverable}','false') WHERE user_id='019a4000-0000-7000-8000-000000000025'`)
 	expectCount(string(cross), 3)
-	exec(`UPDATE discovery_eligibility SET age_group='minor' WHERE user_id=$1`, alice)
-	if status, _ := call(alice, "{}"); status != 403 {
-		t.Fatal("revoked viewer eligibility ignored")
-	}
-	// The consumer profile cannot assign its own age assurance.
+	// Nothing a client sends can mark a profile as adult or verified: there is no such field any more.
 	patch := map[string]json.RawMessage{"adultEligible": json.RawMessage("true")}
 	if domain.ValidateProfilePatch(patch) == nil {
 		t.Fatal("client eligibility assignment accepted")

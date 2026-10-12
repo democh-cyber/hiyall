@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 
-	"kairova/services/api/internal/domain"
-	"kairova/services/api/internal/store"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/store"
 )
 
 const (
@@ -30,20 +31,23 @@ type socialHarness struct {
 	api *API
 }
 
-func newSocialHarness(t *testing.T) *socialHarness {
+func newSocialHarness(t *testing.T) *socialHarness { return newSocialHarnessWith(t) }
+
+// newSocialHarnessWith is newSocialHarness with store options, such as turning age-band isolation off.
+func newSocialHarnessWith(t *testing.T, opts ...store.Option) *socialHarness {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL required for PostgreSQL integration")
 	}
 	ctx := context.Background()
-	db, err := store.New(ctx, dsn)
+	db, err := store.New(ctx, dsn, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(db.Pool.Close)
 	var name string
-	if err = db.Pool.QueryRow(ctx, "SELECT current_database()").Scan(&name); err != nil || name != "kairova_test" {
-		t.Fatal("integration tests require database named kairova_test")
+	if err = db.Pool.QueryRow(ctx, "SELECT current_database()").Scan(&name); err != nil || name != "hiyall_test" {
+		t.Fatal("integration tests require database named hiyall_test")
 	}
 	if _, err = db.Pool.Exec(ctx, "TRUNCATE users,auth_identities,profiles,privacy_settings,sessions,blocks,outbox_events,follows,friendships,notifications,discovery_eligibility CASCADE"); err != nil {
 		t.Fatal(err)
@@ -56,7 +60,7 @@ func newSocialHarness(t *testing.T) *socialHarness {
 		if err := db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE user_id::text=$1 AND status='active')`, token).Scan(&active); err != nil || !active {
 			return store.Principal{}, domain.ErrUnauthorized
 		}
-		return store.Principal{UserID: token, SessionID: token}, nil
+		return store.Principal{UserID: token, SessionID: token, Onboarded: true}, nil
 	}, false, "")
 	h := &socialHarness{t, ctx, db, api}
 	for _, u := range [][2]string{{cara, "cara"}, {dev, "dev_k"}, {eli, "eli"}, {xan, "xan"}, {yui, "yui"}} {
@@ -65,12 +69,13 @@ func newSocialHarness(t *testing.T) *socialHarness {
 	return h
 }
 
-// user provisions a test account with the product defaults: friends-only profile,
-// follow approval and friend requests from everyone.
+// user provisions a test account with the product defaults: a public, discoverable
+// profile, follow approval and friend requests from everyone.
 func (h *socialHarness) user(id, username string) {
-	profile, _ := json.Marshal(domain.Profile{Username: username, DisplayName: strings.ToUpper(username[:1]) + username[1:], Timezone: "UTC", Locale: "en", ProfileAudience: "friends", ProfileAccent: "lime", ProfilePattern: "glow", AvatarFrame: "minimal", Headline: "hi from " + username})
+	profile, _ := json.Marshal(domain.Profile{Username: username, DisplayName: strings.ToUpper(username[:1]) + username[1:], Timezone: "UTC", Locale: "en", ProfileAudience: "public", ProfileAccent: "lime", ProfilePattern: "glow", AvatarFrame: "minimal", Headline: "hi from " + username})
 	privacy, _ := json.Marshal(domain.DefaultPrivacy())
 	h.exec(`INSERT INTO users(user_id) VALUES($1)`, id)
+	h.exec(`INSERT INTO onboarding(user_id,completed_at,terms_version) VALUES($1,now(),'fixture')`, id)
 	h.exec(`INSERT INTO profiles(user_id,username,data) VALUES($1,$2,$3)`, id, username, profile)
 	h.exec(`INSERT INTO privacy_settings(user_id,data) VALUES($1,$2)`, id, privacy)
 }
@@ -174,7 +179,7 @@ func (h *socialHarness) relationship(viewer, target string) map[string]any {
 
 func (h *socialHarness) stats(id string) domain.SocialStats {
 	h.t.Helper()
-	p, err := h.db.GetProfile(h.ctx, id)
+	p, err := h.db.GetProfile(h.ctx, id, nil)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -183,8 +188,12 @@ func (h *socialHarness) stats(id string) domain.SocialStats {
 
 func TestFollowPoliciesRequestsAndVisibility(t *testing.T) {
 	h := newSocialHarness(t)
+	// Follows are instant by default; the approval path is for members who set it.
+	h.policy(bob, "followPolicy", "approval")
+	h.policy(cara, "followPolicy", "approval")
+	h.policy(eli, "followPolicy", "approval")
 
-	// Approval policy (default): the follow waits for the owner.
+	// Approval policy: the follow waits for the owner.
 	same(t, []string{h.ok(alice, "POST", "/v1/users/"+bob+"/follow")["following"].(string)}, "pending")
 	same(t, []string{h.ok(alice, "POST", "/v1/users/"+bob+"/follow")["following"].(string)}, "pending")
 	rel := h.relationship(alice, bob)
@@ -308,7 +317,11 @@ func TestFriendRequestsLifecycleAndPolicies(t *testing.T) {
 	if s := h.stats(cara); s.Friends != 1 {
 		t.Fatalf("friends=%d", s.Friends)
 	}
-	// Friends see a friends-only profile; strangers get the locked card.
+	// Profiles are public by default; a member who chose friends-only shows friends everything and strangers a locked card.
+	if p := h.ok(alice, "GET", "/v1/users/"+dev+"/profile"); p["locked"] != false {
+		t.Fatalf("a public profile was locked for a stranger: %v", p)
+	}
+	h.policy(dev, "profileAudience", "friends")
 	if p := h.ok(cara, "GET", "/v1/users/"+dev+"/profile"); p["locked"] != false || p["headline"] != "hi from dev_k" {
 		t.Fatalf("friend could not see friends-only profile: %v", p)
 	}
@@ -380,6 +393,8 @@ func TestConnectionListsRespectPrivacy(t *testing.T) {
 
 func TestBlockSeversEverything(t *testing.T) {
 	h := newSocialHarness(t)
+	h.policy(bob, "followPolicy", "approval")
+	h.policy(alice, "followPolicy", "approval")
 	h.ok(alice, "POST", "/v1/users/"+bob+"/follow")
 	h.ok(bob, "POST", "/v1/users/"+alice+"/follow-requests/accept")
 	h.ok(bob, "POST", "/v1/users/"+alice+"/follow")
@@ -417,6 +432,7 @@ func TestBlockSeversEverything(t *testing.T) {
 
 func TestActivityFeedPagingReadStateAndOwnership(t *testing.T) {
 	h := newSocialHarness(t)
+	h.policy(alice, "followPolicy", "approval")
 	for _, actor := range []string{bob, cara, dev, eli, xan} {
 		h.ok(actor, "POST", "/v1/users/"+alice+"/follow")
 	}
@@ -555,7 +571,7 @@ func TestGraphWritesAreRateLimitedPerAccount(t *testing.T) {
 func TestProfileStorageKeepsOnlyEditableFields(t *testing.T) {
 	h := newSocialHarness(t)
 	patch := map[string]json.RawMessage{"bio": json.RawMessage(`"fresh"`)}
-	if _, err := h.db.UpdateProfile(h.ctx, alice, 1, patch); err != nil {
+	if _, err := h.db.UpdateProfile(h.ctx, alice, 1, patch, nil); err != nil {
 		t.Fatal(err)
 	}
 	var leaked []string
@@ -565,7 +581,68 @@ func TestProfileStorageKeepsOnlyEditableFields(t *testing.T) {
 	if len(leaked) > 0 {
 		t.Fatalf("derived fields stored in profile data: %v", leaked)
 	}
-	if p, _ := h.db.GetProfile(h.ctx, alice); p.Bio != "fresh" || p.Version != "2" {
+	if p, _ := h.db.GetProfile(h.ctx, alice, nil); p.Bio != "fresh" || p.Version != "2" {
 		t.Fatalf("profile read back wrong: bio=%q version=%s", p.Bio, p.Version)
+	}
+}
+
+// An account that has not finished onboarding is missing everywhere, like its profile: it cannot
+// be followed, sent a friend request or messaged.
+func TestUnfinishedAccountsCannotBeReached(t *testing.T) {
+	h := newSocialHarness(t)
+	h.exec(`UPDATE onboarding SET completed_at=NULL WHERE user_id=$1`, eli)
+	h.expect(h.call(cara, "GET", "/v1/users/"+eli+"/profile"), 404, "NOT_FOUND")
+	h.expect(h.call(cara, "POST", "/v1/users/"+eli+"/follow"), 404, "NOT_FOUND")
+	h.expect(h.call(cara, "POST", "/v1/users/"+eli+"/friend-requests"), 404, "NOT_FOUND")
+	h.expect(h.send(cara, "POST", "/v1/conversations", map[string]string{"userId": eli}), 404, "NOT_FOUND")
+	h.expect(h.call(cara, "GET", "/v1/users/"+eli+"/devices"), 404, "NOT_FOUND")
+	// Their connection lists look exactly like a missing account's, not private.
+	for _, list := range []string{"followers", "following", "friends"} {
+		h.expect(h.call(cara, "GET", "/v1/users/"+eli+"/"+list), 404, "NOT_FOUND")
+	}
+	h.exec(`UPDATE onboarding SET completed_at=now() WHERE user_id=$1`, eli)
+	h.ok(cara, "POST", "/v1/users/"+eli+"/follow")
+	h.expect(h.send(cara, "POST", "/v1/conversations", map[string]string{"userId": eli}), 200, "")
+}
+
+// Only canonical ids (lowercase, hyphenated) are ids: urn:uuid:, braces, bare hex and upper case
+// are missing (404) in paths and invalid (422) in bodies, never a 500, and a spelling of your own
+// id is not a way around the checks against acting on yourself.
+func TestOnlyCanonicalIDsAreAccepted(t *testing.T) {
+	h := newSocialHarness(t)
+	spellings := func(id string) []string {
+		return []string{"urn:uuid:" + id, "{" + id + "}", strings.ReplaceAll(id, "-", ""), strings.ToUpper(id)}
+	}
+	for _, id := range spellings(dev) {
+		for _, path := range []string{"/v1/users/" + id + "/profile", "/v1/posts/" + id, "/v1/spaces/" + id, "/v1/users/" + id + "/posts", "/v1/conversations/" + id, "/v1/users/" + id + "/followers", "/v1/users/" + id + "/devices"} {
+			if got := h.call(cara, "GET", path); got.status != 404 {
+				t.Fatalf("GET %s -> %d %s", path, got.status, got.code)
+			}
+		}
+		for _, path := range []string{"/v1/users/" + id + "/block", "/v1/users/" + id + "/mute", "/v1/notifications/" + id + "/read"} {
+			h.api.graph.reset(cara)
+			if got := h.call(cara, "POST", path); got.status != 404 {
+				t.Fatalf("POST %s -> %d %s", path, got.status, got.code)
+			}
+		}
+		// Nothing echoes the non-canonical spelling back.
+		if status, _, raw := h.full(cara, "GET", "/v1/spaces?parentId="+url.QueryEscape(id), "", ""); status != 422 || strings.Contains(string(raw), id) {
+			t.Fatalf("parentId %d %s", status, raw)
+		}
+		h.expect(h.send(cara, "POST", "/v1/conversations", map[string]string{"userId": id}), 422, "VALIDATION")
+		h.expect(h.send(cara, "POST", "/v1/reports", map[string]any{"targetType": "user", "targetId": id, "reasonCode": "spam"}), 422, "VALIDATION")
+		h.expect(h.send(cara, "DELETE", "/v1/auth/sessions/"+id, nil), 404, "NOT_FOUND")
+	}
+	for _, id := range spellings(cara) {
+		for _, path := range []string{"/v1/users/" + id + "/follow", "/v1/users/" + id + "/mute", "/v1/users/" + id + "/block", "/v1/users/" + id + "/friend-requests"} {
+			h.api.graph.reset(cara)
+			if got := h.call(cara, "POST", path); got.status != 404 {
+				t.Fatalf("POST %s -> %d %s", path, got.status, got.code)
+			}
+		}
+	}
+	var rows int
+	if err := h.db.Pool.QueryRow(h.ctx, `SELECT (SELECT count(*) FROM follows WHERE follower_id=followee_id)+(SELECT count(*) FROM user_controls WHERE actor_id=target_id)+(SELECT count(*) FROM blocks WHERE blocker_id=blocked_id)`).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("self rows %d %v", rows, err)
 	}
 }

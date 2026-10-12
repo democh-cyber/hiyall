@@ -31,12 +31,12 @@ func TestVerifiedAccessTokenBoundary(t *testing.T) {
 	}))
 	defer srv.Close()
 	url = srv.URL
-	v, err := New(context.Background(), url, "kairova-api", nil)
+	v, err := New(context.Background(), url, "hiyall-api", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sign := func(headerType string, override map[string]any) string {
-		claims := map[string]any{"iss": url, "sub": "member", "aud": "kairova-api", "exp": time.Now().Add(time.Minute).Unix(), "iat": time.Now().Unix(), "sid": "device-session"}
+		claims := map[string]any{"iss": url, "sub": "member", "aud": "hiyall-api", "exp": time.Now().Add(time.Minute).Unix(), "iat": time.Now().Unix(), "sid": "device-session"}
 		for k, value := range override {
 			claims[k] = value
 		}

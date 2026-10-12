@@ -3,15 +3,16 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/google/uuid"
 	"golang.org/x/time/rate"
-	"kairova/services/api/internal/realtime"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/realtime"
 )
 
 const (
@@ -19,6 +20,17 @@ const (
 	writeTimeout = 10 * time.Second
 	clientQueue  = 64
 )
+
+// endSessions ends live realtime connections after a sign-out: only session when
+// it is set, otherwise every connection of user except the one on except.
+func (a *API) endSessions(ctx context.Context, user, session, except string) {
+	if a.RT == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	a.RT.Disconnect(ctx, user, session, except)
+}
 
 // signal publishes a wake-up after a committed write. It is best effort and
 // bounded, so a slow bus never holds a request open.
@@ -43,6 +55,12 @@ func (a *API) wake(kind string, users ...string) {
 //
 // Server → client: {"type":"ready"|"inbox"|"activity"|"read"|"typing"|"resync", "data":{...}}
 // Client → server: {"type":"typing","conversationId":"…"}
+//
+// A connection lives only as long as its session: signing it out, revoking it,
+// "sign out everywhere else" and a suspension end it at once, and the session is
+// checked again at every heartbeat, so an expired or revoked session (also one
+// revoked through another node that missed the notice) is closed with 1008
+// "session ended"; the client must authenticate again before reconnecting.
 func (a *API) realtimeGateway(w http.ResponseWriter, r *http.Request) {
 	if a.RT == nil || r.Method != "GET" {
 		a.failure(w, r, 404, "NOT_FOUND", "Endpoint unavailable")
@@ -62,10 +80,21 @@ func (a *API) realtimeGateway(w http.ResponseWriter, r *http.Request) {
 	p, err := a.Verify(authCtx, strings.TrimPrefix(raw, "Bearer "))
 	cancel()
 	if err != nil {
-		a.failure(w, r, 401, "UNAUTHENTICATED", "Sign in again")
+		var policy *domain.PolicyError
+		if errors.As(err, &policy) {
+			a.failure(w, r, policy.Status, policy.Code, policy.Message)
+		} else {
+			a.failure(w, r, 401, "UNAUTHENTICATED", "Sign in again")
+		}
+		return
+	}
+	// Sockets carry activity and chat signals; they wait for onboarding like every other route.
+	if !p.Onboarded {
+		a.failOnboarding(w, r)
 		return
 	}
 	client := realtime.NewClient(p.UserID, clientQueue)
+	client.Session = p.SessionID
 	if !a.RT.Register(client) {
 		w.Header().Set("Retry-After", "10")
 		a.failure(w, r, 503, "AT_CAPACITY", "Too many connections; using background sync")
@@ -99,12 +128,16 @@ func (a *API) realtimeGateway(w http.ResponseWriter, r *http.Request) {
 
 	ready, _ := json.Marshal(map[string]string{"type": "ready"})
 	client.Send <- ready
-	ping := time.NewTicker(pingEvery)
+	ping := time.NewTicker(a.heartbeat)
 	defer ping.Stop()
 	for {
 		select {
 		case <-client.Closed:
-			conn.Close(websocket.StatusTryAgainLater, "resync")
+			if client.Ended() {
+				conn.Close(websocket.StatusPolicyViolation, "session ended")
+			} else {
+				conn.Close(websocket.StatusTryAgainLater, "resync")
+			}
 			return
 		case msg := <-client.Send:
 			wctx, cancel := context.WithTimeout(ctx, writeTimeout)
@@ -114,8 +147,16 @@ func (a *API) realtimeGateway(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-ping.C:
+			// A database error keeps the connection: a brief outage should not drop every socket.
+			vctx, cancel := context.WithTimeout(ctx, writeTimeout)
+			live, err := a.Store.SessionLive(vctx, p.SessionID)
+			cancel()
+			if err == nil && !live {
+				client.End()
+				continue
+			}
 			pctx, cancel := context.WithTimeout(ctx, writeTimeout)
-			err := conn.Ping(pctx)
+			err = conn.Ping(pctx)
 			cancel()
 			if err != nil {
 				return
@@ -139,10 +180,10 @@ func (a *API) realtimeReader(ctx context.Context, conn *websocket.Conn, client *
 		if json.Unmarshal(data, &msg) != nil || msg.Type != "typing" || !typing.Allow() {
 			continue
 		}
-		if _, err := uuid.Parse(msg.ConversationID); err != nil {
+		if !isID(msg.ConversationID) {
 			continue
 		}
-		c, err := a.Store.Conversation(ctx, user, msg.ConversationID)
+		c, err := a.Store.Conversation(ctx, user, msg.ConversationID, nil)
 		if err != nil || c.Status != "active" {
 			continue
 		}

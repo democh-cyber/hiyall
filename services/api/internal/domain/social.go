@@ -13,6 +13,20 @@ type PolicyError struct {
 
 func (e *PolicyError) Error() string { return e.Code }
 
+// RetryError is a 429 policy refusal that knows when the request can succeed again;
+// the API sends After, rounded up to whole seconds, as Retry-After.
+type RetryError struct {
+	*PolicyError
+	After time.Duration
+}
+
+func (e *RetryError) Unwrap() error { return e.PolicyError }
+
+// RetryAfter attaches the time until the refusal lifts.
+func RetryAfter(p *PolicyError, after time.Duration) error {
+	return &RetryError{PolicyError: p, After: after}
+}
+
 var (
 	ErrFollowNotAllowed   = &PolicyError{403, "FOLLOW_NOT_ALLOWED", "This account isn't accepting new followers"}
 	ErrRequestNotAllowed  = &PolicyError{403, "REQUEST_NOT_ALLOWED", "This account isn't accepting friend requests from you"}
@@ -21,10 +35,12 @@ var (
 )
 
 // UserSummary is the minimum identity shown on request, list and activity rows.
+// AvatarURL is a signed thumbnail of the profile photo, or null when there is none.
 type UserSummary struct {
-	UserID      string `json:"userId"`
-	Username    string `json:"username"`
-	DisplayName string `json:"displayName"`
+	UserID      string  `json:"userId"`
+	Username    string  `json:"username"`
+	DisplayName string  `json:"displayName"`
+	AvatarURL   *string `json:"avatarUrl"`
 }
 
 // Name is what a person is called in text: display name, else @username.
@@ -73,9 +89,20 @@ type FriendRequest struct {
 	CreatedAt time.Time   `json:"createdAt"`
 }
 
+// Connection is one row of a followers, following, friends or story viewers list. Following is the
+// viewer's own follow state on that person (none, pending, active); it is left out of story viewers.
 type Connection struct {
-	User  UserSummary `json:"user"`
-	Since time.Time   `json:"since"`
+	User      UserSummary `json:"user"`
+	Since     time.Time   `json:"since"`
+	Following *string     `json:"following,omitempty"`
+}
+
+// Visitor is a member who opened the owner's profile; FirstVisitedAt is when they first did. Following
+// is the owner's own follow state on the visitor (none, pending, active).
+type Visitor struct {
+	User           UserSummary `json:"user"`
+	FirstVisitedAt time.Time   `json:"firstVisitedAt"`
+	Following      string      `json:"following"`
 }
 
 type Notification struct {

@@ -7,9 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/google/uuid"
-	"kairova/services/api/internal/domain"
-	"kairova/services/api/internal/store"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/store"
 )
 
 // chatRoute serves device keys, conversations and the ciphertext relay.
@@ -20,7 +19,6 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 	if n < 2 || parts[0] != "v1" {
 		return false
 	}
-	isID := func(value string) bool { _, err := uuid.Parse(value); return err == nil }
 	respond := func(value any, err error) {
 		if err != nil {
 			a.error(w, r, err)
@@ -42,6 +40,9 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		}
 		w.Header().Set("Retry-After", "2")
 		a.failure(w, r, 429, "RATE_LIMITED", "Slow down a little and try again")
+		return true
+	}
+	if a.chatMediaRoute(w, r, p, parts) {
 		return true
 	}
 	switch {
@@ -136,10 +137,22 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		if limited(a.graph) {
 			return true
 		}
-		respond(a.Store.OpenConversation(ctx, p.UserID, target))
+		// Opening a conversation with someone you have never exchanged a message with is a new contact:
+		// a tighter budget on top of the general one. Reopening a conversation that has messages is not.
+		exchanged, err := a.Store.HaveExchangedMessages(ctx, p.UserID, target)
+		if err != nil {
+			a.error(w, r, err)
+			return true
+		}
+		if !exchanged && !a.firstChats.allow(p.UserID) {
+			w.Header().Set("Retry-After", "60")
+			a.failure(w, r, 429, "RATE_LIMITED", "You have started a lot of new conversations. Try again in a minute.")
+			return true
+		}
+		respond(a.Store.OpenConversation(ctx, p.UserID, target, a.entitlementsFor(ctx, p.UserID), a.signer(ctx), a.presence))
 	case n == 2 && parts[1] == "conversations" && method == "GET":
 		paged(a, w, r, p, "conversations", func(pg page) ([]domain.Conversation, error) {
-			return a.Store.ListConversations(ctx, p.UserID, pg.before, pg.id, pg.limit)
+			return a.Store.ListConversations(ctx, p.UserID, pg.before, pg.id, pg.limit, a.signer(ctx), a.presence)
 		}, func(c domain.Conversation) (time.Time, string) {
 			return c.SortAt, c.ConversationID
 		}, nil)
@@ -184,7 +197,7 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		}
 		respond(map[string]bool{"registered": token != ""}, a.Store.SetPushToken(ctx, p.UserID, parts[2], provider, token))
 	case n == 3 && parts[1] == "conversations" && isID(parts[2]) && method == "GET":
-		respond(a.Store.Conversation(ctx, p.UserID, parts[2]))
+		respond(a.Store.ConversationFor(ctx, p.UserID, parts[2], a.signer(ctx), a.presence))
 	case n == 4 && parts[1] == "conversations" && isID(parts[2]) && parts[3] == "messages" && method == "POST":
 		raw, ok := body()
 		if !ok {
@@ -198,7 +211,7 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		if limited(a.messages) {
 			return true
 		}
-		created, peer, quiet, err := a.Store.SendMessage(ctx, p.UserID, parts[2], m)
+		created, peer, quiet, err := a.Store.SendMessage(ctx, p.UserID, parts[2], m, a.entitlementsFor(ctx, p.UserID))
 		if err != nil {
 			a.error(w, r, err)
 			return true

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"kairova/services/api/internal/domain"
+	"hiyall/services/api/internal/domain"
 )
 
 const maxDevices, maxOneTimeKeys = 10, 100
@@ -168,14 +168,17 @@ func (s *Store) KeyCount(ctx context.Context, user, deviceID string) (int, bool,
 	return count, fallback, mapped(err)
 }
 
-// canMessage applies the target's messagesFrom setting. Once the target has
-// written in the conversation, the actor may always reply.
+// canMessage applies the target's messagesFrom setting. The default is "everyone": anyone who is
+// not blocked, active, onboarded and in the same age band (the barrier above, which behaves like a block) may
+// message them, with no friendship or follow needed. "friends", "followers" and "nobody" are
+// still honoured for members who set them through the API. Once the target has written in the
+// conversation, the actor may always reply.
 func canMessage(ctx context.Context, q querier, actor, target string) error {
 	if actor == target {
 		return &domain.ValidationError{Field: "userId", Message: "choose another account"}
 	}
 	var visible, replied bool
-	err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE user_id=$2 AND status='active') AND EXISTS(SELECT 1 FROM users WHERE user_id=$1 AND status='active') AND NOT `+blockedBetween+`,
+	err := q.QueryRow(ctx, `SELECT `+memberSQL("$2::uuid")+` AND `+memberSQL("$1::uuid")+` AND NOT `+barredBetween+`,
  EXISTS(SELECT 1 FROM messages m JOIN conversations c USING(conversation_id) WHERE m.sender_id=$2 AND c.user_low_id=least($1::uuid,$2::uuid) AND c.user_high_id=greatest($1::uuid,$2::uuid))`, actor, target).Scan(&visible, &replied)
 	if err != nil {
 		return err
@@ -190,6 +193,9 @@ func canMessage(ctx context.Context, q querier, actor, target string) error {
 	if err != nil {
 		return err
 	}
+	if policy.MessagesFrom == "everyone" {
+		return nil
+	}
 	rel, err := relationship(ctx, q, actor, target, policy)
 	if err != nil {
 		return err
@@ -198,6 +204,14 @@ func canMessage(ctx context.Context, q querier, actor, target string) error {
 		return domain.ErrMessagesNotAllowed
 	}
 	return nil
+}
+
+// HaveExchangedMessages reports whether the pair's conversation has ever held a message, in either
+// direction. It is what makes opening a conversation a "new contact" for the stricter limiter.
+func (s *Store) HaveExchangedMessages(ctx context.Context, a, b string) (bool, error) {
+	var exchanged bool
+	err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM messages m JOIN conversations c USING(conversation_id) WHERE c.user_low_id=least($1::uuid,$2::uuid) AND c.user_high_id=greatest($1::uuid,$2::uuid))`, a, b).Scan(&exchanged)
+	return exchanged, err
 }
 
 // PeerDevices lists another person's devices only to someone allowed to message them.
@@ -210,8 +224,21 @@ func (s *Store) PeerDevices(ctx context.Context, actor, target string) ([]domain
 	return s.devices(ctx, s.Pool, target)
 }
 
+// Key claim caps, per rolling hour. A claimer may claim at most ClaimsPerPairHour keys of
+// one device (more is 429 KEY_CLAIMS_LIMITED); a device hands out at most
+// OneTimeClaimsPerDeviceHour one-time keys to everyone together, after which claimers get
+// its fallback key, so nobody can drain a device's one-time keys and nobody can stop
+// others from starting a chat with a popular member either.
+const (
+	ClaimsPerPairHour          = 10
+	OneTimeClaimsPerDeviceHour = 100
+)
+
+var ErrKeyClaimsLimited = &domain.PolicyError{Status: 429, Code: "KEY_CLAIMS_LIMITED", Message: "Too many key requests for this device. Try again later."}
+
 // ClaimKey hands out each one-time key exactly once; the fallback key is reused
-// only when none remain.
+// only when none remain or the device's hourly one-time budget is spent. Claims are
+// serialized per device and recorded in key_claims for the caps above.
 func (s *Store) ClaimKey(ctx context.Context, actor, target, deviceID string) (domain.ClaimedKey, error) {
 	claimed := domain.ClaimedKey{DeviceID: deviceID}
 	// Your own other devices are always reachable; anyone else needs messaging access.
@@ -220,20 +247,44 @@ func (s *Store) ClaimKey(ctx context.Context, actor, target, deviceID string) (d
 			return claimed, err
 		}
 	}
-	var exists bool
-	if err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM devices WHERE device_id=$1 AND user_id=$2 AND revoked_at IS NULL)`, deviceID, target).Scan(&exists); err != nil {
-		return claimed, err
-	}
-	if !exists {
-		return claimed, domain.ErrNotFound
-	}
-	err := s.Pool.QueryRow(ctx, `DELETE FROM one_time_keys WHERE (device_id,key_id)=(SELECT device_id,key_id FROM one_time_keys WHERE device_id=$1 ORDER BY created_at,key_id LIMIT 1 FOR UPDATE SKIP LOCKED)
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var locked string
+		if err := tx.QueryRow(ctx, `SELECT device_id::text FROM devices WHERE device_id=$1 AND user_id=$2 AND revoked_at IS NULL FOR UPDATE`, deviceID, target).Scan(&locked); err != nil {
+			return mapped(err)
+		}
+		var pair, oneTime int
+		var wait int64
+		if err := tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE claimer_id=$2),count(*) FILTER (WHERE one_time),
+ coalesce(ceil(extract(epoch FROM min(claimed_at) FILTER (WHERE claimer_id=$2)+interval '1 hour'-now())),1)::bigint
+ FROM key_claims WHERE device_id=$1 AND claimed_at>now()-interval '1 hour'`, deviceID, actor).Scan(&pair, &oneTime, &wait); err != nil {
+			return err
+		}
+		if pair >= ClaimsPerPairHour {
+			// The budget gains a claim when the claimer's oldest claim in the window is an hour old.
+			return domain.RetryAfter(ErrKeyClaimsLimited, time.Duration(wait)*time.Second)
+		}
+		err := pgx.ErrNoRows
+		if oneTime < OneTimeClaimsPerDeviceHour {
+			err = tx.QueryRow(ctx, `DELETE FROM one_time_keys WHERE (device_id,key_id)=(SELECT device_id,key_id FROM one_time_keys WHERE device_id=$1 ORDER BY created_at,key_id LIMIT 1 FOR UPDATE SKIP LOCKED)
  RETURNING key_id,public_key,signature`, deviceID).Scan(&claimed.KeyID, &claimed.PublicKey, &claimed.Signature)
-	if errors.Is(err, pgx.ErrNoRows) {
-		claimed.Fallback = true
-		err = s.Pool.QueryRow(ctx, `SELECT key_id,public_key,signature FROM fallback_keys WHERE device_id=$1`, deviceID).Scan(&claimed.KeyID, &claimed.PublicKey, &claimed.Signature)
-	}
-	return claimed, mapped(err)
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			claimed.Fallback = true
+			err = tx.QueryRow(ctx, `SELECT key_id,public_key,signature FROM fallback_keys WHERE device_id=$1`, deviceID).Scan(&claimed.KeyID, &claimed.PublicKey, &claimed.Signature)
+		}
+		if err != nil {
+			return mapped(err)
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO key_claims(claimer_id,device_id,one_time) VALUES($1,$2,$3)`, actor, deviceID, !claimed.Fallback)
+		return err
+	})
+	return claimed, err
+}
+
+// PurgeKeyClaims deletes at most batch claim records older than a day; the caps look back an hour.
+func (s *Store) PurgeKeyClaims(ctx context.Context, batch int) (int64, error) {
+	tag, err := s.Pool.Exec(ctx, `DELETE FROM key_claims WHERE ctid IN (SELECT ctid FROM key_claims WHERE claimed_at<now()-interval '1 day' ORDER BY claimed_at LIMIT $1)`, batch)
+	return tag.RowsAffected(), err
 }
 
 // receiptsOn is true when both members allow read receipts and neither has
@@ -241,27 +292,33 @@ func (s *Store) ClaimKey(ctx context.Context, actor, target, deviceID string) (d
 var receiptsOn = `coalesce((mq.data->>'readReceipts')::boolean,false) AND coalesce((pq.data->>'readReceipts')::boolean,false) AND NOT ` + restrictedPair("m.user_id", "m.peer_id")
 
 // conversationSelect reads the caller's member row ($1) and joins the peer's.
-var conversationSelect = `SELECT c.conversation_id::text,c.status,c.created_at,c.last_message_at,p.user_id::text,p.username,coalesce(p.data->>'displayName',''),
+var conversationSelect = `SELECT c.conversation_id::text,c.status,c.created_at,c.last_message_at,p.user_id::text,p.username,coalesce(p.data->>'displayName',''),` + avatarThumbKey("av") + `,
  m.unread_count,m.read_at,CASE WHEN ` + receiptsOn + ` THEN pm.read_at END,m.sort_at,
- CASE WHEN m.muted_until>now() THEN m.muted_until END
+ CASE WHEN m.muted_until>now() THEN m.muted_until END,coalesce(pq.data->>'onlineAudience','nobody')
  FROM conversation_members m
  JOIN conversations c ON c.conversation_id=m.conversation_id
  JOIN conversation_members pm ON pm.conversation_id=m.conversation_id AND pm.user_id=m.peer_id
- JOIN profiles p ON p.user_id=m.peer_id
+ JOIN profiles p ON p.user_id=m.peer_id` + avatarJoin("av", "p") + `
  JOIN users u ON u.user_id=p.user_id AND u.status='active'
  JOIN privacy_settings mq ON mq.user_id=m.user_id
  JOIN privacy_settings pq ON pq.user_id=m.peer_id
  WHERE m.user_id=$1
- AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$1 AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=$1))`
+ AND NOT interaction_barred($1::uuid,p.user_id)`
 
-func scanConversation(row pgx.Row) (domain.Conversation, error) {
+func scanConversation(row pgx.Row, sign Signer) (domain.Conversation, error) {
 	var c domain.Conversation
-	err := row.Scan(&c.ConversationID, &c.Status, &c.CreatedAt, &c.LastMessageAt, &c.Peer.UserID, &c.Peer.Username, &c.Peer.DisplayName, &c.UnreadCount, &c.ReadAt, &c.PeerReadAt, &c.SortAt, &c.MutedUntil)
+	var avatar *string
+	c.SharedInterests = []string{}
+	err := row.Scan(&c.ConversationID, &c.Status, &c.CreatedAt, &c.LastMessageAt, &c.Peer.UserID, &c.Peer.Username, &c.Peer.DisplayName, &avatar, &c.UnreadCount, &c.ReadAt, &c.PeerReadAt, &c.SortAt, &c.MutedUntil, &c.PeerOnlineAudience)
+	c.Peer.AvatarURL = avatarURL(sign, avatar)
 	return c, mapped(err)
 }
 
 // OpenConversation returns the pair's direct conversation, creating or reopening it.
-func (s *Store) OpenConversation(ctx context.Context, actor, target string) (domain.Conversation, error) {
+// The peer carries presence (see ConversationPeer and fillPresence), resolved with online, the hub check.
+// Creating a conversation (no row yet) counts against the member's daily e.NewConversationsPerDay, after
+// the privacy, block and age-band checks; reopening an existing one never does.
+func (s *Store) OpenConversation(ctx context.Context, actor, target string, e domain.Entitlements, sign Signer, online Presence) (domain.Conversation, error) {
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		if err := noSelf(actor, target); err != nil {
 			return err
@@ -280,6 +337,16 @@ func (s *Store) OpenConversation(ctx context.Context, actor, target string) (dom
 		if err := canMessage(ctx, tx, actor, target); err != nil {
 			return err
 		}
+		// Only a pair with no row yet is a new conversation: a closed one (after a block) that is
+		// reactivated keeps its creator and its date, so it is a reopening.
+		if errors.Is(err, pgx.ErrNoRows) {
+			if err := lockQuota(ctx, tx, "chat", actor); err != nil {
+				return err
+			}
+			if err := checkNewChatQuota(ctx, tx, actor, e); err != nil {
+				return err
+			}
+		}
 		var id string
 		var created time.Time
 		if err = tx.QueryRow(ctx, `INSERT INTO conversations(conversation_id,user_low_id,user_high_id,created_by,status) VALUES($1,least($2::uuid,$3::uuid),greatest($2::uuid,$3::uuid),$2,'active')
@@ -292,14 +359,37 @@ func (s *Store) OpenConversation(ctx context.Context, actor, target string) (dom
 	if err != nil {
 		return domain.Conversation{}, err
 	}
-	return scanConversation(s.Pool.QueryRow(ctx, conversationSelect+` AND m.peer_id=$2`, actor, target))
+	c, err := scanConversation(s.Pool.QueryRow(ctx, conversationSelect+` AND m.peer_id=$2`, actor, target), sign)
+	if err != nil {
+		return c, err
+	}
+	c, err = s.withSharedInterests(ctx, actor, c)
+	if err != nil {
+		return c, err
+	}
+	return s.withPresence(ctx, actor, c, online)
 }
 
-func (s *Store) Conversation(ctx context.Context, user, id string) (domain.Conversation, error) {
-	return scanConversation(s.Pool.QueryRow(ctx, conversationSelect+` AND m.conversation_id=$2`, user, id))
+// Conversation is one of the caller's conversations without presence (the realtime typing path only
+// needs the peer's id and the status).
+func (s *Store) Conversation(ctx context.Context, user, id string, sign Signer) (domain.Conversation, error) {
+	c, err := scanConversation(s.Pool.QueryRow(ctx, conversationSelect+` AND m.conversation_id=$2`, user, id), sign)
+	if err != nil {
+		return c, err
+	}
+	return s.withSharedInterests(ctx, user, c)
 }
 
-func (s *Store) ListConversations(ctx context.Context, user string, before *time.Time, beforeID string, limit int) ([]domain.Conversation, error) {
+// ConversationFor is Conversation as the API serves it: the peer carries presence.
+func (s *Store) ConversationFor(ctx context.Context, user, id string, sign Signer, online Presence) (domain.Conversation, error) {
+	c, err := s.Conversation(ctx, user, id, sign)
+	if err != nil {
+		return c, err
+	}
+	return s.withPresence(ctx, user, c, online)
+}
+
+func (s *Store) ListConversations(ctx context.Context, user string, before *time.Time, beforeID string, limit int, sign Signer, online Presence) ([]domain.Conversation, error) {
 	rows, err := s.Pool.Query(ctx, conversationSelect+` AND c.status='active'
  AND ($2::timestamptz IS NULL OR (m.sort_at,m.conversation_id)<($2,$3::uuid))
  ORDER BY m.sort_at DESC,m.conversation_id DESC LIMIT $4`, user, before, beforeID, limit)
@@ -309,13 +399,20 @@ func (s *Store) ListConversations(ctx context.Context, user string, before *time
 	defer rows.Close()
 	result := []domain.Conversation{}
 	for rows.Next() {
-		c, err := scanConversation(rows)
+		c, err := scanConversation(rows, sign)
 		if err != nil {
 			return nil, err
 		}
 		result = append(result, c)
 	}
-	return result, rows.Err()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if err = s.fillSharedInterests(ctx, user, result); err != nil {
+		return nil, err
+	}
+	return result, s.fillPresence(ctx, user, result, online)
 }
 
 // SendMessage stores one ciphertext per recipient device. The device set must be
@@ -324,7 +421,7 @@ func (s *Store) ListConversations(ctx context.Context, user string, before *time
 // It returns the peer so callers can signal without another lookup.
 // SendMessage relays one message. quiet reports that the peer muted this chat
 // or muted/restricted the sender, so no push should be sent.
-func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m domain.SendMessage) (created time.Time, peer string, quiet bool, err error) {
+func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m domain.SendMessage, e domain.Entitlements) (created time.Time, peer string, quiet bool, err error) {
 	err = s.Pool.QueryRow(ctx, `SELECT (CASE WHEN user_low_id=$2 THEN user_high_id ELSE user_low_id END)::text FROM conversations WHERE conversation_id=$1 AND $2 IN (user_low_id,user_high_id)`, conversationID, user).Scan(&peer)
 	if err != nil {
 		return created, "", false, mapped(err)
@@ -391,6 +488,12 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 		if err = tx.QueryRow(ctx, `INSERT INTO messages(message_id,conversation_id,sender_id,sender_device_id) VALUES($1,$2,$3,$4) RETURNING created_at`, m.MessageID, conversationID, user, m.SenderDeviceID).Scan(&created); err != nil {
 			return err
 		}
+		// Claim the attachments in this transaction: any mismatch rolls the whole message back.
+		if len(m.BlobIDs) > 0 {
+			if err = linkBlobs(ctx, tx, user, peer, conversationID, m.MessageID, m.BlobIDs, e); err != nil {
+				return err
+			}
+		}
 		batch := &pgx.Batch{}
 		for _, e := range m.Envelopes {
 			batch.Queue(`INSERT INTO message_envelopes(message_id,recipient_device_id,envelope_type,ciphertext) VALUES($1,$2,$3,$4)`, m.MessageID, e.DeviceID, e.Type, e.Ciphertext)
@@ -456,7 +559,7 @@ func (s *Store) MarkRead(ctx context.Context, user, conversationID string, upTo 
 // ReadReceiptsShared reports whether both people allow read receipts and typing.
 func (s *Store) ReadReceiptsShared(ctx context.Context, a, b string) (bool, error) {
 	var on bool
-	err := s.Pool.QueryRow(ctx, `SELECT coalesce(bool_and(coalesce((data->>'readReceipts')::boolean,false)),false) AND count(*)=2 AND NOT `+restrictedPair("$1::uuid", "$2::uuid")+`
+	err := s.Pool.QueryRow(ctx, `SELECT coalesce(bool_and(coalesce((data->>'readReceipts')::boolean,false)),false) AND count(*)=2 AND NOT `+restrictedPair("$1::uuid", "$2::uuid")+` AND NOT `+barredBetween+`
  FROM privacy_settings WHERE user_id IN ($1,$2)`, a, b).Scan(&on)
 	return on, err
 }
@@ -467,7 +570,8 @@ func (s *Store) Unread(ctx context.Context, user string) (domain.UnreadSummary, 
 	var u domain.UnreadSummary
 	err := s.Pool.QueryRow(ctx, `SELECT coalesce(sum(m.unread_count),0)::int,count(*)::int FROM conversation_members m JOIN conversations c ON c.conversation_id=m.conversation_id
  WHERE m.user_id=$1 AND m.unread_count>0 AND c.status='active' AND (m.muted_until IS NULL OR m.muted_until<=now())
- AND NOT EXISTS(SELECT 1 FROM user_controls rc WHERE rc.actor_id=$1 AND rc.target_id=m.peer_id AND rc.control='restrict')`, user).Scan(&u.Messages, &u.Conversations)
+ AND NOT EXISTS(SELECT 1 FROM user_controls rc WHERE rc.actor_id=$1 AND rc.target_id=m.peer_id AND rc.control='restrict')
+ AND NOT interaction_barred($1::uuid,m.peer_id)`, user).Scan(&u.Messages, &u.Conversations)
 	return u, err
 }
 
@@ -546,7 +650,7 @@ func (s *Store) Inbox(ctx context.Context, user, deviceID string, limit int) ([]
 	rows, err := s.Pool.Query(ctx, `SELECT m.message_id::text,m.conversation_id::text,m.sender_id::text,m.sender_device_id::text,sd.identity_key,e.envelope_type,e.ciphertext,m.created_at
  FROM message_envelopes e JOIN messages m USING(message_id) JOIN devices sd ON sd.device_id=m.sender_device_id
  WHERE e.recipient_device_id=$1 AND e.delivered_at IS NULL
- AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$2 AND b.blocked_id=m.sender_id) OR (b.blocker_id=m.sender_id AND b.blocked_id=$2))
+ AND NOT interaction_barred($2::uuid,m.sender_id)
  ORDER BY e.created_at,m.message_id LIMIT $3`, deviceID, user, limit)
 	if err != nil {
 		return nil, err

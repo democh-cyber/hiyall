@@ -42,6 +42,7 @@ type Profile struct {
 	AvatarMediaID   *string      `json:"avatarMediaId"`
 	CoverMediaID    *string      `json:"coverMediaId"`
 	Pronouns        string       `json:"pronouns"`
+	Gender          string       `json:"gender"`
 	Country         *string      `json:"country"`
 	Region          string       `json:"region"`
 	City            string       `json:"city"`
@@ -57,11 +58,24 @@ type Profile struct {
 	UpdatedAt       time.Time    `json:"updatedAt"`
 }
 
-// SocialStats is derived from stored active relationships, never editable profile data.
+// ProfileView is the own-profile response: the stored profile plus signed URLs for the
+// profile photo (thumbnail and full size), or null when there is none. The URLs are never
+// stored; they are minted for each response.
+type ProfileView struct {
+	Profile
+	AvatarURL     *string `json:"avatarUrl"`
+	AvatarFullURL *string `json:"avatarFullUrl"`
+}
+
+// SocialStats is derived from stored relationships, visits and stories, never editable profile data.
+// Visitors is the number of different members who have opened the profile (never who). Stories is the
+// number of unexpired stories the viewer may see, or the member's own active stories on their own profile.
 type SocialStats struct {
 	Friends   int64 `json:"friends"`
 	Following int64 `json:"following"`
 	Followers int64 `json:"followers"`
+	Visitors  int64 `json:"visitors"`
+	Stories   int64 `json:"stories"`
 }
 
 type Privacy struct {
@@ -84,14 +98,37 @@ type Privacy struct {
 	UpdatedAt           time.Time         `json:"updatedAt"`
 }
 
-var Fields = []string{"pronouns", "location", "profession", "education", "website", "timezone", "languages", "interests", "vibe", "connections"}
+// AdultConnectionsAudience is the starting audience of the "connections" field (who may open the
+// followers and following lists) for an adult: whoever actively follows the member, and friends.
+// A minor starts with MinorConnectionsAudience instead (see ApplyMinorDefaults).
+const AdultConnectionsAudience = "followers"
 
+var Fields = []string{"pronouns", "gender", "age", "counts", "location", "profession", "education", "website", "timezone", "languages", "interests", "vibe", "connections"}
+
+// Genders are the values of the optional profile field gender. An empty value is
+// unset or prefer not to say. Gender is a profile field with its own audience, and the
+// only way to search by it is the gender filter, which matches only members whose
+// audience for it is "everyone".
+var Genders = []string{"woman", "man", "nonbinary"}
+
+// DefaultPrivacy is what every new account starts with. Hiyall is open by
+// default: every onboarded member is discoverable and their profile is public,
+// anyone who is not blocked and is in the same age band may message them
+// (minors included, within their band), and a follow takes effect at once.
+// The followers and following lists are open to the member's followers and
+// friends (field "connections" is "followers"; ApplyMinorDefaults makes it
+// "friends" for a minor), and the friends list stays friends-only; the counts on
+// a profile (field "counts") are for everyone. Stories, comments and mentions stay friends-only,
+// and the activity, last seen and location audiences stay "nobody" (no screen
+// exposes them). "friends", "followers", "nobody" and "approval" remain
+// available through the API for members who set them.
 func DefaultPrivacy() Privacy {
 	fields := make(map[string]string)
 	for _, name := range Fields {
-		fields[name] = "nobody"
+		fields[name] = "everyone"
 	}
-	return Privacy{ProfileAudience: "friends", MessagesFrom: "friends", FollowPolicy: "approval", RequestsFrom: "everyone", StoryAudience: "friends", ActivityAudience: "nobody", OnlineAudience: "nobody", LastSeenAudience: "nobody", LocationAudience: "nobody", CommentsFrom: "friends", MentionsFrom: "friends", FieldAudiences: fields, Version: "1"}
+	fields["connections"] = AdultConnectionsAudience
+	return Privacy{ProfileAudience: "public", MessagesFrom: "everyone", FollowPolicy: "everyone", RequestsFrom: "everyone", StoryAudience: "friends", ActivityAudience: "nobody", OnlineAudience: "everyone", LastSeenAudience: "nobody", LocationAudience: "nobody", CommentsFrom: "friends", MentionsFrom: "friends", Discoverable: true, ShowInterestOverlap: true, FieldAudiences: fields, Version: "1"}
 }
 
 func member(value string, allowed ...string) bool {
@@ -103,12 +140,21 @@ func member(value string, allowed ...string) bool {
 	return false
 }
 
+// multiline lists the text fields that may contain line breaks.
+var multiline = map[string]bool{"bio": true, "quote": true}
+
 func validateString(name string, raw json.RawMessage, min, max int) (string, error) {
 	if string(raw) == "null" {
 		return "", invalid(name, "must be text")
 	}
 	var value string
-	if json.Unmarshal(raw, &value) != nil || !utf8.ValidString(value) {
+	// Only the free-text bio and quote may span lines; every other field is
+	// shown on one line, so line breaks there are refused too.
+	clean := CleanLine
+	if multiline[name] {
+		clean = CleanText
+	}
+	if json.Unmarshal(raw, &value) != nil || !clean(value) {
 		return "", invalid(name, "must be valid text")
 	}
 	length := utf8.RuneCountInString(value)
@@ -119,12 +165,14 @@ func validateString(name string, raw json.RawMessage, min, max int) (string, err
 }
 
 // ValidateProfilePatch rejects identity/version writes and unsupported media references.
-// Media ownership cannot be established until the media module exists; fail closed.
+// avatarMediaId must be a photo id or null here; that the photo is the caller's own, ready and
+// unused is decided in the store, inside the update's transaction. coverMediaId is not
+// enabled yet, so only null passes.
 func ValidateProfilePatch(patch map[string]json.RawMessage) error {
 	if len(patch) == 0 {
 		return invalid("profile", "at least one field is required")
 	}
-	limits := map[string][2]int{"username": {3, 30}, "displayName": {1, 80}, "bio": {0, 300}, "headline": {0, 100}, "quote": {0, 160}, "currentVibe": {0, 80}, "profileAccent": {1, 12}, "profilePattern": {1, 12}, "avatarFrame": {1, 12}, "pronouns": {0, 40}, "region": {0, 100}, "city": {0, 100}, "timezone": {1, 100}, "profession": {0, 100}, "education": {0, 150}, "locale": {2, 35}, "profileAudience": {1, 20}}
+	limits := map[string][2]int{"username": {3, 30}, "displayName": {1, 80}, "bio": {0, 300}, "headline": {0, 100}, "quote": {0, 160}, "currentVibe": {0, 80}, "profileAccent": {1, 12}, "profilePattern": {1, 12}, "avatarFrame": {1, 12}, "pronouns": {0, 40}, "region": {0, 100}, "city": {0, 100}, "timezone": {1, 100}, "profession": {0, 100}, "education": {0, 150}, "locale": {2, 35}, "profileAudience": {1, 20}, "gender": {0, 12}}
 	for name, raw := range patch {
 		if bound, ok := limits[name]; ok {
 			value, err := validateString(name, raw, bound[0], bound[1])
@@ -156,8 +204,13 @@ func ValidateProfilePatch(patch map[string]json.RawMessage) error {
 				if !member(value, "public", "friends", "followers", "private") {
 					return invalid(name, "invalid audience")
 				}
+			case "gender":
+				if value != "" && !member(value, Genders...) {
+					return invalid(name, "choose woman, man, nonbinary or leave it empty")
+				}
 			case "timezone":
-				if _, err := time.LoadLocation(value); err != nil {
+				// "Local" would mean the server's own zone, not a place.
+				if _, err := time.LoadLocation(value); err != nil || value == "Local" {
 					return invalid(name, "invalid IANA time zone")
 				}
 			}
@@ -187,7 +240,12 @@ func ValidateProfilePatch(patch map[string]json.RawMessage) error {
 			if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
 				return invalid(name, "use an HTTPS URL without embedded credentials")
 			}
-		case "avatarMediaId", "coverMediaId":
+		case "avatarMediaId":
+			var id *string
+			if json.Unmarshal(raw, &id) != nil || (id != nil && !IsID(*id)) {
+				return invalid(name, "must be a profile photo id or null")
+			}
+		case "coverMediaId":
 			if string(raw) != "null" {
 				return invalid(name, "media uploads are not enabled yet")
 			}
@@ -212,7 +270,7 @@ func ValidateProfilePatch(patch map[string]json.RawMessage) error {
 			seen := map[string]bool{}
 			for _, value := range values {
 				key := strings.ToLower(value)
-				if strings.TrimSpace(value) != value || value == "" || !utf8.ValidString(value) || utf8.RuneCountInString(value) > 40 || seen[key] {
+				if strings.TrimSpace(value) != value || value == "" || !CleanLine(value) || utf8.RuneCountInString(value) > 40 || seen[key] {
 					return invalid(name, "use unique interests of 1–40 characters")
 				}
 				seen[key] = true

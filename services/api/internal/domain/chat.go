@@ -11,22 +11,31 @@ import (
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// IsID reports whether value is an id in canonical form: lowercase, hyphenated, 36
+// characters, exactly as the API returns ids. Other spellings uuid.Parse accepts
+// (urn:uuid:, braces, 32 hex digits, upper case) are refused, so an id taken from a
+// path or body can be compared as a string and cast to uuid without surprises.
+func IsID(value string) bool { return uuidPattern.MatchString(value) }
+
 var (
 	ErrMessagesNotAllowed = &PolicyError{403, "MESSAGES_NOT_ALLOWED", "This account isn't accepting messages from you"}
 	ErrDevicesChanged     = &PolicyError{409, "DEVICES_CHANGED", "Devices changed. Refresh them and encrypt again."}
 	ErrTooManyDevices     = &PolicyError{409, "TOO_MANY_DEVICES", "Remove a device before adding another"}
 	ErrDeviceConflict     = &PolicyError{409, "DEVICE_CONFLICT", "This device id is already registered with different keys"}
 	ErrConversationClosed = &PolicyError{403, "CONVERSATION_CLOSED", "This conversation is closed"}
+	// ErrNewChatsQuota is the daily cap on starting conversations (Entitlements.NewConversationsPerDay);
+	// the caller adds a Retry-After.
+	ErrNewChatsQuota = &PolicyError{429, "QUOTA", "You’ve reached today’s limit for starting new chats. Try again later."}
 )
 
 // Signed statements bind each public key to its owner and device, so the server
 // cannot attach a key to another account without the clients noticing.
 func DeviceStatement(userID, deviceID, identityKey, signingKey string) string {
-	return strings.Join([]string{"kairova-device-v1", userID, deviceID, identityKey, signingKey}, "\n")
+	return strings.Join([]string{"hiyall-device-v1", userID, deviceID, identityKey, signingKey}, "\n")
 }
 
 func OneTimeKeyStatement(userID, deviceID, keyID, publicKey string) string {
-	return strings.Join([]string{"kairova-otk-v1", userID, deviceID, keyID, publicKey}, "\n")
+	return strings.Join([]string{"hiyall-otk-v1", userID, deviceID, keyID, publicKey}, "\n")
 }
 
 // Keys and signatures use vodozemac's unpadded standard base64.
@@ -132,12 +141,15 @@ type SendMessage struct {
 	MessageID      string     `json:"messageId"`
 	SenderDeviceID string     `json:"senderDeviceId"`
 	Envelopes      []Envelope `json:"envelopes"`
+	// BlobIDs are the encrypted attachments this message claims: uploaded, unclaimed blobs of the
+	// sender in this conversation. The ids are not secret; the descriptor naming them is in the ciphertext.
+	BlobIDs []string `json:"blobIds,omitempty"`
 }
 
 func ParseSendMessage(body map[string]json.RawMessage) (SendMessage, error) {
 	var m SendMessage
 	for key := range body {
-		if !member(key, "messageId", "senderDeviceId", "envelopes") {
+		if !member(key, "messageId", "senderDeviceId", "envelopes", "blobIds") {
 			return m, invalid(key, "field is not accepted")
 		}
 	}
@@ -149,6 +161,9 @@ func ParseSendMessage(body map[string]json.RawMessage) (SendMessage, error) {
 	}
 	if !uuidPattern.MatchString(m.MessageID) || !uuidPattern.MatchString(m.SenderDeviceID) {
 		return m, invalid("messageId", "messageId and senderDeviceId must be lowercase UUIDs")
+	}
+	if len(m.BlobIDs) > 0 && !ValidBlobIDs(m.BlobIDs, MaxBlobsPerMessage) {
+		return m, invalid("blobIds", "send at most 4 distinct blob ids")
 	}
 	if len(m.Envelopes) == 0 || len(m.Envelopes) > 20 {
 		return m, invalid("envelopes", "send 1–20 device envelopes")
@@ -170,12 +185,22 @@ func ParseSendMessage(body map[string]json.RawMessage) (SendMessage, error) {
 	return m, nil
 }
 
+// ConversationPeer is the other member of a conversation: the usual summary plus presence. Online is
+// present (as true) only while the peer is online, and LastSeenAt (RFC 3339, UTC, in PresenceLastSeenBucket
+// steps) only when they are not and have been active; both are left out when the peer's onlineAudience does
+// not admit the caller, which is exactly how an offline peer with no activity looks. They are never false or null.
+type ConversationPeer struct {
+	UserSummary
+	Online     bool       `json:"online,omitempty"`
+	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
+}
+
 type Conversation struct {
-	ConversationID string      `json:"conversationId"`
-	Peer           UserSummary `json:"peer"`
-	Status         string      `json:"status"`
-	CreatedAt      time.Time   `json:"createdAt"`
-	LastMessageAt  *time.Time  `json:"lastMessageAt"`
+	ConversationID string           `json:"conversationId"`
+	Peer           ConversationPeer `json:"peer"`
+	Status         string           `json:"status"`
+	CreatedAt      time.Time        `json:"createdAt"`
+	LastMessageAt  *time.Time       `json:"lastMessageAt"`
 	// UnreadCount counts the peer's messages after ReadAt, the caller's pointer.
 	UnreadCount int        `json:"unreadCount"`
 	ReadAt      *time.Time `json:"readAt"`
@@ -184,7 +209,43 @@ type Conversation struct {
 	// MutedUntil is set while the caller has this chat muted; 9999-12-31
 	// means until unmuted.
 	MutedUntil *time.Time `json:"mutedUntil"`
-	SortAt     time.Time  `json:"-"`
+	// SharedInterests lists up to MaxSharedInterests interests both members have on their profiles, matched
+	// case-insensitively and spelled and ordered as the caller wrote them. It is empty (never null) when
+	// nothing is shared or the peer's interests are not visible to the caller (see Store.fillSharedInterests).
+	SharedInterests []string  `json:"sharedInterests"`
+	SortAt          time.Time `json:"-"`
+	// PeerOnlineAudience is the peer's onlineAudience, read with the row so presence needs no extra query
+	// for it (see Store.fillPresence). It is never serialised.
+	PeerOnlineAudience string `json:"-"`
+}
+
+// MaxSharedInterests caps Conversation.SharedInterests.
+const MaxSharedInterests = 3
+
+// SharedInterests is the case-insensitive intersection of two interest lists in the order and spelling of
+// mine, without duplicates and at most MaxSharedInterests long. The result is never nil.
+func SharedInterests(mine, theirs []string) []string {
+	result := []string{}
+	if len(mine) == 0 || len(theirs) == 0 {
+		return result
+	}
+	other := make(map[string]bool, len(theirs))
+	for _, v := range theirs {
+		other[strings.ToLower(strings.TrimSpace(v))] = true
+	}
+	seen := map[string]bool{}
+	for _, v := range mine {
+		key := strings.ToLower(strings.TrimSpace(v))
+		if key == "" || !other[key] || seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, v)
+		if len(result) == MaxSharedInterests {
+			break
+		}
+	}
+	return result
 }
 
 // UnreadSummary feeds the Chats badge.

@@ -2,8 +2,8 @@ package httpapi
 
 import (
 	"encoding/json"
-	"kairova/services/api/internal/domain"
-	"kairova/services/api/internal/store"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/store"
 	"net/http"
 	"time"
 )
@@ -14,16 +14,8 @@ func (a *API) spacesRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 		return false
 	}
 	ctx := r.Context()
-	eligible, err := a.Store.EligibleAdult(ctx, p.UserID)
-	if err != nil {
-		a.error(w, r, err)
-		return true
-	}
-	if !eligible {
-		a.failure(w, r, 403, "ADULT_SPACE_REQUIRED", "Shared spaces are available to verified adults")
-		return true
-	}
 	if r.Method != "GET" && !a.content.allow(p.UserID) {
+		w.Header().Set("Retry-After", "1")
 		a.failure(w, r, 429, "RATE_LIMITED", "Slow down and try again")
 		return true
 	}
@@ -71,7 +63,7 @@ func (a *API) spacesRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 			}
 			mine := q.Get("mine") == "true"
 			paged(a, w, r, p, "spaces:"+kind+":"+parent+":"+q.Get("mine"), func(pg page) ([]domain.Space, error) {
-				return a.Store.Spaces(ctx, p.UserID, kind, parent, mine, pg.before, pg.id, pg.limit)
+				return a.Store.Spaces(ctx, p.UserID, kind, parent, mine, pg.before, pg.id, pg.limit, a.signer(ctx))
 			}, func(s domain.Space) (time.Time, string) { return s.CreatedAt, s.SpaceID }, nil)
 		case "POST":
 			raw, e := decode(w, r)
@@ -85,7 +77,7 @@ func (a *API) spacesRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 				a.error(w, r, e)
 				return true
 			}
-			s, e := a.Store.CreateSpace(ctx, p.UserID, in)
+			s, e := a.Store.CreateSpace(ctx, p.UserID, in, a.signer(ctx))
 			if e != nil {
 				a.error(w, r, e)
 			} else {
@@ -114,9 +106,9 @@ func (a *API) spacesRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 			a.error(w, r, e)
 			return true
 		}
-		respond(a.Store.UpdateSpace(ctx, p.UserID, id, in))
+		respond(a.Store.UpdateSpace(ctx, p.UserID, id, in, a.signer(ctx)))
 	case n == 3 && r.Method == "GET":
-		respond(a.Store.Space(ctx, p.UserID, id))
+		respond(a.Store.Space(ctx, p.UserID, id, a.signer(ctx)))
 	case n == 4 && parts[3] == "invitations" && r.Method == "POST":
 		var in struct {
 			Username string `json:"username"`
@@ -128,11 +120,12 @@ func (a *API) spacesRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 			a.failure(w, r, 422, "VALIDATION", "Enter a username")
 			return true
 		}
-		x, target, e := a.Store.InviteSpaceUser(ctx, p.UserID, id, in.Username)
+		// target is "" unless someone was really invited (see InviteSpaceUser).
+		x, target, e := a.Store.InviteSpaceUser(ctx, p.UserID, id, in.Username, a.signer(ctx))
 		respond(x, e)
-		if e == nil {
+		if e == nil && target != "" {
 			a.signal(ctx, "activity", nil, target)
-			a.wake("activity", target)
+			a.wakeFrom(ctx, "activity", p.UserID, target)
 		}
 	case n == 4 && parts[3] == "membership" && (r.Method == "PUT" || r.Method == "DELETE"):
 		rsvp := "going"
@@ -155,7 +148,8 @@ func (a *API) spacesRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 		if r.Method == "DELETE" {
 			action = "leave"
 		}
-		respond(a.Store.ChangeSpaceMember(ctx, p.UserID, id, p.UserID, action, rsvp))
+		x, _, e := a.Store.ChangeSpaceMember(ctx, p.UserID, id, p.UserID, action, rsvp, a.signer(ctx))
+		respond(x, e)
 	case n == 4 && parts[3] == "status" && r.Method == "PUT":
 		var in struct {
 			Status string `json:"status"`
@@ -167,7 +161,7 @@ func (a *API) spacesRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 			a.failure(w, r, 422, "VALIDATION", "Choose open, closed or archived")
 			return true
 		}
-		respond(a.Store.SetSpaceStatus(ctx, p.UserID, id, in.Status))
+		respond(a.Store.SetSpaceStatus(ctx, p.UserID, id, in.Status, a.signer(ctx)))
 	case n == 4 && parts[3] == "members" && r.Method == "GET":
 		state := r.URL.Query().Get("state")
 		if state == "" {
@@ -178,7 +172,7 @@ func (a *API) spacesRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 			return true
 		}
 		paged(a, w, r, p, "members:"+id+":"+state, func(pg page) ([]domain.SpaceMember, error) {
-			return a.Store.SpaceMembers(ctx, p.UserID, id, state, pg.before, pg.id, pg.limit)
+			return a.Store.SpaceMembers(ctx, p.UserID, id, state, pg.before, pg.id, pg.limit, a.signer(ctx))
 		}, func(m domain.SpaceMember) (time.Time, string) { return m.CreatedAt, m.User.UserID }, nil)
 	case n == 5 && parts[3] == "members" && isID(parts[4]) && r.Method == "PUT":
 		var in struct {
@@ -189,18 +183,19 @@ func (a *API) spacesRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 		}
 		switch in.Action {
 		case "approve", "invite", "remove", "ban", "unban", "admin", "moderator", "member":
-			x, e := a.Store.ChangeSpaceMember(ctx, p.UserID, id, parts[4], in.Action, "going")
+			x, changed, e := a.Store.ChangeSpaceMember(ctx, p.UserID, id, parts[4], in.Action, "going", a.signer(ctx))
 			respond(x, e)
-			if e == nil {
+			// Only a real change is signalled, and the push respects the target's mutes.
+			if e == nil && changed {
 				a.signal(ctx, "activity", nil, parts[4])
-				a.wake("activity", parts[4])
+				a.wakeFrom(ctx, "activity", p.UserID, parts[4])
 			}
 		default:
 			a.failure(w, r, 422, "VALIDATION", "Choose a member action")
 		}
 	case n == 4 && parts[3] == "entries" && r.Method == "GET":
 		paged(a, w, r, p, "entries:"+id, func(pg page) ([]domain.SpaceEntry, error) {
-			return a.Store.SpaceEntries(ctx, p.UserID, id, pg.before, pg.id, pg.limit)
+			return a.Store.SpaceEntries(ctx, p.UserID, id, pg.before, pg.id, pg.limit, a.signer(ctx))
 		}, func(e domain.SpaceEntry) (time.Time, string) { return e.CreatedAt, e.EntryID }, nil)
 	case n == 4 && parts[3] == "entries" && r.Method == "POST":
 		var in struct {

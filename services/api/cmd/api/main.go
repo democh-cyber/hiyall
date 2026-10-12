@@ -12,13 +12,14 @@ import (
 	"time"
 	_ "time/tzdata"
 
-	"kairova/services/api/internal/config"
-	"kairova/services/api/internal/httpapi"
-	"kairova/services/api/internal/identity"
-	"kairova/services/api/internal/media"
-	"kairova/services/api/internal/push"
-	"kairova/services/api/internal/realtime"
-	"kairova/services/api/internal/store"
+	"hiyall/services/api/internal/config"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/httpapi"
+	"hiyall/services/api/internal/identity"
+	"hiyall/services/api/internal/media"
+	"hiyall/services/api/internal/push"
+	"hiyall/services/api/internal/realtime"
+	"hiyall/services/api/internal/store"
 )
 
 func main() {
@@ -34,17 +35,23 @@ func run() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	db, err := store.New(ctx, cfg.DatabaseURL)
+	db, err := store.New(ctx, cfg.DatabaseURL, store.WithAgeBandIsolation(cfg.AgeBandIsolation))
 	if err != nil {
 		return errors.New("database connection failed; check configuration without logging credentials")
 	}
 	defer db.Pool.Close()
+	if !cfg.AgeBandIsolation {
+		slog.Warn("age-band isolation is OFF: minors and adults can see and reach each other (AGE_BAND_ISOLATION=false)")
+	}
 	var verify httpapi.Verify
 	if cfg.DevAuth {
 		if err = db.Seed(ctx); err != nil {
 			return err
 		}
 		verify = db.VerifyDevSession
+	} else if cfg.FirebaseProjectID != "" {
+		// Firebase ID tokens: signing keys are fetched on first use, so startup needs no network.
+		verify = identity.NewFirebase(ctx, cfg.FirebaseProjectID, db).Verify
 	} else {
 		v, err := identity.New(ctx, cfg.Issuer, cfg.Audience, db)
 		if err != nil {
@@ -76,14 +83,24 @@ func run() error {
 	} else {
 		slog.Warn("media storage not configured; photo uploads are off")
 	}
-	go maintain(background, db, api.Media)
+	if cfg.ChatMediaEndpoint != "" {
+		// A token scoped to the one chat bucket cannot create buckets, so it is never asked to.
+		objects, err := media.NewS3(ctx, media.S3Config{Endpoint: cfg.ChatMediaEndpoint, AccessKey: cfg.ChatMediaAccessKey, SecretKey: cfg.ChatMediaSecretKey, Bucket: cfg.ChatMediaBucket, Region: cfg.ChatMediaRegion, Secure: cfg.ChatMediaSecure, NoCreate: true})
+		if err != nil {
+			return errors.New("chat media storage unavailable; check CHAT_MEDIA_* configuration")
+		}
+		api.ChatMedia = objects
+	} else {
+		slog.Warn("chat media storage not configured; sending photos in chats is off (CHAT_MEDIA_UNAVAILABLE)")
+	}
+	go maintain(background, db, api.Media, api.ChatMedia)
 	srv := &http.Server{Addr: cfg.Listen, Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32768}
 	srv.RegisterOnShutdown(api.RT.CloseAll)
 	shutdown, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	done := make(chan error, 1)
 	go func() {
-		slog.Info("API listening", "address", cfg.Listen, "environment", cfg.Env, "developmentAuth", cfg.DevAuth)
+		slog.Info("API listening", "address", cfg.Listen, "environment", cfg.Env, "developmentAuth", cfg.DevAuth, "firebaseAuth", !cfg.DevAuth && cfg.FirebaseProjectID != "")
 		done <- srv.ListenAndServe()
 	}()
 	select {
@@ -106,9 +123,14 @@ func backoff(attempt int) time.Duration {
 }
 
 // maintain runs hourly cleanup in small batches so it never holds long locks:
-// delivered envelope rows after 7 days, undelivered ciphertext after 30, and
-// sessions 30 days after they expired.
-func maintain(ctx context.Context, db *store.Store, objects media.Store) {
+// delivered envelope rows after 7 days, undelivered ciphertext after 30,
+// sessions 30 days after they expired (revoked sign-ins from an identity provider
+// are kept; see store.PurgeSessions), key claim records after a day, stories a
+// day after they expire, and shared locations 7 days after their last update
+// (they stop counting as shared after 24 hours). Encrypted chat attachments are removed from the chat
+// bucket 30 days after their message (an hour when never sent), and when deleted or their chat was blocked;
+// blobs held as report evidence are kept.
+func maintain(ctx context.Context, db *store.Store, objects, chatObjects media.Store) {
 	tick := time.NewTicker(time.Hour)
 	defer tick.Stop()
 	jobs := []struct {
@@ -117,7 +139,9 @@ func maintain(ctx context.Context, db *store.Store, objects media.Store) {
 	}{
 		{"ciphertext expiry", func() (int64, error) { return db.ExpireEnvelopes(ctx, 7*24*time.Hour, 30*24*time.Hour, 5000) }},
 		{"session purge", func() (int64, error) { return db.PurgeSessions(ctx, 30*24*time.Hour, 5000) }},
+		{"key claim purge", func() (int64, error) { return db.PurgeKeyClaims(ctx, 5000) }},
 		{"story purge", func() (int64, error) { return db.PurgeStories(ctx, 5000) }},
+		{"location purge", func() (int64, error) { return db.PurgeLocations(ctx, domain.LocationRetentionDays*24*time.Hour, 5000) }},
 		{"media cleanup", func() (int64, error) {
 			if objects == nil {
 				return 0, nil
@@ -128,6 +152,13 @@ func maintain(ctx context.Context, db *store.Store, objects media.Store) {
 			}
 			return rows, err
 		}},
+		{"chat blob cleanup", func() (int64, error) {
+			if chatObjects == nil {
+				return 0, nil
+			}
+			return db.PurgeChatBlobs(ctx, chatObjects, 5000)
+		}},
+		{"chat blob tombstone purge", func() (int64, error) { return db.PurgeChatBlobTombstones(ctx, 5000) }},
 	}
 	for {
 		for _, job := range jobs {
