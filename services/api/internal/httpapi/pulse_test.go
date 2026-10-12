@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"kairova/services/api/internal/media"
+	"hiyall/services/api/internal/media"
 )
 
 // photo encodes a small JPEG and splices in an EXIF segment carrying a GPS
@@ -94,7 +94,7 @@ func TestPhotoUploadsAreReencodedWithoutMetadataAndBounded(t *testing.T) {
 
 	h.expect(h.send(alice, "POST", "/v1/media/uploads", map[string]any{"purpose": "post", "contentType": "image/gif", "sizeBytes": 10}), 415, "UNSUPPORTED_MEDIA")
 	h.expect(h.send(alice, "POST", "/v1/media/uploads", map[string]any{"purpose": "post", "contentType": "image/jpeg", "sizeBytes": media.MaxUploadBytes + 1}), 413, "TOO_LARGE")
-	h.expect(h.send(alice, "POST", "/v1/media/uploads", map[string]any{"purpose": "avatar", "contentType": "image/jpeg", "sizeBytes": 10}), 422, "VALIDATION")
+	h.expect(h.send(alice, "POST", "/v1/media/uploads", map[string]any{"purpose": "banner", "contentType": "image/jpeg", "sizeBytes": 10}), 422, "VALIDATION")
 
 	// A file that isn't an image is rejected and its upload removed.
 	made := h.expect(h.send(alice, "POST", "/v1/media/uploads", map[string]any{"purpose": "post", "contentType": "image/jpeg", "sizeBytes": 11}), 201, "").data
@@ -169,9 +169,8 @@ func TestFeedRespectsAudienceMuteAndBlock(t *testing.T) {
 	}
 
 	// Posts hidden from the viewer never crowd out older visible ones.
-	for i := range 25 {
-		h.post(alice, "friends", fmt.Sprintf("friends only %d", i))
-	}
+	// Direct rows: 25 more posts in one day are past the daily post limit.
+	h.exec(`INSERT INTO posts(post_id,author_id,body,audience,created_at) SELECT gen_random_uuid(),$1,'friends only '||g,'friends',now()-interval '1 minute'+g*interval '1 millisecond' FROM generate_series(0,24) g`, alice)
 	first := h.ok(bob, "GET", "/v1/feed?limit=1")
 	if got := items(first); len(got) != 1 || got[0]["body"] != "for followers" || first["nextCursor"] == nil {
 		t.Fatalf("page %v", got)
@@ -314,11 +313,47 @@ func TestStoriesTrayViewsAndExpiry(t *testing.T) {
 	if tray := items(h.ok(cara, "GET", "/v1/stories/tray")); len(tray) != 0 {
 		t.Fatalf("expired stories shown %v", tray)
 	}
-	if n, err := h.db.PurgeStories(h.ctx, 100); err != nil || n != 1 {
+	// The count is stories deleted (two, one with a photo), not media rows, so the hourly loop
+	// keeps purging while full batches remain.
+	if n, err := h.db.PurgeStories(h.ctx, 100); err != nil || n != 2 {
 		t.Fatalf("purge %d %v", n, err)
 	}
 	keys, _, _ := h.db.MediaGarbage(h.ctx, 100)
 	if len(keys) != 3 {
 		t.Fatalf("story photo keys %v", keys)
+	}
+}
+
+// The tray is bounded, and when the bound bites the oldest stories are left out: the viewer's
+// own stories always come first, every author contributes their newest, and one prolific author
+// cannot crowd the others out.
+func TestStoryTrayKeepsOwnAndNewestStories(t *testing.T) {
+	h := newSocialHarness(t)
+	h.policy(bob, "followPolicy", "everyone")
+	h.policy(cara, "followPolicy", "everyone")
+	h.ok(alice, "POST", "/v1/users/"+bob+"/follow")
+	h.ok(alice, "POST", "/v1/users/"+cara+"/follow")
+	add := func(author string, count int, age string) {
+		h.exec(`INSERT INTO stories(story_id,author_id,body,audience,created_at,expires_at)
+ SELECT gen_random_uuid(),$1,'story '||g,'public',now()-$3::interval+g*interval '1 millisecond',now()+interval '1 hour' FROM generate_series(1,$2::int) g`, author, count, age)
+	}
+	add(alice, 1, "3 hours")
+	add(bob, 2000, "2 hours")
+	add(cara, 1, "1 minute")
+	tray := items(h.ok(alice, "GET", "/v1/stories/tray"))
+	if len(tray) != 3 || tray[0]["mine"] != true {
+		t.Fatalf("tray groups %d, first %v", len(tray), tray[0]["author"])
+	}
+	byAuthor := map[string][]any{}
+	for _, g := range tray {
+		byAuthor[g["author"].(map[string]any)["userId"].(string)] = g["stories"].([]any)
+	}
+	if len(byAuthor[alice]) != 1 || len(byAuthor[cara]) != 1 || len(byAuthor[bob]) != 100 {
+		t.Fatalf("stories per author: alice %d cara %d bob %d", len(byAuthor[alice]), len(byAuthor[cara]), len(byAuthor[bob]))
+	}
+	// Bob's are his newest 100, oldest first within the group.
+	bobs := byAuthor[bob]
+	if first, last := bobs[0].(map[string]any)["body"], bobs[99].(map[string]any)["body"]; first != "story 1901" || last != "story 2000" {
+		t.Fatalf("bob's stories run %v to %v", first, last)
 	}
 }

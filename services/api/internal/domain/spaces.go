@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"github.com/google/uuid"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -50,7 +49,7 @@ type SpaceEntry struct {
 
 func SpaceText(text string, min, max int) bool {
 	n := utf8.RuneCountInString(text)
-	return utf8.ValidString(text) && !strings.ContainsRune(text, 0) && n >= min && n <= max
+	return CleanText(text) && n >= min && n <= max
 }
 func ParseSpace(raw []byte) (NewSpace, error) {
 	var s NewSpace
@@ -74,7 +73,7 @@ func ParseSpace(raw []byte) (NewSpace, error) {
 		return s, invalid("capacity", "choose 2–10000 participants")
 	}
 	if s.ParentID != nil {
-		if _, err := uuid.Parse(*s.ParentID); err != nil {
+		if !IsID(*s.ParentID) {
 			return s, invalid("parentId", "must be a community id")
 		}
 	}

@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"kairova/services/api/internal/domain"
-	"kairova/services/api/internal/store"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/store"
 )
 
 // listCursor is bound to the principal and to one list, so it cannot be replayed
@@ -61,8 +61,7 @@ func (a *API) pageOf(w http.ResponseWriter, r *http.Request, p store.Principal, 
 		mac := hmac.New(sha256.New, a.cursorKey[:])
 		mac.Write(data)
 		valid = e == nil && e2 == nil && hmac.Equal(sig, mac.Sum(nil)) && json.Unmarshal(data, &c) == nil && c.User == p.UserID && c.Kind == kind && c.Exp > time.Now().Unix()
-		_, e = uuid.Parse(c.ID)
-		valid = valid && e == nil
+		valid = valid && isID(c.ID)
 	}
 	if !valid {
 		a.failure(w, r, 422, "INVALID_CURSOR", "Reload this list")
@@ -107,10 +106,6 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 	if n < 2 || parts[0] != "v1" {
 		return false
 	}
-	isID := func(value string) bool {
-		_, err := uuid.Parse(value)
-		return err == nil
-	}
 	write := func() bool {
 		if a.graph.allow(p.UserID) {
 			return true
@@ -120,12 +115,16 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 		return false
 	}
 	connections := func(kind, owner string) {
-		if err := a.Store.CanSeeConnections(ctx, p.UserID, owner); err != nil {
+		allowed := a.Store.CanSeeConnections
+		if kind == "friends" {
+			allowed = a.Store.CanSeeFriends
+		}
+		if err := allowed(ctx, p.UserID, owner); err != nil {
 			a.error(w, r, err)
 			return
 		}
 		paged(a, w, r, p, kind+":"+owner, func(pg page) ([]domain.Connection, error) {
-			return a.Store.ListConnections(ctx, kind, p.UserID, owner, pg.before, pg.id, pg.limit)
+			return a.Store.ListConnections(ctx, kind, p.UserID, owner, pg.before, pg.id, pg.limit, a.signer(ctx))
 		}, connectionKey, nil)
 	}
 	method := r.Method
@@ -157,7 +156,7 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 			if !write() {
 				return true
 			}
-			value, err := a.Store.SendFriendRequest(ctx, p.UserID, target)
+			value, err := a.Store.SendFriendRequest(ctx, p.UserID, target, a.signer(ctx))
 			if err != nil {
 				a.error(w, r, err)
 				return true
@@ -179,6 +178,9 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 		return true
 	// /v1/users/{id}/follow-requests/accept: the owner approves follower {id}.
 	case n == 5 && parts[1] == "users" && isID(parts[2]) && parts[3] == "follow-requests" && parts[4] == "accept" && method == "POST":
+		if !write() {
+			return true
+		}
 		if err := a.Store.RespondFollowRequest(ctx, p.UserID, parts[2], true); err != nil {
 			a.error(w, r, err)
 			return true
@@ -191,9 +193,20 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 		switch parts[2] {
 		case "friends", "followers", "following":
 			connections(parts[2], p.UserID)
+		case "visitors":
+			// Only ever the caller's own: there is no route for another member's visitors.
+			if !a.lists.allow(p.UserID) {
+				w.Header().Set("Retry-After", "1")
+				a.failure(w, r, 429, "RATE_LIMITED", "Slow down a little and try again")
+				return true
+			}
+			limitTotal := a.entitlementsFor(ctx, p.UserID).VisitorListLimit
+			paged(a, w, r, p, "visitors", func(pg page) ([]domain.Visitor, error) {
+				return a.Store.ListVisitors(ctx, p.UserID, pg.before, pg.id, pg.limit, limitTotal, a.signer(ctx))
+			}, func(v domain.Visitor) (time.Time, string) { return v.FirstVisitedAt, v.User.UserID }, nil)
 		case "follow-requests":
 			paged(a, w, r, p, "follow_requests", func(pg page) ([]domain.Connection, error) {
-				return a.Store.ListConnections(ctx, "follow_requests", p.UserID, p.UserID, pg.before, pg.id, pg.limit)
+				return a.Store.ListConnections(ctx, "follow_requests", p.UserID, p.UserID, pg.before, pg.id, pg.limit, a.signer(ctx))
 			}, connectionKey, nil)
 		case "friend-requests":
 			direction := r.URL.Query().Get("direction")
@@ -205,7 +218,7 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 				return true
 			}
 			paged(a, w, r, p, "friend_requests:"+direction, func(pg page) ([]domain.FriendRequest, error) {
-				return a.Store.ListFriendRequests(ctx, p.UserID, direction == "incoming", pg.before, pg.id, pg.limit)
+				return a.Store.ListFriendRequests(ctx, p.UserID, direction == "incoming", pg.before, pg.id, pg.limit, a.signer(ctx))
 			}, func(f domain.FriendRequest) (time.Time, string) { return f.CreatedAt, f.RequestID }, nil)
 		default:
 			return false
@@ -230,7 +243,7 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 		id := parts[2]
 		switch {
 		case n == 4 && (parts[3] == "accept" || parts[3] == "decline") && method == "POST":
-			value, err := a.Store.RespondFriendRequest(ctx, p.UserID, id, parts[3] == "accept")
+			value, err := a.Store.RespondFriendRequest(ctx, p.UserID, id, parts[3] == "accept", a.signer(ctx))
 			if err != nil {
 				a.error(w, r, err)
 				return true
@@ -264,7 +277,7 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 				kind = "notifications:unread"
 			}
 			paged(a, w, r, p, kind, func(pg page) ([]domain.Notification, error) {
-				return a.Store.ListNotifications(ctx, p.UserID, unreadOnly, pg.before, pg.id, pg.limit)
+				return a.Store.ListNotifications(ctx, p.UserID, unreadOnly, pg.before, pg.id, pg.limit, a.signer(ctx))
 			}, func(n domain.Notification) (time.Time, string) { return n.CreatedAt, n.NotificationID }, map[string]any{"unreadCount": unread})
 		case n == 3 && parts[2] == "unread-count" && method == "GET":
 			unread, err := a.Store.UnreadNotifications(ctx, p.UserID)

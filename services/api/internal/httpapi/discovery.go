@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"kairova/services/api/internal/domain"
-	"kairova/services/api/internal/store"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/store"
 )
 
 func (a *API) allowSearch(id string) bool { return a.search.allow(id) }
@@ -47,15 +47,6 @@ func (a *API) searchPeople(w http.ResponseWriter, r *http.Request, p store.Princ
 		a.error(w, r, err)
 		return
 	}
-	eligible, err := a.Store.EligibleAdult(r.Context(), p.UserID)
-	if err != nil {
-		a.error(w, r, err)
-		return
-	}
-	if !eligible {
-		a.failure(w, r, 403, "DISCOVERY_ELIGIBILITY", "Adult eligibility must be confirmed before discovery is available")
-		return
-	}
 	raw := f.Cursor
 	f.Cursor = ""
 	data, _ := json.Marshal(f)
@@ -83,7 +74,7 @@ func (a *API) searchPeople(w http.ResponseWriter, r *http.Request, p store.Princ
 		after = c.After
 		page = c.Page
 	}
-	items, err := a.Store.SearchPeople(r.Context(), p.UserID, f, after, 21)
+	items, err := a.Store.SearchPeople(r.Context(), p.UserID, f, after, 21, a.presence, a.signer(r.Context()))
 	if err != nil {
 		a.error(w, r, err)
 		return

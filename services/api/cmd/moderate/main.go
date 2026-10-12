@@ -1,6 +1,7 @@
 // Command moderate is the trust-and-safety operator tool until the separate
 // admin console exists. It reads DATABASE_URL and never touches chat
-// ciphertext: the only message text it shows is what reporters chose to share.
+// ciphertext: the only message text it shows is what reporters chose to share. Encrypted images held
+// as evidence are listed by blob id, size and SHA-256 only; nothing is fetched or decrypted.
 //
 //	moderate queue [-limit 20]
 //	moderate resolve -report ID -action dismiss|warn|suspend -operator NAME [-note TEXT]
@@ -16,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"kairova/services/api/internal/store"
+	"hiyall/services/api/internal/store"
 )
 
 func main() {
@@ -61,6 +62,11 @@ func main() {
 					who = "reporter"
 				}
 				fmt.Printf("    [%s %s] %q\n", e.SentAt.Format(time.RFC3339), who, e.Text)
+			}
+			// Encrypted images held for this report: identifiers and hashes only. The tool never fetches or
+			// decrypts them; the reporter's descriptor stays in the database until a documented process needs it.
+			for _, b := range q.Blobs {
+				fmt.Printf("    held image %s  %s  %d bytes  sha256 %s  (%s)\n", b.BlobID, b.Role, b.SizeBytes, b.CtSha256, b.State)
 			}
 		}
 	case "resolve":

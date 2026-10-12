@@ -4,10 +4,12 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
-	"kairova/services/api/internal/domain"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/store"
 )
 
 var b64 = base64.RawStdEncoding
@@ -92,7 +94,8 @@ func TestDeviceKeysAreSignedBoundedAndClaimedOnce(t *testing.T) {
 		t.Fatalf("count %v", count)
 	}
 
-	// Claims follow messagesFrom; each one-time key goes out once, then the fallback.
+	// Claims follow messagesFrom (open by default; this member asked for friends only); each one-time key goes out once, then the fallback.
+	h.policy(alice, "messagesFrom", "friends")
 	h.expect(h.call(bob, "POST", "/v1/users/"+alice+"/devices/"+d.id+"/claim"), 403, "MESSAGES_NOT_ALLOWED")
 	h.expect(h.call(bob, "GET", "/v1/users/"+alice+"/devices"), 403, "MESSAGES_NOT_ALLOWED")
 	h.policy(alice, "messagesFrom", "everyone")
@@ -125,7 +128,8 @@ func TestEncryptedRelayDeliversToEveryDeviceAndForgetsCiphertext(t *testing.T) {
 	}
 	bobPhone := h.register(bob)
 
-	// Default messagesFrom is friends.
+	// Anyone may message anyone by default; a member who chose friends only is still honoured.
+	h.policy(bob, "messagesFrom", "friends")
 	h.expect(h.send(alice, "POST", "/v1/conversations", map[string]string{"userId": bob}), 403, "MESSAGES_NOT_ALLOWED")
 	h.ok(alice, "POST", "/v1/users/"+bob+"/friend-requests")
 	h.ok(bob, "POST", "/v1/users/"+alice+"/friend-requests")
@@ -232,5 +236,49 @@ func TestMessageValidationAndRateLimit(t *testing.T) {
 	}
 	if limited == 0 {
 		t.Fatal("message flood never limited")
+	}
+}
+
+// One claimer may take at most store.ClaimsPerPairHour keys of one device an hour (429 after),
+// and a device hands out at most store.OneTimeClaimsPerDeviceHour one-time keys an hour to
+// everyone together, then only its fallback key: nobody can drain a member's one-time keys.
+func TestKeyClaimsAreCappedPerClaimerAndPerDevice(t *testing.T) {
+	h := newSocialHarness(t)
+	d := h.register(alice)
+	keys := []map[string]string{}
+	for i := range 40 {
+		keys = append(keys, d.oneTimeKey(fmt.Sprintf("k%d", i)))
+	}
+	h.expect(h.send(alice, "POST", "/v1/devices/"+d.id+"/keys", map[string]any{"oneTimeKeys": keys, "fallbackKey": d.oneTimeKey("fb")}), 200, "")
+	claim := func(actor string) reply {
+		h.api.graph.reset(actor)
+		return h.call(actor, "POST", "/v1/users/"+alice+"/devices/"+d.id+"/claim")
+	}
+	for i := 0; i < store.ClaimsPerPairHour; i++ {
+		if got := h.expect(claim(bob), 200, "").data; got["fallback"] != false {
+			t.Fatalf("claim %d %v", i, got)
+		}
+	}
+	h.expect(claim(bob), 429, "KEY_CLAIMS_LIMITED")
+	// Another claimer is not affected by bob's budget.
+	if got := h.expect(claim(cara), 200, "").data; got["fallback"] != false {
+		t.Fatalf("cara %v", got)
+	}
+	// Once the device has handed out its hourly share of one-time keys, claimers get the fallback key
+	// and the remaining one-time keys stay.
+	h.exec(`INSERT INTO key_claims(claimer_id,device_id,one_time) SELECT $1,$2,true FROM generate_series(1,$3::int)`, eli, d.id, store.OneTimeClaimsPerDeviceHour)
+	if got := h.expect(claim(dev), 200, "").data; got["fallback"] != true || got["keyId"] != "fb" {
+		t.Fatalf("over the device budget %v", got)
+	}
+	if c := h.ok(alice, "GET", "/v1/devices/"+d.id+"/keys"); c["oneTimeKeyCount"] != float64(40-store.ClaimsPerPairHour-1) {
+		t.Fatalf("one-time keys drained: %v", c)
+	}
+	// Claims older than an hour no longer count, and a day later they are purged.
+	h.exec(`UPDATE key_claims SET claimed_at=now()-interval '2 days'`)
+	if got := h.expect(claim(bob), 200, "").data; got["fallback"] != false {
+		t.Fatalf("budget not renewed %v", got)
+	}
+	if n, err := h.db.PurgeKeyClaims(h.ctx, 1000); err != nil || n != int64(store.ClaimsPerPairHour+2+store.OneTimeClaimsPerDeviceHour) {
+		t.Fatalf("purged %d %v", n, err)
 	}
 }

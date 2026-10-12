@@ -1,16 +1,12 @@
 package httpapi
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 )
 
-func adultSpaces(h *socialHarness, users ...string) {
-	for _, id := range users {
-		h.exec(`INSERT INTO discovery_eligibility(user_id,age_group,confirmed_at,valid_until) VALUES($1,'adult',now()-interval '1 day',now()+interval '1 day') ON CONFLICT(user_id) DO UPDATE SET age_group='adult',valid_until=now()+interval '1 day'`, id)
-	}
-}
 func makeSpace(h *socialHarness, user, kind, visibility string, capacity int, parent *string) string {
 	h.t.Helper()
 	in := map[string]any{"kind": kind, "title": "A little circle", "description": "Talk about books", "rules": "Be kind", "visibility": visibility, "capacity": capacity, "timezone": "Asia/Kolkata"}
@@ -26,7 +22,6 @@ func makeSpace(h *socialHarness, user, kind, visibility string, capacity int, pa
 }
 func TestSpacesPrivateAdmissionRolesAndReports(t *testing.T) {
 	h := newSocialHarness(t)
-	adultSpaces(h, alice, bob, cara, dev)
 	id := makeSpace(h, alice, "community", "private", 3, nil)
 	base := "/v1/spaces/" + id
 	h.expect(h.call(bob, "GET", base+"/entries"), 403, "SPACE_MEMBER_REQUIRED")
@@ -54,9 +49,8 @@ func TestSpacesPrivateAdmissionRolesAndReports(t *testing.T) {
 		t.Fatal("banned space leaked")
 	}
 }
-func TestSpacesInviteParentMembershipAndAgeBoundary(t *testing.T) {
+func TestSpacesInviteParentMembershipAndMemberAvailability(t *testing.T) {
 	h := newSocialHarness(t)
-	adultSpaces(h, alice, bob, cara)
 	id := makeSpace(h, alice, "community", "invite", 10, nil)
 	base := "/v1/spaces/" + id
 	h.expect(h.call(bob, "GET", base), 404, "NOT_FOUND")
@@ -75,17 +69,32 @@ func TestSpacesInviteParentMembershipAndAgeBoundary(t *testing.T) {
 	}
 	h.expect(h.call(bob, "DELETE", base+"/membership"), 200, "")
 	h.expect(h.call(bob, "GET", eb), 404, "NOT_FOUND")
-	h.exec(`UPDATE discovery_eligibility SET age_group='minor' WHERE user_id=$1`, bob)
-	h.expect(h.call(bob, "GET", "/v1/spaces"), 403, "ADULT_SPACE_REQUIRED")
+	// Spaces need only an active, onboarded member: no eligibility row exists for anyone in this test.
+	var rows int
+	if err := h.db.Pool.QueryRow(h.ctx, `SELECT count(*) FROM discovery_eligibility`).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("eligibility rows %d (%v)", rows, err)
+	}
+	h.expect(h.send(alice, "PUT", base+"/members/"+bob, map[string]string{"action": "invite"}), 200, "")
+	// A member who has not finished onboarding sees no spaces and cannot be invited.
+	h.exec(`UPDATE onboarding SET completed_at=NULL WHERE user_id=$1`, bob)
+	if len(items(h.ok(bob, "GET", "/v1/spaces"))) != 0 {
+		t.Fatal("a member who is not onboarded saw spaces")
+	}
 	h.expect(h.send(alice, "PUT", base+"/members/"+bob, map[string]string{"action": "invite"}), 404, "NOT_FOUND")
-	h.exec(`UPDATE discovery_eligibility SET valid_until=now()-interval '1 minute' WHERE user_id=$1`, alice)
+	h.exec(`UPDATE onboarding SET completed_at=now() WHERE user_id=$1`, bob)
+	h.expect(h.call(bob, "GET", "/v1/spaces"), 200, "")
+	// A deactivated host's spaces disappear for everyone at once.
+	makeSpace(h, alice, "community", "public", 10, nil)
+	if len(items(h.ok(cara, "GET", "/v1/spaces"))) != 1 {
+		t.Fatal("the host's space is missing")
+	}
+	h.exec(`UPDATE users SET status='suspended' WHERE user_id=$1`, alice)
 	if len(items(h.ok(cara, "GET", "/v1/spaces"))) != 0 {
-		t.Fatal("expired host's spaces leaked")
+		t.Fatal("a deactivated host's spaces leaked")
 	}
 }
 func TestSpacesCapacityConcurrentJoinsAndMomentExpiry(t *testing.T) {
 	h := newSocialHarness(t)
-	adultSpaces(h, alice, bob, cara, dev)
 	id := makeSpace(h, alice, "moment", "public", 2, nil)
 	base := "/v1/spaces/" + id
 	var wg sync.WaitGroup
@@ -126,7 +135,6 @@ func TestSpacesCapacityConcurrentJoinsAndMomentExpiry(t *testing.T) {
 }
 func TestSpacesPaginationBlocksAndValidation(t *testing.T) {
 	h := newSocialHarness(t)
-	adultSpaces(h, alice, bob)
 	for i := 0; i < 3; i++ {
 		makeSpace(h, alice, "community", "public", 10, nil)
 	}
@@ -152,7 +160,6 @@ func TestSpacesPaginationBlocksAndValidation(t *testing.T) {
 
 func TestSpacesEditsCannotWidenAudienceAndPreserveRSVP(t *testing.T) {
 	h := newSocialHarness(t)
-	adultSpaces(h, alice, bob)
 	id := makeSpace(h, alice, "event", "private", 3, nil)
 	base := "/v1/spaces/" + id
 	h.expect(h.send(bob, "PUT", base+"/membership", map[string]string{"rsvp": "interested"}), 200, "")
@@ -174,7 +181,6 @@ func TestSpacesEditsCannotWidenAudienceAndPreserveRSVP(t *testing.T) {
 
 func TestSpacesRecheckModeratorRoleAfterWaitingForLock(t *testing.T) {
 	h := newSocialHarness(t)
-	adultSpaces(h, alice, bob)
 	id := makeSpace(h, alice, "community", "public", 10, nil)
 	base := "/v1/spaces/" + id
 	h.expect(h.send(bob, "PUT", base+"/membership", map[string]string{}), 200, "")
@@ -218,5 +224,120 @@ func TestSpacesRecheckModeratorRoleAfterWaitingForLock(t *testing.T) {
 	}
 	if len(items(h.ok(alice, "GET", base+"/entries"))) != 1 {
 		t.Fatal("demoted moderator deleted the context")
+	}
+}
+
+// Usernames are public (anyone can check whether one is taken), so inviting by username answers
+// exactly the same for a member the host may not reach (other age band, blocked, not onboarded)
+// and for nobody at all as for a real invitation, refusals included, and only invites, notifies
+// and signals the reachable member.
+func TestSpaceInvitationByUsernameRevealsNothing(t *testing.T) {
+	h := newSocialHarness(t)
+	_, sender := withRealtime(t, h)
+	h.ageAt(cara, 30)
+	h.ageAt(xan, 15)
+	h.exec(`INSERT INTO blocks(blocker_id,blocked_id) VALUES($1,$2)`, dev, cara)
+	h.exec(`UPDATE onboarding SET completed_at=NULL WHERE user_id=$1`, eli)
+	for _, u := range []string{xan, dev, eli, yui} {
+		d := h.register(u)
+		h.exec(`UPDATE devices SET push_provider='fcm',push_token=$2 WHERE device_id=$1`, d.id, "push-token-"+u)
+	}
+	space := makeSpace(h, cara, "community", "invite", 10, nil)
+	invite := func(space, username string) reply {
+		h.api.content.reset(cara)
+		return h.send(cara, "POST", "/v1/spaces/"+space+"/invitations", map[string]string{"username": username})
+	}
+	unreachable := []string{"xan", "dev_k", "eli", "nobody_here"}
+	valid := h.expect(invite(space, "yui"), 200, "").data
+	for _, name := range append(unreachable, "yui") {
+		if got := h.expect(invite(space, name), 200, "").data; fmt.Sprint(got) != fmt.Sprint(valid) {
+			t.Fatalf("%s answered %v, a real invitation %v", name, got, valid)
+		}
+	}
+	if got := userIDs(items(h.ok(cara, "GET", "/v1/spaces/"+space+"/members?state=invited"))); fmt.Sprint(got) != fmt.Sprint([]string{yui}) {
+		t.Fatalf("invited %v", got)
+	}
+	var rows, notes int
+	if err := h.db.Pool.QueryRow(h.ctx, `SELECT (SELECT count(*) FROM space_members WHERE space_id=$1),(SELECT count(*) FROM notifications WHERE event='space.invited')`, space).Scan(&rows, &notes); err != nil || rows != 2 || notes != 1 {
+		t.Fatalf("members %d notifications %d %v", rows, notes, err)
+	}
+	eventually(t, func() bool { return len(sender.list()) >= 1 })
+	time.Sleep(100 * time.Millisecond)
+	if got := sender.list(); fmt.Sprint(got) != fmt.Sprint([]string{yui + ":activity"}) {
+		t.Fatalf("pushes %v", got)
+	}
+	// The refusals a real invitation can meet come first for everyone alike.
+	child := makeSpace(h, cara, "event", "private", 10, &space)
+	for _, name := range append(unreachable, "niko") {
+		h.expect(invite(child, name), 403, "SPACE_MEMBER_REQUIRED")
+	}
+	h.expect(h.send(cara, "PUT", "/v1/spaces/"+space+"/status", map[string]string{"status": "closed"}), 200, "")
+	for _, name := range append(unreachable, "niko") {
+		h.expect(invite(space, name), 409, "SPACE_CLOSED")
+	}
+}
+
+// Moderators act only on people in the space (or, to ban, someone they may reach): anything
+// else is 404, never a 500 or a silent success, and only a real change signals or wakes anyone,
+// respecting the target's mutes.
+func TestSpaceModerationNeedsAMembership(t *testing.T) {
+	h := newSocialHarness(t)
+	_, sender := withRealtime(t, h)
+	h.ageAt(cara, 30)
+	h.ageAt(xan, 15)
+	h.exec(`INSERT INTO blocks(blocker_id,blocked_id) VALUES($1,$2)`, dev, cara)
+	space := makeSpace(h, cara, "community", "public", 10, nil)
+	member := func(actor, target, action string) reply {
+		h.api.content.reset(actor)
+		return h.send(actor, "PUT", "/v1/spaces/"+space+"/members/"+target, map[string]string{"action": action})
+	}
+	for _, target := range []string{xan, dev, "019a4000-0000-7000-8000-00000000beef"} {
+		h.expect(member(cara, target, "remove"), 404, "NOT_FOUND")
+		h.expect(member(cara, target, "ban"), 404, "NOT_FOUND")
+		h.expect(member(cara, target, "approve"), 404, "NOT_FOUND")
+		// A role can only be given to an active member; for the owner that is 404, not a role error.
+		for _, role := range []string{"member", "moderator", "admin"} {
+			h.expect(member(cara, target, role), 404, "NOT_FOUND")
+		}
+	}
+	for _, role := range []string{"member", "moderator", "admin"} {
+		h.expect(member(cara, eli, role), 404, "NOT_FOUND")
+	}
+	// A reachable stranger can be banned pre-emptively, and unbanned once.
+	h.expect(member(cara, eli, "remove"), 404, "NOT_FOUND")
+	h.expect(member(cara, eli, "ban"), 200, "")
+	h.expect(member(cara, eli, "unban"), 200, "")
+	h.expect(member(cara, eli, "unban"), 404, "NOT_FOUND")
+
+	d := h.register(yui)
+	h.exec(`UPDATE devices SET push_provider='fcm',push_token='push-token-yui' WHERE device_id=$1`, d.id)
+	h.api.content.reset(yui)
+	h.expect(h.send(yui, "PUT", "/v1/spaces/"+space+"/membership", map[string]string{}), 200, "")
+	pushes := func() int { time.Sleep(100 * time.Millisecond); return len(sender.list()) }
+	// Setting the role a member already has changes nothing and wakes nobody.
+	h.expect(member(cara, yui, "member"), 200, "")
+	if n := pushes(); n != 0 {
+		t.Fatalf("no-op woke the member: %v", sender.list())
+	}
+	h.expect(member(cara, yui, "moderator"), 200, "")
+	eventually(t, func() bool { return len(sender.list()) == 1 })
+	// A member who muted the host is not woken by the host's moderation.
+	h.ok(yui, "POST", "/v1/users/"+cara+"/mute")
+	h.expect(member(cara, yui, "member"), 200, "")
+	h.expect(member(cara, yui, "remove"), 200, "")
+	h.expect(member(cara, yui, "remove"), 404, "NOT_FOUND")
+	if n := pushes(); n != 1 {
+		t.Fatalf("muted member woken: %v", sender.list())
+	}
+	// A moderator cannot reach someone who blocked them even when the owner can.
+	h.expect(h.send(yui, "PUT", "/v1/spaces/"+space+"/membership", map[string]string{}), 200, "")
+	h.expect(member(cara, yui, "admin"), 200, "")
+	h.exec(`INSERT INTO blocks(blocker_id,blocked_id) VALUES($1,$2)`, bob, yui)
+	h.expect(member(yui, bob, "ban"), 404, "NOT_FOUND")
+	h.expect(member(yui, bob, "invite"), 404, "NOT_FOUND")
+	h.api.content.reset(yui)
+	before := h.expect(h.send(yui, "POST", "/v1/spaces/"+space+"/invitations", map[string]string{"username": "niko"}), 200, "").data
+	if got := userIDs(items(h.ok(cara, "GET", "/v1/spaces/"+space+"/members?state=invited"))); len(got) != 0 || before["memberCount"] != float64(2) {
+		t.Fatalf("invited past a block: %v %v", got, before)
 	}
 }

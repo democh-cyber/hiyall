@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"time"
 
-	"kairova/services/api/internal/domain"
-	"kairova/services/api/internal/media"
-	"kairova/services/api/internal/store"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/media"
+	"hiyall/services/api/internal/store"
 )
 
 const (
@@ -20,6 +20,9 @@ const (
 	// by media id, so a refreshed URL doesn't refetch.
 	readURLLifetime = time.Hour
 )
+
+// uploadPurposes are what a photo upload may be for; an avatar is attached through the profile.
+var uploadPurposes = map[string]bool{"post": true, "story": true, "avatar": true}
 
 // signer mints read URLs for media the store just authorized.
 func (a *API) signer(ctx context.Context) store.Signer {
@@ -72,7 +75,7 @@ func (a *API) completeUpload(ctx context.Context, owner, id string) (map[string]
 	if err = a.Media.Delete(ctx, upload.Key); err != nil {
 		slog.Warn("original upload not deleted", "mediaId", id, "reason", err.Error())
 	}
-	if err = a.Store.MediaReady(ctx, owner, id, out.Width, out.Height, full, thumb, int64(len(out.Full))); err != nil {
+	if err = a.Store.MediaReady(ctx, owner, id, out.Width, out.Height, full, thumb, int64(len(out.Full)+len(out.Thumb))); err != nil {
 		return nil, err
 	}
 	sign := a.signer(ctx)
@@ -144,8 +147,8 @@ func (a *API) pulseRoute(w http.ResponseWriter, r *http.Request, p store.Princip
 			ContentType string `json:"contentType"`
 			SizeBytes   int64  `json:"sizeBytes"`
 		}
-		if strictDecode(raw, &in) != nil || (in.Purpose != "post" && in.Purpose != "story") {
-			a.failure(w, r, 422, "VALIDATION", "send purpose (post or story), contentType and sizeBytes")
+		if strictDecode(raw, &in) != nil || !uploadPurposes[in.Purpose] {
+			a.failure(w, r, 422, "VALIDATION", "send purpose (post, story or avatar), contentType and sizeBytes")
 			return true
 		}
 		if !media.ContentTypes[in.ContentType] {
@@ -156,12 +159,12 @@ func (a *API) pulseRoute(w http.ResponseWriter, r *http.Request, p store.Princip
 			a.failure(w, r, 413, "TOO_LARGE", "Photos can be up to 15 MB")
 			return true
 		}
-		id, key, err := a.Store.CreateUpload(ctx, p.UserID, in.Purpose, in.ContentType, in.SizeBytes)
+		id, key, err := a.Store.CreateUpload(ctx, p.UserID, in.Purpose, in.ContentType, in.SizeBytes, a.entitlementsFor(ctx, p.UserID))
 		if err != nil {
 			a.error(w, r, err)
 			return true
 		}
-		url, headers, err := a.Media.PresignPut(ctx, key, in.ContentType, uploadURLLifetime)
+		url, headers, err := a.Media.PresignPut(ctx, key, in.ContentType, in.SizeBytes, uploadURLLifetime)
 		if err != nil {
 			a.error(w, r, err)
 			return true
@@ -201,7 +204,7 @@ func (a *API) pulseRoute(w http.ResponseWriter, r *http.Request, p store.Princip
 			a.error(w, r, err)
 			return true
 		}
-		id, err := a.Store.CreatePost(ctx, p.UserID, in)
+		id, err := a.Store.CreatePost(ctx, p.UserID, in, a.entitlementsFor(ctx, p.UserID))
 		if err != nil {
 			a.error(w, r, err)
 			return true
@@ -242,7 +245,7 @@ func (a *API) pulseRoute(w http.ResponseWriter, r *http.Request, p store.Princip
 		respond(map[string]bool{"saved": method == "PUT"}, a.Store.SetSaved(ctx, p.UserID, parts[2], method == "PUT"))
 	case n == 4 && parts[1] == "posts" && isID(parts[2]) && parts[3] == "comments" && method == "GET":
 		paged(a, w, r, p, "comments:"+parts[2], func(pg page) ([]domain.Comment, error) {
-			return a.Store.Comments(ctx, p.UserID, parts[2], pg.before, pg.id, pg.limit)
+			return a.Store.Comments(ctx, p.UserID, parts[2], pg.before, pg.id, pg.limit, sign)
 		}, commentKey, nil)
 	case n == 4 && parts[1] == "posts" && isID(parts[2]) && parts[3] == "comments" && method == "POST":
 		if !allow(a.content) {
@@ -257,7 +260,7 @@ func (a *API) pulseRoute(w http.ResponseWriter, r *http.Request, p store.Princip
 			a.error(w, r, err)
 			return true
 		}
-		comment, author, hidden, err := a.Store.AddComment(ctx, p.UserID, parts[2], in)
+		comment, author, hidden, err := a.Store.AddComment(ctx, p.UserID, parts[2], in, sign)
 		if err != nil {
 			a.error(w, r, err)
 			return true
@@ -290,18 +293,38 @@ func (a *API) pulseRoute(w http.ResponseWriter, r *http.Request, p store.Princip
 			a.error(w, r, err)
 			return true
 		}
-		id, err := a.Store.CreateStory(ctx, p.UserID, in)
+		id, err := a.Store.CreateStory(ctx, p.UserID, in, a.entitlementsFor(ctx, p.UserID))
 		created(map[string]string{"storyId": id}, err)
 	case n == 3 && parts[1] == "stories" && parts[2] == "tray" && method == "GET":
 		groups, err := a.Store.StoryTray(ctx, p.UserID, sign)
 		respond(map[string]any{"items": groups}, err)
+	case n == 3 && parts[1] == "me" && parts[2] == "stories" && method == "GET":
+		if !allow(a.lists) {
+			return true
+		}
+		paged(a, w, r, p, "my_stories", func(pg page) ([]domain.Story, error) {
+			return a.Store.MyStories(ctx, p.UserID, pg.before, pg.id, pg.limit, sign)
+		}, func(s domain.Story) (time.Time, string) { return s.CreatedAt, s.StoryID }, nil)
+	case n == 4 && parts[1] == "users" && isID(parts[2]) && parts[3] == "stories" && method == "GET":
+		if !allow(a.lists) {
+			return true
+		}
+		paged(a, w, r, p, "stories:"+parts[2], func(pg page) ([]domain.Story, error) {
+			return a.Store.UserStories(ctx, p.UserID, parts[2], pg.before, pg.id, pg.limit, sign)
+		}, func(s domain.Story) (time.Time, string) { return s.CreatedAt, s.StoryID }, nil)
 	case n == 3 && parts[1] == "stories" && isID(parts[2]) && method == "DELETE":
+		if !allow(a.content) {
+			return true
+		}
 		respond(map[string]bool{"deleted": true}, a.Store.DeleteStory(ctx, p.UserID, parts[2]))
 	case n == 4 && parts[1] == "stories" && isID(parts[2]) && parts[3] == "view" && method == "POST":
 		respond(map[string]bool{"viewed": true}, a.Store.ViewStory(ctx, p.UserID, parts[2]))
 	case n == 4 && parts[1] == "stories" && isID(parts[2]) && parts[3] == "viewers" && method == "GET":
+		if !allow(a.lists) {
+			return true
+		}
 		paged(a, w, r, p, "viewers:"+parts[2], func(pg page) ([]domain.Connection, error) {
-			return a.Store.StoryViewers(ctx, p.UserID, parts[2], pg.before, pg.id, pg.limit)
+			return a.Store.StoryViewers(ctx, p.UserID, parts[2], pg.before, pg.id, pg.limit, sign)
 		}, connectionKey, nil)
 	default:
 		return false

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"mime"
 	"net"
 	"net/http"
@@ -19,12 +20,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/time/rate"
-	"kairova/services/api/internal/domain"
-	"kairova/services/api/internal/media"
-	"kairova/services/api/internal/push"
-	"kairova/services/api/internal/realtime"
-	"kairova/services/api/internal/store"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/media"
+	"hiyall/services/api/internal/push"
+	"hiyall/services/api/internal/realtime"
+	"hiyall/services/api/internal/store"
 )
 
 type Verify func(context.Context, string) (store.Principal, error)
@@ -41,14 +43,36 @@ type API struct {
 	messages  *keyedLimiter
 	reports   *keyedLimiter
 	uploads   *keyedLimiter
+	// blobSlots bounds encrypted-attachment upload slots, completions and deletes per account;
+	// blobURLs bounds download URLs (opening a chat with many photos asks for many).
+	blobSlots *keyedLimiter
+	blobURLs  *keyedLimiter
 	content   *keyedLimiter
+	// lists bounds reads of the member-only lists (visitors, own stories, story viewers): a burst of
+	// 30, then two a second, so pulling to refresh and paging never trips it but a loop does.
+	lists *keyedLimiter
+	// locations bounds how often one account can move its shared point: a burst
+	// of 3, then one change every 2 minutes.
+	locations *keyedLimiter
+	// firstChats bounds how many conversations an account can open with people it has never
+	// exchanged a message with: a burst of 10, then one a minute. Messaging is open to everyone
+	// who is not blocked or in the other age band, so this is what limits unsolicited contact.
+	firstChats *keyedLimiter
 	// mediaSlots bounds concurrent photo processing on this node.
 	mediaSlots chan struct{}
 	// Media is optional; without it photo uploads answer 503.
 	Media media.Store
+	// ChatMedia is the separate bucket for end-to-end encrypted chat attachments; without it the
+	// attachment routes answer 503 CHAT_MEDIA_UNAVAILABLE. It only ever holds ciphertext.
+	ChatMedia media.Store
+	// Entitlements resolves a member's limits (docs/architecture/11-plans-and-entitlements.md). Nil means
+	// everyone is on the Free plan, which is the only plan today; tests replace it to try other tiers.
+	Entitlements func(ctx context.Context, userID string) domain.Entitlements
 	// RT and Push are optional; without them clients fall back to polling.
 	RT   *realtime.Hub
 	Push *push.Dispatcher
+	// heartbeat is how often a realtime connection is pinged and its session checked.
+	heartbeat time.Duration
 }
 
 func New(s *store.Store, verify Verify, dev bool, origin string) *API {
@@ -61,8 +85,14 @@ func New(s *store.Store, verify Verify, dev bool, origin string) *API {
 		messages:   newKeyedLimiter(5, 40, 4096),
 		reports:    newKeyedLimiter(rate.Every(time.Minute), 10, 4096),
 		uploads:    newKeyedLimiter(rate.Every(2*time.Second), 30, 4096),
+		blobSlots:  newKeyedLimiter(rate.Every(500*time.Millisecond), 60, 4096),
+		blobURLs:   newKeyedLimiter(10, 60, 4096),
 		content:    newKeyedLimiter(1, 30, 4096),
+		lists:      newKeyedLimiter(2, 30, 4096),
+		locations:  newKeyedLimiter(rate.Every(2*time.Minute), 3, 4096),
+		firstChats: newKeyedLimiter(rate.Every(time.Minute), 10, 4096),
 		mediaSlots: make(chan struct{}, 4),
+		heartbeat:  pingEvery,
 	}
 	if _, err := rand.Read(a.cursorKey[:]); err != nil {
 		panic(err)
@@ -109,6 +139,14 @@ func (a *API) Handler() http.Handler {
 		defer func() {
 			slog.Info("request completed", "requestId", id, "status", response.status, "durationMs", time.Since(start).Milliseconds())
 		}()
+		r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, id))
+		w.Header().Set("X-Request-Id", id)
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		// The socket is long-lived, so it skips the request deadline below; its refusals
+		// still carry the request id and the standard headers.
 		if r.URL.Path == "/v1/realtime" {
 			a.realtimeGateway(w, r)
 			return
@@ -116,12 +154,6 @@ func (a *API) Handler() http.Handler {
 		deadline, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 		r = r.WithContext(deadline)
-		r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, id))
-		w.Header().Set("X-Request-Id", id)
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 		defer func() {
 			if recover() != nil {
 				slog.Error("request panic", "requestId", id)
@@ -137,8 +169,8 @@ func (a *API) Handler() http.Handler {
 			}
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, If-Match")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, PATCH, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, If-Match, X-Client-Platform")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, PATCH, POST, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Expose-Headers", "ETag, X-Request-Id")
 			if r.Method == "OPTIONS" {
 				w.WriteHeader(204)
@@ -175,11 +207,7 @@ func (a *API) Handler() http.Handler {
 		}
 		p, err := a.Verify(r.Context(), strings.TrimPrefix(raw, "Bearer "))
 		if err != nil {
-			if errors.Is(err, domain.ErrUnauthorized) {
-				a.failure(w, r, 401, "UNAUTHENTICATED", "Sign in to continue")
-			} else {
-				a.failure(w, r, 503, "AUTH_UNAVAILABLE", "Authentication is temporarily unavailable")
-			}
+			a.authFailure(w, r, err)
 			return
 		}
 		a.route(w, r, p)
@@ -221,16 +249,38 @@ func (a *API) error(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, domain.ErrUsernameTaken):
 		a.failure(w, r, 409, "USERNAME_TAKEN", "This username is taken")
 	case errors.As(err, &policy):
-		if policy.Status == 429 {
-			w.Header().Set("Retry-After", "3600")
+		// A refusal that knows when it lifts says so; one that lifts only when the caller acts
+		// (closing a space) sends no Retry-After.
+		var retry *domain.RetryError
+		if policy.Status == 429 && errors.As(err, &retry) {
+			w.Header().Set("Retry-After", strconv.FormatInt(max(1, int64(math.Ceil(retry.After.Seconds()))), 10))
 		}
 		a.failure(w, r, policy.Status, policy.Code, policy.Message)
 	case errors.Is(err, domain.ErrUnauthorized):
 		a.failure(w, r, 401, "UNAUTHENTICATED", "Sign in to continue")
+	case foreignKeyViolation(err):
+		// Ids come from the caller: one that names nothing is missing, not a server fault.
+		a.failure(w, r, 404, "NOT_FOUND", "This resource is unavailable")
+	case invalidText(err):
+		a.failure(w, r, 422, "VALIDATION", "Text contains characters that cannot be stored")
 	default:
-		slog.Error("request failed", "requestId", r.Context().Value(requestIDKey{}))
+		// The cause is logged for diagnosis: database and Go errors name the failing operation,
+		// never a request body, credential, birth date or position.
+		slog.Error("request failed", "requestId", r.Context().Value(requestIDKey{}), "method", r.Method, "path", r.URL.Path, "reason", err.Error())
 		a.failure(w, r, 500, "INTERNAL", "Something went wrong")
 	}
+}
+
+// invalidText is PostgreSQL refusing text it cannot store (a NUL byte, an invalid or
+// untranslatable sequence) that slipped past validation: the caller's input, so 422.
+func invalidText(err error) bool {
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && (pe.Code == "22021" || pe.Code == "22P05")
+}
+
+func foreignKeyViolation(err error) bool {
+	var pe *pgconn.PgError
+	return errors.As(err, &pe) && pe.Code == "23503"
 }
 
 // Reject duplicate keys as well as trailing JSON and unknown properties in domain validation.
@@ -292,7 +342,7 @@ func (a *API) devSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var id string
-	if len(body) != 1 || json.Unmarshal(body["userId"], &id) != nil || (id != "019a4000-0000-7000-8000-000000000001" && id != "019a4000-0000-7000-8000-000000000002") {
+	if len(body) != 1 || json.Unmarshal(body["userId"], &id) != nil || (id != "019a4000-0000-7000-8000-000000000001" && id != "019a4000-0000-7000-8000-000000000002" && id != store.SamID && id != store.KaiID) {
 		a.failure(w, r, 422, "VALIDATION", "Select a development account")
 		return
 	}
@@ -312,6 +362,12 @@ func (a *API) devSession(w http.ResponseWriter, r *http.Request) {
 func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 	ctx := r.Context()
 	path := r.URL.Path
+	// The one place onboarding is enforced: until it is complete, only the routes
+	// in onboardingExempt are reachable, whatever handler would serve the request.
+	if !p.Onboarded && !onboardingExempt(r.Method, path) {
+		a.failOnboarding(w, r)
+		return
+	}
 	if path == "/v1/discovery/search" && r.Method == "POST" {
 		a.searchPeople(w, r, p)
 		return
@@ -319,7 +375,7 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 	if path == "/v1/me/profile" || path == "/v1/me/privacy" {
 		if r.Method == "GET" {
 			if path == "/v1/me/profile" {
-				value, err := a.Store.GetProfile(ctx, p.UserID)
+				value, err := a.Store.GetProfile(ctx, p.UserID, a.signer(ctx))
 				if err != nil {
 					a.error(w, r, err)
 					return
@@ -349,7 +405,7 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 				return
 			}
 			if path == "/v1/me/profile" {
-				value, err := a.Store.UpdateProfile(ctx, p.UserID, v, body)
+				value, err := a.Store.UpdateProfile(ctx, p.UserID, v, body, a.signer(ctx))
 				if err != nil {
 					a.error(w, r, err)
 					return
@@ -373,6 +429,7 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 			a.error(w, r, err)
 			return
 		}
+		a.endSessions(ctx, p.UserID, p.SessionID, "")
 		a.ok(w, r, map[string]bool{"revoked": true})
 		return
 	}
@@ -386,20 +443,32 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 			a.error(w, r, err)
 			return
 		}
+		a.endSessions(ctx, p.UserID, "", p.SessionID)
 		a.ok(w, r, map[string]int64{"revoked": count})
 		return
 	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) == 4 && parts[0] == "v1" && parts[1] == "users" {
-		if _, err := uuid.Parse(parts[2]); err != nil {
+		if !isID(parts[2]) {
 			a.failure(w, r, 404, "NOT_FOUND", "This resource is unavailable")
 			return
 		}
 		if parts[3] == "profile" && r.Method == "GET" {
-			value, err := a.Store.VisibleProfile(ctx, p.UserID, parts[2])
+			value, err := a.Store.VisibleProfile(ctx, p.UserID, parts[2], a.presence, a.signer(ctx))
 			if err != nil {
 				a.error(w, r, err)
 				return
+			}
+			// The profile opened, so this is a visit (a locked card counts; one's own profile, and a request
+			// refused above as blocked, in the other age band or not found, do not). A first visit shows up in
+			// this response's count too. Failing to record it never fails the request.
+			if first, err := a.Store.RecordProfileVisit(ctx, p.UserID, parts[2]); err != nil {
+				slog.Warn("profile visit not recorded", "requestId", ctx.Value(requestIDKey{}))
+			} else if first {
+				if stats, ok := value["socialStats"].(domain.SocialStats); ok {
+					stats.Visitors++
+					value["socialStats"] = stats
+				}
 			}
 			a.ok(w, r, value)
 			return
@@ -415,7 +484,7 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 		}
 	}
 	if len(parts) == 4 && parts[0] == "v1" && parts[1] == "auth" && parts[2] == "sessions" && r.Method == "DELETE" {
-		if _, err := uuid.Parse(parts[3]); err != nil {
+		if !isID(parts[3]) {
 			a.failure(w, r, 404, "NOT_FOUND", "Session unavailable")
 			return
 		}
@@ -423,10 +492,11 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 			a.error(w, r, err)
 			return
 		}
+		a.endSessions(ctx, p.UserID, parts[3], "")
 		a.ok(w, r, map[string]bool{"revoked": true})
 		return
 	}
-	if a.chatRoute(w, r, p, parts) || a.socialRoute(w, r, p, parts) || a.safetyRoute(w, r, p, parts) || a.pulseRoute(w, r, p, parts) || a.spacesRoute(w, r, p, parts) {
+	if a.onboardingRoute(w, r, p, parts) || a.nearbyRoute(w, r, p, parts) || a.chatRoute(w, r, p, parts) || a.socialRoute(w, r, p, parts) || a.safetyRoute(w, r, p, parts) || a.pulseRoute(w, r, p, parts) || a.spacesRoute(w, r, p, parts) {
 		return
 	}
 	a.failure(w, r, 404, "NOT_FOUND", "Endpoint unavailable")
@@ -467,8 +537,7 @@ func (a *API) sessions(w http.ResponseWriter, r *http.Request, p store.Principal
 			mac := hmac.New(sha256.New, a.cursorKey[:])
 			mac.Write(bytes)
 			valid = e == nil && e2 == nil && hmac.Equal(sig, mac.Sum(nil)) && json.Unmarshal(bytes, &c) == nil && c.UserID == p.UserID && c.Exp > time.Now().Unix()
-			_, e = uuid.Parse(c.ID)
-			valid = valid && e == nil
+			valid = valid && isID(c.ID)
 		}
 		if !valid {
 			a.failure(w, r, 422, "INVALID_CURSOR", "Reload your sessions")

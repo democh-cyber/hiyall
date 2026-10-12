@@ -8,7 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"kairova/services/api/internal/domain"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/realtime"
 )
 
 // quietFrom is true when user $r has muted or restricted user $a. Callers
@@ -31,8 +32,23 @@ func (s *Store) Quiet(ctx context.Context, recipient, actor string) (bool, error
 	return quiet, err
 }
 
+// bandBarredSQL is the age-band half of interaction_barred (migration 0017): true while
+// age-band isolation is on and a and b are in different bands. Blocks are not part of it.
+func bandBarredSQL(a, b string) string {
+	return `(age_isolation_enabled() AND age_band(` + a + `)<>age_band(` + b + `))`
+}
+
+// knownToSQL is true when viewer may see who subject is in their own safety lists and
+// reports: subject has finished onboarding and is in viewer's age band. A block in either
+// direction does not hide them (the blocked list shows blocked members too), but another
+// age band or an unfinished account does, exactly like their profile.
+func knownToSQL(viewer, subject string) string {
+	return `(` + memberSQL(subject) + ` AND NOT ` + bandBarredSQL(viewer, subject) + `)`
+}
+
 // SetControl adds or removes the actor's mute or restrict on target. Restrict
-// has no expiry; mute may.
+// has no expiry; mute may. A target in the other age band or that has not finished
+// onboarding is missing (404), like their profile; removing a control always works.
 func (s *Store) SetControl(ctx context.Context, actor, target, control string, on bool, until *time.Time) error {
 	if err := noSelf(actor, target); err != nil {
 		return err
@@ -45,7 +61,7 @@ func (s *Store) SetControl(ctx context.Context, actor, target, control string, o
 		until = nil
 	}
 	tag, err := s.Pool.Exec(ctx, `INSERT INTO user_controls(actor_id,target_id,control,until)
- SELECT $1,u.user_id,$3,$4 FROM users u WHERE u.user_id=$2 AND u.status='active'
+ SELECT $1,u.user_id,$3,$4 FROM users u WHERE u.user_id=$2 AND `+knownToSQL("$1::uuid", "u.user_id")+`
  ON CONFLICT (actor_id,target_id,control) DO UPDATE SET until=excluded.until`, actor, target, control, until)
 	if err == nil && tag.RowsAffected() == 0 {
 		return domain.ErrNotFound
@@ -75,21 +91,22 @@ func (s *Store) SetConversationMute(ctx context.Context, user, conversationID st
 }
 
 // ListControls pages the caller's blocked, muted or restricted accounts,
-// newest first. Expired mutes are omitted.
-func (s *Store) ListControls(ctx context.Context, actor, kind string, before *time.Time, beforeID string, limit int) ([]domain.Control, error) {
+// newest first. Expired mutes are omitted, and so are muted or restricted accounts the
+// caller may not know (knownToSQL); the blocked list shows every block, so it can be undone.
+func (s *Store) ListControls(ctx context.Context, actor, kind string, before *time.Time, beforeID string, limit int, sign Signer) ([]domain.Control, error) {
 	var source string
 	switch kind {
 	case "blocked":
 		source = `SELECT blocked_id AS target_id,created_at,NULL::timestamptz AS until FROM blocks WHERE blocker_id=$1`
 	case "muted", "restricted":
 		control := map[string]string{"muted": "mute", "restricted": "restrict"}[kind]
-		source = `SELECT target_id,created_at,until FROM user_controls WHERE actor_id=$1 AND control='` + control + `' AND (until IS NULL OR until>now())`
+		source = `SELECT target_id,created_at,until FROM user_controls WHERE actor_id=$1 AND control='` + control + `' AND (until IS NULL OR until>now()) AND ` + knownToSQL("$1::uuid", "target_id")
 	default:
 		return nil, domain.ErrNotFound
 	}
-	rows, err := s.Pool.Query(ctx, `SELECT p.user_id::text,p.username,coalesce(p.data->>'displayName',''),c.created_at,c.until
+	rows, err := s.Pool.Query(ctx, `SELECT p.user_id::text,p.username,coalesce(p.data->>'displayName',''),`+avatarThumbKey("av")+`,c.created_at,c.until
  FROM (`+source+`) c
- JOIN profiles p ON p.user_id=c.target_id
+ JOIN profiles p ON p.user_id=c.target_id`+avatarJoin("av", "p")+`
  JOIN users u ON u.user_id=c.target_id AND u.status='active'
  WHERE ($2::timestamptz IS NULL OR (c.created_at,c.target_id)<($2,$3::uuid))
  ORDER BY c.created_at DESC,c.target_id DESC LIMIT $4`, actor, before, beforeID, limit)
@@ -98,7 +115,10 @@ func (s *Store) ListControls(ctx context.Context, actor, kind string, before *ti
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (domain.Control, error) {
 		var c domain.Control
-		return c, row.Scan(&c.User.UserID, &c.User.Username, &c.User.DisplayName, &c.Since, &c.Until)
+		var avatar *string
+		err := row.Scan(&c.User.UserID, &c.User.Username, &c.User.DisplayName, &avatar, &c.Since, &c.Until)
+		c.User.AvatarURL = avatarURL(sign, avatar)
+		return c, err
 	})
 }
 
@@ -127,14 +147,14 @@ func (s *Store) CreateReport(ctx context.Context, reporter string, r domain.NewR
 		err = s.Pool.QueryRow(ctx, `SELECT c.author_id::text FROM comments c JOIN posts p ON p.post_id=c.post_id
  WHERE c.comment_id=$2 AND c.deleted_at IS NULL AND (NOT c.hidden OR c.author_id=$1) AND p.deleted_at IS NULL AND `+visibleTo("p.author_id", "p.audience"), reporter, r.TargetID).Scan(&subject)
 	case "space":
-		x, e := s.Space(ctx, reporter, r.TargetID)
+		x, e := s.Space(ctx, reporter, r.TargetID, nil)
 		err = e
 		subject = x.Owner.UserID
 	case "space_entry":
 		var spaceID string
-		err = s.Pool.QueryRow(ctx, `SELECT space_id::text,author_id::text FROM space_entries WHERE entry_id=$1 AND deleted_at IS NULL AND `+adultSQL("author_id"), r.TargetID).Scan(&spaceID, &subject)
+		err = s.Pool.QueryRow(ctx, `SELECT space_id::text,author_id::text FROM space_entries WHERE entry_id=$1 AND deleted_at IS NULL AND `+memberSQL("author_id"), r.TargetID).Scan(&spaceID, &subject)
 		if err == nil {
-			x, e := s.Space(ctx, reporter, spaceID)
+			x, e := s.Space(ctx, reporter, spaceID, nil)
 			err = e
 			if err == nil && x.MyState != "active" {
 				err = domain.ErrNotFound
@@ -197,27 +217,46 @@ func (s *Store) CreateReport(ctx context.Context, reporter string, r domain.NewR
 		description = r.Description
 	}
 	report := domain.Report{TargetType: r.TargetType, TargetID: r.TargetID, ReasonCode: r.ReasonCode, Status: "open"}
-	err = s.Pool.QueryRow(ctx, `INSERT INTO reports(report_id,reporter_id,target_type,target_id,subject_id,reason_code,description,evidence,disclosure_consent,severity)
+	created := false
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, `INSERT INTO reports(report_id,reporter_id,target_type,target_id,subject_id,reason_code,description,evidence,disclosure_consent,severity)
  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
  ON CONFLICT (reporter_id,target_type,target_id) WHERE status='open' DO NOTHING
  RETURNING report_id::text,created_at`, newID(), reporter, r.TargetType, r.TargetID, subject, r.ReasonCode, description, evidence, r.DisclosureConsent, r.Severity()).
-		Scan(&report.ReportID, &report.CreatedAt)
-	created := err == nil
-	if errors.Is(err, pgx.ErrNoRows) {
+			Scan(&report.ReportID, &report.CreatedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil // the earlier open report stands, with its own evidence
+		}
+		if err != nil {
+			return err
+		}
+		created = true
+		// Shared images are held against deletion for as long as the report keeps them.
+		return holdEvidenceBlobs(ctx, tx, report.ReportID, conversation, r.Evidence)
+	})
+	if err == nil && !created {
 		err = s.Pool.QueryRow(ctx, `SELECT report_id::text,reason_code,created_at FROM reports WHERE reporter_id=$1 AND target_type=$2 AND target_id=$3 AND status='open'`,
 			reporter, r.TargetType, r.TargetID).Scan(&report.ReportID, &report.ReasonCode, &report.CreatedAt)
 	}
 	if err != nil {
 		return domain.Report{}, false, err
 	}
-	err = s.Pool.QueryRow(ctx, `SELECT p.user_id::text,p.username,coalesce(p.data->>'displayName','') FROM profiles p WHERE p.user_id=$1`, subject).
+	// The subject's name is shown only when the reporter may know who they are (knownToSQL).
+	err = s.Pool.QueryRow(ctx, `SELECT p.user_id::text,`+reportSubjectName+` FROM profiles p WHERE p.user_id=$2`, reporter, subject).
 		Scan(&report.Subject.UserID, &report.Subject.Username, &report.Subject.DisplayName)
 	return report, created, mapped(err)
 }
 
-// ListReports pages the caller's own reports and their status.
+// reportSubjectName is the subject's username and display name for reporter $1 and profile
+// row p, or two empty strings when the reporter may not know who the subject is: a report
+// against a member in the other age band, or not onboarded, is accepted but names nobody.
+var reportSubjectName = `CASE WHEN ` + knownToSQL("$1::uuid", "p.user_id") + ` THEN p.username ELSE '' END,
+ CASE WHEN ` + knownToSQL("$1::uuid", "p.user_id") + ` THEN coalesce(p.data->>'displayName','') ELSE '' END`
+
+// ListReports pages the caller's own reports and their status. Subjects the caller may not
+// know are listed without a name (see reportSubjectName).
 func (s *Store) ListReports(ctx context.Context, reporter string, before *time.Time, beforeID string, limit int) ([]domain.Report, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT r.report_id::text,r.target_type,r.target_id::text,p.user_id::text,p.username,coalesce(p.data->>'displayName',''),r.reason_code,r.status,r.created_at,r.resolved_at
+	rows, err := s.Pool.Query(ctx, `SELECT r.report_id::text,r.target_type,r.target_id::text,p.user_id::text,`+reportSubjectName+`,r.reason_code,r.status,r.created_at,r.resolved_at
  FROM reports r JOIN profiles p ON p.user_id=r.subject_id
  WHERE r.reporter_id=$1 AND ($2::timestamptz IS NULL OR (r.created_at,r.report_id)<($2,$3::uuid))
  ORDER BY r.created_at DESC,r.report_id DESC LIMIT $4`, reporter, before, beforeID, limit)
@@ -235,8 +274,10 @@ type QueuedReport struct {
 	ReportID, TargetType, TargetID, Reporter, Subject, SubjectName string
 	ReasonCode, Severity, Description                              string
 	Evidence                                                       []domain.Evidence
-	PriorReports                                                   int
-	CreatedAt                                                      time.Time
+	// Blobs are the encrypted images held for this report: ids, sizes and hashes, never keys.
+	Blobs        []domain.BlobInfo
+	PriorReports int
+	CreatedAt    time.Time
 }
 
 // ReportQueue lists open reports, high severity first, then oldest first.
@@ -249,7 +290,7 @@ func (s *Store) ReportQueue(ctx context.Context, limit int) ([]QueuedReport, err
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (QueuedReport, error) {
+	queue, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (QueuedReport, error) {
 		var q QueuedReport
 		var evidence []byte
 		err := row.Scan(&q.ReportID, &q.TargetType, &q.TargetID, &q.Reporter, &q.Subject, &q.SubjectName, &q.ReasonCode, &q.Severity, &q.Description, &evidence, &q.PriorReports, &q.CreatedAt)
@@ -258,6 +299,12 @@ func (s *Store) ReportQueue(ctx context.Context, limit int) ([]QueuedReport, err
 		}
 		return q, err
 	})
+	for i := range queue {
+		if err == nil {
+			queue[i].Blobs, err = s.HeldBlobs(ctx, queue[i].ReportID)
+		}
+	}
+	return queue, err
 }
 
 // ResolveReport closes an open report with an operator action. Suspend
@@ -283,11 +330,18 @@ func (s *Store) ResolveReport(ctx context.Context, reportID, operator, action, n
 	})
 }
 
+// suspend deactivates the account and revokes every session. The realtime notice is sent on
+// commit (NOTIFY is transactional), so every API node listening on the bus ends the account's
+// live connections even though the moderation tool is a separate process.
 func suspend(ctx context.Context, tx pgx.Tx, user string) error {
 	if _, err := tx.Exec(ctx, `UPDATE users SET status='suspended' WHERE user_id=$1 AND status='active'`, user); err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1`, user)
+	if _, err := tx.Exec(ctx, `UPDATE sessions SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1`, user); err != nil {
+		return err
+	}
+	notice, _ := json.Marshal(realtime.DisconnectEvent(user))
+	_, err := tx.Exec(ctx, `SELECT pg_notify($1,$2)`, realtime.Channel, string(notice))
 	return err
 }
 

@@ -3,8 +3,8 @@ package httpapi
 import (
 	"context"
 	"errors"
-	"kairova/services/api/internal/domain"
-	"kairova/services/api/internal/store"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/store"
 	"net/http/httptest"
 	"strings"
 	"testing"

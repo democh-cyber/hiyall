@@ -8,7 +8,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const channel = "kairova_realtime"
+// Channel is the PostgreSQL notification channel the PGBus listens on.
+const Channel = "hiyall_realtime"
 
 // maxUsersPerNotify keeps each payload well under PostgreSQL's 8000-byte limit.
 const maxUsersPerNotify = 100
@@ -32,7 +33,7 @@ func (b *PGBus) Publish(ctx context.Context, e Event) error {
 		if err != nil {
 			return err
 		}
-		if _, err = b.Pool.Exec(ctx, `SELECT pg_notify($1,$2)`, channel, string(payload)); err != nil {
+		if _, err = b.Pool.Exec(ctx, `SELECT pg_notify($1,$2)`, Channel, string(payload)); err != nil {
 			return err
 		}
 	}
@@ -46,7 +47,7 @@ func (b *PGBus) Run(ctx context.Context, deliver func(Event)) error {
 		return err
 	}
 	defer conn.Close(context.Background())
-	if _, err = conn.Exec(ctx, `LISTEN `+channel); err != nil {
+	if _, err = conn.Exec(ctx, `LISTEN `+Channel); err != nil {
 		return err
 	}
 	for {

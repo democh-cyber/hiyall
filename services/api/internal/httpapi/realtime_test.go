@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"kairova/services/api/internal/push"
-	"kairova/services/api/internal/realtime"
+	"hiyall/services/api/internal/push"
+	"hiyall/services/api/internal/realtime"
 )
 
 // socket reads in the background: a timed-out Read closes a coder/websocket
@@ -21,6 +21,8 @@ type socket struct {
 	t      *testing.T
 	conn   *websocket.Conn
 	events chan map[string]any
+	// status is the close code the server sent; it is set before events is closed.
+	status websocket.StatusCode
 }
 
 func dial(t *testing.T, server *httptest.Server, token string) (*socket, *http.Response, error) {
@@ -35,13 +37,14 @@ func dial(t *testing.T, server *httptest.Server, token string) (*socket, *http.R
 	if err != nil {
 		return nil, resp, err
 	}
-	s := &socket{t, conn, make(chan map[string]any, 32)}
+	s := &socket{t: t, conn: conn, events: make(chan map[string]any, 32)}
 	t.Cleanup(func() { conn.CloseNow() })
 	go func() {
 		defer close(s.events)
 		for {
 			_, data, err := conn.Read(context.Background())
 			if err != nil {
+				s.status = websocket.CloseStatus(err)
 				return
 			}
 			var e map[string]any
@@ -68,6 +71,24 @@ func (s *socket) next() map[string]any {
 		s.t.Fatal("no event")
 	}
 	return nil
+}
+
+// closedWith waits for the server to close the socket, skipping any events, and
+// returns the close code.
+func (s *socket) closedWith() websocket.StatusCode {
+	s.t.Helper()
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case _, ok := <-s.events:
+			if !ok {
+				return s.status
+			}
+		case <-deadline:
+			s.t.Fatal("socket still open")
+			return 0
+		}
+	}
 }
 
 // quiet asserts nothing arrives for a short while.
@@ -292,5 +313,135 @@ func TestSlowClientsAreDisconnectedNotBuffered(t *testing.T) {
 	}
 	if hub.Register(realtime.NewClient("w", 1)) {
 		t.Fatal("node limit not enforced")
+	}
+}
+
+// A socket lives only as long as its session: signing it out, revoking it, signing out
+// everywhere else, expiry and suspension all end it with 1008, and other sessions stay.
+func TestRealtimeConnectionsEndWithTheirSession(t *testing.T) {
+	h := newSocialHarness(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	api := New(h.db, h.db.VerifyDevSession, true, "")
+	api.RT = realtime.NewHub(realtime.NewLocalBus(), 10, 100)
+	api.heartbeat = 50 * time.Millisecond
+	go api.RT.Run(ctx, func(int) time.Duration { return 10 * time.Millisecond })
+	server := httptest.NewServer(api.Handler())
+	t.Cleanup(server.Close)
+	session := func(user, token string) (string, *socket) {
+		t.Helper()
+		p, err := h.db.CreateDevSession(ctx, user, token, "web")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ws, _, err := dial(t, server, token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p.SessionID, ws
+	}
+	request := func(method, path, token string) int {
+		t.Helper()
+		req, _ := http.NewRequest(method, server.URL+path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	_, phone := session(alice, "token-phone-0000000001")
+	laptopID, laptop := session(alice, "token-laptop-000000001")
+	_, tablet := session(alice, "token-tablet-000000001")
+	_, bobPhone := session(bob, "token-bob-phone-000001")
+
+	// Revoking one session from another device ends only that socket.
+	if status := request("DELETE", "/v1/auth/sessions/"+laptopID, "token-phone-0000000001"); status != 200 {
+		t.Fatalf("revoke %d", status)
+	}
+	if code := laptop.closedWith(); code != websocket.StatusPolicyViolation {
+		t.Fatalf("revoked socket closed with %v", code)
+	}
+	phone.quiet()
+	// Sign out everywhere else ends the tablet, not the phone and not another account.
+	if status := request("POST", "/v1/auth/sessions/revoke-others", "token-phone-0000000001"); status != 200 {
+		t.Fatalf("revoke others %d", status)
+	}
+	if code := tablet.closedWith(); code != websocket.StatusPolicyViolation {
+		t.Fatalf("other socket closed with %v", code)
+	}
+	phone.quiet()
+	bobPhone.quiet()
+	// Signing out ends the caller's own socket.
+	if status := request("POST", "/v1/auth/logout", "token-phone-0000000001"); status != 200 {
+		t.Fatalf("logout %d", status)
+	}
+	if code := phone.closedWith(); code != websocket.StatusPolicyViolation {
+		t.Fatalf("signed-out socket closed with %v", code)
+	}
+	// Expiry and suspension are found at the next heartbeat.
+	expiringID, expiring := session(alice, "token-expiring-0000001")
+	h.exec(`UPDATE sessions SET expires_at=now()-interval '1 second' WHERE session_id=$1`, expiringID)
+	if code := expiring.closedWith(); code != websocket.StatusPolicyViolation {
+		t.Fatalf("expired socket closed with %v", code)
+	}
+	h.exec(`UPDATE users SET status='suspended' WHERE user_id=$1`, bob)
+	if code := bobPhone.closedWith(); code != websocket.StatusPolicyViolation {
+		t.Fatalf("suspended socket closed with %v", code)
+	}
+	if _, resp, err := dial(t, server, "token-bob-phone-000001"); err == nil || resp == nil || resp.StatusCode != 401 {
+		t.Fatalf("suspended account reconnected: %v", err)
+	}
+}
+
+// The moderation tool is a separate process: suspending through it notifies every API node on
+// the realtime channel, in the same transaction, and the hub turns that into a disconnect.
+func TestSuspensionNotifiesEveryNodeToEndConnections(t *testing.T) {
+	h := newSocialHarness(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := h.db.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err = conn.Exec(ctx, `LISTEN `+realtime.Channel); err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Exec(context.Background(), `UNLISTEN *`)
+	report := h.expect(h.send(alice, "POST", "/v1/reports", map[string]any{"targetType": "user", "targetId": bob, "reasonCode": "spam"}), 201, "").data["report"].(map[string]any)["reportId"].(string)
+	if err = h.db.ResolveReport(ctx, report, "operator", "suspend", ""); err != nil {
+		t.Fatal(err)
+	}
+	n, err := conn.Conn().WaitForNotification(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e realtime.Event
+	if err = json.Unmarshal([]byte(n.Payload), &e); err != nil || len(e.Users) != 1 || e.Users[0] != bob {
+		t.Fatalf("notice %s %v", n.Payload, err)
+	}
+	// Delivered to a hub, the notice ends the user's connections and is never sent to a client.
+	hub := realtime.NewHub(realtime.NewLocalBus(), 5, 10)
+	runCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go hub.Run(runCtx, func(int) time.Duration { return time.Millisecond })
+	bobClient, aliceClient := realtime.NewClient(bob, 4), realtime.NewClient(alice, 4)
+	hub.Register(bobClient)
+	hub.Register(aliceClient)
+	hub.Publish(ctx, e.Type, e.Data, e.Users...)
+	select {
+	case <-bobClient.Closed:
+	case <-time.After(time.Second):
+		t.Fatal("suspended user's connection kept")
+	}
+	if !bobClient.Ended() || len(bobClient.Send) != 0 {
+		t.Fatalf("notice reached the client or did not end it")
+	}
+	select {
+	case <-aliceClient.Closed:
+		t.Fatal("another user's connection ended")
+	default:
 	}
 }

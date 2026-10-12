@@ -10,14 +10,20 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
-	"kairova/services/api/internal/domain"
-	"kairova/services/api/internal/store"
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/store"
 )
+
+// Resolve maps a verified provider identity to an account and session.
+type Resolve func(ctx context.Context, issuer, subject, sid string, expiry time.Time) (store.Principal, error)
 
 type Verifier struct {
 	verifier *oidc.IDTokenVerifier
 	issuer   string
 	store    *store.Store
+	resolve  Resolve
+	// firebase selects Firebase ID-token semantics instead of OIDC access tokens.
+	firebase bool
 }
 
 func New(ctx context.Context, issuer, audience string, s *store.Store) (*Verifier, error) {
@@ -26,14 +32,17 @@ func New(ctx context.Context, issuer, audience string, s *store.Store) (*Verifie
 	if err != nil {
 		return nil, err
 	}
-	return &Verifier{provider.Verifier(&oidc.Config{ClientID: audience, SupportedSigningAlgs: []string{"RS256", "ES256"}}), issuer, s}, nil
+	return &Verifier{verifier: provider.Verifier(&oidc.Config{ClientID: audience, SupportedSigningAlgs: []string{"RS256", "ES256"}}), issuer: issuer, store: s, resolve: s.ResolveOIDC}, nil
 }
 func (v *Verifier) Verify(ctx context.Context, raw string) (store.Principal, error) {
+	if v.firebase {
+		return v.verifyFirebase(ctx, raw)
+	}
 	token, sid, err := v.accessClaims(ctx, raw)
 	if err != nil {
 		return store.Principal{}, domain.ErrUnauthorized
 	}
-	return v.store.ResolveOIDC(ctx, v.issuer, token.Subject, sid, token.Expiry)
+	return v.resolve(ctx, v.issuer, token.Subject, sid, token.Expiry)
 }
 func (v *Verifier) accessClaims(ctx context.Context, raw string) (*oidc.IDToken, string, error) {
 	token, err := v.verifier.Verify(ctx, raw)

@@ -5,8 +5,6 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	"github.com/google/uuid"
 )
 
 // ReportReasons maps each accepted reason to its queue severity. High-severity
@@ -27,9 +25,10 @@ var ReportReasons = map[string]string{
 }
 
 const (
-	maxEvidence     = 10
-	maxEvidenceText = 4000
-	maxDescription  = 1000
+	maxAttachmentsPerEvidence = 4
+	maxEvidence               = 10
+	maxEvidenceText           = 4000
+	maxDescription            = 1000
 )
 
 // Evidence is one decrypted message the reporter chose to share. The server
@@ -40,6 +39,9 @@ type Evidence struct {
 	Text      string    `json:"text"`
 	SentAt    time.Time `json:"sentAt"`
 	FromMe    bool      `json:"fromMe"`
+	// Attachments are encrypted images of this message the reporter chose to share, with the descriptor
+	// (and so the key) they hold. Blobs named here are held against deletion while the report is open.
+	Attachments []EvidenceAttachment `json:"attachments,omitempty"`
 }
 
 type NewReport struct {
@@ -67,13 +69,16 @@ func ParseReport(raw []byte) (NewReport, error) {
 	default:
 		return r, invalid("targetType", "must be user, conversation, message, post, comment or story")
 	}
-	if _, err := uuid.Parse(r.TargetID); err != nil {
+	if !IsID(r.TargetID) {
 		return r, invalid("targetId", "must be an id")
 	}
 	if _, ok := ReportReasons[r.ReasonCode]; !ok {
 		return r, invalid("reasonCode", "is not a supported reason")
 	}
 	r.Description = strings.TrimSpace(r.Description)
+	if !CleanText(r.Description) {
+		return r, invalid("description", "must be valid text")
+	}
 	if utf8.RuneCountInString(r.Description) > maxDescription {
 		return r, invalid("description", "keep it under 1000 characters")
 	}
@@ -88,12 +93,20 @@ func ParseReport(raw []byte) (NewReport, error) {
 	}
 	seen := map[string]bool{}
 	for _, e := range r.Evidence {
-		if _, err := uuid.Parse(e.MessageID); err != nil || seen[e.MessageID] {
+		if !IsID(e.MessageID) || seen[e.MessageID] {
 			return r, invalid("evidence", "each message must be a distinct id")
 		}
 		seen[e.MessageID] = true
-		if e.Text == "" || utf8.RuneCountInString(e.Text) > maxEvidenceText || e.SentAt.IsZero() {
+		if e.Text == "" || !CleanText(e.Text) || utf8.RuneCountInString(e.Text) > maxEvidenceText || e.SentAt.IsZero() {
 			return r, invalid("evidence", "each message needs its text (up to 4000 characters) and time")
+		}
+		if len(e.Attachments) > maxAttachmentsPerEvidence {
+			return r, invalid("evidence", "share at most 4 attachments per message")
+		}
+		for _, a := range e.Attachments {
+			if !ValidBlobIDs(a.BlobIDs, MaxBlobsPerMessage) || !validDescriptor(a.Descriptor) {
+				return r, invalid("evidence", "each attachment needs 1-4 distinct blob ids and its descriptor object (up to 4 KiB)")
+			}
 		}
 	}
 	if len(r.Evidence) == 0 {
@@ -102,16 +115,30 @@ func ParseReport(raw []byte) (NewReport, error) {
 	return r, nil
 }
 
+// validDescriptor is a JSON object of bounded size; the server never interprets it.
+func validDescriptor(raw json.RawMessage) bool {
+	var object map[string]json.RawMessage
+	return len(raw) > 0 && len(raw) <= MaxAttachmentDescriptor && json.Unmarshal(raw, &object) == nil && object != nil
+}
+
+// ReportSubject names who a report is about, only when the reporter may know them (see the
+// store); like the name, a photo would reveal a member the reporter may not know, so it has none.
+type ReportSubject struct {
+	UserID      string `json:"userId"`
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName"`
+}
+
 // Report is what a reporter sees of their own report.
 type Report struct {
-	ReportID   string      `json:"reportId"`
-	TargetType string      `json:"targetType"`
-	TargetID   string      `json:"targetId"`
-	Subject    UserSummary `json:"subject"`
-	ReasonCode string      `json:"reasonCode"`
-	Status     string      `json:"status"`
-	CreatedAt  time.Time   `json:"createdAt"`
-	ResolvedAt *time.Time  `json:"resolvedAt"`
+	ReportID   string        `json:"reportId"`
+	TargetType string        `json:"targetType"`
+	TargetID   string        `json:"targetId"`
+	Subject    ReportSubject `json:"subject"`
+	ReasonCode string        `json:"reasonCode"`
+	Status     string        `json:"status"`
+	CreatedAt  time.Time     `json:"createdAt"`
+	ResolvedAt *time.Time    `json:"resolvedAt"`
 }
 
 // Control is one entry in the caller's blocked, muted or restricted list.
@@ -137,5 +164,7 @@ func ParseMuteUntil(raw map[string]json.RawMessage, now time.Time) (*time.Time, 
 	if json.Unmarshal(value, &until) != nil || !until.After(now) {
 		return nil, invalid("until", "must be a future time")
 	}
+	// Echoed and stored in UTC, whatever offset the client used.
+	until = until.UTC()
 	return &until, nil
 }

@@ -3,10 +3,11 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"kairova/services/api/internal/domain"
+	"hiyall/services/api/internal/domain"
 )
 
 // querier is satisfied by both the pool and a transaction.
@@ -15,12 +16,17 @@ type querier interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
-const blockedBetween = `EXISTS(SELECT 1 FROM blocks WHERE (blocker_id=$1 AND blocked_id=$2) OR (blocker_id=$2 AND blocked_id=$1))`
+// barredBetween is true when $1 and $2 may not see or reach each other: a block in either
+// direction or, while age-band isolation is on, different age bands (interaction_barred,
+// migration 0017). Every place that used to check only blocks between two members uses it,
+// so a cross-band attempt looks exactly like a block. The safety lists of real blocks do not.
+const barredBetween = `interaction_barred($1::uuid,$2::uuid)`
 
 // lockPair locks both accounts in id order so reciprocal actions cannot deadlock.
-// Inactive accounts and blocked pairs are indistinguishable from missing ones.
+// Inactive accounts, accounts that have not finished onboarding (their profile is hidden too)
+// and barred pairs (blocked, or in different age bands) are indistinguishable from missing ones.
 func lockPair(ctx context.Context, tx pgx.Tx, a, b string) error {
-	rows, err := tx.Query(ctx, `SELECT user_id FROM users WHERE user_id IN ($1,$2) AND status='active' ORDER BY user_id FOR UPDATE`, a, b)
+	rows, err := tx.Query(ctx, `SELECT u.user_id FROM users u JOIN onboarding o ON o.user_id=u.user_id AND o.completed_at IS NOT NULL WHERE u.user_id IN ($1,$2) AND u.status='active' ORDER BY u.user_id FOR UPDATE OF u`, a, b)
 	if err != nil {
 		return err
 	}
@@ -35,11 +41,11 @@ func lockPair(ctx context.Context, tx pgx.Tx, a, b string) error {
 	if count != 2 {
 		return domain.ErrNotFound
 	}
-	var blocked bool
-	if err = tx.QueryRow(ctx, `SELECT `+blockedBetween, a, b).Scan(&blocked); err != nil {
+	var barred bool
+	if err = tx.QueryRow(ctx, `SELECT `+barredBetween, a, b).Scan(&barred); err != nil {
 		return err
 	}
-	if blocked {
+	if barred {
 		return domain.ErrNotFound
 	}
 	return nil
@@ -262,16 +268,18 @@ func (s *Store) RemoveFollower(ctx context.Context, owner, follower string) erro
 	})
 }
 
-const friendRequestSelect = `SELECT f.friendship_id::text,f.status,f.created_at,
- s.user_id::text,s.username,coalesce(s.data->>'displayName',''),
- r.user_id::text,r.username,coalesce(r.data->>'displayName','')
+var friendRequestSelect = `SELECT f.friendship_id::text,f.status,f.created_at,
+ s.user_id::text,s.username,coalesce(s.data->>'displayName',''),` + avatarThumbKey("sav") + `,
+ r.user_id::text,r.username,coalesce(r.data->>'displayName',''),` + avatarThumbKey("rav") + `
  FROM friendships f
  JOIN profiles s ON s.user_id=f.requested_by
- JOIN profiles r ON r.user_id=CASE WHEN f.requested_by=f.user_low_id THEN f.user_high_id ELSE f.user_low_id END`
+ JOIN profiles r ON r.user_id=CASE WHEN f.requested_by=f.user_low_id THEN f.user_high_id ELSE f.user_low_id END` + avatarJoin("sav", "s") + avatarJoin("rav", "r")
 
-func scanFriendRequest(row pgx.Row) (domain.FriendRequest, error) {
+func scanFriendRequest(row pgx.Row, sign Signer) (domain.FriendRequest, error) {
 	var f domain.FriendRequest
-	err := row.Scan(&f.RequestID, &f.Status, &f.CreatedAt, &f.Sender.UserID, &f.Sender.Username, &f.Sender.DisplayName, &f.Recipient.UserID, &f.Recipient.Username, &f.Recipient.DisplayName)
+	var sender, recipient *string
+	err := row.Scan(&f.RequestID, &f.Status, &f.CreatedAt, &f.Sender.UserID, &f.Sender.Username, &f.Sender.DisplayName, &sender, &f.Recipient.UserID, &f.Recipient.Username, &f.Recipient.DisplayName, &recipient)
+	f.Sender.AvatarURL, f.Recipient.AvatarURL = avatarURL(sign, sender), avatarURL(sign, recipient)
 	return f, mapped(err)
 }
 
@@ -289,7 +297,7 @@ func acceptFriend(ctx context.Context, tx pgx.Tx, id, recipient, requester strin
 }
 
 // SendFriendRequest is idempotent, and accepts instead when the target already asked.
-func (s *Store) SendFriendRequest(ctx context.Context, actor, target string) (domain.FriendRequest, error) {
+func (s *Store) SendFriendRequest(ctx context.Context, actor, target string, sign Signer) (domain.FriendRequest, error) {
 	if err := noSelf(actor, target); err != nil {
 		return domain.FriendRequest{}, err
 	}
@@ -316,13 +324,14 @@ func (s *Store) SendFriendRequest(ctx context.Context, actor, target string) (do
 		case "accepted":
 			return tx.QueryRow(ctx, `SELECT friendship_id::text FROM friendships WHERE user_low_id=least($1::uuid,$2::uuid) AND user_high_id=greatest($1::uuid,$2::uuid)`, actor, target).Scan(&id)
 		}
-		var cooling bool
-		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM friendships WHERE user_low_id=least($1::uuid,$2::uuid) AND user_high_id=greatest($1::uuid,$2::uuid) AND status='declined' AND requested_by=$1 AND responded_at>now()-interval '7 days')`, actor, target).Scan(&cooling)
-		if err != nil {
+		// The cooldown lasts 7 days from the decline; the refusal says how long is left.
+		var remaining *int64
+		err = tx.QueryRow(ctx, `SELECT ceil(extract(epoch FROM responded_at+interval '7 days'-now()))::bigint FROM friendships WHERE user_low_id=least($1::uuid,$2::uuid) AND user_high_id=greatest($1::uuid,$2::uuid) AND status='declined' AND requested_by=$1 AND responded_at>now()-interval '7 days'`, actor, target).Scan(&remaining)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		if cooling {
-			return domain.ErrRequestCooldown
+		if remaining != nil {
+			return domain.RetryAfter(domain.ErrRequestCooldown, time.Duration(*remaining)*time.Second)
 		}
 		if !rel.CanFriendRequest {
 			return domain.ErrRequestNotAllowed
@@ -340,13 +349,13 @@ func (s *Store) SendFriendRequest(ctx context.Context, actor, target string) (do
 	if err != nil {
 		return domain.FriendRequest{}, err
 	}
-	return scanFriendRequest(s.Pool.QueryRow(ctx, friendRequestSelect+` WHERE f.friendship_id=$1`, id))
+	return scanFriendRequest(s.Pool.QueryRow(ctx, friendRequestSelect+` WHERE f.friendship_id=$1`, id), sign)
 }
 
 // RespondFriendRequest is recipient-only; anyone else sees the request as missing.
-func (s *Store) RespondFriendRequest(ctx context.Context, actor, id string, accept bool) (domain.FriendRequest, error) {
+func (s *Store) RespondFriendRequest(ctx context.Context, actor, id string, accept bool, sign Signer) (domain.FriendRequest, error) {
 	var requester string
-	err := s.Pool.QueryRow(ctx, `SELECT requested_by::text FROM friendships WHERE friendship_id=$1 AND status='pending' AND $2 IN (user_low_id,user_high_id) AND requested_by<>$2`, id, actor).Scan(&requester)
+	err := s.Pool.QueryRow(ctx, `SELECT requested_by::text FROM friendships WHERE friendship_id=$1 AND status='pending' AND $2 IN (user_low_id,user_high_id) AND requested_by<>$2 AND NOT interaction_barred($2::uuid,requested_by)`, id, actor).Scan(&requester)
 	if err != nil {
 		return domain.FriendRequest{}, mapped(err)
 	}
@@ -375,7 +384,7 @@ func (s *Store) RespondFriendRequest(ctx context.Context, actor, id string, acce
 	if err != nil {
 		return domain.FriendRequest{}, err
 	}
-	return scanFriendRequest(s.Pool.QueryRow(ctx, friendRequestSelect+` WHERE f.friendship_id=$1`, id))
+	return scanFriendRequest(s.Pool.QueryRow(ctx, friendRequestSelect+` WHERE f.friendship_id=$1`, id), sign)
 }
 
 // CancelFriendRequest is requester-only.
@@ -383,6 +392,7 @@ func (s *Store) CancelFriendRequest(ctx context.Context, actor, id string) error
 	return s.inTx(ctx, func(tx pgx.Tx) error {
 		var recipient string
 		err := tx.QueryRow(ctx, `UPDATE friendships SET status='cancelled',updated_at=now() WHERE friendship_id=$1 AND requested_by=$2 AND status='pending'
+ AND NOT interaction_barred($2::uuid,CASE WHEN user_low_id=$2 THEN user_high_id ELSE user_low_id END)
  RETURNING (CASE WHEN user_low_id=$2 THEN user_high_id ELSE user_low_id END)::text`, id, actor).Scan(&recipient)
 		if err != nil {
 			return mapped(err)
@@ -405,11 +415,12 @@ func (s *Store) Unfriend(ctx context.Context, actor, target string) error {
 	})
 }
 
-func (s *Store) ListFriendRequests(ctx context.Context, actor string, incoming bool, before *time.Time, beforeID string, limit int) ([]domain.FriendRequest, error) {
+func (s *Store) ListFriendRequests(ctx context.Context, actor string, incoming bool, before *time.Time, beforeID string, limit int, sign Signer) ([]domain.FriendRequest, error) {
 	rows, err := s.Pool.Query(ctx, friendRequestSelect+`
  JOIN users su ON su.user_id=s.user_id AND su.status='active'
  JOIN users ru ON ru.user_id=r.user_id AND ru.status='active'
  WHERE f.status='pending' AND (CASE WHEN $2 THEN r.user_id=$1 ELSE s.user_id=$1 END)
+ AND NOT interaction_barred($1::uuid,CASE WHEN $2 THEN s.user_id ELSE r.user_id END)
  AND ($3::timestamptz IS NULL OR (f.created_at,f.friendship_id)<($3,$4::uuid))
  ORDER BY f.created_at DESC,f.friendship_id DESC LIMIT $5`, actor, incoming, before, beforeID, limit)
 	if err != nil {
@@ -418,7 +429,7 @@ func (s *Store) ListFriendRequests(ctx context.Context, actor string, incoming b
 	defer rows.Close()
 	result := []domain.FriendRequest{}
 	for rows.Next() {
-		f, err := scanFriendRequest(rows)
+		f, err := scanFriendRequest(rows, sign)
 		if err != nil {
 			return nil, err
 		}
@@ -434,13 +445,29 @@ var connectionSources = map[string]string{
 	"follow_requests": `SELECT follower_id,created_at FROM follows WHERE followee_id=$1 AND state='pending'`,
 }
 
-// CanSeeConnections gates another person's friends/followers/following lists.
+// CanSeeConnections gates another person's followers and following lists. The owner always may.
+// Anyone else needs the owner's profile audience and the owner's "connections" field audience to admit
+// them; for an adult owner that field starts at "followers", so a viewer with an active follow on the
+// owner (and a friend) may open the lists, while a pending request, an unfollow, a block or the other
+// age band does not. A minor's field starts at "friends" (domain.ApplyMinorDefaults).
 func (s *Store) CanSeeConnections(ctx context.Context, viewer, owner string) error {
+	return s.canSeeConnectionList(ctx, viewer, owner, false)
+}
+
+// CanSeeFriends gates another person's friends list. It is stricter: the connections audience applies as
+// for the other lists, except that "followers" is read as "friends", so the accepted friendships of a
+// member are listed to their friends (and the member) only, however many people follow them. An owner who
+// has opened the field to "everyone" through the API still opens it to everyone, as before.
+func (s *Store) CanSeeFriends(ctx context.Context, viewer, owner string) error {
+	return s.canSeeConnectionList(ctx, viewer, owner, true)
+}
+
+func (s *Store) canSeeConnectionList(ctx context.Context, viewer, owner string, friendsList bool) error {
 	if viewer == owner {
 		return nil
 	}
 	var visible bool
-	if err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE user_id=$2 AND status='active') AND NOT `+blockedBetween, viewer, owner).Scan(&visible); err != nil {
+	if err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users u JOIN onboarding o USING(user_id) WHERE u.user_id=$2 AND u.status='active' AND o.completed_at IS NOT NULL) AND NOT `+barredBetween, viewer, owner).Scan(&visible); err != nil {
 		return err
 	}
 	if !visible {
@@ -454,24 +481,29 @@ func (s *Store) CanSeeConnections(ctx context.Context, viewer, owner string) err
 	if err != nil {
 		return err
 	}
-	if !rel.Allows(policy.ProfileAudience) || !rel.Allows(policy.FieldAudiences["connections"]) {
+	audience := policy.FieldAudiences["connections"]
+	if friendsList && audience == "followers" {
+		audience = "friends"
+	}
+	if !rel.Allows(policy.ProfileAudience) || !rel.Allows(audience) {
 		return domain.ErrConnectionsPrivate
 	}
 	return nil
 }
 
-// ListConnections hides inactive accounts and anyone blocked by or blocking the
-// owner or the viewer, so lists never resurface a blocked person.
-func (s *Store) ListConnections(ctx context.Context, kind, viewer, owner string, before *time.Time, beforeID string, limit int) ([]domain.Connection, error) {
+// ListConnections hides inactive accounts and anyone barred from the owner or the viewer
+// (blocked in either direction, or in the other age band), so lists never resurface them.
+func (s *Store) ListConnections(ctx context.Context, kind, viewer, owner string, before *time.Time, beforeID string, limit int, sign Signer) ([]domain.Connection, error) {
 	source, ok := connectionSources[kind]
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
 	rows, err := s.Pool.Query(ctx, `WITH c(other,since) AS (`+source+`)
- SELECT p.user_id::text,p.username,coalesce(p.data->>'displayName',''),c.since FROM c
+ SELECT p.user_id::text,p.username,coalesce(p.data->>'displayName',''),`+avatarThumbKey("av")+`,c.since,coalesce(vf.state,'none') FROM c
  JOIN users u ON u.user_id=c.other AND u.status='active'
- JOIN profiles p ON p.user_id=c.other
- WHERE NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id IN ($1,$2) AND b.blocked_id=c.other) OR (b.blocker_id=c.other AND b.blocked_id IN ($1,$2)))
+ JOIN profiles p ON p.user_id=c.other`+avatarJoin("av", "p")+`
+ LEFT JOIN follows vf ON vf.follower_id=$2 AND vf.followee_id=c.other AND vf.state<>'removed'
+ WHERE NOT interaction_barred($1::uuid,c.other) AND NOT interaction_barred($2::uuid,c.other)
  AND ($3::timestamptz IS NULL OR (c.since,c.other)<($3,$4::uuid))
  ORDER BY c.since DESC,c.other DESC LIMIT $5`, owner, viewer, before, beforeID, limit)
 	if err != nil {
@@ -481,21 +513,60 @@ func (s *Store) ListConnections(ctx context.Context, kind, viewer, owner string,
 	result := []domain.Connection{}
 	for rows.Next() {
 		var c domain.Connection
-		if err = rows.Scan(&c.User.UserID, &c.User.Username, &c.User.DisplayName, &c.Since); err != nil {
+		var avatar *string
+		var following string
+		if err = rows.Scan(&c.User.UserID, &c.User.Username, &c.User.DisplayName, &avatar, &c.Since, &following); err != nil {
 			return nil, err
 		}
+		c.User.AvatarURL, c.Following = avatarURL(sign, avatar), &following
 		result = append(result, c)
 	}
 	return result, rows.Err()
 }
 
-const visibleNotifications = `FROM notifications n
- JOIN users u ON u.user_id=n.actor_id AND u.status='active'
- JOIN profiles p ON p.user_id=n.actor_id
- WHERE n.recipient_id=$1 AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$1 AND b.blocked_id=n.actor_id) OR (b.blocker_id=n.actor_id AND b.blocked_id=$1))`
+// ListVisitors pages the members who opened the owner's own profile, newest first visit first. Only the
+// owner's own list exists: there is no way to ask for someone else's. Inactive accounts and anyone barred
+// from the owner (blocked in either direction, or in the other age band) are left out. limitTotal
+// (the member's VisitorListLimit) is how many of the most recent visitors the list ever returns, across
+// all its pages; the cap is applied after those exclusions.
+func (s *Store) ListVisitors(ctx context.Context, owner string, before *time.Time, beforeID string, limit, limitTotal int, sign Signer) ([]domain.Visitor, error) {
+	limitTotal = max(limitTotal, 0)
+	rows, err := s.Pool.Query(ctx, `WITH v AS (
+  SELECT pv.visitor_id,pv.first_visited_at FROM profile_visits pv
+  JOIN users u ON u.user_id=pv.visitor_id AND u.status='active'
+  WHERE pv.profile_id=$1 AND NOT interaction_barred($1::uuid,pv.visitor_id)
+  ORDER BY pv.first_visited_at DESC,pv.visitor_id DESC LIMIT $2)
+ SELECT p.user_id::text,p.username,coalesce(p.data->>'displayName',''),`+avatarThumbKey("av")+`,v.first_visited_at,coalesce(vf.state,'none') FROM v
+ JOIN profiles p ON p.user_id=v.visitor_id`+avatarJoin("av", "p")+`
+ LEFT JOIN follows vf ON vf.follower_id=$1 AND vf.followee_id=v.visitor_id AND vf.state<>'removed'
+ WHERE ($3::timestamptz IS NULL OR (v.first_visited_at,v.visitor_id)<($3,$4::uuid))
+ ORDER BY v.first_visited_at DESC,v.visitor_id DESC LIMIT $5`, owner, limitTotal, before, beforeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []domain.Visitor{}
+	for rows.Next() {
+		var v domain.Visitor
+		var avatar *string
+		if err = rows.Scan(&v.User.UserID, &v.User.Username, &v.User.DisplayName, &avatar, &v.FirstVisitedAt, &v.Following); err != nil {
+			return nil, err
+		}
+		v.User.AvatarURL = avatarURL(sign, avatar)
+		result = append(result, v)
+	}
+	return result, rows.Err()
+}
 
-func (s *Store) ListNotifications(ctx context.Context, recipient string, unreadOnly bool, before *time.Time, beforeID string, limit int) ([]domain.Notification, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT n.notification_id::text,n.event,n.target_id::text,n.created_at,n.read_at,p.user_id::text,p.username,coalesce(p.data->>'displayName','') `+visibleNotifications+`
+const notificationsFrom = `FROM notifications n
+ JOIN users u ON u.user_id=n.actor_id AND u.status='active'
+ JOIN profiles p ON p.user_id=n.actor_id`
+const notificationsWhere = `
+ WHERE n.recipient_id=$1 AND NOT interaction_barred($1::uuid,n.actor_id)`
+const visibleNotifications = notificationsFrom + notificationsWhere
+
+func (s *Store) ListNotifications(ctx context.Context, recipient string, unreadOnly bool, before *time.Time, beforeID string, limit int, sign Signer) ([]domain.Notification, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT n.notification_id::text,n.event,n.target_id::text,n.created_at,n.read_at,p.user_id::text,p.username,coalesce(p.data->>'displayName',''),`+avatarThumbKey("av")+` `+notificationsFrom+avatarJoin("av", "p")+notificationsWhere+`
  AND (NOT $2 OR n.read_at IS NULL)
  AND ($3::timestamptz IS NULL OR (n.created_at,n.notification_id)<($3,$4::uuid))
  ORDER BY n.created_at DESC,n.notification_id DESC LIMIT $5`, recipient, unreadOnly, before, beforeID, limit)
@@ -507,9 +578,11 @@ func (s *Store) ListNotifications(ctx context.Context, recipient string, unreadO
 	for rows.Next() {
 		var n domain.Notification
 		var actor domain.UserSummary
-		if err = rows.Scan(&n.NotificationID, &n.Event, &n.TargetID, &n.CreatedAt, &n.ReadAt, &actor.UserID, &actor.Username, &actor.DisplayName); err != nil {
+		var avatar *string
+		if err = rows.Scan(&n.NotificationID, &n.Event, &n.TargetID, &n.CreatedAt, &n.ReadAt, &actor.UserID, &actor.Username, &actor.DisplayName, &avatar); err != nil {
 			return nil, err
 		}
+		actor.AvatarURL = avatarURL(sign, avatar)
 		labels := domain.NotificationCopy[n.Event]
 		n.Type, n.TargetType = labels[0], labels[1]
 		n.Text = actor.Name() + " " + labels[2]
