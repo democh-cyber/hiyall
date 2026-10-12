@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../shared/chat_tokens.dart';
+
 abstract final class VibeColors {
   static const ink = Color(0xff20231f);
   static const lime = Color(0xffd2f65a);
@@ -14,7 +16,7 @@ abstract final class VibeColors {
   static const info = Color(0xff564383);
 }
 
-ThemeData kairovaTheme(Brightness brightness) {
+ThemeData hiyallTheme(Brightness brightness) {
   final dark = brightness == Brightness.dark;
   final scheme =
       ColorScheme.fromSeed(
@@ -45,7 +47,8 @@ ThemeData kairovaTheme(Brightness brightness) {
   );
   final headings = base.textTheme.apply(fontFamily: 'SpaceGrotesk');
   return base.copyWith(
-    scaffoldBackgroundColor: dark ? const Color(0xff191c18) : VibeColors.cream,
+    scaffoldBackgroundColor: dark ? ChatTokens.dark.bg : VibeColors.cream,
+    extensions: [if (dark) ChatTokens.dark else ChatTokens.light],
     textTheme: base.textTheme.copyWith(
       displayLarge: headings.displayLarge?.copyWith(
         fontWeight: FontWeight.w700,

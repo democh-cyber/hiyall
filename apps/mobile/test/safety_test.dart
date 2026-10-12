@@ -1,11 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:kairova/app.dart';
-import 'package:kairova/core/api.dart';
-import 'package:kairova/core/chat/chat_engine.dart';
-import 'package:kairova/core/state.dart';
-import 'package:kairova/features/safety.dart';
+import 'package:hiyall/app.dart';
+import 'package:hiyall/core/api.dart';
+import 'package:hiyall/core/chat/chat_engine.dart';
+import 'package:hiyall/core/state.dart';
+import 'package:hiyall/features/safety.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
 
@@ -88,6 +90,29 @@ class SafetyApi extends FakeApi {
   }
 }
 
+/// Lists answer only when their gate opens; unblocking can be refused.
+class SlowControls extends SafetyApi {
+  final gates = <String, Completer<void>>{};
+  bool refuseUnblock = false;
+  @override
+  Future<ApiPage<Map<String, dynamic>>> controls(
+    Session s,
+    String kind, [
+    String? cursor,
+  ]) async {
+    calls.add('list $kind');
+    await gates[kind]?.future;
+    return super.controls(s, kind, cursor);
+  }
+
+  @override
+  Future<void> block(Session session, String userId, bool value) async {
+    await gates['unblock']?.future;
+    if (refuseUnblock) throw const ApiFailure('Could not connect.');
+    return super.block(session, userId, value);
+  }
+}
+
 Future<ProviderContainer> start(
   WidgetTester tester,
   SafetyApi api,
@@ -105,7 +130,7 @@ Future<ProviderContainer> start(
   );
   addTearDown(container.dispose);
   await tester.pumpWidget(
-    UncontrolledProviderScope(container: container, child: const KairovaApp()),
+    UncontrolledProviderScope(container: container, child: const HiyallApp()),
   );
   container.read(routerProvider).go(at);
   await tester.pumpAndSettle();
@@ -334,6 +359,57 @@ void main() {
     await tester.tap(find.text('Unmute'));
     await tester.pumpAndSettle();
     expect(api.calls, contains('mute $nikoId false'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Switching lists mid-load still loads the new list', (
+    tester,
+  ) async {
+    Map<String, dynamic> person(String id, String name) => {
+      'user': {'userId': id, 'username': id, 'displayName': name},
+      'since': '2026-10-01T10:00:00Z',
+    };
+    final api = SlowControls()
+      ..lists['muted'] = [person('m1', 'Mo')]
+      ..lists['restricted'] = [person('r1', 'Ro')];
+    await start(tester, api, '/profile/controls');
+    api.gates['muted'] = Completer();
+    await tester.tap(find.text('Muted'));
+    await tester.pump();
+    // Muted is still loading; Restricted must not be dropped because of it.
+    await tester.tap(find.text('Restricted'));
+    await tester.pump();
+    await tester.pump();
+    expect(api.calls.where((c) => c == 'list restricted'), hasLength(1));
+    expect(find.text('Ro'), findsOneWidget);
+    api.gates['muted']!.complete();
+    await tester.pumpAndSettle();
+    // The slow muted list lands in its own tab, not this one.
+    expect(find.text('Ro'), findsOneWidget);
+    expect(find.text('Mo'), findsNothing);
+    await tester.tap(find.text('Muted'));
+    await tester.pumpAndSettle();
+    expect(find.text('Mo'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('A refused undo puts the person back in its own list', (
+    tester,
+  ) async {
+    final api = SlowControls()..refuseUnblock = true;
+    await start(tester, api, '/profile/controls');
+    api.gates['unblock'] = Completer();
+    await tester.tap(find.text('Unblock'));
+    await tester.pump();
+    expect(find.text('Niko'), findsNothing);
+    await tester.tap(find.text('Muted'));
+    await tester.pumpAndSettle();
+    api.gates['unblock']!.complete();
+    await tester.pumpAndSettle();
+    expect(find.text('Niko'), findsNothing, reason: 'muted list is empty');
+    await tester.tap(find.text('Blocked'));
+    await tester.pumpAndSettle();
+    expect(find.text('Niko'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

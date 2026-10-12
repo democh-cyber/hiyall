@@ -1,13 +1,14 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:kairova/app.dart';
-import 'package:kairova/core/api.dart';
-import 'package:kairova/core/state.dart';
-import 'package:kairova/features/pulse.dart';
+import 'package:hiyall/app.dart';
+import 'package:hiyall/core/api.dart';
+import 'package:hiyall/core/state.dart';
+import 'package:hiyall/features/pulse.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
 
@@ -21,6 +22,10 @@ class PulseApi extends FakeApi {
   String? posted;
   List<String>? postedMedia;
   String? storyBody;
+
+  /// The whole last story request: what the composer sent to createStory.
+  Map<String, Object?>? storySent;
+  Object? postFailure, storyFailure, uploadFailure;
 
   @override
   Future<void> react(Session s, String postId, String? reaction) async {
@@ -70,6 +75,7 @@ class PulseApi extends FakeApi {
     required String purpose,
     void Function(double progress)? onProgress,
   }) async {
+    if (uploadFailure != null) throw uploadFailure!;
     calls.add('upload $purpose $contentType ${bytes.length}');
     onProgress?.call(1);
     return 'media-${calls.length}';
@@ -82,6 +88,7 @@ class PulseApi extends FakeApi {
     required String audience,
     List<String> mediaIds = const [],
   }) async {
+    if (postFailure != null) throw postFailure!;
     posted = '$audience:$body';
     postedMedia = mediaIds;
     return Post(
@@ -102,9 +109,22 @@ class PulseApi extends FakeApi {
     Session s, {
     String body = '',
     String background = 'lime',
+    String textStyle = 'clean',
+    int lifetimeHours = 24,
     String? mediaId,
     required String audience,
-  }) async => storyBody = '$audience:$background:$body';
+  }) async {
+    if (storyFailure != null) throw storyFailure!;
+    storyBody = '$audience:$background:$body';
+    storySent = {
+      'body': body,
+      'background': background,
+      'textStyle': textStyle,
+      'lifetimeHours': lifetimeHours,
+      'mediaId': mediaId,
+      'audience': audience,
+    };
+  }
 }
 
 class FakePicker extends ImagePicker {
@@ -155,7 +175,7 @@ Future<ProviderContainer> start(
   );
   addTearDown(container.dispose);
   await tester.pumpWidget(
-    UncontrolledProviderScope(container: container, child: const KairovaApp()),
+    UncontrolledProviderScope(container: container, child: const HiyallApp()),
   );
   container.read(routerProvider).go(at);
   await tester.pumpAndSettle();
@@ -344,6 +364,104 @@ void main() {
     expect(api.postedMedia, hasLength(2));
   });
 
+  group('Limits are explained in the server’s words', () {
+    const postsLimit = ApiFailure(
+      'You’ve reached today’s limit of 20 posts. Try again later.',
+      429,
+      'QUOTA',
+      Duration(hours: 5),
+    );
+
+    testWidgets('A post over the daily limit says so, with when to retry', (
+      tester,
+    ) async {
+      final api = PulseApi()..postFailure = postsLimit;
+      final container = await start(tester, api, '/home');
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(home: ComposePostScreen(picker: FakePicker())),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('post-body')), 'one more');
+      await tester.tap(find.text('Everyone'));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('share-post')));
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'You’ve reached today’s limit of 20 posts. Try again in about 5 hours.',
+        ),
+        findsOneWidget,
+      );
+      // The text stays, and nothing retries by itself.
+      expect(find.text('one more'), findsOneWidget);
+      expect(api.posted, isNull);
+    });
+
+    testWidgets('A story over the daily limit says so', (tester) async {
+      final api = PulseApi()
+        ..storyFailure = const ApiFailure(
+          'You’ve reached today’s limit of 30 stories. Try again later.',
+          429,
+          'QUOTA',
+        );
+      final container = await start(tester, api, '/home');
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const MaterialApp(home: StoryComposerScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('story-text')), 'gm');
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('share-story')));
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'You’ve reached today’s limit of 30 stories. Try again later.',
+        ),
+        findsOneWidget,
+      );
+      expect(api.storyBody, isNull);
+    });
+
+    testWidgets('Photos refused for a limit explain it and offer no retry', (
+      tester,
+    ) async {
+      final api = PulseApi()
+        ..uploadFailure = const ApiFailure(
+          'Your photo storage is full. Delete some posts or stories to free space.',
+          429,
+          'QUOTA',
+        );
+      final container = await start(tester, api, '/home');
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(home: ComposePostScreen(picker: FakePicker())),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('add-photos')));
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'Your photo storage is full. Delete some posts or stories to free space.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Photo limit reached'), findsNWidgets(2));
+      expect(find.textContaining('Tap to retry'), findsNothing);
+      // Tapping a refused photo does not send it again.
+      await tester.tap(find.text('Photo limit reached').first);
+      await tester.pumpAndSettle();
+      expect(api.calls.where((c) => c.startsWith('upload')), isEmpty);
+    });
+  });
+
   testWidgets('Stories: tray, viewer marks seen, and a text story shares', (
     tester,
   ) async {
@@ -408,4 +526,116 @@ void main() {
     // The fixture's story audience setting is friends.
     expect(api.storyBody, 'friends:mint:hello world');
   });
+
+  testWidgets('A double tap on "Show more" fetches the next page once', (
+    tester,
+  ) async {
+    final api = PagedComments();
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          apiProvider.overrideWithValue(api),
+          sessionProvider.overrideWith(SignedIn.new),
+        ],
+        child: MaterialApp(
+          home: Consumer(
+            builder: (context, ref, _) => TextButton(
+              onPressed: () =>
+                  showComments(context, ref, post('p1'), 'everyone'),
+              child: const Text('Open comments'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Open comments'));
+    await tester.pumpAndSettle();
+    expect(find.text('first'), findsOneWidget);
+    api.gate = Completer();
+    await tester.tap(find.text('Show more'));
+    await tester.pump();
+    await tester.tap(find.text('Show more'), warnIfMissed: false);
+    await tester.pump();
+    api.gate!.complete();
+    await tester.pumpAndSettle();
+    expect(api.cursors, [null, 'c2']);
+    expect(find.text('second'), findsOneWidget);
+    expect(find.text('Show more'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Stories close once even when asked twice in a frame', (
+    tester,
+  ) async {
+    final now = DateTime.now();
+    final groups = [
+      StoryGroup(niko, [
+        Story(
+          storyId: 'n1',
+          body: 'only one',
+          background: 'pink',
+          audience: 'followers',
+          createdAt: now,
+          expiresAt: now.add(const Duration(hours: 20)),
+        ),
+      ]),
+    ];
+    final nav = GlobalKey<NavigatorState>();
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          apiProvider.overrideWithValue(PulseApi()),
+          sessionProvider.overrideWith(SignedIn.new),
+        ],
+        child: MaterialApp(navigatorKey: nav, home: const Text('home')),
+      ),
+    );
+    nav.currentState!.push(
+      MaterialPageRoute<void>(builder: (_) => const Text('underneath')),
+    );
+    await tester.pumpAndSettle();
+    nav.currentState!.push(
+      MaterialPageRoute<void>(
+        builder: (_) => StoryViewer(groups: groups, start: 0),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('only one'), findsOneWidget);
+    // The timer ending, a swipe and the close button can all fire before
+    // the next frame; the viewer must pop only itself.
+    final close = tester
+        .widget<IconButton>(find.byKey(const Key('close-stories')))
+        .onPressed!;
+    close();
+    close();
+    await tester.pump(const Duration(seconds: 6));
+    await tester.pumpAndSettle();
+    expect(find.text('underneath'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+}
+
+/// Two pages of comments; the second waits on [gate].
+class PagedComments extends PulseApi {
+  final cursors = <String?>[];
+  Completer<void>? gate;
+  @override
+  Future<ApiPage<PostComment>> comments(
+    Session s,
+    String postId, [
+    String? cursor,
+  ]) async {
+    cursors.add(cursor);
+    PostComment c(String id, String body) => PostComment(
+      commentId: id,
+      postId: postId,
+      body: body,
+      author: niko,
+      createdAt: DateTime.now(),
+    );
+    if (cursor == null) return ApiPage([c('c1', 'first')], 'c2');
+    await gate!.future;
+    return ApiPage([c('c1', 'first'), c('c2', 'second')], null);
+  }
 }

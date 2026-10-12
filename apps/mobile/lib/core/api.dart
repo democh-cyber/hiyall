@@ -1,21 +1,54 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
+import 'discovery.dart';
+import 'presence.dart';
 import 'realtime/realtime_client.dart';
 
 part 'pulse.dart';
 part 'spaces.dart';
+part 'nearby.dart';
+part 'people.dart';
 
 const apiBaseUrl = String.fromEnvironment('API_BASE_URL');
 const devLoginEnabled = kDebugMode && bool.fromEnvironment('ENABLE_DEV_LOGIN');
+
+/// Plain http is accepted only by debug builds and only for the machine's own API
+/// (the host, the Android emulator's alias for it). Release builds require https.
+bool _isLocalHttp(Uri url) =>
+    url.scheme == 'http' &&
+    const ['localhost', '127.0.0.1', '10.0.2.2'].contains(url.host);
 
 class ApiFailure implements Exception {
   final String message;
   final int? status;
   final String? code;
-  const ApiFailure(this.message, [this.status, this.code]);
+
+  /// How long the server said a limit lasts (Retry-After), when it said.
+  final Duration? retryAfter;
+  const ApiFailure(this.message, [this.status, this.code, this.retryAfter]);
+
+  /// The words to show. A daily limit (code QUOTA) that says when it lifts trades the server's
+  /// "Try again later." for "Try again in about 5 hours."; every other failure is [message].
+  String get displayMessage {
+    final wait = retryAfter;
+    const later = ' Try again later.';
+    if (code != 'QUOTA' || wait == null || !message.endsWith(later)) {
+      return message;
+    }
+    final head = message.substring(0, message.length - later.length);
+    final minutes = (wait.inSeconds / 60).ceil();
+    final about = minutes < 90
+        ? (minutes <= 1 ? 'a minute' : '$minutes minutes')
+        : (() {
+            final hours = (minutes / 60).round();
+            return hours == 1 ? 'an hour' : '$hours hours';
+          })();
+    return '$head Try again in about $about.';
+  }
+
   @override
-  String toString() => message;
+  String toString() => displayMessage;
 }
 
 class ProfileLanguage {
@@ -36,17 +69,30 @@ class ProfileLanguage {
 /// Display data only. Account identities, credentials and wallet data are never
 /// parsed into the profile used by either owner or visitor presentation.
 class ProfileSocialStats {
-  final int friends, following, followers;
+  final int following, followers;
+
+  /// How many different members have opened this profile. Never who.
+  final int visitors;
+
+  /// Stories up right now that the viewer may watch.
+  final int stories;
+
+  /// Friendships still exist on the server but are no longer shown.
+  final int friends;
   const ProfileSocialStats({
-    required this.friends,
+    this.friends = 0,
     required this.following,
     required this.followers,
+    this.visitors = 0,
+    this.stories = 0,
   });
   factory ProfileSocialStats.fromJson(Map<String, dynamic> json) =>
       ProfileSocialStats(
-        friends: json['friends'] as int,
-        following: json['following'] as int,
-        followers: json['followers'] as int,
+        friends: json['friends'] as int? ?? 0,
+        following: json['following'] as int? ?? 0,
+        followers: json['followers'] as int? ?? 0,
+        visitors: json['visitors'] as int? ?? 0,
+        stories: json['stories'] as int? ?? 0,
       );
 }
 
@@ -102,10 +148,24 @@ class Relationship {
 class Profile {
   final String userId, username, displayName, bio, profession, version;
   final String headline, quote, currentVibe, pronouns, education;
+
+  /// `woman`, `man`, `nonbinary`, or empty when not said.
+  final String gender;
+
+  /// Whole years, present only when the server chose to show it to this viewer.
+  final int? age;
+
+  /// Where they say they are, beyond the country (both optional).
+  final String region, city;
   final ProfileSocialStats? socialStats;
   final String profileAccent, profilePattern, avatarFrame;
   final String? country, websiteUrl;
   final List<String> interests;
+
+  /// In people lists only: up to three interests this member shares with the
+  /// viewer, spelled as the viewer wrote them. The server sends it only when the
+  /// member shows their interests, so empty means "nothing to say", not "none".
+  final List<String> sharedInterests;
   final List<ProfileLanguage> languages;
 
   /// Present only when viewing someone else.
@@ -113,6 +173,26 @@ class Profile {
 
   /// The owner's profile audience excludes this viewer; only identity is sent.
   final bool locked;
+
+  /// Whether the viewer may open this member's followers and following lists.
+  /// Only sent with someone else's profile; false when the server did not say.
+  final bool canSeeConnections;
+
+  /// Set only when the person is online and lets this viewer see it: true while
+  /// they are, false never. Null means "not shared", so no dot is drawn.
+  final bool? online;
+
+  /// When they were last seen (UTC, a five-minute bucket), only when they are
+  /// not online and the server let this viewer see it; null otherwise.
+  final DateTime? lastSeenAt;
+
+  /// Rounded-up distance bucket, present only in nearby results.
+  final int? distanceKm;
+
+  /// Signed photo URLs, null when they have no photo. The thumbnail is on every
+  /// person; the full size only on the owner's and a visitor's profile. They
+  /// expire after about an hour, so images are cached by path, never by URL.
+  final String? avatarUrl, avatarFullUrl;
   const Profile({
     required this.userId,
     required this.username,
@@ -126,15 +206,26 @@ class Profile {
     this.currentVibe = '',
     this.pronouns = '',
     this.education = '',
+    this.gender = '',
+    this.age,
+    this.region = '',
+    this.city = '',
     this.country,
     this.websiteUrl,
     this.interests = const [],
+    this.sharedInterests = const [],
     this.languages = const [],
     this.profileAccent = 'lime',
     this.profilePattern = 'glow',
     this.avatarFrame = 'minimal',
     this.relationship,
     this.locked = false,
+    this.canSeeConnections = false,
+    this.online,
+    this.lastSeenAt,
+    this.distanceKm,
+    this.avatarUrl,
+    this.avatarFullUrl,
   });
   factory Profile.fromJson(Map<String, dynamic> json) => Profile(
     userId: json['userId'] as String,
@@ -153,10 +244,20 @@ class Profile {
     currentVibe: json['currentVibe'] as String? ?? '',
     pronouns: json['pronouns'] as String? ?? '',
     education: json['education'] as String? ?? '',
+    gender: json['gender'] as String? ?? '',
+    age: (json['age'] as num?)?.toInt(),
+    region: json['region'] as String? ?? '',
+    city: json['city'] as String? ?? '',
     country: json['country'] as String?,
     websiteUrl: json['websiteUrl'] as String?,
     interests: List<String>.unmodifiable(
       (json['interests'] as List? ?? []).cast<String>(),
+    ),
+    sharedInterests: List<String>.unmodifiable(
+      [
+        for (final v in json['sharedInterests'] as List? ?? const [])
+          if (v is String && v.trim().isNotEmpty) v,
+      ].take(3),
     ),
     languages: List<ProfileLanguage>.unmodifiable(
       (json['languages'] as List? ?? []).map(
@@ -170,7 +271,18 @@ class Profile {
         ? null
         : Relationship.fromJson(json['relationship'] as Map<String, dynamic>),
     locked: json['locked'] as bool? ?? false,
+    canSeeConnections: json['canSeeConnections'] as bool? ?? false,
+    online: json['online'] is bool ? json['online'] as bool : null,
+    lastSeenAt: parseLastSeen(json['lastSeenAt']),
+    distanceKm: (json['distanceKm'] as num?)?.toInt(),
+    avatarUrl: json['avatarUrl'] as String?,
+    avatarFullUrl: json['avatarFullUrl'] as String?,
   );
+
+  /// The photo suited to a circle of [diameter] logical pixels: the full-size
+  /// one for a large header when the server sent it, the thumbnail otherwise.
+  String? avatarFor(double diameter) =>
+      diameter >= 96 ? (avatarFullUrl ?? avatarUrl) : avatarUrl;
 }
 
 /// One page of a cursor-paginated list.
@@ -201,8 +313,42 @@ class Privacy {
 }
 
 class Session {
-  final String token, userId;
-  const Session(this.token, this.userId);
+  final String userId;
+  final String _token;
+  final String Function()? _live;
+
+  /// False until the account has finished onboarding (age confirmation, terms,
+  /// name and username). The API refuses most routes until it is true.
+  final bool onboarded;
+
+  /// [live] returns the newest token when the identity provider rotates it, so
+  /// long-lived callers such as the realtime socket never hold an expired one.
+  const Session(
+    this._token,
+    this.userId, {
+    String Function()? live,
+    this.onboarded = true,
+  }) : _live = live; // ignore: prefer_initializing_formals
+  String get token => _live?.call() ?? _token;
+  Session copyWith({bool? onboarded}) => Session(
+    _token,
+    userId,
+    live: _live,
+    onboarded: onboarded ?? this.onboarded,
+  );
+}
+
+class OnboardingStatus {
+  final bool completed;
+
+  /// The terms revision the server expects the person to accept.
+  final String termsVersion;
+  const OnboardingStatus(this.completed, this.termsVersion);
+  factory OnboardingStatus.fromJson(Map<String, dynamic> json) =>
+      OnboardingStatus(
+        json['completed'] as bool? ?? false,
+        json['termsVersion'] as String? ?? '',
+      );
 }
 
 const _policyCodes = {
@@ -211,6 +357,7 @@ const _policyCodes = {
   'REQUEST_COOLDOWN',
   'CONNECTIONS_PRIVATE',
   'RATE_LIMITED',
+  'QUOTA',
   'COMMENTS_NOT_ALLOWED',
   'MEDIA_NOT_READY',
   'MEDIA_UNAVAILABLE',
@@ -221,7 +368,12 @@ const _policyCodes = {
   'SPACE_OWNER',
   'SPACE_ROLE_REQUIRED',
   'SPACE_MEMBER_REQUIRED',
-  'ADULT_SPACE_REQUIRED',
+  'EMAIL_NOT_VERIFIED',
+  'LOCATION_NOT_SHARED',
+  'ONBOARDING_REQUIRED',
+  'AGE_REQUIREMENT_NOT_MET',
+  'PROFILE_INCOMPLETE',
+  'INVALID_CURSOR',
 };
 
 /// Reported on sign-in so the sessions list can say where each one is.
@@ -233,23 +385,30 @@ String get clientPlatform => kIsWeb
         _ => 'unknown',
       };
 
-class ApiClient with PulseApi, SpacesApi {
+class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi {
   final Dio _dio;
 
   /// Sends photo bytes straight to object storage; no API base URL or token.
   @override
-  final Dio _uploads = Dio(
-    BaseOptions(
-      connectTimeout: const Duration(seconds: 15),
-      sendTimeout: const Duration(minutes: 2),
-    ),
-  );
+  final Dio _uploads;
 
   /// Called when a signed-in request is refused as unauthenticated: the
   /// session expired or was revoked elsewhere.
   void Function()? onUnauthorized;
-  ApiClient({Dio? dio})
-    : _dio =
+
+  /// Asks the identity provider for a brand-new token after a 401. A different
+  /// token means the first was only stale, so the request is retried once.
+  Future<String?> Function()? tokenRefresher;
+  ApiClient({Dio? dio, Dio? uploads})
+    : _uploads =
+          uploads ??
+          Dio(
+            BaseOptions(
+              connectTimeout: const Duration(seconds: 15),
+              sendTimeout: const Duration(minutes: 2),
+            ),
+          ),
+      _dio =
           dio ??
           Dio(
             BaseOptions(
@@ -267,18 +426,18 @@ class ApiClient with PulseApi, SpacesApi {
     String? token,
     Object? body,
     String? version,
+    bool retried = false,
   }) async {
     final url = Uri.tryParse(_dio.options.baseUrl);
-    if (url == null ||
-        url.host.isEmpty ||
-        (!devLoginEnabled && url.scheme != 'https')) {
+    if (url == null || url.host.isEmpty) {
       throw const ApiFailure('The service is not configured yet.');
     }
-    if (devLoginEnabled &&
-        url.scheme != 'https' &&
-        !(url.scheme == 'http' &&
-            ['localhost', '127.0.0.1', '10.0.2.2'].contains(url.host))) {
-      throw const ApiFailure('Development login requires a local service.');
+    if (url.scheme != 'https' && !(kDebugMode && _isLocalHttp(url))) {
+      throw ApiFailure(
+        devLoginEnabled && url.scheme == 'http'
+            ? 'Development login requires a local service.'
+            : 'The service is not configured yet.',
+      );
     }
     try {
       final response = await _dio.request<Map<String, dynamic>>(
@@ -295,17 +454,38 @@ class ApiClient with PulseApi, SpacesApi {
       return response.data!['data'];
     } on DioException catch (error) {
       final status = error.response?.statusCode;
-      final body = error.response?.data;
-      final failure = body is Map && body['error'] is Map
-          ? body['error'] as Map
+      final reply = error.response?.data;
+      final failure = reply is Map && reply['error'] is Map
+          ? reply['error'] as Map
           : const {};
       final code = failure['code'] as String?;
+      if (status == 401 && token != null && !retried) {
+        final fresh = await tokenRefresher?.call();
+        if (fresh != null && fresh != token) {
+          return _request(
+            method,
+            path,
+            token: fresh,
+            body: body,
+            version: version,
+            retried: true,
+          );
+        }
+      }
       if (status == 401 && token != null) onUnauthorized?.call();
       // Policy refusals carry server copy written to be shown as-is.
       if ((_policyCodes.contains(code) ||
               (path.startsWith('/v1/spaces') && code == 'VALIDATION')) &&
           failure['message'] is String) {
-        throw ApiFailure(failure['message'] as String, status, code);
+        final wait = int.tryParse(
+          error.response?.headers.value('retry-after') ?? '',
+        );
+        throw ApiFailure(
+          failure['message'] as String,
+          status,
+          code,
+          wait == null || wait < 1 ? null : Duration(seconds: wait),
+        );
       }
       final message = switch (status) {
         401 => 'Your session has expired. Sign in again.',
@@ -352,6 +532,11 @@ class ApiClient with PulseApi, SpacesApi {
       body: patch,
     ) as Map<String, dynamic>,
   );
+
+  /// Sets the profile photo to an uploaded media item, or removes it with
+  /// null. The server checks the media belongs to the caller.
+  Future<Profile> setAvatar(Session s, Profile p, String? mediaId) =>
+      updateProfile(s, p, {'avatarMediaId': mediaId});
   Future<Privacy> privacy(Session s) async => Privacy(
     await _request('GET', '/v1/me/privacy', token: s.token)
         as Map<String, dynamic>,
@@ -383,24 +568,41 @@ class ApiClient with PulseApi, SpacesApi {
   Future<Map<String, dynamic>> searchPeople(
     Session session,
     Map<String, dynamic> filters,
-  ) async {
-    try {
-      return await _request(
-        'POST',
-        '/v1/discovery/search',
-        token: session.token,
-        body: filters,
-      ) as Map<String, dynamic>;
-    } on ApiFailure catch (error) {
-      if (error.status == 403) {
-        throw const ApiFailure(
-          'Discovery is available after adult eligibility is confirmed. Age confirmation is not available in this build yet.',
-          403,
-        );
-      }
-      rethrow;
-    }
-  }
+  ) async => await _request(
+    'POST',
+    '/v1/discovery/search',
+    token: session.token,
+    body: filters,
+  ) as Map<String, dynamic>;
+
+  Future<OnboardingStatus> onboarding(Session s) async =>
+      OnboardingStatus.fromJson(
+        await _request('GET', '/v1/me/onboarding', token: s.token)
+            as Map<String, dynamic>,
+      );
+
+  /// Confirms the minimum-age declaration and terms. The birth date is checked by the
+  /// server and never stored.
+  Future<OnboardingStatus> completeOnboarding(
+    Session s, {
+    required String birthDate,
+    required String termsVersion,
+  }) async => OnboardingStatus.fromJson(
+    await _request(
+      'POST',
+      '/v1/me/onboarding/complete',
+      token: s.token,
+      body: {'birthDate': birthDate, 'termsVersion': termsVersion},
+    ) as Map<String, dynamic>,
+  );
+
+  Future<bool> usernameAvailable(Session s, String username) async =>
+      (await _request(
+            'GET',
+            '/v1/usernames/${Uri.encodeComponent(username)}/availability',
+            token: s.token,
+          ) as Map<String, dynamic>)['available']
+          as bool;
 
   Future<void> logout(Session s) async =>
       await _request('POST', '/v1/auth/logout', token: s.token);
@@ -424,7 +626,13 @@ class ApiClient with PulseApi, SpacesApi {
   /// The account's live event socket, or null where only polling is used.
   RealtimeClient? realtime(Session s) => kIsWeb || _dio.options.baseUrl.isEmpty
       ? null
-      : RealtimeClient(_dio.options.baseUrl, s.token);
+      : RealtimeClient(
+          _dio.options.baseUrl,
+          s.token,
+          tokenOf: () => s.token,
+          refreshToken: () async => tokenRefresher?.call(),
+          onSessionEnded: () => onUnauthorized?.call(),
+        );
 
   // Social graph. Each call returns the server's resulting state.
   Future<String> follow(Session s, String userId) async =>

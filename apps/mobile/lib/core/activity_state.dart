@@ -41,8 +41,20 @@ class ActivityController extends AsyncNotifier<ActivityState> {
   ApiClient get _api => ref.read(apiProvider);
   Session get _session => requireSession(ref);
 
+  /// Bumped whenever the first page replaces the list, so a slower page
+  /// fetched for the old list is dropped instead of overwriting the new one.
+  int _epoch = 0;
+
+  /// Applies [change] to the newest state, never to a snapshot taken before
+  /// an await, so concurrent refreshes and mutations are kept.
+  void _update(ActivityState Function(ActivityState) change) {
+    final latest = state.asData?.value;
+    if (latest != null) state = AsyncData(change(latest));
+  }
+
   @override
   Future<ActivityState> build() async {
+    _epoch++;
     final (page, unread) = await ref
         .watch(apiProvider)
         .notifications(requireSession(ref));
@@ -55,6 +67,7 @@ class ActivityController extends AsyncNotifier<ActivityState> {
 
   Future<void> refresh() async {
     final (page, unread) = await _api.notifications(_session);
+    _epoch++;
     state = AsyncData(
       ActivityState(page.items, nextCursor: page.nextCursor, unread: unread),
     );
@@ -65,26 +78,30 @@ class ActivityController extends AsyncNotifier<ActivityState> {
     if (current == null || current.nextCursor == null || current.loadingMore) {
       return;
     }
+    final epoch = _epoch;
     state = AsyncData(current.copyWith(loadingMore: true));
     try {
       final (page, unread) = await _api.notifications(
         _session,
         current.nextCursor,
       );
-      final seen = {for (final i in current.items) i['notificationId']};
-      state = AsyncData(
-        current.copyWith(
+      // The list was reloaded meanwhile; this page continues the old one.
+      if (epoch != _epoch) return;
+      _update((latest) {
+        final seen = {for (final i in latest.items) i['notificationId']};
+        return latest.copyWith(
           items: [
-            ...current.items,
+            ...latest.items,
             ...page.items.where((i) => !seen.contains(i['notificationId'])),
           ],
           nextCursor: () => page.nextCursor,
-          unread: unread,
+          // A local mark-read in the meantime is newer than this count.
+          unread: latest.unread == current.unread ? unread : latest.unread,
           loadingMore: false,
-        ),
-      );
+        );
+      });
     } catch (_) {
-      state = AsyncData(current.copyWith(loadingMore: false));
+      if (epoch == _epoch) _update((l) => l.copyWith(loadingMore: false));
       rethrow;
     }
   }
@@ -119,7 +136,13 @@ class ActivityController extends AsyncNotifier<ActivityState> {
     try {
       await _api.markNotificationRead(_session, id);
     } catch (_) {
-      state = AsyncData(current);
+      _update((latest) {
+        final at = latest.items.indexWhere((i) => i['notificationId'] == id);
+        if (at < 0 || latest.items[at]['readAt'] == null) return latest;
+        final items = [...latest.items];
+        items[at] = {...items[at], 'readAt': null};
+        return latest.copyWith(items: items, unread: latest.unread + 1);
+      });
       rethrow;
     }
   }
@@ -128,6 +151,10 @@ class ActivityController extends AsyncNotifier<ActivityState> {
     final current = state.asData?.value;
     if (current == null || current.unread == 0) return;
     final now = DateTime.now().toUtc().toIso8601String();
+    final wereUnread = {
+      for (final i in current.items)
+        if (i['readAt'] == null) i['notificationId'],
+    };
     state = AsyncData(
       current.copyWith(
         items: [
@@ -139,7 +166,17 @@ class ActivityController extends AsyncNotifier<ActivityState> {
     try {
       await _api.markAllNotificationsRead(_session);
     } catch (_) {
-      state = AsyncData(current);
+      _update(
+        (latest) => latest.copyWith(
+          items: [
+            for (final i in latest.items)
+              wereUnread.contains(i['notificationId'])
+                  ? {...i, 'readAt': null}
+                  : i,
+          ],
+          unread: latest.unread + current.unread,
+        ),
+      );
       rethrow;
     }
   }
@@ -151,6 +188,7 @@ class ActivityController extends AsyncNotifier<ActivityState> {
     if (current == null) return;
     final actor = (item['actors'] as List).first as Map<String, dynamic>;
     final id = item['notificationId'];
+    final index = current.items.indexWhere((i) => i['notificationId'] == id);
     state = AsyncData(
       current.copyWith(
         items: [
@@ -177,7 +215,15 @@ class ActivityController extends AsyncNotifier<ActivityState> {
         );
       }
     } catch (_) {
-      state = AsyncData(current);
+      _update((latest) {
+        if (latest.items.any((i) => i['notificationId'] == id)) return latest;
+        final items = [...latest.items];
+        items.insert(index < 0 ? 0 : index.clamp(0, items.length), item);
+        return latest.copyWith(
+          items: items,
+          unread: item['readAt'] == null ? latest.unread + 1 : latest.unread,
+        );
+      });
       rethrow;
     }
     // Counts on both profiles change when a request is accepted.

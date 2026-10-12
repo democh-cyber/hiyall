@@ -23,7 +23,6 @@ Future<PeopleFilters?> showPeopleFilters(
   BuildContext context, {
   PeopleFilters? initial,
   Profile? ownProfile,
-  bool preview = false,
 }) => showModalBottomSheet<PeopleFilters>(
   context: context,
   isScrollControlled: true,
@@ -33,11 +32,7 @@ Future<PeopleFilters?> showPeopleFilters(
     heightFactor: .92,
     child: ClipRRect(
       borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-      child: PeopleFilterScreen(
-        initial: initial,
-        ownProfile: ownProfile,
-        preview: preview,
-      ),
+      child: PeopleFilterScreen(initial: initial, ownProfile: ownProfile),
     ),
   ),
 );
@@ -45,13 +40,7 @@ Future<PeopleFilters?> showPeopleFilters(
 class PeopleFilterScreen extends StatefulWidget {
   final PeopleFilters? initial;
   final Profile? ownProfile;
-  final bool preview;
-  const PeopleFilterScreen({
-    super.key,
-    this.initial,
-    this.ownProfile,
-    this.preview = false,
-  });
+  const PeopleFilterScreen({super.key, this.initial, this.ownProfile});
 
   @override
   State<PeopleFilterScreen> createState() => _PeopleFilterScreenState();
@@ -82,24 +71,42 @@ class _PeopleFilterScreenState extends State<PeopleFilterScreen> {
   final interests = <String>{};
   final languages = <String>{};
   String? vibe, country;
+  bool nearby = false;
+  bool online = false;
+
+  /// The slider runs from [ageFloor] to [ageCeiling]; the top stop means
+  /// "and over", so it sends no upper limit.
+  static const ageFloor = 13.0, ageCeiling = 60.0;
+  double ageLow = ageFloor, ageHigh = ageCeiling;
+  String gender = '';
+  bool get ageActive => ageLow > ageFloor || ageHigh < ageCeiling;
+  String get ageLabel {
+    final low = ageLow.round();
+    final high = ageHigh >= ageCeiling ? '60+' : '${ageHigh.round()}';
+    return '$low to $high years old';
+  }
+
   bool get hasFilters =>
+      nearby ||
+      online ||
+      ageActive ||
+      gender.isNotEmpty ||
       interests.isNotEmpty ||
       languages.isNotEmpty ||
       vibe != null ||
       country != null;
 
-  // The owner's own languages come first, then common ones, then any picked
-  // through search so every selection stays visible as a pill.
-  List<String> get languagePills => {
-    ...?widget.ownProfile?.languages.map((l) => l.code.toLowerCase()),
-    'en',
-    'hi',
-    'ko',
-    'ja',
-    'es',
-    'fr',
-    ...languages,
-  }.toList();
+  /// How many separate filters are on right now (the same count the Discover
+  /// screen shows on its Filters button).
+  int get activeCount =>
+      interests.length +
+      languages.length +
+      (country == null ? 0 : 1) +
+      (vibe == null ? 0 : 1) +
+      (nearby ? 1 : 0) +
+      (online ? 1 : 0) +
+      (ageActive ? 1 : 0) +
+      (gender.isEmpty ? 0 : 1);
 
   @override
   void initState() {
@@ -109,6 +116,17 @@ class _PeopleFilterScreenState extends State<PeopleFilterScreen> {
     languages.addAll(start?.languages ?? []);
     country = start == null || start.country.isEmpty ? null : start.country;
     vibe = start == null || start.vibe.isEmpty ? null : start.vibe;
+    nearby = start?.nearby ?? false;
+    online = start?.online ?? false;
+    ageLow = (start?.ageMin ?? ageFloor.round()).toDouble().clamp(
+      ageFloor,
+      ageCeiling,
+    );
+    ageHigh = (start?.ageMax ?? ageCeiling.round()).toDouble().clamp(
+      ageFloor,
+      ageCeiling,
+    );
+    gender = start?.gender ?? '';
   }
 
   void change(VoidCallback update) {
@@ -121,6 +139,11 @@ class _PeopleFilterScreenState extends State<PeopleFilterScreen> {
     languages.clear();
     vibe = null;
     country = null;
+    nearby = false;
+    online = false;
+    ageLow = ageFloor;
+    ageHigh = ageCeiling;
+    gender = '';
   });
 
   Future<void> choose({required bool isCountry}) async {
@@ -148,7 +171,7 @@ class _PeopleFilterScreenState extends State<PeopleFilterScreen> {
     });
   }
 
-  Widget section(String title, {String? count}) => Padding(
+  Widget section(String title, {String? count, Widget? action}) => Padding(
     padding: const EdgeInsets.only(top: 24, bottom: 10),
     child: Row(
       children: [
@@ -163,7 +186,9 @@ class _PeopleFilterScreenState extends State<PeopleFilterScreen> {
             ),
           ),
         ),
-        if (count != null)
+        if (action != null)
+          action
+        else if (count != null)
           Text(
             count,
             style: TextStyle(
@@ -204,15 +229,41 @@ class _PeopleFilterScreenState extends State<PeopleFilterScreen> {
                     const SizedBox(height: 6),
                     Row(
                       children: [
-                        const Expanded(
-                          child: Text(
-                            'Filters',
-                            style: TextStyle(
-                              fontFamily: 'SpaceGrotesk',
-                              fontSize: 24,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: -.6,
-                            ),
+                        Expanded(
+                          child: Row(
+                            children: [
+                              const Text(
+                                'Filters',
+                                style: TextStyle(
+                                  fontFamily: 'SpaceGrotesk',
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: -.6,
+                                ),
+                              ),
+                              if (activeCount > 0) ...[
+                                const SizedBox(width: 10),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 9,
+                                    vertical: 3,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: VibeColors.lime,
+                                    borderRadius: BorderRadius.circular(99),
+                                  ),
+                                  child: Text(
+                                    '$activeCount on',
+                                    key: const Key('filter-sheet-count'),
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w800,
+                                      color: VibeColors.ink,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
                         ),
                         IconButton(
@@ -230,78 +281,113 @@ class _PeopleFilterScreenState extends State<PeopleFilterScreen> {
                   key: const Key('filter-content'),
                   padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
                   children: [
-                    if (widget.preview)
-                      Container(
-                        margin: const EdgeInsets.only(top: 8),
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: VibeColors.lilac.withValues(
-                            alpha: theme.brightness == Brightness.dark
-                                ? .09
-                                : .35,
-                          ),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Text(
-                          'DESIGN PREVIEW\nTry a temporary filter draft. Live people search is not connected. Nothing here is saved.',
-                          style: TextStyle(
-                            fontSize: 12,
-                            height: 1.6,
-                            color: scheme.onSurface,
-                          ),
-                        ),
-                      ),
-                    section('From'),
-                    pills([
-                      _Pill(
-                        label: 'Anywhere',
-                        selected: country == null,
-                        onTap: () => change(() => country = null),
-                      ),
-                      _Pill(
-                        label: country == null
-                            ? 'Choose country'
-                            : countryNames[country] ?? country!,
-                        icon: country == null ? Icons.add_rounded : null,
-                        selected: country != null,
-                        onTap: () => choose(isCountry: true),
-                      ),
-                    ]),
-                    section(
-                      'Speaks',
-                      count: languages.isEmpty
-                          ? null
-                          : '${languages.length} selected',
+                    section('Right now'),
+                    _SwitchRow(
+                      key: const Key('filter-online'),
+                      label: 'Online now',
+                      value: 'Only people who are online and show it to you',
+                      on: online,
+                      onChanged: (v) => change(() => online = v),
                     ),
-                    pills([
-                      _Pill(
-                        label: 'Any language',
-                        selected: languages.isEmpty,
-                        onTap: () => change(languages.clear),
-                      ),
-                      for (final code in languagePills)
-                        _Pill(
-                          label: languageLabel(code),
-                          selected: languages.contains(code),
-                          onTap:
-                              languages.length >= 10 &&
-                                  !languages.contains(code)
-                              ? null
-                              : () => change(
-                                  () => languages.contains(code)
-                                      ? languages.remove(code)
-                                      : languages.add(code),
-                                ),
-                        ),
-                      _Pill(
-                        label: 'More languages',
-                        icon: Icons.search_rounded,
-                        selected: false,
-                        onTap: () => choose(isCountry: false),
-                      ),
-                    ]),
+                    section('Country'),
+                    _FilterRow(
+                      label: 'Anywhere',
+                      selected: country == null,
+                      radio: true,
+                      onTap: () => change(() => country = null),
+                    ),
+                    const SizedBox(height: 10),
+                    _FilterRow(
+                      label: 'Choose country',
+                      value: country == null
+                          ? null
+                          : countryNames[country] ?? country!,
+                      selected: country != null,
+                      radio: true,
+                      opensPicker: true,
+                      onTap: () => choose(isCountry: true),
+                    ),
                     section(
-                      'Into',
+                      'Language',
+                      action: TextButton(
+                        onPressed: languages.isEmpty
+                            ? null
+                            : () => change(languages.clear),
+                        style: TextButton.styleFrom(
+                          minimumSize: const Size(48, 48),
+                        ),
+                        child: const Text('Any language'),
+                      ),
+                    ),
+                    _FilterRow(
+                      label: 'Choose languages',
+                      value: languages.isEmpty
+                          ? 'Search languages'
+                          : languages.map(languageLabel).join(' · '),
+                      selected: languages.isNotEmpty,
+                      opensPicker: true,
+                      onTap: () => choose(isCountry: false),
+                    ),
+                    section('Age'),
+                    Text(
+                      ageLabel,
+                      key: const Key('filter-age-label'),
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: scheme.primary,
+                      ),
+                    ),
+                    SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        activeTickMarkColor: Colors.transparent,
+                        inactiveTickMarkColor: Colors.transparent,
+                      ),
+                      child: RangeSlider(
+                        key: const Key('filter-age'),
+                        min: ageFloor,
+                        max: ageCeiling,
+                        divisions: (ageCeiling - ageFloor).round(),
+                        values: RangeValues(ageLow, ageHigh),
+                        labels: RangeLabels(
+                          '${ageLow.round()}',
+                          ageHigh >= ageCeiling ? '60+' : '${ageHigh.round()}',
+                        ),
+                        onChanged: (range) => setState(() {
+                          ageLow = range.start;
+                          ageHigh = range.end;
+                        }),
+                      ),
+                    ),
+                    section('Location'),
+                    _FilterRow(
+                      key: const Key('filter-nearby'),
+                      label: 'My surroundings',
+                      value: 'People close to where you are, nearest first',
+                      selected: nearby,
+                      checkbox: true,
+                      onTap: () => change(() => nearby = !nearby),
+                    ),
+                    section('Gender'),
+                    for (final (value, label) in const [
+                      ('', 'All'),
+                      ('man', 'Man'),
+                      ('woman', 'Woman'),
+                      ('nonbinary', 'Non-binary'),
+                    ]) ...[
+                      _FilterRow(
+                        key: Key(
+                          'filter-gender-${value.isEmpty ? 'any' : value}',
+                        ),
+                        label: label,
+                        selected: gender == value,
+                        radio: true,
+                        onTap: () => change(() => gender = value),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
+                    section(
+                      'Interests',
                       count: interests.isEmpty
                           ? null
                           : '${interests.length} selected',
@@ -334,7 +420,7 @@ class _PeopleFilterScreenState extends State<PeopleFilterScreen> {
                     ]),
                     const SizedBox(height: 20),
                     Text(
-                      'Filters only match what people chose to show publicly. They apply to this search and aren’t saved.',
+                      'Filters only match what people chose to show publicly. Online now means active in the last couple of minutes.',
                       style: TextStyle(
                         fontSize: 12,
                         height: 1.5,
@@ -358,21 +444,28 @@ class _PeopleFilterScreenState extends State<PeopleFilterScreen> {
                         TextButton(
                           key: const Key('clear-active-filters'),
                           onPressed: hasFilters ? clear : null,
-                          child: const Text('Reset'),
+                          child: const Text('Reset all'),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: FilledButton(
-                            onPressed: widget.preview
-                                ? null
-                                : () => Navigator.of(context).pop(
-                                    PeopleFilters(
-                                      interests: interests,
-                                      languages: languages,
-                                      country: country ?? '',
-                                      vibe: vibe ?? '',
-                                    ),
-                                  ),
+                            onPressed: () => Navigator.of(context).pop(
+                              PeopleFilters(
+                                interests: interests,
+                                languages: languages,
+                                country: country ?? '',
+                                vibe: vibe ?? '',
+                                nearby: nearby,
+                                online: online,
+                                ageMin: ageLow > ageFloor
+                                    ? ageLow.round()
+                                    : null,
+                                ageMax: ageHigh < ageCeiling
+                                    ? ageHigh.round()
+                                    : null,
+                                gender: gender,
+                              ),
+                            ),
                             style: FilledButton.styleFrom(
                               minimumSize: const Size.fromHeight(52),
                               shape: const StadiumBorder(),
@@ -381,10 +474,8 @@ class _PeopleFilterScreenState extends State<PeopleFilterScreen> {
                               disabledForegroundColor: scheme.onSurface
                                   .withValues(alpha: .65),
                             ),
-                            child: Text(
-                              widget.preview
-                                  ? 'Search unavailable in preview'
-                                  : 'Show people',
+                            child: const Text(
+                              'Show people',
                               textAlign: TextAlign.center,
                             ),
                           ),
@@ -402,14 +493,199 @@ class _PeopleFilterScreenState extends State<PeopleFilterScreen> {
   }
 }
 
+/// A row with a switch, for a setting that is simply on or off.
+class _SwitchRow extends StatelessWidget {
+  final String label, value;
+  final bool on;
+  final ValueChanged<bool> onChanged;
+  const _SwitchRow({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.on,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final radius = BorderRadius.circular(14);
+    return Semantics(
+      toggled: on,
+      label: label,
+      hint: value,
+      excludeSemantics: true,
+      onTap: () => onChanged(!on),
+      child: Material(
+        color: on ? scheme.primary.withValues(alpha: .06) : scheme.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: radius,
+          side: BorderSide(
+            color: on
+                ? scheme.primary.withValues(alpha: .55)
+                : scheme.outlineVariant,
+          ),
+        ),
+        child: InkWell(
+          borderRadius: radius,
+          onTap: () => onChanged(!on),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 64),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          label,
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: on ? scheme.primary : scheme.onSurface,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          value,
+                          style: TextStyle(
+                            fontSize: 13,
+                            height: 1.4,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Switch(value: on, onChanged: onChanged),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FilterRow extends StatelessWidget {
+  final String label;
+  final String? value;
+  final bool selected, radio, opensPicker, checkbox;
+  final VoidCallback onTap;
+  const _FilterRow({
+    super.key,
+    required this.label,
+    this.value,
+    required this.selected,
+    this.radio = false,
+    this.opensPicker = false,
+    this.checkbox = false,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final foreground = selected ? scheme.primary : scheme.onSurface;
+    final radius = BorderRadius.circular(14);
+    return Semantics(
+      button: true,
+      selected: selected,
+      child: Material(
+        color: selected
+            ? scheme.primary.withValues(alpha: .06)
+            : scheme.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: radius,
+          side: BorderSide(
+            color: selected
+                ? scheme.primary.withValues(alpha: .55)
+                : scheme.outlineVariant,
+          ),
+        ),
+        child: InkWell(
+          borderRadius: radius,
+          onTap: onTap,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 64),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              child: Row(
+                children: [
+                  if (radio) ...[
+                    Icon(
+                      selected
+                          ? Icons.radio_button_checked_rounded
+                          : Icons.radio_button_unchecked_rounded,
+                      size: 20,
+                      color: selected ? foreground : scheme.outlineVariant,
+                    ),
+                    const SizedBox(width: 12),
+                  ],
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          label,
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: foreground,
+                          ),
+                        ),
+                        if (value != null) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            value!,
+                            style: TextStyle(
+                              fontSize: 13,
+                              height: 1.5,
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  if (checkbox) ...[
+                    const SizedBox(width: 12),
+                    Icon(
+                      selected
+                          ? Icons.check_box_rounded
+                          : Icons.check_box_outline_blank_rounded,
+                      size: 24,
+                      color: selected ? foreground : scheme.outlineVariant,
+                    ),
+                  ],
+                  if (opensPicker) ...[
+                    const SizedBox(width: 12),
+                    Icon(
+                      Icons.chevron_right_rounded,
+                      size: 22,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _Pill extends StatelessWidget {
   final String label;
-  final IconData? icon;
   final bool selected;
   final VoidCallback? onTap;
   const _Pill({
     required this.label,
-    this.icon,
     required this.selected,
     required this.onTap,
   });
@@ -451,10 +727,6 @@ class _Pill extends StatelessWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (icon != null) ...[
-                      Icon(icon, size: 16, color: foreground),
-                      const SizedBox(width: 6),
-                    ],
                     Flexible(
                       child: Text(
                         label,

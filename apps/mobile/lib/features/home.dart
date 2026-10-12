@@ -7,52 +7,40 @@ import 'package:go_router/go_router.dart';
 import '../core/activity_state.dart';
 import '../core/api.dart';
 import '../core/feed_state.dart';
-import '../core/discovery.dart';
+import '../core/home_prefs.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
-import '../shared/profile_space.dart';
+import '../shared/press_scale.dart';
+import '../shared/segmented.dart';
 import '../shared/widgets.dart';
+import 'home_cards.dart';
+import 'home_vibe.dart';
 import 'live_sync.dart';
 import 'pulse.dart';
 
-/// A short, unfiltered first page of Discover: the same opted-in adults the
-/// Discover tab would show, so Home never widens who can be found. Kept for the
-/// session; pull-to-refresh or a new sign-in reloads it.
-final homeSuggestionsProvider = FutureProvider.autoDispose<List<Profile>>((
-  ref,
-) async {
-  final session = requireSession(ref);
-  // Suggestions change slowly; don't re-query on every tab switch.
-  ref.keepAlive();
-  final data = await ref
-      .watch(apiProvider)
-      .searchPeople(session, PeopleFilters().toJson());
-  return [
-    for (final item in data['items'] as List)
-      Profile.fromJson(Map<String, dynamic>.from(item as Map)),
-  ].where((p) => p.userId != session.userId).take(10).toList();
-}, retry: apiReadRetry);
+export 'home_cards.dart' show homeSuggestionsProvider, missingProfileParts;
 
-/// What an unfinished profile is still missing, in the order worth fixing.
-List<String> missingProfileParts(Profile p) => [
-  if (p.bio.trim().isEmpty) 'Bio',
-  if (p.headline.trim().isEmpty) 'Headline',
-  if (p.currentVibe.trim().isEmpty) 'Current vibe',
-  if (p.interests.isEmpty) 'Interests',
-  if (p.languages.isEmpty) 'Languages',
-  if (p.pronouns.trim().isEmpty) 'Pronouns',
-];
+/// The Home page's width, from which it lays out as two columns: Pulse in the
+/// middle and the vibe check, "For you" and suggestions in a side rail.
+const homeWideBreakpoint = 880.0;
+const _feedMaxWidth = 640.0;
+const _railWidth = 340.0;
 
-const _profileParts = 6;
-const _cardTextScale = 1.6;
-
-String greetingFor(DateTime now) => switch (now.hour) {
-  < 5 => 'STILL UP',
-  < 12 => 'GOOD MORNING',
-  < 17 => 'GOOD AFTERNOON',
-  < 22 => 'GOOD EVENING',
-  _ => 'WINDING DOWN',
-};
+/// A one-line hello that fits the hour: "gm Mira ☀️", "hey Mira 🌙",
+/// "still up, Mira? 👀". Uses the first name only; with no name yet it
+/// still reads naturally.
+String homeGreeting(DateTime now, String? displayName) {
+  final first = displayName?.trim().split(RegExp(r'\s+')).first ?? '';
+  final hour = now.hour;
+  String line(String withName, String without) =>
+      first.isEmpty ? without : withName;
+  if (hour < 5 || hour >= 23) {
+    return line('still up, $first? 👀', 'still up? 👀');
+  }
+  if (hour < 12) return line('gm $first ☀️', 'gm ☀️');
+  if (hour < 17) return line('hey $first 🌤️', 'hey 🌤️');
+  return line('hey $first 🌙', 'hey 🌙');
+}
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -62,6 +50,16 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   String mode = 'following';
+
+  /// Whether the create button shows its label. It folds to a plain "+" while
+  /// the page scrolls down and opens again on the way up.
+  final extended = ValueNotifier<bool>(true);
+
+  @override
+  void dispose() {
+    extended.dispose();
+    super.dispose();
+  }
 
   Future<void> refresh() async {
     ref.invalidate(homeSuggestionsProvider);
@@ -75,594 +73,527 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   bool onScroll(ScrollNotification n) {
+    if (n.metrics.axis != Axis.vertical || n.depth != 0) return false;
     // Fetch the next page while a screen or two of posts is still left.
-    if (n.metrics.axis == Axis.vertical && n.metrics.extentAfter < 1200) {
+    if (n.metrics.extentAfter < 1200) {
       ref.read(feedProvider(mode).notifier).loadMore().catchError((_) {});
+    }
+    if (n is ScrollUpdateNotification) {
+      final delta = n.scrollDelta ?? 0;
+      if (n.metrics.pixels <= 24 || delta < -4) {
+        extended.value = true;
+      } else if (delta > 4) {
+        extended.value = false;
+      }
     }
     return false;
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final profile = ref.watch(profileProvider).asData?.value;
-    final activity = ref.watch(activityProvider).asData?.value;
-    final unreadChats = ref.watch(chatUnreadProvider);
-    final feed = ref.watch(feedProvider(mode));
-    final posts = feed.asData?.value.items ?? const <Post>[];
-    final requests = [
-      for (final i in activity?.items ?? const <Map<String, dynamic>>[])
-        if (isPendingRequest(i)) i,
-    ];
-    final missing = profile == null
-        ? const <String>[]
-        : missingProfileParts(profile);
-    // Suggestions sit after the third post, or under a quiet feed.
-    final suggestAt = posts.isEmpty ? -1 : math.min(3, posts.length);
+  void setMode(String next) => setState(() => mode = next);
 
-    return ReadingWidth(
-      child: RefreshIndicator(
-        onRefresh: refresh,
-        child: NotificationListener<ScrollNotification>(
-          onNotification: onScroll,
-          child: CustomScrollView(
-            slivers: [
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-                sliver: SliverList.list(
-                  children: [
-                    _Greeting(name: profile?.displayName),
-                    const SizedBox(height: 16),
-                    const StoryTray(),
-                    const SizedBox(height: 14),
-                    _PulseStrip(
-                      unreadChats: unreadChats,
-                      requests: requests.length,
-                      newActivity: activity?.unread ?? 0,
-                    ),
-                    if (requests.isNotEmpty) ...[
-                      _Heading(
-                        'Waiting on you',
-                        action: requests.length > 2 ? 'See all' : null,
-                        onAction: () => context.go('/notifications'),
-                      ),
-                      for (final r in requests.take(2)) _RequestRow(item: r),
-                    ],
-                    if (profile != null && missing.isNotEmpty)
-                      _ProfileProgress(missing: missing),
-                    Padding(
-                      padding: const EdgeInsets.only(top: 26, bottom: 12),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Text(
-                            'Pulse',
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                          const SizedBox(height: 10),
-                          SegmentedButton<String>(
-                            key: const Key('feed-mode'),
-                            showSelectedIcon: false,
-                            segments: const [
-                              ButtonSegment(
-                                value: 'following',
-                                label: Text('Your people'),
-                              ),
-                              ButtonSegment(
-                                value: 'everyone',
-                                label: Text('Everyone'),
-                              ),
-                            ],
-                            selected: {mode},
-                            onSelectionChanged: (s) =>
-                                setState(() => mode = s.single),
-                          ),
-                        ],
-                      ),
-                    ),
-                    if (feed.hasError && posts.isEmpty)
-                      FailureCard(
-                        error: feed.error!,
-                        retry: () => ref.invalidate(feedProvider(mode)),
-                      )
-                    else if (feed.isLoading && posts.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.all(32),
-                        child: Center(child: CircularProgressIndicator()),
-                      )
-                    else if (posts.isEmpty) ...[
-                      EmptyCard(
-                        key: const Key('feed-empty'),
-                        icon: Icons.auto_awesome_rounded,
-                        title: mode == 'following'
-                            ? 'Your Pulse is quiet'
-                            : 'Nothing public yet',
-                        description: mode == 'following'
-                            ? 'Follow a few people or share something of your own.'
-                            : 'Public posts from everyone show up here.',
-                        action: FilledButton.icon(
-                          onPressed: () => context.push('/compose'),
-                          icon: const Icon(Icons.edit_note_rounded),
-                          label: const Text('Share a post'),
-                        ),
-                      ),
-                      const _Suggestions(),
-                    ],
-                  ],
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, box) {
+      final wide = box.maxWidth >= homeWideBreakpoint;
+      return Stack(
+        children: [
+          Positioned.fill(
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: wide
+                      ? _feedMaxWidth + 24 + _railWidth
+                      : _feedMaxWidth,
                 ),
+                child: wide ? _wide(context) : _column(wide: false),
               ),
-              SliverPadding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                sliver: SliverList.builder(
-                  itemCount: posts.length,
-                  itemBuilder: (context, i) => Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      PostCard(post: posts[i], mode: mode),
-                      if (i + 1 == suggestAt)
-                        const Padding(
-                          padding: EdgeInsets.only(bottom: 14),
-                          child: _Suggestions(),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 8, bottom: 120),
-                  child: feed.asData?.value.loadingMore ?? false
-                      ? const Center(child: CircularProgressIndicator())
-                      : const SizedBox.shrink(),
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
-      ),
-    );
-  }
-}
+          Positioned(
+            right: 16,
+            bottom: 16,
+            child: HomeCreateButton(extended: extended),
+          ),
+        ],
+      );
+    },
+  );
 
-class _Greeting extends StatelessWidget {
-  final String? name;
-  const _Greeting({required this.name});
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        VibeTag(
-          greetingFor(DateTime.now()),
-          color: VibeColors.lime,
-          icon: Icons.auto_awesome,
-        ),
-        const SizedBox(height: 12),
-        Text(
-          name == null ? 'Your orbit' : 'Hey, $name.',
-          style: Theme.of(context).textTheme.headlineLarge,
-        ),
-        const SizedBox(height: 4),
-        Text(
-          'Here’s what’s happening with your people.',
-          style: TextStyle(color: scheme.onSurfaceVariant, height: 1.5),
-        ),
-      ],
-    );
-  }
-}
-
-class _PulseStrip extends StatelessWidget {
-  final int unreadChats, requests, newActivity;
-  const _PulseStrip({
-    required this.unreadChats,
-    required this.requests,
-    required this.newActivity,
-  });
-  @override
-  Widget build(BuildContext context) => Row(
+  Widget _wide(BuildContext context) => Row(
+    crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Expanded(
-        child: _PulseTile(
-          key: const Key('home-pulse-chats'),
-          count: unreadChats,
-          label: unreadChats == 1 ? 'message' : 'messages',
-          icon: Icons.chat_bubble_outline_rounded,
-          color: VibeColors.lilac,
-          onTap: () => context.go('/chats'),
-        ),
-      ),
-      const SizedBox(width: 10),
-      Expanded(
-        child: _PulseTile(
-          key: const Key('home-pulse-requests'),
-          count: requests,
-          label: requests == 1 ? 'request' : 'requests',
-          icon: Icons.person_add_alt_rounded,
-          color: VibeColors.pink,
-          onTap: () => context.go('/notifications'),
-        ),
-      ),
-      const SizedBox(width: 10),
-      Expanded(
-        child: _PulseTile(
-          key: const Key('home-pulse-activity'),
-          count: newActivity,
-          label: 'activity',
-          icon: Icons.bolt_rounded,
-          color: VibeColors.mint,
-          onTap: () => context.go('/notifications'),
+      Expanded(child: _column(wide: true)),
+      const SizedBox(width: 24),
+      SizedBox(
+        width: _railWidth,
+        child: ListView(
+          key: const Key('home-rail'),
+          padding: const EdgeInsets.fromLTRB(0, 8, 16, 120),
+          children: const [
+            StaggerIn(index: 0, child: HomeVibeStrip(wrap: true)),
+            HomeProfileNudge(rail: true, topGap: 16),
+            HomeForYou(rail: true, topGap: 28),
+            SizedBox(height: 28),
+            HomeSuggestions(rail: true),
+          ],
         ),
       ),
     ],
   );
+
+  /// The feed column: everything on a phone, just stories and Pulse beside the rail.
+  Widget _column({required bool wide}) => RefreshIndicator(
+    color: VibeColors.lime,
+    backgroundColor: VibeColors.ink,
+    onRefresh: refresh,
+    child: NotificationListener<ScrollNotification>(
+      onNotification: onScroll,
+      child: CustomScrollView(
+        key: const Key('home-scroll'),
+        // Bouncy at the top so the pull-to-refresh feels springy.
+        physics: const BouncingScrollPhysics(
+          parent: AlwaysScrollableScrollPhysics(),
+        ),
+        slivers: [
+          if (!wide) ...[
+            const SliverToBoxAdapter(
+              child: StaggerIn(index: 0, child: _Greeting()),
+            ),
+            const SliverToBoxAdapter(
+              child: StaggerIn(index: 1, child: HomeVibeStrip()),
+            ),
+            const SliverToBoxAdapter(
+              child: StaggerIn(index: 2, child: HomeProfileNudge(topGap: 4)),
+            ),
+          ],
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: EdgeInsets.only(top: wide ? 12 : 10),
+              child: const StaggerIn(index: 3, child: StoryTray()),
+            ),
+          ),
+          if (!wide)
+            const SliverToBoxAdapter(
+              child: StaggerIn(index: 4, child: HomeForYou(topGap: 12)),
+            ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
+              child: StaggerIn(
+                index: 5,
+                child: VibeSegmented<String>(
+                  key: const Key('feed-mode'),
+                  segments: const [
+                    ('following', 'Your people'),
+                    ('everyone', 'Everyone'),
+                  ],
+                  selected: mode,
+                  onChanged: setMode,
+                  keyFor: (v) => Key('feed-mode-$v'),
+                ),
+              ),
+            ),
+          ),
+          _FeedSlivers(mode: mode, wide: wide),
+        ],
+      ),
+    ),
+  );
 }
 
-class _PulseTile extends StatelessWidget {
-  final int count;
+/// "gm Mira ☀️". Rebuilds on its own when the name arrives.
+class _Greeting extends ConsumerWidget {
+  const _Greeting();
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final name = ref.watch(profileProvider.select((p) => p.value?.displayName));
+    final text = homeGreeting(ref.watch(homeClockProvider)(), name);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+      child: Semantics(
+        header: true,
+        child: Text(
+          text,
+          key: const Key('home-greeting'),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.headlineMedium
+              ?.copyWith(fontSize: 30, letterSpacing: -1.2),
+        ),
+      ),
+    );
+  }
+}
+
+/// Pulse itself: the posts, with the suggestions carousel after about the
+/// third one, and a calm look for loading, errors and a quiet feed.
+class _FeedSlivers extends ConsumerWidget {
+  final String mode;
+  final bool wide;
+  const _FeedSlivers({required this.mode, required this.wide});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final feed = ref.watch(feedProvider(mode));
+    final posts = feed.value?.items ?? const <Post>[];
+    // The rail carries the suggestions on a wide screen.
+    final suggestions =
+        !wide &&
+        ref.watch(
+          homeSuggestionsProvider.select((s) => s.value?.isNotEmpty ?? false),
+        );
+    // After the third post, or at the end of a short feed.
+    final slot = posts.isEmpty ? -1 : math.min(3, posts.length);
+    final inline = suggestions && posts.isNotEmpty;
+    const side = EdgeInsets.symmetric(horizontal: 16);
+
+    if (!feed.hasValue && feed.hasError) {
+      return SliverToBoxAdapter(
+        child: Padding(
+          padding: side,
+          child: FailureCard(
+            error: feed.error!,
+            retry: () => ref.invalidate(feedProvider(mode)),
+          ),
+        ),
+      );
+    }
+    if (!feed.hasValue) {
+      return const SliverToBoxAdapter(child: _FeedSkeleton());
+    }
+    if (posts.isEmpty) {
+      return SliverToBoxAdapter(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: side,
+              child: _QuietFeed(mode: mode),
+            ),
+            if (suggestions) ...[
+              const SizedBox(height: 24),
+              const HomeSuggestions(),
+            ],
+            const SizedBox(height: 120),
+          ],
+        ),
+      );
+    }
+    return SliverMainAxisGroup(
+      slivers: [
+        SliverList.builder(
+          itemCount: posts.length + (inline ? 1 : 0),
+          itemBuilder: (context, i) {
+            if (inline && i == slot) {
+              return const Padding(
+                padding: EdgeInsets.only(bottom: 22),
+                child: HomeSuggestions(),
+              );
+            }
+            final index = inline && i > slot ? i - 1 : i;
+            final card = Padding(
+              padding: side,
+              child: PostCard(post: posts[index], mode: mode),
+            );
+            return index < 3 ? StaggerIn(index: 6 + index, child: card) : card;
+          },
+        ),
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 120),
+            child: feed.value?.loadingMore ?? false
+                ? const Center(child: CircularProgressIndicator())
+                : const SizedBox.shrink(),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Where the first post will be, while Pulse loads. Still, never shimmering.
+class _FeedSkeleton extends StatelessWidget {
+  const _FeedSkeleton();
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final block = scheme.surfaceContainerHigh;
+    Widget bar(double width, [double height = 14]) => Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: block,
+        borderRadius: BorderRadius.circular(8),
+      ),
+    );
+    Widget card(bool photo) => Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        borderRadius: BorderRadius.circular(VibeRadius.surface),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(color: block, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [bar(120), const SizedBox(height: 8), bar(80, 10)],
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (photo)
+            Container(
+              height: 200,
+              decoration: BoxDecoration(
+                color: block,
+                borderRadius: BorderRadius.circular(22),
+              ),
+            )
+          else ...[
+            bar(double.infinity),
+            const SizedBox(height: 8),
+            bar(220),
+          ],
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Container(
+                width: 76,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: block,
+                  borderRadius: BorderRadius.circular(100),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                width: 76,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: block,
+                  borderRadius: BorderRadius.circular(100),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+    return Semantics(
+      label: 'Loading your Pulse',
+      child: ExcludeSemantics(
+        child: Column(children: [card(true), card(false)]),
+      ),
+    );
+  }
+}
+
+/// A feed with nothing in it yet, with two ways to change that.
+class _QuietFeed extends StatelessWidget {
+  final String mode;
+  const _QuietFeed({required this.mode});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final yours = mode == 'following';
+    return Container(
+      key: const Key('feed-empty'),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        borderRadius: BorderRadius.circular(VibeRadius.surface),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const VibeArt(height: 150),
+          const SizedBox(height: 18),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Text(
+              yours ? 'Your Pulse is quiet 🌙' : 'Nothing public yet 🌱',
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Text(
+              yours
+                  ? 'Follow a few people or drop something of your own.'
+                  : 'Public posts from everyone show up here.',
+              style: TextStyle(
+                height: 1.5,
+                fontSize: 14.5,
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 10,
+            runSpacing: 4,
+            children: [
+              _BigButton(
+                key: const Key('feed-empty-share'),
+                label: 'Share a post',
+                icon: Icons.edit_note_rounded,
+                onTap: () => context.push('/compose'),
+              ),
+              _BigButton(
+                key: const Key('feed-empty-find'),
+                label: 'Find people',
+                icon: Icons.search_rounded,
+                filled: false,
+                onTap: () => context.push('/people'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BigButton extends StatelessWidget {
   final String label;
   final IconData icon;
-  final Color color;
+  final bool filled;
   final VoidCallback onTap;
-  const _PulseTile({
+  const _BigButton({
     super.key,
-    required this.count,
     required this.label,
     required this.icon,
-    required this.color,
     required this.onTap,
+    this.filled = true,
   });
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final active = count > 0;
-    return Semantics(
-      button: true,
-      label: '$count $label',
-      excludeSemantics: true,
-      child: Material(
-        color: active ? color : scheme.surface,
-        borderRadius: BorderRadius.circular(22),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(22),
-          onTap: onTap,
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(22),
-              border: Border.all(color: active ? color : scheme.outlineVariant),
+    final fg = filled ? VibeColors.ink : scheme.onSurface;
+    return PressScale(
+      minHeight: 48,
+      semanticLabel: label,
+      onTap: onTap,
+      child: Align(
+        widthFactor: 1,
+        child: Container(
+          constraints: const BoxConstraints(minHeight: 48),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+          decoration: BoxDecoration(
+            color: filled ? VibeColors.lime : Colors.transparent,
+            borderRadius: BorderRadius.circular(100),
+            border: Border.all(
+              color: filled ? VibeColors.lime : scheme.outlineVariant,
+              width: 1.5,
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(
-                  icon,
-                  size: 20,
-                  color: active ? VibeColors.ink : scheme.onSurfaceVariant,
-                ),
-                const SizedBox(height: 14),
-                Text(
-                  count > 99 ? '99+' : '$count',
-                  style: TextStyle(
-                    fontFamily: 'SpaceGrotesk',
-                    fontSize: 28,
-                    height: 1,
-                    fontWeight: FontWeight.w700,
-                    color: active ? VibeColors.ink : scheme.onSurface,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 19, color: fg),
+              const SizedBox(width: 8),
+              // Wraps instead of overflowing at large text sizes.
+              Flexible(
+                child: Text(
                   label,
-                  maxLines: 1,
+                  maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: active
-                        ? VibeColors.ink.withValues(alpha: .75)
-                        : scheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14.5,
+                    color: fg,
                   ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The one create button: a lime pill that opens the create sheet and folds
+/// down to a plain "+" while the feed scrolls away.
+class HomeCreateButton extends StatelessWidget {
+  final ValueNotifier<bool> extended;
+  const HomeCreateButton({super.key, required this.extended});
+
+  @override
+  Widget build(BuildContext context) {
+    final duration = VibeMotion.duration(context);
+    return ValueListenableBuilder<bool>(
+      valueListenable: extended,
+      builder: (context, open, _) => Tooltip(
+        message: 'Create',
+        child: PressScale(
+          key: const Key('home-create'),
+          minHeight: 56,
+          pressedScale: .94,
+          semanticLabel: 'Create',
+          semanticHint: 'Post, story, circle or moment',
+          onTap: () => showCreateSheet(context),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: VibeColors.lime,
+              borderRadius: BorderRadius.circular(100),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: .2),
+                  blurRadius: 20,
+                  spreadRadius: -2,
+                  offset: const Offset(0, 6),
                 ),
               ],
             ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _Heading extends StatelessWidget {
-  final String title;
-  final String? action;
-  final VoidCallback? onAction;
-  const _Heading(this.title, {this.action, this.onAction});
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(top: 28, bottom: 10),
-    child: Row(
-      children: [
-        Expanded(
-          child: Text(title, style: Theme.of(context).textTheme.titleLarge),
-        ),
-        if (action != null)
-          TextButton(onPressed: onAction, child: Text(action!)),
-      ],
-    ),
-  );
-}
-
-class _Initial extends StatelessWidget {
-  final String name;
-  final Color color;
-  static const double radius = 22;
-  const _Initial(this.name, {this.color = VibeColors.lilac});
-  @override
-  Widget build(BuildContext context) => CircleAvatar(
-    radius: radius,
-    backgroundColor: color,
-    foregroundColor: VibeColors.ink,
-    child: Text(
-      name.characters.firstOrNull?.toUpperCase() ?? '?',
-      style: TextStyle(fontWeight: FontWeight.w800, fontSize: radius * .8),
-    ),
-  );
-}
-
-class _RequestRow extends ConsumerWidget {
-  final Map<String, dynamic> item;
-  const _RequestRow({required this.item});
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final actor = (item['actors'] as List).first as Map;
-    final name = (actor['displayName'] ?? actor['username'] ?? '') as String;
-    final id = item['notificationId'];
-    Future<void> respond(bool accept) async {
-      try {
-        await ref.read(activityProvider.notifier).respond(item, accept);
-      } catch (e) {
-        if (context.mounted) showMessage(context, e.toString());
-      }
-    }
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: VibePanel(
-        padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
-        child: Row(
-          children: [
-            InkWell(
-              customBorder: const CircleBorder(),
-              onTap: () => context.go('/discover/person/${actor['userId']}'),
-              child: _Initial(name, color: VibeColors.pink),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                item['text'] as String? ?? name,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-            ),
-            IconButton(
-              key: Key('home-decline-$id'),
-              tooltip: 'Decline',
-              onPressed: () => respond(false),
-              icon: const Icon(Icons.close_rounded),
-            ),
-            IconButton.filled(
-              key: Key('home-accept-$id'),
-              tooltip: 'Accept',
-              onPressed: () => respond(true),
-              icon: const Icon(Icons.check_rounded),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _Suggestions extends ConsumerWidget {
-  const _Suggestions();
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final people = ref.watch(homeSuggestionsProvider).asData?.value;
-    if (people == null || people.isEmpty) return const SizedBox.shrink();
-    final own = ref.watch(profileProvider).asData?.value;
-    final mine = {...?own?.interests};
-    final scaler = MediaQuery.textScalerOf(context)
-        .clamp(maxScaleFactor: _cardTextScale);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _Heading(
-          'People you might vibe with',
-          action: 'Discover',
-          onAction: () => context.go('/discover'),
-        ),
-        SizedBox(
-          // Fixed chrome plus text that grows with the reader's text size.
-          height: 112 + scaler.scale(84),
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            clipBehavior: Clip.none,
-            itemCount: people.length,
-            separatorBuilder: (_, _) => const SizedBox(width: 10),
-            itemBuilder: (context, i) {
-              final p = people[i];
-              final shared = p.interests.where(mine.contains).length;
-              return MediaQuery.withClampedTextScaling(
-                maxScaleFactor: _cardTextScale,
-                child: _PersonCard(person: p, shared: shared),
-              );
-            },
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _PersonCard extends StatelessWidget {
-  final Profile person;
-  final int shared;
-  const _PersonCard({required this.person, required this.shared});
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final accent = profileAccent(person);
-    final line = [person.currentVibe, person.headline, person.profession]
-        .firstWhere(
-          (s) => s.trim().isNotEmpty,
-          orElse: () => '@${person.username}',
-        );
-    return SizedBox(
-      width: 150,
-      child: Material(
-        color: scheme.surface,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(24),
-          side: BorderSide(color: scheme.outlineVariant),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          key: Key('home-person-${person.userId}'),
-          onTap: () => context.go('/discover/person/${person.userId}'),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                height: 64,
-                color: accent.withValues(alpha: .55),
-                alignment: Alignment.bottomLeft,
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
-                child: Transform.translate(
-                  offset: const Offset(0, 22),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(color: scheme.surface, width: 3),
+            child: AnimatedSize(
+              duration: duration,
+              curve: Curves.easeOutBack,
+              alignment: Alignment.centerRight,
+              child: Container(
+                height: 56,
+                constraints: const BoxConstraints(minWidth: 56),
+                padding: EdgeInsets.symmetric(horizontal: open ? 20 : 0),
+                alignment: Alignment.center,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.add_rounded,
+                      size: 26,
+                      color: VibeColors.ink,
                     ),
-                    child: _Initial(person.displayName, color: accent),
-                  ),
-                ),
-              ),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 28, 12, 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        person.displayName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w800,
-                          fontSize: 15,
+                    if (open) ...[
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Create',
+                        style: TextStyle(
+                          fontFamily: 'SpaceGrotesk',
+                          fontWeight: FontWeight.w700,
+                          fontSize: 16,
+                          color: VibeColors.ink,
                         ),
                       ),
-                      const SizedBox(height: 2),
-                      Flexible(
-                        child: Text(
-                          line,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 12,
-                            height: 1.35,
-                            color: scheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ),
-                      if (shared > 0) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          shared == 1
-                              ? '1 shared interest'
-                              : '$shared shared interests',
-                          style: const TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w800,
-                            color: VibeColors.success,
-                          ),
-                        ),
-                      ],
                     ],
-                  ),
+                  ],
                 ),
               ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ProfileProgress extends StatelessWidget {
-  final List<String> missing;
-  const _ProfileProgress({required this.missing});
-  @override
-  Widget build(BuildContext context) {
-    final done = _profileParts - missing.length;
-    return Padding(
-      padding: const EdgeInsets.only(top: 28),
-      child: VibePanel(
-        color: VibeColors.lime,
-        padding: const EdgeInsets.all(20),
-        child: DefaultTextStyle.merge(
-          style: const TextStyle(color: VibeColors.ink),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Make it feel like you',
-                      style: TextStyle(
-                        fontFamily: 'SpaceGrotesk',
-                        fontSize: 20,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                  Text(
-                    '$done/$_profileParts',
-                    style: const TextStyle(fontWeight: FontWeight.w800),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: LinearProgressIndicator(
-                  value: done / _profileParts,
-                  minHeight: 8,
-                  color: VibeColors.ink,
-                  backgroundColor: VibeColors.ink.withValues(alpha: .12),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                'Still missing: ${missing.take(3).join(', ')}'
-                '${missing.length > 3 ? ' and more' : ''}.',
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                style: FilledButton.styleFrom(
-                  backgroundColor: VibeColors.ink,
-                  foregroundColor: VibeColors.lime,
-                ),
-                onPressed: () => context.go('/profile/edit'),
-                icon: const Icon(Icons.arrow_outward, size: 16),
-                label: const Text('Make it yours'),
-              ),
-            ],
+            ),
           ),
         ),
       ),

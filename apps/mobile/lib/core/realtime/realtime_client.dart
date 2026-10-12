@@ -19,13 +19,30 @@ class RealtimeEvent {
 class RealtimeClient {
   final Uri url;
   final String token;
+
+  /// Reads the newest token on every (re)connect; Firebase rotates it hourly.
+  final String Function()? tokenOf;
+
+  /// Asks the identity provider for a brand-new token, after the server said
+  /// the session ended. Without it, [tokenOf] is read again.
+  final Future<String?> Function()? refreshToken;
+
+  /// Called once the server keeps refusing the session after a fresh token:
+  /// the session really ended, so the app should sign out rather than retry.
+  final void Function()? onSessionEnded;
   final Future<RealtimeSocket> Function(Uri, String) _connect;
   RealtimeClient(
     String apiBase,
     this.token, {
+    this.tokenOf,
+    this.refreshToken,
+    this.onSessionEnded,
     Future<RealtimeSocket> Function(Uri, String)? connect,
   }) : url = _socketUrl(apiBase),
        _connect = connect ?? connectSocket;
+
+  /// WebSocket close code for "policy violation": the session ended.
+  static const sessionEndedCode = 1008;
 
   static Uri _socketUrl(String base) {
     final api = Uri.parse(base);
@@ -42,7 +59,15 @@ class RealtimeClient {
   StreamSubscription<String>? _subscription;
   Timer? _retry;
   int _attempt = 0;
+
+  /// Bumped by every start and stop; a handshake that finishes under an older
+  /// generation belongs to a connection nobody wants any more.
+  int _generation = 0;
   bool _running = false, _disposed = false;
+
+  /// Set after the server ended the session and one reconnect with a fresh
+  /// token is under way; a second refusal stops the client.
+  bool _retryingEndedSession = false;
 
   /// "ready" arrives on every (re)connect; treat it as "resync now".
   Stream<RealtimeEvent> get events => _events.stream;
@@ -50,17 +75,21 @@ class RealtimeClient {
   void start() {
     if (_running || _disposed) return;
     _running = true;
+    _generation++;
+    _retryingEndedSession = false;
     _open();
   }
 
   /// Closes the socket, e.g. when the app goes to the background.
   void stop() {
     _running = false;
+    _generation++;
     _retry?.cancel();
     _subscription?.cancel();
+    _subscription = null;
     _socket?.close();
     _socket = null;
-    connected.value = false;
+    _setConnected(false);
   }
 
   void dispose() {
@@ -76,32 +105,71 @@ class RealtimeClient {
     );
   }
 
-  Future<void> _open() async {
+  Future<void> _open({String? freshToken}) async {
+    final generation = _generation;
+    bool current() => _running && !_disposed && generation == _generation;
     try {
-      final socket = await _connect(url, token);
-      if (!_running) {
+      final socket = await _connect(
+        url,
+        freshToken ?? tokenOf?.call() ?? token,
+      );
+      if (!current()) {
         await socket.close();
         return;
       }
+      // A retry timer and a fresh start can overlap; keep only the newest.
+      _subscription?.cancel();
+      _socket?.close();
       _socket = socket;
       _attempt = 0;
-      connected.value = true;
+      _setConnected(true);
       _subscription = socket.messages.listen(
         _receive,
-        onDone: _lost,
-        onError: (_) => _lost(),
+        onDone: () => _lost(socket),
+        onError: (_) => _lost(socket),
         cancelOnError: true,
       );
     } on UnsupportedError {
-      _running = false;
+      if (generation == _generation) _running = false;
+    } on RealtimeUnauthorized {
+      if (current()) _sessionEnded();
     } catch (_) {
-      _schedule();
+      if (current()) _schedule();
     }
+  }
+
+  /// The server refused this session. Try once more with a fresh token (the
+  /// old one may simply have expired); if that is refused too, stop and let
+  /// the session layer sign out instead of reconnecting with a dead token.
+  Future<void> _sessionEnded() async {
+    _setConnected(false);
+    if (_retryingEndedSession) {
+      stop();
+      onSessionEnded?.call();
+      return;
+    }
+    _retryingEndedSession = true;
+    _retry?.cancel();
+    final generation = _generation;
+    String? fresh;
+    try {
+      fresh = await refreshToken?.call();
+    } catch (_) {
+      // Fall back to whatever tokenOf reports now.
+    }
+    if (!_running || _disposed || generation != _generation) return;
+    await _open(freshToken: fresh);
+  }
+
+  void _setConnected(bool value) {
+    if (!_disposed) connected.value = value;
   }
 
   void _receive(String raw) {
     try {
       final json = jsonDecode(raw) as Map<String, dynamic>;
+      // The server accepted the session again.
+      if (json['type'] == 'ready') _retryingEndedSession = false;
       final data =
           (json['data'] as Map?)?.map(
             (k, v) => MapEntry(k as String, v.toString()),
@@ -115,10 +183,16 @@ class RealtimeClient {
     }
   }
 
-  void _lost() {
+  void _lost(RealtimeSocket socket) {
+    if (!identical(socket, _socket)) return;
     _socket = null;
-    connected.value = false;
-    _schedule();
+    _subscription = null;
+    _setConnected(false);
+    if (socket.closeCode == sessionEndedCode) {
+      _sessionEnded();
+    } else {
+      _schedule();
+    }
   }
 
   void _schedule() {

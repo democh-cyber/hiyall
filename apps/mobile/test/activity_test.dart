@@ -8,11 +8,11 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:kairova/app.dart';
-import 'package:kairova/core/state.dart';
-import 'package:kairova/core/theme.dart';
-import 'package:kairova/features/activity.dart';
-import 'package:kairova/shared/navigation_dock.dart';
+import 'package:hiyall/app.dart';
+import 'package:hiyall/core/state.dart';
+import 'package:hiyall/core/theme.dart';
+import 'package:hiyall/features/activity.dart';
+import 'package:hiyall/shared/navigation_dock.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
 
@@ -91,7 +91,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpWidget(
       MaterialApp(
-        theme: kairovaTheme(dark ? Brightness.dark : Brightness.light),
+        theme: hiyallTheme(dark ? Brightness.dark : Brightness.light),
         home: MediaQuery(
           data: MediaQueryData(
             size: size,
@@ -139,7 +139,7 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: RepaintBoundary(key: capture, child: const KairovaApp()),
+        child: RepaintBoundary(key: capture, child: const HiyallApp()),
       ),
     );
     container.read(routerProvider).go('/notifications');
@@ -195,7 +195,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(
       container.read(routerProvider).routeInformationProvider.value.uri.path,
-      '/profile/privacy',
+      '/profile/settings',
     );
     expect(tester.takeException(), isNull);
   });
@@ -474,10 +474,7 @@ void main() {
     );
     addTearDown(container.dispose);
     await tester.pumpWidget(
-      UncontrolledProviderScope(
-        container: container,
-        child: const KairovaApp(),
-      ),
+      UncontrolledProviderScope(container: container, child: const HiyallApp()),
     );
     container.read(routerProvider).go('/notifications');
     await tester.pumpAndSettle();

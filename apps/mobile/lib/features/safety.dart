@@ -3,9 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/api.dart';
+import '../core/chat/chat_attachment.dart';
 import '../core/chat/chat_engine.dart';
 import '../core/state.dart';
-import '../core/theme.dart';
+import '../shared/person_avatar.dart';
 import '../shared/widgets.dart';
 
 /// Reasons offered when reporting, in the order people look for them. Keys
@@ -16,7 +17,7 @@ const reportReasons = <String, String>{
   'hate': 'Hate speech or symbols',
   'sexual_content': 'Nudity or sexual content',
   'self_harm': 'Self-harm or suicide',
-  'underage': 'They may be under 18',
+  'underage': 'They may be too young (under 13)',
   'scam': 'Scam or fraud',
   'spam': 'Spam',
   'impersonation': 'Pretending to be someone else',
@@ -136,10 +137,13 @@ Future<void> showPersonOptions(
   final api = ref.read(apiProvider);
   final session = ref.read(sessionProvider).asData?.value;
   if (session == null) return;
+  // The profile that opened these options may be gone when the server
+  // answers; the container outlives it.
+  final container = ProviderScope.containerOf(context, listen: false);
   Future<void> apply(Future<void> Function() action, String done) async {
     try {
       await action();
-      ref.invalidate(otherProfileProvider(profile.userId));
+      container.invalidate(otherProfileProvider(profile.userId));
       if (context.mounted) showMessage(context, done);
     } catch (e) {
       if (context.mounted) showMessage(context, e.toString());
@@ -174,32 +178,75 @@ Future<void> showPersonOptions(
         name: name,
       );
       if (receipt?.blocked ?? false) {
-        ref.invalidate(profileProvider);
+        container.invalidate(profileProvider);
+        container.invalidate(otherProfileProvider(profile.userId));
         if (context.mounted) context.go('/discover');
       }
     case 'block':
-      final sure = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: Text('Block $name?'),
-          content: const Text(
-            'They won’t be able to find your profile, follow you or message you. Your follows and friendship end, and your chat closes. They won’t be told.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              key: const Key('confirm-block'),
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Block'),
-            ),
-          ],
-        ),
-      );
-      if (sure ?? false) onBlock();
+      if (await confirmBlock(context, name)) onBlock();
   }
+}
+
+/// The question every "Block" asks first (the person's profile menu and the
+/// chat's): what blocking does, and that they are not told. True on "Block".
+Future<bool> confirmBlock(BuildContext context, String name) async =>
+    await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Block $name?'),
+        content: const Text(
+          'They won’t be able to find your profile, follow you or message you. Your follows and friendship end, and your chat closes. They won’t be told.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('confirm-block'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Block'),
+          ),
+        ],
+      ),
+    ) ??
+    false;
+
+/// Asks first ([confirmBlock]), then blocks [userId] and says so, for screens
+/// that stay where they are afterwards (Discover's row menu): the caller drops
+/// the person from its own list. True only when the server accepted the block;
+/// a refusal or a failure says why and returns false, and "Account blocked." is
+/// never shown otherwise. Screens that also leave (the profile, a chat) keep
+/// their own flow and navigation.
+Future<bool> blockAccount(
+  BuildContext context,
+  WidgetRef ref, {
+  required String userId,
+  required String name,
+}) async {
+  final session = ref.read(sessionProvider).asData?.value;
+  if (session == null) return false;
+  if (!await confirmBlock(context, name) || !context.mounted) return false;
+  final api = ref.read(apiProvider);
+  final container = ProviderScope.containerOf(context, listen: false);
+  try {
+    await api.block(session, userId, true);
+  } catch (e) {
+    if (context.mounted) {
+      showMessage(
+        context,
+        e is ApiFailure
+            ? e.displayMessage
+            : 'That didn’t go through. Try again.',
+      );
+    }
+    return false;
+  }
+  container.invalidate(otherProfileProvider(userId));
+  // Block changes also change the owner's derived connection counts.
+  container.invalidate(profileProvider);
+  if (context.mounted) showMessage(context, 'Account blocked.');
+  return true;
 }
 
 /// The report flow. For chats, [messages] are the decrypted messages on this
@@ -224,9 +271,10 @@ Future<ReportReceipt?> showReportSheet(
     name: name,
     messages: [
       for (final m in messages.reversed)
-        if (!m.notice) m,
+        // Local notices and photos that never went out have nothing to share.
+        if (!m.notice && m.status == SendStatus.sent) m,
     ].take(30).toList(),
-    submit: (reason, details, evidence, consent, block) async {
+    submit: (reason, details, evidence, consent, block, sharePhotos) async {
       final session = ref.read(sessionProvider).asData!.value!;
       return ref
           .read(apiProvider)
@@ -243,6 +291,18 @@ Future<ReportReceipt?> showReportSheet(
                   'text': m.text,
                   'sentAt': (m.serverAt ?? m.sentAt).toUtc().toIso8601String(),
                   'fromMe': m.mine,
+                  // The key to open a photo leaves the device only when the
+                  // reporter ticked the photo consent as well.
+                  if (sharePhotos && m.attachment?.uploaded == true)
+                    'attachments': [
+                      {
+                        'blobIds': [
+                          m.attachment!.full.blobId,
+                          m.attachment!.thumb.blobId,
+                        ],
+                        'descriptor': m.attachment!.toJson(),
+                      },
+                    ],
                 },
             ],
             disclosureConsent: consent,
@@ -258,6 +318,7 @@ typedef _Submit = Future<ReportReceipt> Function(
   List<ChatMessage> evidence,
   bool consent,
   bool block,
+  bool sharePhotos,
 );
 
 class _ReportSheet extends StatefulWidget {
@@ -279,7 +340,7 @@ class _ReportSheetState extends State<_ReportSheet> {
   String? reason;
   final details = TextEditingController();
   final selected = <String>{};
-  bool consent = false, block = false, sending = false;
+  bool consent = false, block = false, sending = false, sharePhotos = false;
   String? error;
 
   @override
@@ -287,6 +348,11 @@ class _ReportSheetState extends State<_ReportSheet> {
     details.dispose();
     super.dispose();
   }
+
+  /// A picked message carries a photo the safety team could open.
+  bool get photoPicked => widget.messages.any(
+    (m) => selected.contains(m.messageId) && m.attachment?.uploaded == true,
+  );
 
   bool get ready => reason != null && !sending && (selected.isEmpty || consent);
 
@@ -305,6 +371,7 @@ class _ReportSheetState extends State<_ReportSheet> {
         ],
         consent,
         block,
+        sharePhotos && photoPicked,
       );
       if (!mounted) return;
       Navigator.pop(context, receipt);
@@ -401,13 +468,19 @@ class _ReportSheetState extends State<_ReportSheet> {
                             ? selected.add(m.messageId)
                             : selected.remove(m.messageId);
                         if (selected.isEmpty) consent = false;
+                        if (!photoPicked) sharePhotos = false;
                       }),
+                      secondary: m.isPhoto
+                          ? const Icon(Icons.photo_outlined)
+                          : null,
                       title: Text(
-                        m.text,
+                        m.isPhoto ? m.preview : m.text,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
-                      subtitle: Text(m.mine ? 'You' : widget.name),
+                      subtitle: Text(
+                        '${m.mine ? 'You' : widget.name}${m.isPhoto ? ' · Photo' : ''}',
+                      ),
                     ),
                 ],
               ),
@@ -420,11 +493,22 @@ class _ReportSheetState extends State<_ReportSheet> {
                 onChanged: (v) => setState(() => consent = v!),
                 title: Text(
                   selected.length == 1
-                      ? 'Share this message with Kairova’s safety team'
-                      : 'Share these ${selected.length} messages with Kairova’s safety team',
+                      ? 'Share this message with Hiyall’s safety team'
+                      : 'Share these ${selected.length} messages with Hiyall’s safety team',
                 ),
                 subtitle: const Text(
                   'Only the messages you picked leave your device’s encryption.',
+                ),
+              ),
+            if (photoPicked)
+              CheckboxListTile(
+                key: const Key('report-photo-consent'),
+                contentPadding: EdgeInsets.zero,
+                value: sharePhotos,
+                onChanged: (v) => setState(() => sharePhotos = v!),
+                title: const Text('Also share the photo itself'),
+                subtitle: const Text(
+                  'This gives Hiyall’s safety team the key to open the photo you picked. Without it they only see the caption.',
                 ),
               ),
           ],
@@ -468,8 +552,13 @@ class _ControlsScreenState extends ConsumerState<ControlsScreen> {
   String kind = 'blocked';
   final lists = <String, List<Map<String, dynamic>>>{};
   final cursors = <String, String?>{};
-  Object? error;
-  bool loading = false;
+
+  /// Per list, so switching tabs mid-load neither drops nor mixes requests.
+  final errors = <String, Object>{};
+  final _requests = <String, int>{};
+  int _request = 0;
+  Object? get error => errors[kind];
+  bool get loading => _requests.containsKey(kind);
 
   @override
   void initState() {
@@ -480,28 +569,33 @@ class _ControlsScreenState extends ConsumerState<ControlsScreen> {
   Session get session => ref.read(sessionProvider).asData!.value!;
 
   Future<void> load({bool more = false}) async {
-    if (loading) return;
     final current = kind;
+    // Only paging waits; a reload supersedes whatever is in flight.
+    if (more && _requests.containsKey(current)) return;
+    final run = ++_request;
     setState(() {
-      loading = true;
-      error = null;
+      _requests[current] = run;
+      errors.remove(current);
     });
+    bool latest() => mounted && _requests[current] == run;
     try {
       final page = await ref
           .read(apiProvider)
           .controls(session, current, more ? cursors[current] : null);
-      if (!mounted) return;
+      if (!latest()) return;
       setState(() {
+        final kept = more ? lists[current] ?? const [] : const [];
+        final seen = {for (final i in kept) (i['user'] as Map)['userId']};
         lists[current] = [
-          ...more ? lists[current] ?? const [] : const [],
-          ...page.items,
+          ...kept,
+          ...page.items.where((i) => seen.add((i['user'] as Map)['userId'])),
         ];
         cursors[current] = page.nextCursor;
       });
     } catch (e) {
-      if (mounted) setState(() => error = e);
+      if (latest()) setState(() => errors[current] = e);
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (latest()) setState(() => _requests.remove(current));
     }
   }
 
@@ -509,15 +603,20 @@ class _ControlsScreenState extends ConsumerState<ControlsScreen> {
     final user = item['user'] as Map<String, dynamic>;
     final id = user['userId'] as String;
     final api = ref.read(apiProvider);
-    final previous = lists[kind]!;
+    final container = ProviderScope.containerOf(context, listen: false);
+    // The list this undo belongs to, even if another tab is open by the time
+    // the server answers.
+    final which = kind;
+    final at = lists[which]!.indexOf(item);
+    bool sameUser(Map<String, dynamic> i) => (i['user'] as Map)['userId'] == id;
     setState(
-      () => lists[kind] = [
-        for (final i in previous)
-          if ((i['user'] as Map)['userId'] != id) i,
+      () => lists[which] = [
+        for (final i in lists[which]!)
+          if (!sameUser(i)) i,
       ],
     );
     try {
-      switch (kind) {
+      switch (which) {
         case 'blocked':
           await api.block(session, id, false);
         case 'muted':
@@ -525,10 +624,14 @@ class _ControlsScreenState extends ConsumerState<ControlsScreen> {
         case 'restricted':
           await api.setRestricted(session, id, false);
       }
-      ref.invalidate(otherProfileProvider(id));
+      container.invalidate(otherProfileProvider(id));
     } catch (e) {
       if (!mounted) return;
-      setState(() => lists[kind] = previous);
+      setState(() {
+        final now = [...?lists[which]];
+        if (!now.any(sameUser)) now.insert(at.clamp(0, now.length), item);
+        lists[which] = now;
+      });
       showMessage(context, e.toString());
     }
   }
@@ -549,9 +652,9 @@ class _ControlsScreenState extends ConsumerState<ControlsScreen> {
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 120),
           children: [
             TextButton.icon(
-              onPressed: () => context.go('/profile/privacy'),
+              onPressed: () => context.go('/profile/settings'),
               icon: const Icon(Icons.arrow_back),
-              label: const Text('Privacy'),
+              label: const Text('Settings'),
               style: TextButton.styleFrom(alignment: Alignment.centerLeft),
             ),
             Text(
@@ -601,16 +704,12 @@ class _ControlsScreenState extends ConsumerState<ControlsScreen> {
                     for (final item in items)
                       ListTile(
                         key: Key('control-${(item['user'] as Map)['userId']}'),
-                        leading: CircleAvatar(
-                          backgroundColor: VibeColors.lilac,
-                          foregroundColor: VibeColors.ink,
-                          child: Text(
-                            ((item['user'] as Map)['displayName'] as String)
-                                    .characters
-                                    .firstOrNull
-                                    ?.toUpperCase() ??
-                                '?',
-                          ),
+                        leading: PersonAvatar(
+                          name: (item['user'] as Map)['displayName'] as String,
+                          avatarUrl:
+                              (item['user'] as Map)['avatarUrl'] as String?,
+                          userId: (item['user'] as Map)['userId'] as String,
+                          radius: 20,
                         ),
                         title: Text(
                           (item['user'] as Map)['displayName'] as String,

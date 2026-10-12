@@ -92,9 +92,15 @@ class _LiveSyncState extends ConsumerState<LiveSync> {
   static const connectedPoll = Duration(seconds: 60);
   static const fallbackPoll = Duration(seconds: 10);
 
+  /// How often open chat screens re-read conversation state while the socket
+  /// is live, so a peer's online dot and last-seen text stay current. (Without
+  /// a socket the 30 s sync below already does it.) Presence only moves in
+  /// steps of minutes, so this is deliberately slow.
+  static const presenceRefresh = Duration(seconds: 60);
+
   RealtimeClient? client;
   StreamSubscription<RealtimeEvent>? events;
-  Timer? fallback;
+  Timer? fallback, presence;
   AppLifecycleListener? lifecycle;
 
   bool get live => client?.connected.value ?? false;
@@ -104,6 +110,9 @@ class _LiveSyncState extends ConsumerState<LiveSync> {
     super.initState();
     fallback = Timer.periodic(const Duration(seconds: 30), (_) {
       if (!live) syncAll();
+    });
+    presence = Timer.periodic(presenceRefresh, (_) {
+      if (live) ref.read(chatSignalProvider.notifier).bump();
     });
     lifecycle = AppLifecycleListener(
       onResume: () {
@@ -117,6 +126,7 @@ class _LiveSyncState extends ConsumerState<LiveSync> {
   @override
   void dispose() {
     fallback?.cancel();
+    presence?.cancel();
     lifecycle?.dispose();
     events?.cancel();
     client?.connected.removeListener(onConnection);

@@ -4,10 +4,17 @@ import 'dart:io';
 import 'socket.dart';
 
 Future<RealtimeSocket> connectSocket(Uri url, String token) async {
-  final ws = await WebSocket.connect(
-    url.toString(),
-    headers: {'Authorization': 'Bearer $token'},
-  ).timeout(const Duration(seconds: 10));
+  final WebSocket ws;
+  try {
+    ws = await WebSocket.connect(
+      url.toString(),
+      headers: {'Authorization': 'Bearer $token'},
+    ).timeout(const Duration(seconds: 10));
+  } on WebSocketException catch (error) {
+    final status = error.httpStatusCode;
+    if (status == 401 || status == 403) throw RealtimeUnauthorized(status);
+    rethrow;
+  }
   // The server pings every 25s; this detects a dead link from our side too.
   ws.pingInterval = const Duration(seconds: 30);
   return _IoSocket(ws);
@@ -22,4 +29,6 @@ class _IoSocket implements RealtimeSocket {
   void send(String message) => ws.add(message);
   @override
   Future<void> close() => ws.close();
+  @override
+  int? get closeCode => ws.closeCode;
 }

@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
-import 'package:kairova/app.dart';
-import 'package:kairova/core/api.dart';
-import 'package:kairova/core/realtime/realtime_client.dart';
-import 'package:kairova/core/state.dart';
-import 'package:kairova/shared/navigation_dock.dart';
+import 'package:hiyall/app.dart';
+import 'package:hiyall/core/api.dart';
+import 'package:hiyall/core/realtime/realtime_client.dart';
+import 'package:hiyall/core/state.dart';
+import 'package:hiyall/shared/navigation_dock.dart';
 
 class SignedIn extends SessionController {
   @override
@@ -162,6 +163,7 @@ Future<void> launch(
   WidgetTester tester,
   FakeApi api, {
   double textScale = 1,
+  List<Override> overrides = const [],
 }) async {
   tester.view.physicalSize = const Size(390, 844);
   tester.view.devicePixelRatio = 1;
@@ -170,6 +172,7 @@ Future<void> launch(
       overrides: [
         apiProvider.overrideWithValue(api),
         sessionProvider.overrideWith(SignedIn.new),
+        ...overrides,
       ],
       child: Builder(
         builder: (context) => MediaQuery(
@@ -177,7 +180,7 @@ Future<void> launch(
             size: const Size(390, 844),
             textScaler: TextScaler.linear(textScale),
           ),
-          child: const KairovaApp(),
+          child: const HiyallApp(),
         ),
       ),
     ),
@@ -212,7 +215,7 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
-  testWidgets('Privacy edits save only after an explicit successful request', (
+  testWidgets('The online toggle saves only the online audience', (
     tester,
   ) async {
     addTearDown(tester.view.resetPhysicalSize);
@@ -220,53 +223,35 @@ void main() {
     final api = FakeApi();
     await launch(tester, api);
     GoRouter.of(tester.element(find.byType(Scaffold).first))
-        .go('/profile/privacy');
+        .go('/profile/settings');
     await tester.pumpAndSettle();
-    final control = find.widgetWithText(
-      DropdownButtonFormField<String>,
-      'Who can view my profile?',
-    );
-    await tester.scrollUntilVisible(control, 300);
+    final toggle = find.byKey(const Key('online-toggle'));
+    expect(toggle, findsOneWidget);
+    expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+    await tester.tap(toggle);
     await tester.pumpAndSettle();
-    await tester.tap(control);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Public').last);
-    await tester.pumpAndSettle();
-    expect(api.saved, isNull);
-    final save = find.text('Save privacy settings');
-    await tester.scrollUntilVisible(save, 400);
-    await tester.pumpAndSettle();
-    await tester.tap(save);
-    await tester.pumpAndSettle();
-    expect(api.saved, {'profileAudience': 'public'});
-    expect(find.text('Privacy settings saved.'), findsOneWidget);
+    expect(api.saved, {'onlineAudience': 'everyone'});
     expect(tester.takeException(), isNull);
   });
-  testWidgets('A failed privacy save does not claim success', (tester) async {
+  testWidgets('A failed online change says so and leaves the switch alone', (
+    tester,
+  ) async {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final api = FakeApi()..failSave = true;
     await launch(tester, api);
     GoRouter.of(tester.element(find.byType(Scaffold).first))
-        .go('/profile/privacy');
+        .go('/profile/settings');
     await tester.pumpAndSettle();
-    final control = find.widgetWithText(
-      DropdownButtonFormField<String>,
-      'Who can view my profile?',
-    );
-    await tester.scrollUntilVisible(control, 300);
-    await tester.pumpAndSettle();
-    await tester.tap(control);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Public').last);
-    await tester.pumpAndSettle();
-    final save = find.text('Save privacy settings');
-    await tester.scrollUntilVisible(save, 400);
-    await tester.pumpAndSettle();
-    await tester.tap(save);
+    await tester.tap(find.byKey(const Key('online-toggle')));
     await tester.pumpAndSettle();
     expect(find.text('Offline'), findsOneWidget);
-    expect(find.text('Privacy settings saved.'), findsNothing);
+    expect(
+      tester
+          .widget<SwitchListTile>(find.byKey(const Key('online-toggle')))
+          .value,
+      isFalse,
+    );
     expect(api.saved, isNull);
   });
   testWidgets('A hidden account can be unblocked from its profile screen', (
@@ -311,6 +296,6 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await launch(tester, FakeApi(), textScale: 2);
-    expect(find.byType(ListView), findsOneWidget);
+    expect(find.byKey(const Key('home-scroll')), findsOneWidget);
   });
 }
