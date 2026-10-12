@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:kairova/app.dart';
-import 'package:kairova/core/api.dart';
-import 'package:kairova/core/state.dart';
+import 'package:hiyall/app.dart';
+import 'package:hiyall/core/api.dart';
+import 'package:hiyall/core/state.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
 
@@ -82,7 +82,7 @@ Future<ProviderContainer> open(WidgetTester tester, GraphApi api) async {
   );
   addTearDown(container.dispose);
   await tester.pumpWidget(
-    UncontrolledProviderScope(container: container, child: const KairovaApp()),
+    UncontrolledProviderScope(container: container, child: const HiyallApp()),
   );
   container.read(routerProvider).go('/discover/person/$nikoId');
   await tester.pumpAndSettle();
@@ -120,6 +120,40 @@ void main() {
   });
 
   testWidgets(
+    'Anyone can be messaged or followed and there is no friend step',
+    (tester) async {
+      final api = GraphApi(
+        const Relationship(canFollow: true, canFriendRequest: true),
+      );
+      await open(tester, api);
+      expect(find.byKey(const Key('visitor-profile')), findsOneWidget);
+      expect(find.byKey(const Key('message-person')), findsOneWidget);
+      expect(find.byKey(const Key('follow')), findsOneWidget);
+      expect(find.byKey(const Key('add-friend')), findsNothing);
+      expect(find.byKey(const Key('friends')), findsNothing);
+    },
+  );
+
+  testWidgets('Message is the wide main action beside Follow', (tester) async {
+    final api = GraphApi(const Relationship(canFollow: true));
+    await open(tester, api);
+    final message = tester.getRect(find.byKey(const Key('message-person')));
+    final follow = tester.getRect(find.byKey(const Key('follow')));
+    expect(message.width, greaterThan(follow.width));
+    expect((message.center.dy - follow.center.dy).abs(), lessThan(4));
+    expect(message.left, lessThan(follow.left));
+  });
+
+  testWidgets('Following does not change whether you can message', (
+    tester,
+  ) async {
+    final api = GraphApi(const Relationship(following: 'active'));
+    await open(tester, api);
+    expect(find.byKey(const Key('message-person')), findsOneWidget);
+    expect(find.byKey(const Key('following')), findsOneWidget);
+  });
+
+  testWidgets(
     'An incoming request is answered from the profile and unlocks it',
     (tester) async {
       final api = GraphApi(
@@ -138,8 +172,9 @@ void main() {
       await tester.pumpAndSettle();
       expect(api.log, ['respond req-9 true']);
       expect(find.text('This space is private'), findsNothing);
-      expect(find.byKey(const Key('friends')), findsOneWidget);
+      // Once unlocked it is an ordinary profile: message or follow, no friend step.
       expect(find.byKey(const Key('message-person')), findsOneWidget);
+      expect(find.byKey(const Key('friends')), findsNothing);
     },
   );
 }

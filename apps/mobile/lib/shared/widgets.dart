@@ -22,7 +22,7 @@ class BrandMark extends StatelessWidget {
   const BrandMark({super.key, this.size = 44});
   @override
   Widget build(BuildContext context) => Semantics(
-    label: 'Kairova',
+    label: 'Hiyall',
     child: Container(
       width: size,
       height: size,

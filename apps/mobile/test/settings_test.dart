@@ -2,10 +2,10 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:kairova/app.dart';
-import 'package:kairova/core/api.dart';
-import 'package:kairova/core/state.dart';
-import 'package:kairova/features/settings.dart';
+import 'package:hiyall/app.dart';
+import 'package:hiyall/core/api.dart';
+import 'package:hiyall/core/state.dart';
+import 'package:hiyall/features/settings.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
 
@@ -74,6 +74,50 @@ class SettingsApi extends FakeApi {
   ], null);
 }
 
+/// The server's settings move to version 2 behind the app's back.
+class StaleSettingsApi extends FakeApi {
+  String serverVersion = '1';
+  final sentVersions = <String>[];
+  @override
+  Future<Privacy> privacy(Session s) async =>
+      Privacy({...(await super.privacy(s)).values, 'version': serverVersion});
+  @override
+  Future<Privacy> updatePrivacy(
+    Session s,
+    Privacy p,
+    Map<String, dynamic> patch,
+  ) async {
+    sentVersions.add(p.version);
+    if (p.version != serverVersion) {
+      throw const ApiFailure(
+        'Your settings changed. Reload before saving.',
+        412,
+      );
+    }
+    saved = patch;
+    return Privacy({...p.values, ...patch, 'version': '${p.version}+'});
+  }
+}
+
+/// The server blanks the identity of a barred member.
+class BarredReportsApi extends SettingsApi {
+  @override
+  Future<ApiPage<Map<String, dynamic>>> myReports(
+    Session s, [
+    String? cursor,
+  ]) async => const ApiPage([
+    {
+      'reportId': 'r2',
+      'targetType': 'conversation',
+      'targetId': 'c1',
+      'subject': {'userId': nikoId, 'username': '', 'displayName': ''},
+      'reasonCode': 'scam',
+      'status': 'open',
+      'createdAt': '2026-10-07T09:00:00Z',
+    },
+  ], null);
+}
+
 Future<ProviderContainer> open(
   WidgetTester tester,
   FakeApi api,
@@ -91,7 +135,7 @@ Future<ProviderContainer> open(
   );
   addTearDown(container.dispose);
   await tester.pumpWidget(
-    UncontrolledProviderScope(container: container, child: const KairovaApp()),
+    UncontrolledProviderScope(container: container, child: const HiyallApp()),
   );
   container.read(routerProvider).go(at);
   await tester.pumpAndSettle();
@@ -188,30 +232,30 @@ void main() {
     expect(find.byKey(const Key('revoke-others')), findsNothing);
   });
 
-  testWidgets(
-    'Privacy explains Discover needs a public profile and can discard',
-    (tester) async {
-      final api = FakeApi();
-      await open(tester, api, '/profile/privacy');
-      final discover = find.byKey(const Key('privacy-discoverable'));
-      await tester.scrollUntilVisible(
-        discover,
-        300,
-        scrollable: find.byType(Scrollable).first,
-      );
-      expect(find.byKey(const Key('discover-needs-public')), findsNothing);
-      await tester.tap(discover);
-      await tester.pumpAndSettle();
-      // The fixture's profile is friends-only.
-      expect(find.byKey(const Key('discover-needs-public')), findsOneWidget);
-      expect(find.text('Save privacy settings'), findsOneWidget);
-      await tester.tap(find.byKey(const Key('privacy-discard')));
-      await tester.pumpAndSettle();
-      expect(find.byKey(const Key('discover-needs-public')), findsNothing);
-      expect(find.text('Save privacy settings'), findsNothing);
-      expect(api.saved, isNull);
-    },
-  );
+  test('Report subjects without a name read as unavailable', () {
+    expect(
+      reportSubjectName({'displayName': 'Niko', 'username': 'niko'}),
+      'Niko',
+    );
+    expect(
+      reportSubjectName({'displayName': ' ', 'username': 'niko'}),
+      '@niko',
+    );
+    expect(
+      reportSubjectName({'displayName': '', 'username': ''}),
+      'Account unavailable',
+    );
+    expect(reportSubjectName(null), 'Account unavailable');
+  });
+
+  testWidgets('A report about a barred account shows a neutral label', (
+    tester,
+  ) async {
+    await open(tester, BarredReportsApi(), '/profile/reports');
+    expect(find.text('Chat with Account unavailable'), findsOneWidget);
+    expect(find.textContaining('@'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('Reports show where each one stands', (tester) async {
     await open(tester, SettingsApi(), '/profile/reports');
@@ -235,4 +279,88 @@ void main() {
     await tester.pumpAndSettle();
     expect(container.read(themeProvider), ThemeMode.system);
   });
+
+  testWidgets('A refused online change re-reads settings for the next try', (
+    tester,
+  ) async {
+    final api = StaleSettingsApi();
+    await open(tester, api, '/profile/settings');
+    api.serverVersion = '2';
+    final toggle = find.byKey(const Key('online-toggle'));
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Your settings changed. Reload before saving.'),
+      findsOneWidget,
+    );
+    expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+    // Let the message go so it doesn't cover the switch.
+    await tester.pump(const Duration(seconds: 10));
+    await tester.pumpAndSettle();
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(api.sentVersions, ['1', '2']);
+    expect(api.saved, {'onlineAudience': 'everyone'});
+  });
+
+  group('the one presence switch', () {
+    testWidgets(
+      'says online and last seen, and is off by default for a hidden account',
+      (tester) async {
+        await open(tester, FakeApi(), '/profile/settings');
+        expect(find.text('Show when I’m online and last seen'), findsOneWidget);
+        expect(
+          find.text(
+            'Everyone can see when you’re active. Turn off to hide both.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.textContaining('green dot'), findsNothing);
+        expect(
+          tester
+              .widget<SwitchListTile>(find.byKey(const Key('online-toggle')))
+              .value,
+          isFalse,
+        );
+      },
+    );
+
+    testWidgets(
+      'turns on to everyone and off to nobody, one setting for both',
+      (tester) async {
+        final api = OnlineApi();
+        await open(tester, api, '/profile/settings');
+        final toggle = find.byKey(const Key('online-toggle'));
+        expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+        await tester.tap(toggle);
+        await tester.pumpAndSettle();
+        expect(api.saved, {'onlineAudience': 'nobody'});
+        expect(api.saved!.keys, [
+          'onlineAudience',
+        ], reason: 'no lastSeenAudience');
+        expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+        await tester.tap(toggle);
+        await tester.pumpAndSettle();
+        expect(api.saved, {'onlineAudience': 'everyone'});
+        expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+      },
+    );
+  });
+}
+
+/// An account that shows when it is online.
+class OnlineApi extends FakeApi {
+  String audience = 'everyone';
+  @override
+  Future<Privacy> privacy(Session s) async =>
+      Privacy({...(await super.privacy(s)).values, 'onlineAudience': audience});
+  @override
+  Future<Privacy> updatePrivacy(
+    Session s,
+    Privacy p,
+    Map<String, dynamic> patch,
+  ) async {
+    audience = patch['onlineAudience'] as String;
+    return super.updatePrivacy(s, p, patch);
+  }
 }

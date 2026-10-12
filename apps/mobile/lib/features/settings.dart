@@ -6,6 +6,7 @@ import '../app.dart';
 import '../core/api.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
+import '../shared/person_avatar.dart';
 import '../shared/widgets.dart';
 import 'safety.dart';
 
@@ -68,16 +69,96 @@ class _Group extends StatelessWidget {
 class _Link extends StatelessWidget {
   final IconData icon;
   final String title, subtitle, to;
-  const _Link(this.icon, this.title, this.subtitle, this.to);
+
+  /// Shown in place of [icon], e.g. the member's own photo.
+  final Widget? leading;
+  const _Link(this.icon, this.title, this.subtitle, this.to, {this.leading});
   @override
   Widget build(BuildContext context) => ListTile(
     key: Key('settings-$to'),
-    leading: Icon(icon),
+    leading: leading ?? Icon(icon),
     title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
     subtitle: Text(subtitle),
     trailing: const Icon(Icons.chevron_right_rounded),
     onTap: () => context.go(to),
   );
+}
+
+/// The one visibility control: whether other people can see when you're online and when you were last seen
+/// (one switch for both: it sets the online audience to everyone or to nobody).
+class _OnlineTile extends ConsumerStatefulWidget {
+  const _OnlineTile();
+  @override
+  ConsumerState<_OnlineTile> createState() => _OnlineTileState();
+}
+
+class _OnlineTileState extends ConsumerState<_OnlineTile> {
+  bool? pending;
+  bool busy = false;
+
+  Future<void> change(Privacy current, bool on) async {
+    final session = ref.read(sessionProvider).asData?.value;
+    if (session == null || busy) return;
+    // Held past the awaits: the tile may be gone when the answer arrives.
+    final container = ProviderScope.containerOf(context, listen: false);
+    setState(() {
+      busy = true;
+      pending = on;
+    });
+    try {
+      await container.read(apiProvider).updatePrivacy(session, current, {
+        'onlineAudience': on ? 'everyone' : 'nobody',
+      });
+      container.invalidate(privacyProvider);
+      await container.read(privacyProvider.future);
+    } catch (e) {
+      // The settings may have changed elsewhere (a 412) or be unknown after a
+      // dropped connection; re-read them so the next change sends the newest
+      // version and the switch shows what's really saved.
+      container.invalidate(privacyProvider);
+      if (mounted) showMessage(context, e.toString());
+    } finally {
+      if (mounted) {
+        setState(() {
+          busy = false;
+          pending = null;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final privacy = ref.watch(privacyProvider);
+    final current = privacy.asData?.value;
+    final on = pending ?? current?.text('onlineAudience') == 'everyone';
+    return SwitchListTile(
+      key: const Key('online-toggle'),
+      secondary: const Icon(Icons.circle, size: 14),
+      title: const Text(
+        'Show when I’m online and last seen',
+        style: TextStyle(fontWeight: FontWeight.w700),
+      ),
+      subtitle: Text(
+        privacy.hasError
+            ? 'Couldn’t load this setting.'
+            : 'Everyone can see when you’re active. Turn off to hide both.',
+      ),
+      value: on,
+      onChanged: current == null || busy ? null : (v) => change(current, v),
+    );
+  }
+}
+
+/// Who a report was about. Barred accounts come back with no name or
+/// username, so they get a neutral label instead of a blank or a bare "@".
+String reportSubjectName(Object? subject) {
+  final map = subject is Map ? subject : const {};
+  final name = (map['displayName'] as String? ?? '').trim();
+  if (name.isNotEmpty) return name;
+  final username = (map['username'] as String? ?? '').trim();
+  if (username.isNotEmpty) return '@$username';
+  return 'Account unavailable';
 }
 
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -104,39 +185,44 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final mode = ref.watch(themeProvider);
+    final me = ref.watch(profileProvider).asData?.value;
     return ReadingWidth(
       child: ListView(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 120),
         children: [
           const _Back('Profile', '/profile'),
           Text('Settings', style: Theme.of(context).textTheme.headlineMedium),
-          const _Group('Account', [
+          _Group('Account', [
             _Link(
               Icons.face_6_outlined,
               'Edit profile',
               'Name, bio, interests and style',
               '/profile/edit',
+              leading: me?.avatarUrl == null
+                  ? null
+                  : PersonAvatar(
+                      key: const Key('settings-avatar'),
+                      name: me!.displayName,
+                      avatarUrl: me.avatarUrl,
+                      userId: me.userId,
+                      radius: 16,
+                    ),
             ),
-            _Link(
+            const _Link(
               Icons.devices_outlined,
               'Where you’re signed in',
               'See sessions and sign out remotely',
               '/profile/sessions',
             ),
-            _Link(
+            const _Link(
               Icons.phonelink_lock_outlined,
               'Chat devices',
               'Phones that hold your chat keys',
               '/profile/devices',
             ),
           ]),
-          const _Group('Privacy and safety', [
-            _Link(
-              Icons.shield_outlined,
-              'Privacy',
-              'Who can see, find and message you',
-              '/profile/privacy',
-            ),
+          const _Group('Status', [_OnlineTile()]),
+          const _Group('Safety', [
             _Link(
               Icons.block_rounded,
               'Blocked, muted and restricted',
@@ -185,22 +271,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ListTile(
               leading: const Icon(Icons.info_outline_rounded),
               title: const Text(
-                'About Kairova',
+                'About Hiyall',
                 style: TextStyle(fontWeight: FontWeight.w700),
               ),
-              subtitle: const Text('0.1.0 · Early access'),
+              subtitle: const Text('Version 0.1.0'),
               onTap: () => showAboutDialog(
                 context: context,
-                applicationName: 'Kairova',
-                applicationVersion: '0.1.0 · Early access',
+                applicationName: 'Hiyall',
+                applicationVersion: 'Version 0.1.0',
                 applicationIcon: const BrandMark(),
               ),
-            ),
-            const _Link(
-              Icons.design_services_outlined,
-              'Design gallery',
-              'Every screen design in one place',
-              '/design',
             ),
           ]),
           const SizedBox(height: 24),
@@ -519,13 +599,7 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
                       Builder(
                         builder: (context) {
                           final (label, color) = status(r['status'] as String);
-                          final subject = r['subject'] as Map;
-                          final name =
-                              (subject['displayName'] as String? ?? '')
-                                  .trim()
-                                  .isEmpty
-                              ? '@${subject['username']}'
-                              : subject['displayName'] as String;
+                          final name = reportSubjectName(r['subject']);
                           final what = switch (r['targetType']) {
                             'conversation' => 'Chat with $name',
                             'message' => 'Message from $name',

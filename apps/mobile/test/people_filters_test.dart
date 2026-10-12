@@ -7,12 +7,12 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:kairova/app.dart';
-import 'package:kairova/core/api.dart';
-import 'package:kairova/core/discovery.dart';
-import 'package:kairova/core/state.dart';
-import 'package:kairova/core/theme.dart';
-import 'package:kairova/features/people_filters.dart';
+import 'package:hiyall/app.dart';
+import 'package:hiyall/core/api.dart';
+import 'package:hiyall/core/discovery.dart';
+import 'package:hiyall/core/state.dart';
+import 'package:hiyall/core/theme.dart';
+import 'package:hiyall/features/people_filters.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
 
@@ -102,13 +102,13 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: RepaintBoundary(key: appCapture, child: const KairovaApp()),
+        child: RepaintBoundary(key: appCapture, child: const HiyallApp()),
       ),
     );
     // Home asks for a few suggestions; count only what Discover sends.
     await tester.pumpAndSettle();
     api.queries.clear();
-    container.read(routerProvider).go('/discover');
+    container.read(routerProvider).go('/people');
     await tester.pumpAndSettle();
     return container;
   }
@@ -159,6 +159,27 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  Future<void> chooseLanguage(
+    WidgetTester tester,
+    String language, {
+    int selectedCount = 1,
+  }) async {
+    final picker = find.text('Choose languages');
+    await reveal(tester, picker);
+    await tester.tap(picker);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), language);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ListTile, language));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.text(
+        'Use $selectedCount ${selectedCount == 1 ? 'language' : 'languages'}',
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
   testWidgets(
     'Discover opens on everyone; filters apply only on explicit search',
     (tester) async {
@@ -167,7 +188,13 @@ void main() {
       expect(api.queries, hasLength(1));
       expect(api.queries.single['interests'], isEmpty);
       await openFilters(tester);
+      await reveal(tester, find.text('Music'));
       await tester.tap(find.text('Music'));
+      await tester.pumpAndSettle();
+      await tester.drag(
+        find.byKey(const Key('filter-content')),
+        const Offset(0, 300),
+      );
       await tester.pumpAndSettle();
       expect(find.text('1 selected'), findsOneWidget);
       await tester.tap(find.byTooltip('Close filters'));
@@ -175,14 +202,16 @@ void main() {
       expect(api.queries, hasLength(1));
       await openFilters(tester);
       expect(find.text('1 selected'), findsNothing);
+      await reveal(tester, find.text('Music'));
       await tester.tap(find.text('Music'));
       await tester.pumpAndSettle();
       await showPeople(tester);
       expect(api.queries, hasLength(2));
       expect(api.queries.last['interests'], ['Music']);
-      expect(find.text('Your orbit is a little quiet.'), findsOneWidget);
+      expect(find.text('No one here just yet.'), findsOneWidget);
       expect(find.text('Clear filters'), findsOneWidget);
       await openFilters(tester);
+      await reveal(tester, find.text('1 selected'));
       expect(find.text('1 selected'), findsOneWidget);
       await tester.tap(find.byKey(const Key('clear-active-filters')));
       await tester.pumpAndSettle();
@@ -190,6 +219,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(api.queries, hasLength(2));
       await openFilters(tester);
+      await reveal(tester, find.text('1 selected'));
       expect(find.text('1 selected'), findsOneWidget);
       expect(api.saved, isNull);
       expect(tester.takeException(), isNull);
@@ -208,18 +238,9 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(ListTile, 'India'));
       await tester.pumpAndSettle();
-      await reveal(tester, find.text('Korean'));
-      await tester.tap(find.text('Korean').last);
-      await tester.pumpAndSettle();
-      await reveal(tester, find.text('More languages'));
-      await tester.tap(find.text('More languages'));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'Hindi');
-      await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(ListTile, 'Hindi'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Use 2 languages'));
-      await tester.pumpAndSettle();
+      await chooseLanguage(tester, 'Korean');
+      await chooseLanguage(tester, 'Hindi', selectedCount: 2);
+      expect(find.text('Korean · Hindi'), findsOneWidget);
       await showPeople(tester);
       expect(api.queries.last['languages'], containsAll(['ko', 'hi']));
       expect(api.queries.last['country'], 'IN');
@@ -248,10 +269,11 @@ void main() {
         ]
         ..next = 'opaque-server-cursor';
       await openFilters(tester);
+      await reveal(tester, find.text('Music'));
       await tester.tap(find.text('Music'));
       await tester.pumpAndSettle();
       await showPeople(tester);
-      expect(find.text('Into Music'), findsOneWidget);
+      expect(find.text('Music'), findsOneWidget);
       expect(find.textContaining('% match'), findsNothing);
       api.items = [
         {
@@ -280,19 +302,19 @@ void main() {
   );
 
   testWidgets(
-    'Eligibility errors never become an empty success or fabricated people',
+    'Refused searches never become an empty success or fabricated people',
     (tester) async {
       final api = DiscoveryTestApi()
         ..failure = const ApiFailure(
-          'Adult eligibility needs confirmation.',
-          403,
+          'Your session has expired. Sign in again.',
+          401,
         );
       await launch(tester, api);
       expect(
-        find.text('Adult eligibility needs confirmation.'),
+        find.text('Your session has expired. Sign in again.'),
         findsOneWidget,
       );
-      expect(find.text('Your orbit is a little quiet.'), findsNothing);
+      expect(find.text('No one here just yet.'), findsNothing);
       expect(find.textContaining('people match'), findsNothing);
       expect(tester.takeException(), isNull);
     },
@@ -304,12 +326,16 @@ void main() {
       final api = DiscoveryTestApi();
       await launch(tester, api);
       await openFilters(tester);
+      await chooseLanguage(tester, 'Korean');
+      await reveal(tester, find.text('Music'));
       await tester.tap(find.text('Music'));
       await tester.pumpAndSettle();
-      await reveal(tester, find.text('Korean'));
-      await tester.tap(find.text('Korean').last);
+      // Back up to the language section.
+      await tester.drag(
+        find.byKey(const Key('filter-content')),
+        const Offset(0, 1200),
+      );
       await tester.pumpAndSettle();
-      await reveal(tester, find.text('Any language'));
       await tester.tap(find.text('Any language'));
       await tester.pumpAndSettle();
       await showPeople(tester);
@@ -325,6 +351,7 @@ void main() {
       final api = DiscoveryTestApi();
       await launch(tester, api);
       await openFilters(tester);
+      await reveal(tester, find.text('Music'));
       await tester.tap(find.text('Music'));
       await tester.pumpAndSettle();
       await showPeople(tester);
@@ -333,7 +360,7 @@ void main() {
       expect(api.queries, hasLength(3));
       expect(api.queries.last['interests'], isEmpty);
       expect(find.text('Clear filters'), findsNothing);
-      await tester.tap(find.text('Explore everyone'));
+      await tester.tap(find.text('Refresh'));
       await tester.pumpAndSettle();
       expect(api.queries, hasLength(4));
       expect(api.queries.last['languages'], isEmpty);
@@ -350,7 +377,7 @@ void main() {
       await launch(tester, api);
       expect(find.byType(LinearProgressIndicator), findsNothing);
       expect(find.bySemanticsLabel('Finding people'), findsOneWidget);
-      expect(find.text('Your orbit is a little quiet.'), findsNothing);
+      expect(find.text('No one here just yet.'), findsNothing);
       api.pending!.complete({
         'items': [
           {
@@ -370,15 +397,17 @@ void main() {
         'nextCursor': null,
       });
       await tester.pumpAndSettle();
-      for (final visible in ['Niko', 'IN', 'KO', 'A quiet hello']) {
+      for (final visible in ['Niko', 'A quiet hello', 'Music · Books']) {
         expect(find.text(visible), findsOneWidget);
       }
+      // Rows stay at two lines: the languages and the country badge are left
+      // to the profile (the spoken label still says the languages).
+      expect(find.text('IN'), findsNothing);
+      expect(find.text('Korean · Conversational'), findsNothing);
       for (final spoken in [
-        'India',
-        'Korean, Conversational',
+        'Korean · Conversational',
         'Into Music, Books',
-        'Vibe: Chill',
-        'Books and side quests.',
+        'A quiet hello',
       ]) {
         expect(find.bySemanticsLabel(RegExp(RegExp.escape(spoken))), findsOne);
       }
@@ -403,6 +432,7 @@ void main() {
       final slow = api.pending!;
       api.pending = null;
       await openFilters(tester);
+      await reveal(tester, find.text('Music'));
       await tester.tap(find.text('Music'));
       await tester.pumpAndSettle();
       await showPeople(tester);
@@ -416,7 +446,10 @@ void main() {
       });
       await tester.pumpAndSettle();
       expect(find.text('Stale'), findsNothing);
-      expect(find.byKey(const ValueKey('applied-interest-Music')), findsOne);
+      expect(
+        tester.widget<Text>(find.byKey(const Key('filter-count'))).data,
+        '1',
+      );
       expect(tester.takeException(), isNull);
     },
   );
@@ -431,25 +464,26 @@ void main() {
       await launch(tester, api);
       expect(find.text('Couldn’t connect.'), findsOneWidget);
       await openFilters(tester);
+      await reveal(tester, find.text('Music'));
       await tester.tap(find.text('Music'));
       await tester.pumpAndSettle();
       await showPeople(tester);
       expect(find.text('Couldn’t connect.'), findsOneWidget);
       expect(find.text('You’re offline.'), findsNothing);
-      expect(find.text('Your orbit is a little quiet.'), findsNothing);
+      expect(find.text('No one here just yet.'), findsNothing);
       api.failure = null;
-      await tester.tap(find.text('Try again'));
+      await tester.tap(find.byKey(const Key('discovery-retry')));
       await tester.pumpAndSettle();
       expect(api.queries, hasLength(3));
       expect(api.queries.last['interests'], ['Music']);
       expect(find.text('Couldn’t connect.'), findsNothing);
-      expect(find.text('Your orbit is a little quiet.'), findsOneWidget);
+      expect(find.text('No one here just yet.'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
 
   testWidgets(
-    'Applied filters stay pinned at the top and removal preserves the other dimensions',
+    'The chips stay pinned while scrolling, and the filter button counts and resets',
     (tester) async {
       final api = DiscoveryTestApi()
         ..items = List.generate(
@@ -470,8 +504,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(ListTile, 'India'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('English').last);
-      await tester.pumpAndSettle();
+      await chooseLanguage(tester, 'English');
       await reveal(tester, find.text('Music'));
       await tester.tap(find.text('Music'));
       await tester.pumpAndSettle();
@@ -489,14 +522,8 @@ void main() {
           'applied-filters-test-${dark ? 'dark' : 'light'}',
         );
       }
-
-      final before = <String, Rect>{
-        for (final key in ['applied-country-IN', 'applied-language-en'])
-          key: tester.getRect(find.byKey(ValueKey(key))),
-      };
-      for (final rect in before.values) {
-        expect(rect.bottom, lessThan(300));
-      }
+      final chips = find.byKey(const Key('discover-chips'));
+      final top = tester.getTopLeft(chips).dy;
       final scroll = find
           .descendant(
             of: find.byKey(const Key('discovery-results-scroll')),
@@ -505,41 +532,27 @@ void main() {
           .first;
       await tester.drag(scroll, const Offset(0, -1200));
       await tester.pumpAndSettle();
-      for (final entry in before.entries) {
-        expect(tester.getRect(find.byKey(ValueKey(entry.key))), entry.value);
-      }
-      await tester.tap(find.byKey(const ValueKey('applied-country-IN')));
+      // The Explore row has scrolled away; the chips are pinned at the top.
+      expect(find.byKey(const Key('discover-filters')), findsNothing);
+      expect(tester.getTopLeft(chips).dy, lessThan(top));
+      expect(chips.hitTestable(), findsOneWidget);
+      await tester.drag(scroll, const Offset(0, 1500));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('discover-reset')));
       await tester.pumpAndSettle();
       expect(api.queries.last['country'], '');
-      expect(api.queries.last['interests'], ['Music']);
-      expect(api.queries.last['languages'], ['en']);
-      expect(api.queries.last['vibe'], 'Chill');
-      expect(tester.widget<Text>(count).data, '3');
-      expect(find.byKey(const ValueKey('applied-country-IN')), findsNothing);
-      final clear = find.byKey(const Key('clear-applied-filters'));
-      await tester.scrollUntilVisible(
-        clear,
-        150,
-        scrollable: find
-            .descendant(
-              of: find.byKey(const Key('applied-filter-summary')),
-              matching: find.byType(Scrollable),
-            )
-            .first,
-      );
-      await tester.tap(clear);
-      await tester.pumpAndSettle();
       expect(api.queries.last['interests'], isEmpty);
       expect(api.queries.last['languages'], isEmpty);
       expect(api.queries.last['vibe'], '');
-      expect(find.byKey(const Key('applied-filter-summary')), findsNothing);
+      expect(count, findsNothing);
+      expect(find.byKey(const Key('discover-reset')), findsNothing);
       expect(api.saved, isNull);
       expect(tester.takeException(), isNull);
     },
   );
 
   testWidgets(
-    'Profile tabs and long selections stay reachable on small phones with doubled text',
+    'Chips and long selections stay reachable on small phones with doubled text',
     (tester) async {
       final api = DenseDiscoveryApi();
       final container = await launch(tester, api);
@@ -552,27 +565,19 @@ void main() {
               size: Size(320, 740),
               textScaler: TextScaler.linear(2),
             ),
-            child: RepaintBoundary(key: appCapture, child: const KairovaApp()),
+            child: RepaintBoundary(key: appCapture, child: const HiyallApp()),
           ),
         ),
       );
       await tester.pumpAndSettle();
-      final tab = find.text('Your interests');
-      await tester.scrollUntilVisible(
-        tab,
-        80,
-        scrollable: find
-            .descendant(
-              of: find.byKey(const Key('discover-tabs')),
-              matching: find.byType(Scrollable),
-            )
-            .first,
-      );
+      final tab = find.byKey(const Key('chip-interests'));
       await tester.ensureVisible(tab);
       await tester.pumpAndSettle();
       await tester.tap(tab);
       await tester.pumpAndSettle();
       expect(api.queries.last['interests'], hasLength(10));
+      // A category chip stands for itself: no filter count on the button.
+      expect(find.byKey(const Key('filter-count')), findsNothing);
       await openFilters(tester);
       await reveal(tester, find.text('Chill'));
       await tester.tap(find.text('Chill').last);
@@ -580,24 +585,19 @@ void main() {
       await showPeople(tester);
       final count = find.byKey(const Key('filter-count'));
       expect(tester.widget<Text>(count).data, '11');
-      final summary = find.byKey(const Key('applied-filter-summary'));
-      expect(tester.getRect(summary).bottom, lessThan(400));
-      final last = find.byKey(const ValueKey('applied-vibe-Chill'));
-      await tester.scrollUntilVisible(
-        last,
-        120,
-        scrollable: find
-            .descendant(of: summary, matching: find.byType(Scrollable))
-            .first,
+      // At 320 px and 2x text the filter button keeps its icon and its count,
+      // and is still a 48 dp target.
+      expect(find.text('Filters'), findsNothing);
+      expect(
+        tester.getSize(find.byKey(const Key('discover-filters'))).height,
+        greaterThanOrEqualTo(48),
       );
-      await tester.pumpAndSettle();
       await captureApplied(tester, 'applied-filters-small-large-text');
-      expect(last.hitTestable(), findsOneWidget);
-      await tester.tap(last);
+      await tester.tap(find.byKey(const Key('discover-reset')));
       await tester.pumpAndSettle();
       expect(api.queries.last['vibe'], '');
-      expect(api.queries.last['interests'], hasLength(10));
-      expect(last, findsNothing);
+      expect(api.queries.last['interests'], isEmpty);
+      expect(count, findsNothing);
       expect(tester.takeException(), isNull);
     },
   );
@@ -621,7 +621,7 @@ void main() {
             final boundary = GlobalKey();
             await tester.pumpWidget(
               MaterialApp(
-                theme: kairovaTheme(dark ? Brightness.dark : Brightness.light),
+                theme: hiyallTheme(dark ? Brightness.dark : Brightness.light),
                 home: MediaQuery(
                   data: MediaQueryData(
                     size: size,
@@ -687,8 +687,8 @@ void main() {
               isNull,
               reason: 'Scrolled $size scale=$scale dark=$dark',
             );
+            // Age, location and gender filters are part of the sheet now.
             expect(find.text('Nearby'), findsNothing);
-            expect(find.byType(RangeSlider), findsNothing);
           }
         }
       }

@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/activity_state.dart';
 import '../core/api.dart';
 import '../core/state.dart';
-import '../core/theme.dart';
+import '../shared/person_avatar.dart';
 import '../shared/widgets.dart';
 
 /// Follow and friend controls for another account. Every action goes to the
@@ -12,7 +12,25 @@ import '../shared/widgets.dart';
 class RelationshipBar extends ConsumerStatefulWidget {
   final Profile profile;
   final Widget? trailing;
-  const RelationshipBar({super.key, required this.profile, this.trailing});
+
+  /// Offer friend requests and show friendship. Off on ordinary profiles,
+  /// where anyone can message anyone and following is optional; on for the
+  /// private-profile card, where a request is how someone asks in.
+  final bool showFriendship;
+
+  /// Put [trailing] (the Message button) first so it is the main action.
+  final bool messageFirst;
+
+  /// A compact icon control after the buttons (the wave), at its own size.
+  final Widget? extra;
+  const RelationshipBar({
+    super.key,
+    required this.profile,
+    this.trailing,
+    this.showFriendship = true,
+    this.messageFirst = false,
+    this.extra,
+  });
   @override
   ConsumerState<RelationshipBar> createState() => _RelationshipBarState();
 }
@@ -71,6 +89,8 @@ class _RelationshipBarState extends ConsumerState<RelationshipBar> {
     final buttons = <Widget>[];
 
     switch (r.friendship) {
+      case 'accepted' when !widget.showFriendship:
+        break;
       case 'accepted':
         buttons.add(
           OutlinedButton.icon(
@@ -137,7 +157,7 @@ class _RelationshipBarState extends ConsumerState<RelationshipBar> {
           ),
         );
       default:
-        if (r.canFriendRequest) {
+        if (r.canFriendRequest && widget.showFriendship) {
           buttons.add(
             FilledButton.icon(
               key: const Key('add-friend'),
@@ -205,8 +225,33 @@ class _RelationshipBarState extends ConsumerState<RelationshipBar> {
           );
         }
     }
-    if (widget.trailing != null) buttons.add(widget.trailing!);
-    return Wrap(spacing: 8, runSpacing: 8, children: buttons);
+    final message = widget.trailing;
+    if (message != null) {
+      widget.messageFirst ? buttons.insert(0, message) : buttons.add(message);
+    }
+    // Crowded (a pending request plus follow and message): let them wrap.
+    if (buttons.length > 3) {
+      return Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [...buttons, ?widget.extra],
+      );
+    }
+    // One row: the main action takes the most room, the rest share the rest.
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        for (var i = 0; i < buttons.length; i++) ...[
+          if (i > 0) const SizedBox(width: 8),
+          Expanded(flex: i == 0 ? 3 : 2, child: buttons[i]),
+        ],
+        if (widget.extra != null) ...[
+          if (buttons.isNotEmpty) const SizedBox(width: 4),
+          widget.extra!,
+        ],
+      ],
+    );
   }
 }
 
@@ -222,30 +267,21 @@ class LockedProfile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final initial = profile.displayName.trim().isEmpty
-        ? '?'
-        : profile.displayName.trim().characters.first.toUpperCase();
     return ReadingWidth(
       child: ListView(
         padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
         children: [
           Center(
-            child: Container(
-              width: 96,
-              height: 96,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: VibeColors.lilac,
-                borderRadius: BorderRadius.circular(32),
-              ),
-              child: Text(
-                initial,
-                style: const TextStyle(
-                  fontFamily: 'SpaceGrotesk',
-                  fontSize: 40,
-                  fontWeight: FontWeight.w700,
-                  color: VibeColors.ink,
-                ),
+            child: PersonAvatar(
+              name: profile.displayName,
+              avatarUrl: profile.avatarFor(96),
+              userId: profile.userId,
+              radius: 48,
+              cornerRadius: 32,
+              initialStyle: const TextStyle(
+                fontFamily: 'SpaceGrotesk',
+                fontSize: 40,
+                fontWeight: FontWeight.w700,
               ),
             ),
           ),

@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/theme.dart';
+import 'avatar_gradient.dart';
+import 'chat_tokens.dart';
 
 enum DockStoryState { none, viewed, unseen }
 
@@ -33,10 +35,10 @@ class NavigationDock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
+    final t = ChatTokens.of(context);
     final scale = MediaQuery.textScalerOf(context).scale(1);
     final largeText = scale > 1.15;
-    final height = largeText ? 48 + 23 * scale : 66.0;
+    final height = largeText ? 50 + 23 * scale : 68.0;
     return SafeArea(
       top: false,
       child: Padding(
@@ -47,37 +49,32 @@ class NavigationDock extends StatelessWidget {
             constraints: const BoxConstraints(maxWidth: 560),
             child: DecoratedBox(
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(26),
                 boxShadow: [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: dark ? .2 : .07),
-                    blurRadius: 20,
+                    color: t.shadow.withValues(alpha: t.isDark ? .22 : .08),
+                    blurRadius: 22,
                     offset: const Offset(0, 6),
                   ),
                 ],
               ),
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(26),
                 child: BackdropFilter(
                   filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      color:
-                          (dark
-                                  ? const Color(0xff252a25)
-                                  : const Color(0xfffafaf5))
-                              .withValues(alpha: .87),
-                      borderRadius: BorderRadius.circular(20),
+                      color: t.dockSurface.withValues(alpha: .92),
+                      borderRadius: BorderRadius.circular(26),
                       border: Border.all(
-                        color: (dark ? Colors.white : VibeColors.ink)
-                            .withValues(alpha: dark ? .11 : .09),
-                        width: .7,
+                        color: t.hairline.withValues(alpha: t.isDark ? .8 : 1),
+                        width: .8,
                       ),
                     ),
                     child: Material(
                       type: MaterialType.transparency,
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        padding: const EdgeInsets.symmetric(horizontal: 6),
                         child: SizedBox(
                           height: height,
                           child: Row(
@@ -151,6 +148,7 @@ class DockDestination extends StatefulWidget {
 
 class _DockDestinationState extends State<DockDestination>
     with SingleTickerProviderStateMixin {
+  bool _pressed = false;
   late final controller = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 220),
@@ -179,9 +177,11 @@ class _DockDestinationState extends State<DockDestination>
 
   @override
   Widget build(BuildContext context) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final muted = dark ? const Color(0xffaeb8aa) : const Color(0xff626a5d);
-    final bright = dark ? const Color(0xfff0f8df) : VibeColors.ink;
+    final t = ChatTokens.of(context);
+    final dark = t.isDark;
+    final muted = t.textSecondary;
+    final bright = dark ? t.text : VibeColors.ink;
+    final label = dark ? t.accent : VibeColors.ink;
     final badgeLabel = widget.unreadCount > 0
         ? ', ${widget.unreadCount} unread messages'
         : widget.activityDot
@@ -203,152 +203,158 @@ class _DockDestinationState extends State<DockDestination>
       excludeSemantics: true,
       child: InkWell(
         onTap: widget.onTap,
-        borderRadius: BorderRadius.circular(15),
+        borderRadius: BorderRadius.circular(20),
+        // No grey hover or press rectangle behind a tab: feedback is a small press
+        // scale, and keyboard focus keeps a soft lime ring.
+        splashFactory: NoSplash.splashFactory,
+        onHighlightChanged: (value) => setState(() => _pressed = value),
         overlayColor: WidgetStateProperty.resolveWith(
           (states) => states.contains(WidgetState.focused)
               ? VibeColors.lime.withValues(alpha: .18)
-              : (dark ? Colors.white : VibeColors.ink).withValues(alpha: .04),
+              : Colors.transparent,
         ),
-        child: AnimatedBuilder(
-          animation: controller,
-          builder: (context, _) {
-            final progress = controller.value;
-            final color = Color.lerp(muted, bright, progress)!;
-            final reduced = MediaQuery.disableAnimationsOf(context);
-            return Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                SizedBox(
-                  width: 42,
-                  height: 38,
-                  child: Stack(
-                    alignment: Alignment.center,
-                    clipBehavior: Clip.none,
-                    children: [
-                      Opacity(
-                        opacity: progress,
-                        child: Container(
-                          width: 34,
-                          height: 34,
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(12),
-                            gradient: RadialGradient(
-                              colors: [
-                                VibeColors.lime.withValues(
-                                  alpha: dark ? .23 : .42,
-                                ),
-                                const Color(0xffb6a1f5).withValues(alpha: .07),
-                                VibeColors.lime.withValues(alpha: 0),
-                              ],
-                            ),
-                            boxShadow: [
-                              BoxShadow(
+        child: AnimatedScale(
+          scale: _pressed ? .94 : 1,
+          duration: const Duration(milliseconds: 90),
+          child: AnimatedBuilder(
+            animation: controller,
+            builder: (context, _) {
+              final progress = controller.value;
+              final color = Color.lerp(muted, bright, progress)!;
+              final reduced = MediaQuery.disableAnimationsOf(context);
+              return Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 56,
+                    height: 34,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      clipBehavior: Clip.none,
+                      children: [
+                        // The selected pill: a soft lime tint that grows in.
+                        Opacity(
+                          opacity: progress,
+                          child: Transform.scale(
+                            scale: .8 + .2 * progress,
+                            child: Container(
+                              key: ValueKey('dock-pill-${widget.index}'),
+                              width: 52,
+                              height: 32,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(16),
                                 color: VibeColors.lime.withValues(
-                                  alpha: dark ? .055 : .045,
+                                  alpha: dark ? .17 : .55,
                                 ),
-                                blurRadius: 10,
                               ),
-                            ],
+                            ),
                           ),
                         ),
-                      ),
-                      Transform.scale(
-                        scale: .97 + .09 * progress,
-                        child: Transform.rotate(
-                          angle: widget.index == 2 && !reduced
-                              ? math.sin(progress * math.pi) * .1
-                              : 0,
-                          child: widget.index == 4
-                              ? _avatar(dark, progress)
-                              : SizedBox(
-                                  width: 25,
-                                  height: 25,
-                                  child: CustomPaint(
-                                    painter: _DockIconPainter(
-                                      widget.index,
-                                      color,
-                                      progress,
+                        Transform.scale(
+                          scale: .98 + .06 * progress,
+                          child: Transform.rotate(
+                            angle: widget.index == 2 && !reduced
+                                ? math.sin(progress * math.pi) * .1
+                                : 0,
+                            child: widget.index == 4
+                                ? _avatar(dark, progress)
+                                : SizedBox(
+                                    width: 24,
+                                    height: 24,
+                                    child: CustomPaint(
+                                      painter: _DockIconPainter(
+                                        widget.index,
+                                        color,
+                                        progress,
+                                      ),
                                     ),
                                   ),
+                          ),
+                        ),
+                        if (widget.unreadCount > 0)
+                          Positioned(
+                            right: 1,
+                            top: -3,
+                            child: Container(
+                              key: const ValueKey('chat-unread-badge'),
+                              constraints: const BoxConstraints(minWidth: 18),
+                              height: 18,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 5,
+                              ),
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: dark ? VibeColors.lime : VibeColors.ink,
+                                borderRadius: BorderRadius.circular(9),
+                                border: Border.all(
+                                  color: t.dockSurface,
+                                  width: 1.5,
                                 ),
-                        ),
-                      ),
-                      if (widget.unreadCount > 0)
-                        Positioned(
-                          right: -1,
-                          top: 1,
-                          child: Container(
-                            key: const ValueKey('chat-unread-badge'),
-                            constraints: const BoxConstraints(minWidth: 16),
-                            height: 15,
-                            padding: const EdgeInsets.symmetric(horizontal: 4),
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              color: dark ? VibeColors.lime : VibeColors.ink,
-                              borderRadius: BorderRadius.circular(5),
-                              border: Border.all(
+                              ),
+                              child: Text(
+                                widget.unreadCount > 99
+                                    ? '99+'
+                                    : '${widget.unreadCount}',
+                                textScaler: TextScaler.noScaling,
+                                style: TextStyle(
+                                  fontFamily: 'Manrope',
+                                  fontSize: 10,
+                                  height: 1.1,
+                                  fontWeight: FontWeight.w800,
+                                  color: dark
+                                      ? VibeColors.ink
+                                      : VibeColors.lime,
+                                ),
+                              ),
+                            ),
+                          ),
+                        if (widget.activityDot)
+                          Positioned(
+                            right: 10,
+                            top: 2,
+                            child: Container(
+                              key: const ValueKey('activity-unread-dot'),
+                              width: 8,
+                              height: 8,
+                              decoration: BoxDecoration(
                                 color: dark
-                                    ? const Color(0xff252a25)
-                                    : const Color(0xfffafaf5),
-                                width: 1,
-                              ),
-                            ),
-                            child: Text(
-                              widget.unreadCount > 99
-                                  ? '99+'
-                                  : '${widget.unreadCount}',
-                              textScaler: TextScaler.noScaling,
-                              style: TextStyle(
-                                fontFamily: 'Manrope',
-                                fontSize: 8,
-                                fontWeight: FontWeight.w800,
-                                color: dark ? VibeColors.ink : Colors.white,
+                                    ? VibeColors.lime
+                                    : const Color(0xff58781b),
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: t.dockSurface,
+                                  width: 1.5,
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                      if (widget.activityDot)
-                        Positioned(
-                          right: 5,
-                          top: 3,
-                          child: Container(
-                            key: const ValueKey('activity-unread-dot'),
-                            width: 6,
-                            height: 6,
-                            decoration: BoxDecoration(
-                              color: dark
-                                  ? VibeColors.lime
-                                  : const Color(0xff58781b),
-                              shape: BoxShape.circle,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-                if (widget.showLabel)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 2),
-                    child: Text(
-                      widget.label,
-                      textAlign: TextAlign.center,
-                      maxLines: 2,
-                      style: TextStyle(
-                        fontFamily: 'Manrope',
-                        fontSize: 10.5,
-                        height: 1.15,
-                        fontWeight: FontWeight.lerp(
-                          FontWeight.w500,
-                          FontWeight.w800,
-                          progress,
-                        ),
-                        color: color,
-                      ),
+                      ],
                     ),
                   ),
-              ],
-            );
-          },
+                  if (widget.showLabel)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2, left: 2, right: 2),
+                      child: Text(
+                        widget.label,
+                        textAlign: TextAlign.center,
+                        maxLines: 2,
+                        style: TextStyle(
+                          fontFamily: 'Manrope',
+                          fontSize: 11,
+                          height: 1.15,
+                          fontWeight: FontWeight.lerp(
+                            FontWeight.w500,
+                            FontWeight.w800,
+                            progress,
+                          ),
+                          color: Color.lerp(muted, label, progress),
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
         ),
       ),
     );
@@ -359,7 +365,9 @@ class _DockDestinationState extends State<DockDestination>
         ? 'K'
         : widget.profileName.trim().characters.first;
     final fallback = Container(
-      color: dark ? const Color(0xff555e4d) : const Color(0xffe2e6d8),
+      decoration: BoxDecoration(
+        gradient: avatarGradient(widget.profileName.trim()),
+      ),
       alignment: Alignment.center,
       child: Text(
         initial,
@@ -368,7 +376,7 @@ class _DockDestinationState extends State<DockDestination>
           fontFamily: 'Manrope',
           fontSize: 12,
           fontWeight: FontWeight.w800,
-          color: dark ? Colors.white : VibeColors.ink,
+          color: VibeColors.ink,
         ),
       ),
     );

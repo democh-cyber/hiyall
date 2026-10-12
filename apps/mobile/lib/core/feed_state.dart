@@ -35,14 +35,20 @@ class FeedController extends AsyncNotifier<FeedState> {
   ApiClient get _api => ref.read(apiProvider);
   Session get _session => requireSession(ref);
 
+  /// Bumped whenever the first page replaces the list, so a slower page
+  /// fetched for the old list is dropped instead of overwriting the new one.
+  int _epoch = 0;
+
   @override
   Future<FeedState> build() async {
+    _epoch++;
     final page = await ref.watch(apiProvider).feed(requireSession(ref), mode);
     return FeedState(page.items, nextCursor: page.nextCursor);
   }
 
   Future<void> refresh() async {
     final page = await _api.feed(_session, mode);
+    _epoch++;
     state = AsyncData(FeedState(page.items, nextCursor: page.nextCursor));
   }
 
@@ -51,14 +57,21 @@ class FeedController extends AsyncNotifier<FeedState> {
     if (current == null || current.nextCursor == null || current.loadingMore) {
       return;
     }
+    final epoch = _epoch;
     state = AsyncData(current.copyWith(loadingMore: true));
     try {
       final page = await _api.feed(_session, mode, current.nextCursor);
-      final seen = {for (final p in current.items) p.postId};
+      // The list was reloaded meanwhile; this page continues the old one.
+      if (epoch != _epoch) return;
+      // Merge into the newest state so reactions, saves, new posts and
+      // removals made while the page loaded are kept.
+      final latest = state.asData?.value;
+      if (latest == null) return;
+      final seen = {for (final p in latest.items) p.postId};
       state = AsyncData(
-        current.copyWith(
+        latest.copyWith(
           items: [
-            ...current.items,
+            ...latest.items,
             ...page.items.where((p) => !seen.contains(p.postId)),
           ],
           nextCursor: () => page.nextCursor,
@@ -66,7 +79,10 @@ class FeedController extends AsyncNotifier<FeedState> {
         ),
       );
     } catch (_) {
-      state = AsyncData(current.copyWith(loadingMore: false));
+      final latest = state.asData?.value;
+      if (epoch == _epoch && latest != null) {
+        state = AsyncData(latest.copyWith(loadingMore: false));
+      }
       rethrow;
     }
   }

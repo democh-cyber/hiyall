@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:kairova/core/api.dart';
-import 'package:kairova/core/state.dart';
+import 'package:hiyall/core/api.dart';
+import 'package:hiyall/core/state.dart';
 
 void main() {
   test(

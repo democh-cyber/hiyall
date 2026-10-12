@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import '../core/api.dart';
 import '../core/profile_labels.dart';
 import '../core/theme.dart';
+import 'person_avatar.dart';
+import 'profile_stats.dart';
 
 Color profileAccent(Profile profile) => switch (profile.profileAccent) {
   'violet' => VibeColors.lilac,
@@ -35,7 +37,7 @@ Future<void> shareProfile(BuildContext context, Profile profile) async {
             Text('@${profile.username}'),
             const SizedBox(height: 12),
             const Text(
-              'Your privacy settings still decide who can see your profile.',
+              'Share your username so friends can find you on Hiyall.',
             ),
             const SizedBox(height: 20),
             FilledButton.icon(
@@ -84,6 +86,9 @@ class ProfileSpace extends StatefulWidget {
   final bool isOwner;
   final VoidCallback? onEdit, onSettings, onOptions;
 
+  /// Where each tappable stat leads; a stat without an entry is a plain number.
+  final ProfileStatActions statActions;
+
   /// Content for the Posts (0) and Media (1) tabs; null keeps the empty state.
   final Widget? Function(int tab)? contentFor;
   const ProfileSpace({
@@ -94,6 +99,7 @@ class ProfileSpace extends StatefulWidget {
     this.onSettings,
     this.onOptions,
     this.contentFor,
+    this.statActions = const {},
   });
   @override
   State<ProfileSpace> createState() => _ProfileSpaceState();
@@ -150,7 +156,7 @@ class _ProfileSpaceState extends State<ProfileSpace> {
                       if (widget.isOwner || p.interests.isNotEmpty) ...[
                         const SizedBox(height: 24),
                         _sectionTitle(
-                          'MY INTERESTS',
+                          widget.isOwner ? 'MY INTERESTS' : 'INTERESTS',
                           muted,
                           action: widget.isOwner
                               ? IconButton(
@@ -395,22 +401,6 @@ class _ProfileSpaceState extends State<ProfileSpace> {
                             icon: const Icon(Icons.edit_outlined, size: 16),
                             label: const Text('Edit profile'),
                           ),
-                        if (!widget.isOwner)
-                          const Tooltip(
-                            message: 'Connections are coming soon',
-                            child: OutlinedButton(
-                              onPressed: null,
-                              child: Text('Connect'),
-                            ),
-                          ),
-                        if (!widget.isOwner)
-                          const Tooltip(
-                            message: 'Private chats are coming soon',
-                            child: OutlinedButton(
-                              onPressed: null,
-                              child: Text('Message'),
-                            ),
-                          ),
                         OutlinedButton.icon(
                           onPressed: () => shareProfile(context, p),
                           style: OutlinedButton.styleFrom(
@@ -431,7 +421,12 @@ class _ProfileSpaceState extends State<ProfileSpace> {
                     ),
                     if (p.socialStats != null) ...[
                       const SizedBox(height: 12),
-                      _stats(p.socialStats!, ink, muted),
+                      ProfileStatsRow(
+                        stats: p.socialStats!,
+                        actions: widget.statActions,
+                        ink: ink,
+                        muted: muted,
+                      ),
                     ],
                     if (widget.isOwner || p.currentVibe.isNotEmpty) ...[
                       const SizedBox(height: 12),
@@ -513,60 +508,12 @@ class _ProfileSpaceState extends State<ProfileSpace> {
     );
   }
 
-  Widget _stats(ProfileSocialStats stats, Color ink, Color muted) => Row(
-    key: const ValueKey('profile-social-stats'),
-    children: [
-      for (final (value, label) in [
-        (stats.friends, 'Friends'),
-        (stats.following, 'Following'),
-        (stats.followers, 'Followers'),
-      ])
-        Expanded(
-          child: Semantics(
-            label: '$value $label',
-            excludeSemantics: true,
-            child: Column(
-              children: [
-                Text(
-                  _shortCount(value),
-                  style: TextStyle(
-                    fontFamily: 'SpaceGrotesk',
-                    fontSize: 22,
-                    height: 1.2,
-                    fontWeight: FontWeight.w700,
-                    color: ink,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  label,
-                  style: TextStyle(fontSize: 11, height: 1.4, color: muted),
-                ),
-              ],
-            ),
-          ),
-        ),
-    ],
-  );
-  String _shortCount(int value) {
-    if (value < 1000) return '$value';
-    final unit = value >= 1000000 ? 'M' : 'K';
-    final number = value / (unit == 'M' ? 1000000 : 1000);
-    return '${number.toStringAsFixed(number < 10 ? 1 : 0).replaceFirst(RegExp(r'\.0$'), '')}$unit';
-  }
-
   Widget _about(BuildContext context, Profile p, Color muted) {
     final rows = <(IconData, String, bool)>[
       if (p.country != null && countryNames.containsKey(p.country))
         (Icons.public_rounded, countryNames[p.country]!, false),
       if (p.profession.isNotEmpty)
         (Icons.work_outline_rounded, p.profession, true),
-      if (p.languages.isNotEmpty)
-        (
-          Icons.language_rounded,
-          p.languages.map((v) => languageLabel(v.code)).join(' · '),
-          false,
-        ),
       if (p.pronouns.isNotEmpty)
         (Icons.person_outline_rounded, p.pronouns, false),
       if (p.education.isNotEmpty) (Icons.school_outlined, p.education, false),
@@ -577,7 +524,7 @@ class _ProfileSpaceState extends State<ProfileSpace> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _sectionTitle(
-          'ABOUT ME',
+          widget.isOwner ? 'ABOUT ME' : 'ABOUT',
           muted,
           action: widget.isOwner
               ? TextButton(
@@ -801,8 +748,9 @@ class _ProfileSpaceState extends State<ProfileSpace> {
   }
 }
 
-/// Original code-generated monogram: a static orbital composition, not a story
-/// or verification signal. Media-backed avatars need the authorized media service.
+/// The profile photo inside the accent frame. Without one, an original
+/// code-generated monogram: a static orbital composition, not a story or
+/// verification signal.
 class _ProfileAvatar extends StatelessWidget {
   final Profile profile;
   final Color accent;
@@ -828,8 +776,15 @@ class _ProfileAvatar extends StatelessWidget {
         ),
         child: Padding(
           padding: const EdgeInsets.all(5),
-          child: ClipOval(
-            child: CustomPaint(
+          child: PersonAvatar(
+            name: profile.displayName.trim().isEmpty
+                ? 'K'
+                : profile.displayName,
+            avatarUrl: profile.avatarFor(size),
+            userId: profile.userId,
+            radius: (size - 10) / 2,
+            // Without a photo the generated monogram stays.
+            fallback: CustomPaint(
               painter: _IdentityAvatarPainter(accent, profile.username),
               child: Center(
                 child: Text(
@@ -987,37 +942,43 @@ class _ProfileStickyHeader extends SliverPersistentHeaderDelegate {
                     : Align(
                         key: const ValueKey('expanded-profile-identity'),
                         alignment: AlignmentDirectional.centerStart,
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              isOwner
-                                  ? 'MY DIGITAL SPACE'
-                                  : 'THEIR DIGITAL SPACE',
-                              style: TextStyle(
-                                fontSize: 10,
-                                letterSpacing: 2,
-                                fontWeight: FontWeight.w800,
-                                color: dark
-                                    ? const Color(0xffa7b19f)
-                                    : const Color(0xff69725f),
-                              ),
-                            ),
-                            if (isOwner) ...[
-                              const SizedBox(height: 4),
+                        // The bar has a fixed height; at large text sizes
+                        // the label shrinks to fit rather than spilling out.
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          alignment: AlignmentDirectional.centerStart,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
                               Text(
-                                'Main character. You.',
+                                isOwner
+                                    ? 'MY DIGITAL SPACE'
+                                    : 'THEIR DIGITAL SPACE',
                                 style: TextStyle(
-                                  fontSize: 9,
-                                  height: 1.4,
+                                  fontSize: 10,
+                                  letterSpacing: 2,
+                                  fontWeight: FontWeight.w800,
                                   color: dark
                                       ? const Color(0xffa7b19f)
                                       : const Color(0xff69725f),
                                 ),
                               ),
+                              if (isOwner) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Main character. You.',
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    height: 1.4,
+                                    color: dark
+                                        ? const Color(0xffa7b19f)
+                                        : const Color(0xff69725f),
+                                  ),
+                                ),
+                              ],
                             ],
-                          ],
+                          ),
                         ),
                       ),
               );

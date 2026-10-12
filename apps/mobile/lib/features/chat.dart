@@ -1,19 +1,31 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../core/api.dart';
+import '../core/avatar_upload.dart';
 import '../core/chat/chat_api.dart';
+import '../core/chat/chat_attachment.dart';
 import '../core/chat/chat_engine.dart';
 import '../core/chat/chat_store.dart';
+import '../core/chat_peers.dart';
+import '../core/presence.dart';
 import '../core/state.dart';
-import '../core/theme.dart';
+import '../shared/chat_tokens.dart';
+import '../shared/person_link.dart';
 import '../shared/widgets.dart';
 import '../src/rust/frb_generated.dart';
+import 'chat_format.dart';
+import 'chat_list.dart';
+import 'chat_menu.dart';
+import 'chat_photo.dart';
+import 'chat_thread.dart';
 import 'live_sync.dart';
 import 'safety.dart';
 
@@ -37,55 +49,82 @@ final chatSupported =
         defaultTargetPlatform == TargetPlatform.iOS);
 
 Future<void>? _rust;
+
+/// The account whose photos this device last held, so signing out (or into
+/// another account) removes the first account's cache and unsent uploads.
+String? _mediaOwner;
+
 final chatEngineProvider = FutureProvider<ChatEngine?>((ref) async {
   final session = ref.watch(sessionProvider).asData?.value;
-  if (!chatSupported || session == null) return null;
+  if (!chatSupported) return null;
+  final previous = _mediaOwner;
+  if (session == null && previous == null) return null;
+  final root = await getApplicationSupportDirectory();
+  if (previous != null && previous != session?.userId) {
+    _mediaOwner = null;
+    await ChatEngine.wipeLocalMedia(
+      root: root,
+      store: SecureChatStore(),
+      userId: previous,
+    );
+  }
+  if (session == null) return null;
+  _mediaOwner = session.userId;
   await (_rust ??= RustLib.init());
+  // The same refresh-then-expire handling as every other API call.
+  final rest = ref.read(apiProvider);
   final engine = ChatEngine(
     userId: session.userId,
-    api: ChatApi(apiBaseUrl, session.token),
+    api: ChatApi(
+      apiBaseUrl,
+      session.token,
+      tokenOf: () => session.token,
+      tokenRefresher: () async => rest.tokenRefresher?.call(),
+      onUnauthorized: () => rest.onUnauthorized?.call(),
+    ),
     store: SecureChatStore(),
     platform: defaultTargetPlatform == TargetPlatform.iOS ? 'ios' : 'android',
+    mediaRoot: root,
   );
   ref.onDispose(engine.dispose);
   await engine.start();
   return engine;
 });
 
-String chatError(Object error) => switch (error) {
-  ChatFailure(code: 'MESSAGES_NOT_ALLOWED') =>
-    'They aren’t accepting messages from you right now.',
-  ChatFailure(code: 'CONVERSATION_CLOSED' || 'NOT_FOUND') =>
-    'This conversation isn’t available.',
-  ChatFailure(code: 'KEY_CHANGED') =>
-    'Their security keys changed unexpectedly, so sending is paused.',
-  ChatFailure(code: 'RATE_LIMITED') => 'You’re sending a lot. Wait a moment.',
-  ChatFailure(:final message) => message,
-  _ => 'Something went wrong with encryption on this device.',
+/// Words for the reasons a photo could not be sent, or null for any other code.
+String? photoFailureText(String? code) => switch (code) {
+  'ATTACHMENTS_NOT_ALLOWED' => 'You can send photos once they reply.',
+  'PHOTO_TOO_LARGE' ||
+  'TOO_LARGE' => 'That photo is too large to send. Try a smaller one.',
+  'QUOTA' => 'You’ve sent a lot of photos today. Try again later.',
+  'CHAT_MEDIA_UNAVAILABLE' =>
+    'Photos aren’t available right now. Try again later.',
+  'BLOB_NOT_READY' ||
+  'BLOB_SIZE_MISMATCH' ||
+  'BLOB_EXPIRED' => 'The upload didn’t finish. Try again.',
+  'CANCELED' => 'Upload canceled.',
+  'INTERRUPTED' => 'Sending was interrupted.',
+  'NETWORK' => 'Couldn’t reach the chat service. Check your connection.',
+  'PHOTOS_UNAVAILABLE' => 'Photos can only be sent from the Hiyall app.',
+  'LOCAL_DATA_LOST' =>
+    'This photo can’t be sent again. Delete it and choose it again.',
+  _ => null,
 };
 
-class EncryptedBadge extends StatelessWidget {
-  const EncryptedBadge({super.key});
-  @override
-  Widget build(BuildContext context) => Row(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      Icon(
-        Icons.lock_rounded,
-        size: 12,
-        color: Theme.of(context).colorScheme.onSurfaceVariant,
-      ),
-      const SizedBox(width: 4),
-      Text(
-        'End-to-end encrypted',
-        style: TextStyle(
-          fontSize: 11,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
-      ),
-    ],
-  );
-}
+String chatError(Object error) =>
+    (error is ChatFailure ? photoFailureText(error.code) : null) ??
+    switch (error) {
+      ChatFailure(code: 'MESSAGES_NOT_ALLOWED') =>
+        'They aren’t accepting messages from you right now.',
+      ChatFailure(code: 'CONVERSATION_CLOSED' || 'NOT_FOUND') =>
+        'This conversation isn’t available.',
+      ChatFailure(code: 'KEY_CHANGED') =>
+        'Their security keys changed unexpectedly, so sending is paused.',
+      ChatFailure(code: 'RATE_LIMITED') =>
+        'You’re sending a lot. Wait a moment.',
+      ChatFailure(:final message) => message,
+      _ => 'Something went wrong with encryption on this device.',
+    };
 
 class ChatsScreen extends ConsumerStatefulWidget {
   const ChatsScreen({super.key});
@@ -93,11 +132,20 @@ class ChatsScreen extends ConsumerStatefulWidget {
   ConsumerState<ChatsScreen> createState() => _ChatsScreenState();
 }
 
+/// How long typing in the search field waits before the list filters.
+const chatSearchDebounce = Duration(milliseconds: 200);
+
 class _ChatsScreenState extends ConsumerState<ChatsScreen> {
   List<ChatConversation>? items;
   Object? error;
   StreamSubscription<String>? changes;
   ChatEngine? engine;
+  final search = TextEditingController();
+  Timer? _debounce;
+
+  /// The search text the list is filtered by (after the debounce).
+  String query = '';
+  ChatFilter filter = ChatFilter.all;
 
   Future<void> load() async {
     final current = engine;
@@ -108,6 +156,11 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
         setState(() {
           items = next;
           error = null;
+        });
+        // Discover reads this to show Message instead of Say hi.
+        ref.read(chatPeersProvider.notifier).load({
+          for (final c in next)
+            if (c.last != null) c.peerId: c.id,
         });
       }
     } catch (e) {
@@ -123,20 +176,43 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     load();
   }
 
-  @override
-  void dispose() {
-    changes?.cancel();
-    super.dispose();
+  /// Filters 200 ms after the last keystroke; emptying the field is immediate.
+  void onSearch(String text) {
+    _debounce?.cancel();
+    if (text.trim().isEmpty) {
+      if (query.isNotEmpty) setState(() => query = '');
+      return;
+    }
+    _debounce = Timer(chatSearchDebounce, () {
+      if (mounted) setState(() => query = text);
+    });
+  }
+
+  void clearSearch() {
+    _debounce?.cancel();
+    search.clear();
+    setState(() => query = '');
   }
 
   @override
+  void dispose() {
+    _debounce?.cancel();
+    changes?.cancel();
+    search.dispose();
+    super.dispose();
+  }
+
+  void open(ChatConversation c) => context.go(
+    '/chats/${c.id}?peer=${Uri.encodeQueryComponent(c.peerId)}&name=${Uri.encodeQueryComponent(c.peerName)}',
+  );
+
+  @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     if (!chatSupported) {
       return const _ChatNotice(
         icon: Icons.phone_iphone_rounded,
         title: 'Chats live in the app',
-        body: 'Private chats are end-to-end encrypted with keys kept in your phone’s secure storage. Open Kairova on Android or iOS to chat.',
+        body: 'Private chats are end-to-end encrypted with keys kept in your phone’s secure storage. Open Hiyall on Android or iOS to chat.',
       );
     }
     final state = ref.watch(chatEngineProvider);
@@ -147,7 +223,11 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     ref.listen(chatSignalProvider, (_, _) => load());
     final typing = ref.watch(typingProvider);
     if (state.isLoading) {
-      return const Center(child: Text('Setting up encryption…'));
+      return const _ChatNotice(
+        icon: Icons.lock_outline_rounded,
+        title: 'Setting up encryption…',
+        body: 'Creating the keys that keep your chats private. This only takes a moment.',
+      );
     }
     if (state.hasError) {
       return _ChatNotice(
@@ -157,150 +237,118 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
         action: () => ref.invalidate(chatEngineProvider),
       );
     }
+    final now = ref.watch(chatClockProvider)();
+    final all = items;
+    final shown = all == null
+        ? null
+        : filterChats(all, query: query, filter: filter);
+    // The app shell already prints "Chats" above wide layouts.
+    final wide = MediaQuery.sizeOf(context).width >= 900;
+    final hasChats = all != null && all.isNotEmpty;
+    final narrowed = query.trim().isNotEmpty || filter != ChatFilter.all;
     return RefreshIndicator(
       onRefresh: () async {
         await engine?.pollNow();
         await load();
       },
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(0, 12, 0, 32),
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
-            child: Text(
-              'Chats',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-          ),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 0, 20, 12),
-            child: EncryptedBadge(),
-          ),
-          if (error != null)
-            Padding(
-              padding: const EdgeInsets.all(20),
-              child: Text(chatError(error!)),
-            ),
-          if (items == null && error == null)
-            const Padding(
-              padding: EdgeInsets.all(40),
-              child: Center(child: Text('Loading chats…')),
-            ),
-          if (items?.isEmpty ?? false)
-            Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'No chats yet',
-                    style: TextStyle(
-                      fontFamily: 'SpaceGrotesk',
-                      fontSize: 22,
-                      fontWeight: FontWeight.w700,
-                    ),
+      child: LayoutBuilder(
+        builder: (context, box) {
+          final side = math.max(0.0, (box.maxWidth - chatListMaxWidth) / 2);
+          final empty = all != null && all.isEmpty;
+          return ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: EdgeInsets.fromLTRB(side, wide ? 0 : 6, side, 32),
+            children: [
+              ChatsHeading(subtitle: chatsSubtitle(all), showTitle: !wide),
+              if (hasChats) ...[
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: ChatMetrics.pagePadding,
                   ),
-                  const SizedBox(height: 6),
-                  Text(
-                    'Open someone’s profile and tap Message.',
-                    style: TextStyle(color: scheme.onSurfaceVariant),
+                  child: ChatSearchField(
+                    controller: search,
+                    onChanged: onSearch,
                   ),
-                  const SizedBox(height: 14),
-                  OutlinedButton(
-                    onPressed: () => context.go('/discover'),
-                    child: const Text('Find people'),
-                  ),
-                ],
-              ),
-            ),
-          for (final c in items ?? <ChatConversation>[])
-            ListTile(
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 20,
-                vertical: 4,
-              ),
-              leading: CircleAvatar(
-                radius: 24,
-                backgroundColor: VibeColors.lilac,
-                foregroundColor: VibeColors.ink,
-                child: Text(
-                  c.peerName.characters.firstOrNull?.toUpperCase() ?? '?',
                 ),
-              ),
-              title: Text(
-                c.peerName,
-                style: const TextStyle(fontWeight: FontWeight.w800),
-              ),
-              subtitle: typing[c.id]?.isAfter(DateTime.now()) ?? false
-                  ? const Text(
-                      'typing…',
-                      style: TextStyle(fontStyle: FontStyle.italic),
-                    )
-                  : Text(
-                      c.last == null
-                          ? '@${c.peerUsername}'
-                          : (c.last!.mine ? 'You: ' : '') + c.last!.text,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: c.unreadCount > 0
-                          ? TextStyle(
-                              fontWeight: FontWeight.w700,
-                              color: scheme.onSurface,
-                            )
-                          : null,
-                    ),
-              trailing: c.unreadCount == 0 && !c.muted
-                  ? null
-                  : Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (c.muted)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 6),
-                            child: Icon(
-                              Icons.notifications_off_outlined,
-                              key: Key('muted-${c.id}'),
-                              semanticLabel: 'Muted',
-                              size: 18,
-                              color: scheme.onSurfaceVariant,
-                            ),
-                          ),
-                        if (c.unreadCount > 0)
-                          Semantics(
-                            label: '${c.unreadCount} unread',
-                            child: Container(
-                              constraints: const BoxConstraints(minWidth: 24),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 7,
-                                vertical: 3,
-                              ),
-                              decoration: BoxDecoration(
-                                // Muted chats don't call for attention.
-                                color: c.muted
-                                    ? scheme.surfaceContainerHighest
-                                    : VibeColors.lime,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Text(
-                                c.unreadCount > 99 ? '99+' : '${c.unreadCount}',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: c.muted
-                                      ? scheme.onSurfaceVariant
-                                      : VibeColors.ink,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-              onTap: () => context.go(
-                '/chats/${c.id}?peer=${Uri.encodeQueryComponent(c.peerId)}&name=${Uri.encodeQueryComponent(c.peerName)}',
-              ),
-            ),
-        ],
+                ChatFilterChips(
+                  filter: filter,
+                  unread: unreadChatCount(all),
+                  onChanged: (f) => setState(() => filter = f),
+                ),
+                if (!narrowed)
+                  MeetSomeoneCard(onTap: () => context.go('/discover'))
+                else
+                  const SizedBox(height: 6),
+              ],
+              if (error != null)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  child: ChatMessageCard(
+                    icon: Icons.cloud_off_rounded,
+                    title: 'Couldn’t load your chats',
+                    body: chatError(error!),
+                    primaryLabel: 'Try again',
+                    onPrimary: load,
+                  ),
+                ),
+              if (all == null && error == null) const ChatListSkeleton(),
+              if (empty)
+                ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minHeight: math.max(420, box.maxHeight - 120),
+                  ),
+                  child: ChatMessageCard(
+                    key: const Key('chats-empty'),
+                    art: const HelloArt(height: 150),
+                    title: 'No conversations yet',
+                    body: 'Someone interesting is one hello away.',
+                    primaryLabel: 'Meet someone new',
+                    onPrimary: () => context.go('/discover'),
+                    secondaryLabel: 'Say hi to your followers',
+                    onSecondary: () => context.go('/profile/followers'),
+                  ),
+                ),
+              if (shown != null && shown.isEmpty && !empty)
+                query.trim().isEmpty
+                    ? ChatMessageCard(
+                        key: const Key('chats-no-unread'),
+                        icon: Icons.done_all_rounded,
+                        title: 'No unread conversations',
+                        body: 'You’re all caught up.',
+                        primaryLabel: 'Show all chats',
+                        onPrimary: () =>
+                            setState(() => filter = ChatFilter.all),
+                      )
+                    : ChatMessageCard(
+                        key: const Key('chats-no-match'),
+                        icon: Icons.search_off_rounded,
+                        title: 'No conversations found',
+                        body:
+                            'Nothing matches “${query.trim()}”. Try a name, a @username or something they said.',
+                        primaryLabel: 'Clear search',
+                        onPrimary: clearSearch,
+                        secondaryLabel: 'Meet someone new',
+                        onSecondary: () => context.go('/discover'),
+                      ),
+              if (shown != null)
+                for (var i = 0; i < shown.length; i++)
+                  ChatRow(
+                    key: ValueKey(shown[i].id),
+                    chat: shown[i],
+                    now: now,
+                    typing:
+                        typing[shown[i].id]?.isAfter(DateTime.now()) ?? false,
+                    showDivider: i < shown.length - 1,
+                    onTap: () => open(shown[i]),
+                  ),
+              if (shown != null && shown.isNotEmpty)
+                const Padding(
+                  padding: EdgeInsets.only(top: 18),
+                  child: Center(child: EncryptedChip()),
+                ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -317,21 +365,13 @@ class _ChatNotice extends StatelessWidget {
     this.action,
   });
   @override
-  Widget build(BuildContext context) => ReadingWidth(
-    child: ListView(
-      padding: const EdgeInsets.all(24),
-      children: [
-        Icon(icon, size: 40),
-        const SizedBox(height: 12),
-        Text(title, style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 8),
-        Text(body),
-        if (action != null) ...[
-          const SizedBox(height: 16),
-          OutlinedButton(onPressed: action, child: const Text('Try again')),
-        ],
-      ],
-    ),
+  Widget build(BuildContext context) => ChatMessageCard(
+    scrollable: true,
+    icon: icon,
+    title: title,
+    body: body,
+    primaryLabel: action == null ? null : 'Try again',
+    onPrimary: action,
   );
 }
 
@@ -349,26 +389,160 @@ class ConversationScreen extends ConsumerStatefulWidget {
 
 class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   final input = TextEditingController();
+  final focus = FocusNode();
   final scroll = ScrollController();
   List<ChatMessage> messages = [];
   StreamSubscription<String>? changes;
   ChatEngine? engine;
-  bool sending = false;
+  bool sending = false, attaching = false;
   DateTime? peerReadAt;
   DateTime? mutedUntil;
 
+  /// History has been read at least once, so "empty" is a fact.
+  bool loaded = false;
+
+  /// Messages already on screen; later arrivals pop in, history does not.
+  final known = <String>{}, fresh = <String>{}, played = <String>{};
+
+  /// How many of the peer's messages were unread when this chat was opened,
+  /// and the first of them once history is there. Taken once: reading them
+  /// as the screen opens does not move the divider.
+  int unreadAtOpen = 0, unreadTries = 0;
+  bool unreadCaptured = false, unreadResolved = false;
+  String? unreadFrom;
+  bool _typingShown = false;
+
   /// From the route when opened from the chat list; otherwise loaded below.
   late String peerId = widget.peerId, peerName = widget.peerName;
+  String? peerAvatarUrl;
   DateTime lastTyping = DateTime.fromMillisecondsSinceEpoch(0);
 
-  Future<void> reload() async {
-    final list = await engine!.history(widget.id);
-    if (!mounted) return;
-    setState(() => messages = list);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (scroll.hasClients) scroll.jumpTo(scroll.position.maxScrollExtent);
+  /// The person is reading the bottom of the thread (or there is nothing to
+  /// scroll yet). Updated as they scroll, and decides whether new messages
+  /// move the view and whether the "latest" button shows.
+  bool atBottom = true;
+
+  /// Messages that arrived while they were reading further up.
+  int newWhileAway = 0;
+
+  /// The first-time card was dismissed.
+  bool introDismissed = false;
+
+  /// What the server says both people list (its audience rules already
+  /// applied), and whether the first look at the conversation has come back:
+  /// the new-chat card waits for it so its icebreakers do not change under
+  /// the person's thumb.
+  List<String> sharedInterests = const [];
+  bool receiptLoaded = false;
+
+  /// The peer's presence as the server last said it (see [ChatHeader]). Read
+  /// with the rest of the server-held state in [loadReceipt], which already
+  /// reruns on every chat signal and on the slow presence refresh.
+  bool peerOnline = false;
+  DateTime? peerLastSeenAt;
+
+  bool get _nearBottom =>
+      !scroll.hasClients ||
+      isNearBottom(
+        pixels: scroll.position.pixels,
+        maxExtent: scroll.position.maxScrollExtent,
+      );
+
+  void _onScroll() {
+    final near = _nearBottom;
+    if (near == atBottom) return;
+    setState(() {
+      atBottom = near;
+      if (near) newWhileAway = 0;
     });
+  }
+
+  /// Moves to the newest message. Rows below are only estimated until they are
+  /// built, so the end can move while jumping: look again for a few frames.
+  void _stickToBottom([int tries = 4]) =>
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!scroll.hasClients) return;
+        final end = scroll.position.maxScrollExtent;
+        if (scroll.position.pixels < end - 1) {
+          scroll.jumpTo(end);
+          if (tries > 1) _stickToBottom(tries - 1);
+        }
+      });
+
+  /// The "latest" button: down to the newest message, gently unless motion is
+  /// reduced, and the count of what came in meanwhile starts again.
+  Future<void> jumpToLatest() async {
+    setState(() => newWhileAway = 0);
+    if (!scroll.hasClients) return;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _stickToBottom();
+      return;
+    }
+    await scroll.animateTo(
+      scroll.position.maxScrollExtent,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+    );
+    // Rows below were only estimated until they were built.
+    _stickToBottom();
+  }
+
+  Future<void> reload() async {
+    final List<ChatMessage> list;
+    try {
+      list = await engine!.history(widget.id);
+    } catch (_) {
+      if (mounted) setState(() => loaded = true);
+      rethrow;
+    }
+    if (!mounted) return;
+    var arrived = 0;
+    final firstLoad = !loaded;
+    final stick = shouldAutoScroll(
+      firstLoad: firstLoad,
+      nearBottom: _nearBottom,
+      sentNewOwnMessage:
+          loaded && list.any((m) => m.mine && !known.contains(m.messageId)),
+    );
+    setState(() {
+      if (!loaded) {
+        known.addAll(list.map((m) => m.messageId));
+      } else {
+        for (final m in list) {
+          if (known.add(m.messageId)) {
+            fresh.add(m.messageId);
+            if (!m.mine && !m.notice) arrived++;
+          }
+        }
+      }
+      loaded = true;
+      messages = list;
+      // Reading older messages: keep the place and count what came in.
+      if (!stick && arrived > 0) newWhileAway += arrived;
+      _resolveUnread();
+    });
+    if (stick) _stickToBottom();
     markRead();
+  }
+
+  /// Finds the first message the person had not read, once both the unread
+  /// count and enough of the history are here.
+  void _resolveUnread() {
+    if (unreadResolved || !unreadCaptured || !loaded) return;
+    if (unreadAtOpen <= 0) {
+      unreadResolved = true;
+      return;
+    }
+    final incoming = [
+      for (final m in messages)
+        if (!m.mine && !m.notice) m,
+    ];
+    // A message still in the inbox is not in history yet; wait a little.
+    if (incoming.length < unreadAtOpen && unreadTries++ < 3) return;
+    unreadResolved = true;
+    if (incoming.isEmpty) return;
+    final index = math.max(0, incoming.length - unreadAtOpen);
+    unreadFrom = incoming[index].messageId;
   }
 
   /// Reading happens while this screen is open and the app is in front.
@@ -390,9 +564,33 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     try {
       final c = await engine?.api.conversation(widget.id);
       if (c == null || !mounted) return;
+      final shared = parseSharedInterests(c['sharedInterests']);
+      if (!receiptLoaded || !listEquals(shared, sharedInterests)) {
+        setState(() {
+          receiptLoaded = true;
+          sharedInterests = shared;
+        });
+      }
       final at = DateTime.tryParse(c['peerReadAt'] as String? ?? '');
       final muted = DateTime.tryParse(c['mutedUntil'] as String? ?? '');
       final peer = c['peer'] as Map? ?? const {};
+      final avatar = peer['avatarUrl'] as String?;
+      if (!unreadCaptured) {
+        setState(() {
+          unreadCaptured = true;
+          unreadAtOpen = (c['unreadCount'] as num?)?.toInt() ?? 0;
+          _resolveUnread();
+        });
+      }
+      if (avatar != peerAvatarUrl) setState(() => peerAvatarUrl = avatar);
+      final presence = parsePresence(peer);
+      if (presence.online != peerOnline ||
+          presence.lastSeenAt != peerLastSeenAt) {
+        setState(() {
+          peerOnline = presence.online;
+          peerLastSeenAt = presence.lastSeenAt;
+        });
+      }
       if (peerId.isEmpty && peer['userId'] is String) {
         final display = (peer['displayName'] as String? ?? '').trim();
         setState(() {
@@ -406,56 +604,23 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
           mutedUntil = muted;
         });
       }
-    } catch (_) {}
+    } catch (_) {
+      // Without the first look the card simply waits less: show it as it is.
+      if (mounted && !receiptLoaded) setState(() => receiptLoaded = true);
+    }
   }
 
   bool get muted => mutedUntil?.isAfter(DateTime.now()) ?? false;
 
   Future<void> options() async {
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      useRootNavigator: true,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (context) => SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                key: const Key('chat-mute'),
-                leading: Icon(
-                  muted
-                      ? Icons.notifications_active_outlined
-                      : Icons.notifications_off_outlined,
-                ),
-                title: Text(muted ? 'Unmute chat' : 'Mute chat'),
-                subtitle: const Text(
-                  'No notifications, and it stays out of your unread count.',
-                ),
-                onTap: () => Navigator.pop(context, 'mute'),
-              ),
-              ListTile(
-                key: const Key('chat-profile'),
-                leading: const Icon(Icons.person_outline_rounded),
-                title: Text('View $peerName’s profile'),
-                onTap: () => Navigator.pop(context, 'profile'),
-              ),
-              ListTile(
-                key: const Key('chat-report'),
-                leading: const Icon(Icons.flag_outlined),
-                title: const Text('Report'),
-                onTap: () => Navigator.pop(context, 'report'),
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        ),
-      ),
+    final choice = await showChatSafetyMenu(
+      context,
+      muted: muted,
+      peerName: peerName,
     );
     if (!mounted || choice == null || engine == null) return;
     switch (choice) {
-      case 'mute':
+      case ChatMenuAction.mute:
         DateTime? until;
         if (!muted) {
           final picked = await pickMuteDuration(
@@ -476,18 +641,46 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         } catch (e) {
           if (mounted) showMessage(context, chatError(e));
         }
-      case 'profile':
-        context.go('/discover/person/$peerId');
-      case 'report':
-        final receipt = await showReportSheet(
-          context,
-          ref,
-          targetType: 'conversation',
-          targetId: widget.id,
-          name: peerName,
-          messages: messages,
-        );
-        if ((receipt?.blocked ?? false) && mounted) context.go('/chats');
+      case ChatMenuAction.profile:
+        openPerson(context, peerId);
+      case ChatMenuAction.report:
+        await reportPeer();
+      case ChatMenuAction.block:
+        await blockPeer();
+    }
+  }
+
+  /// The report flow (its sheet can also block). The menu and the new-chat
+  /// card both call this.
+  Future<void> reportPeer() async {
+    final receipt = await showReportSheet(
+      context,
+      ref,
+      targetType: 'conversation',
+      targetId: widget.id,
+      name: peerName,
+      messages: messages,
+    );
+    if ((receipt?.blocked ?? false) && mounted) context.go('/chats');
+  }
+
+  /// Asks first, then blocks and leaves the chat. The menu and the new-chat
+  /// card both call this.
+  Future<void> blockPeer() async {
+    final session = ref.read(sessionProvider).asData?.value;
+    if (peerId.isEmpty || session == null) return;
+    if (!await confirmBlock(context, peerName) || !mounted) return;
+    final api = ref.read(apiProvider);
+    try {
+      await api.block(session, peerId, true);
+      ref.invalidate(otherProfileProvider(peerId));
+      ref.invalidate(profileProvider);
+      ref.read(chatSignalProvider.notifier).bump();
+      if (!mounted) return;
+      showMessage(context, 'Account blocked.');
+      context.go('/chats');
+    } catch (e) {
+      if (mounted) showMessage(context, chatError(e));
     }
   }
 
@@ -520,6 +713,10 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (number != null) ...[
+              Text(
+                'Messages and photos in this chat are end-to-end encrypted: only you and $peerName can read them.',
+              ),
+              const SizedBox(height: 12),
               SelectableText(
                 [
                   for (var i = 0; i < number.length; i += 5)
@@ -557,14 +754,17 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     changes = next.changes
         .where((id) => id == widget.id)
         .listen((_) => reload());
-    reload();
+    // The receipt first: its unread count must be read before opening the
+    // chat marks everything read.
     loadReceipt();
+    reload();
     next.pollNow().catchError((_) {});
   }
 
   Future<void> send() async {
     final text = input.text.trim();
     if (text.isEmpty || sending || engine == null || peerId.isEmpty) return;
+    unawaited(sendHaptic());
     setState(() => sending = true);
     try {
       await engine!.send(widget.id, peerId, text);
@@ -576,17 +776,140 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     }
   }
 
+  /// A conversation starter goes into the composer for the person to edit or
+  /// send; nothing is sent for them.
+  void starter(String text) {
+    input.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    focus.requestFocus();
+  }
+
+  /// Choose or take a photo, preview it with an optional caption, then send.
+  /// The message appears at once; the upload carries on in the background.
+  Future<void> attachPhoto() async {
+    final current = engine;
+    if (current == null || peerId.isEmpty || attaching) return;
+    final source = await showAttachSheet(context);
+    if (source == null || !mounted) return;
+    setState(() => attaching = true);
+    Uint8List? bytes;
+    try {
+      bytes = await pickChatPhoto(ref.read(imagePickerProvider), source);
+    } catch (e) {
+      if (mounted) showMessage(context, photoPickError(e));
+      return;
+    } finally {
+      if (mounted) setState(() => attaching = false);
+    }
+    if (bytes == null || !mounted) return;
+    final caption = await showPhotoPreview(context, bytes, peerName);
+    if (caption == null || !mounted) return;
+    try {
+      await current.sendPhoto(widget.id, peerId, bytes, caption: caption);
+    } catch (e) {
+      if (mounted) showMessage(context, chatError(e));
+    }
+  }
+
+  Future<void> retryPhoto(ChatMessage message) async {
+    try {
+      await engine?.retryPhoto(widget.id, message.messageId);
+    } catch (e) {
+      if (mounted) showMessage(context, chatError(e));
+    }
+  }
+
+  Future<void> deletePhoto(ChatMessage message) async {
+    try {
+      await engine?.discardPhoto(widget.id, message.messageId);
+    } catch (e) {
+      if (mounted) showMessage(context, chatError(e));
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    scroll.addListener(_onScroll);
+  }
+
   @override
   void dispose() {
     changes?.cancel();
+    scroll.removeListener(_onScroll);
     input.dispose();
+    focus.dispose();
     scroll.dispose();
     super.dispose();
   }
 
+  bool _seen(ChatMessage m) =>
+      m.mine &&
+      m.serverAt != null &&
+      peerReadAt != null &&
+      !peerReadAt!.isBefore(m.serverAt!);
+
+  Widget _row(
+    BuildContext context,
+    ThreadRow row,
+    DateTime now,
+    String? newestMine,
+  ) {
+    switch (row) {
+      case DayRow(:final day):
+        return DayChip(chatDayLabel(day, now), key: ValueKey('day-$day'));
+      case NoticeRow(:final message):
+        return NoticeChip(message.text, key: ValueKey(message.messageId));
+      case UnreadRow():
+        return const NewMessagesDivider();
+      case TypingRow():
+        return TypingBubble(
+          peerName: peerName,
+          peerId: peerId,
+          peerAvatarUrl: peerAvatarUrl,
+        );
+      case MessageRow():
+        final m = row.message;
+        Widget bubble = ChatBubble(
+          row: row,
+          engine: engine,
+          conversationId: widget.id,
+          peerName: peerName,
+          peerId: peerId,
+          peerAvatarUrl: peerAvatarUrl,
+          seen: _seen(m),
+          newestMine: m.messageId == newestMine,
+        );
+        if (fresh.contains(m.messageId)) {
+          bubble = BubbleEntrance(
+            key: ValueKey('enter-${m.messageId}'),
+            mine: m.mine,
+            animate: !played.contains(m.messageId),
+            onDone: () => played.add(m.messageId),
+            child: bubble,
+          );
+        }
+        return Column(
+          key: ValueKey(m.messageId),
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            bubble,
+            if (m.mine && m.attachment != null && m.status == SendStatus.failed)
+              FailedPhotoActions(
+                message: m,
+                error: photoFailureText(m.failure) ?? 'This photo wasn’t sent.',
+                onRetry: () => retryPhoto(m),
+                onDelete: () => deletePhoto(m),
+              ),
+          ],
+        );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     ref
         .watch(chatEngineProvider)
         .whenData(
@@ -597,254 +920,114 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     ref.listen(chatSignalProvider, (_, _) => loadReceipt());
     final until = ref.watch(typingProvider)[widget.id];
     final typing = until != null && until.isAfter(DateTime.now());
-    final lastMine = messages.lastWhere(
-      (m) => m.mine && !m.notice,
-      orElse: () => ChatMessage(
-        messageId: '',
-        senderId: '',
-        text: '',
-        sentAt: DateTime(0),
-        mine: true,
-      ),
-    );
-    final seen =
-        lastMine.serverAt != null &&
-        peerReadAt != null &&
-        !peerReadAt!.isBefore(lastMine.serverAt!);
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(8, 4, 16, 8),
-          child: Row(
-            children: [
-              IconButton(
-                tooltip: 'Back to chats',
-                onPressed: () => context.go('/chats'),
-                icon: const Icon(Icons.arrow_back_rounded),
-              ),
-              CircleAvatar(
-                radius: 18,
-                backgroundColor: VibeColors.lilac,
-                foregroundColor: VibeColors.ink,
-                child: Text(
-                  peerName.characters.firstOrNull?.toUpperCase() ?? '?',
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      peerName,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    if (typing)
-                      Text(
-                        'typing…',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontStyle: FontStyle.italic,
-                          color: scheme.onSurfaceVariant,
-                        ),
-                      )
-                    else
-                      const EncryptedBadge(),
-                  ],
-                ),
-              ),
-              if (muted)
-                Tooltip(
-                  message: 'Muted',
-                  child: Icon(
-                    Icons.notifications_off_outlined,
-                    key: const Key('chat-muted'),
-                    size: 18,
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
-              IconButton(
-                key: const Key('safety-number-button'),
-                tooltip: 'Verify safety number',
-                onPressed: engine == null ? null : showSafetyNumber,
-                icon: const Icon(Icons.verified_user_outlined),
-              ),
-              IconButton(
-                key: const Key('chat-options'),
-                tooltip: 'Chat options',
-                onPressed: engine == null ? null : options,
-                icon: const Icon(Icons.more_vert_rounded),
-              ),
-            ],
+    if (typing != _typingShown) {
+      _typingShown = typing;
+      if (typing && _nearBottom) _stickToBottom();
+    }
+    final now = ref.watch(chatClockProvider)();
+    final newestMine = messages
+        .where((m) => m.mine && !m.notice)
+        .map((m) => m.messageId)
+        .lastOrNull;
+    final rows = buildThread(messages, unreadFrom: unreadFrom, typing: typing);
+    final showJump = loaded && messages.isNotEmpty && !atBottom;
+    return ChatAtmosphere(
+      child: Column(
+        children: [
+          ChatHeader(
+            name: peerName,
+            userId: peerId,
+            avatarUrl: peerAvatarUrl,
+            typing: typing,
+            online: peerOnline,
+            lastSeenAt: peerLastSeenAt,
+            now: now,
+            muted: muted,
+            canAct: engine != null,
+            onBack: () => context.go('/chats'),
+            onSafety: showSafetyNumber,
+            onOptions: options,
+            onProfile: peerId.isEmpty
+                ? null
+                : () => openPerson(context, peerId),
           ),
-        ),
-        Divider(height: 1, color: scheme.outlineVariant),
-        Expanded(
-          child: messages.isEmpty
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(32),
-                    child: Text(
-                      'Messages are encrypted on this phone and only readable on your and $peerName’s devices.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: scheme.onSurfaceVariant),
-                    ),
-                  ),
-                )
-              : ListView.builder(
-                  controller: scroll,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 16,
-                  ),
-                  itemCount: messages.length,
-                  itemBuilder: (context, i) => Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _Bubble(message: messages[i]),
-                      if (seen && messages[i].messageId == lastMine.messageId)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 6, top: 2),
-                          child: Text(
-                            'Seen',
-                            key: const Key('seen'),
-                            textAlign: TextAlign.right,
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: scheme.onSurfaceVariant,
-                            ),
+          Expanded(
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                !loaded || (messages.isEmpty && !receiptLoaded)
+                    ? const Align(
+                        alignment: Alignment.topCenter,
+                        child: ThreadLoading(),
+                      )
+                    : messages.isEmpty
+                    ? (introDismissed
+                          ? const QuietNewChat()
+                          : NewChatCard(
+                              name: peerName,
+                              userId: peerId,
+                              conversationId: widget.id,
+                              avatarUrl: peerAvatarUrl,
+                              sharedInterests: sharedInterests,
+                              onPick: starter,
+                              onDismiss: () =>
+                                  setState(() => introDismissed = true),
+                              onReport: reportPeer,
+                              onBlock: blockPeer,
+                            ))
+                    : LayoutBuilder(
+                        builder: (context, box) {
+                          final side = math.max(
+                            12.0,
+                            (box.maxWidth - conversationMaxWidth) / 2 + 12,
+                          );
+                          return ListView.builder(
+                            controller: scroll,
+                            padding: EdgeInsets.fromLTRB(side, 8, side, 12),
+                            itemCount: rows.length,
+                            itemBuilder: (context, i) =>
+                                _row(context, rows[i], now, newestMine),
+                          );
+                        },
+                      ),
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 6,
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        maxWidth: conversationMaxWidth,
+                      ),
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: ScrollToLatestButton(
+                            visible: showJump,
+                            count: newWhileAway,
+                            onTap: jumpToLatest,
                           ),
                         ),
-                    ],
-                  ),
-                ),
-        ),
-        SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    key: const Key('chat-input'),
-                    controller: input,
-                    minLines: 1,
-                    maxLines: 5,
-                    maxLength: 4000,
-                    textInputAction: TextInputAction.send,
-                    onChanged: typed,
-                    onSubmitted: (_) => send(),
-                    decoration: InputDecoration(
-                      hintText: 'Message',
-                      counterText: '',
-                      filled: true,
-                      fillColor: scheme.surface,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
-                        borderSide: BorderSide.none,
-                      ),
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 18,
-                        vertical: 12,
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                IconButton.filled(
-                  key: const Key('chat-send'),
-                  tooltip: 'Send',
-                  onPressed: sending || engine == null ? null : send,
-                  style: IconButton.styleFrom(
-                    backgroundColor: VibeColors.lime,
-                    foregroundColor: VibeColors.ink,
-                    minimumSize: const Size(48, 48),
-                  ),
-                  icon: sending
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.arrow_upward_rounded),
                 ),
               ],
             ),
           ),
-        ),
-      ],
-    );
-  }
-}
-
-class _Bubble extends StatelessWidget {
-  final ChatMessage message;
-  const _Bubble({required this.message});
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    if (message.notice) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Center(
-          child: Text(
-            message.text,
-            style: TextStyle(
-              fontSize: 11,
-              fontStyle: FontStyle.italic,
-              color: scheme.onSurfaceVariant,
-            ),
+          ChatComposer(
+            controller: input,
+            focus: focus,
+            sending: sending,
+            canSend: !sending && engine != null,
+            canAttach: engine != null && peerId.isNotEmpty && !attaching,
+            showAttach: chatSupported,
+            onChanged: typed,
+            onSend: send,
+            onAttach: attachPhoto,
           ),
-        ),
-      );
-    }
-    final time = TimeOfDay.fromDateTime(message.sentAt.toLocal())
-        .format(context);
-    return Align(
-      alignment: message.mine ? Alignment.centerRight : Alignment.centerLeft,
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.sizeOf(context).width * .75,
-        ),
-        child: Container(
-          margin: const EdgeInsets.symmetric(vertical: 3),
-          padding: const EdgeInsets.fromLTRB(14, 9, 14, 7),
-          decoration: BoxDecoration(
-            color: message.mine ? VibeColors.lime : scheme.surface,
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(18),
-              topRight: const Radius.circular(18),
-              bottomLeft: Radius.circular(message.mine ? 18 : 4),
-              bottomRight: Radius.circular(message.mine ? 4 : 18),
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                message.text,
-                style: TextStyle(
-                  color: message.mine ? VibeColors.ink : scheme.onSurface,
-                  fontSize: 15,
-                ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                time,
-                style: TextStyle(
-                  fontSize: 10,
-                  color: message.mine
-                      ? VibeColors.ink.withValues(alpha: .6)
-                      : scheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
-        ),
+        ],
       ),
     );
   }
@@ -917,7 +1100,7 @@ class _ChatDevicesState extends ConsumerState<ChatDevicesScreen> {
       return const _ChatNotice(
         icon: Icons.phone_iphone_rounded,
         title: 'Chat devices',
-        body: 'Open Kairova on Android or iOS to manage the devices that can read your chats.',
+        body: 'Open Hiyall on Android or iOS to manage the devices that can read your chats.',
       );
     }
     final engine = ref.watch(chatEngineProvider).asData?.value;

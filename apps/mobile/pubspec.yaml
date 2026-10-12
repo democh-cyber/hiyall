@@ -1,5 +1,5 @@
-name: kairova
-description: "Kairova — your people, your pace. Privacy-first social foundation."
+name: hiyall
+description: "Hiyall — your people, your pace. Privacy-first social foundation."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -38,12 +38,18 @@ dependencies:
   go_router: ^18.0.2
   dio: ^5.11.1
   flutter_secure_storage: ^11.2.0
-  kairova_e2ee:
+  hiyall_e2ee:
     path: rust_builder
   flutter_rust_bridge: 2.13.0
   crypto: ^3.0.7
   image_picker: ^1.2.4
+  # App-private folder for the encrypted chat photo cache and outbox.
+  path_provider: ^2.1.5
   cached_network_image: ^4.0.4
+  firebase_core: ^4.15.0
+  firebase_auth: ^6.7.0
+  url_launcher: ^6.3.3
+  geolocator: ^14.1.1
 
 dev_dependencies:
   flutter_test:

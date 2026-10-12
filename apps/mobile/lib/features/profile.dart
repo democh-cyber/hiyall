@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../core/state.dart';
 import '../shared/widgets.dart';
 import '../shared/profile_space.dart';
+import 'people_lists.dart';
 import 'profile_editor.dart';
 import 'pulse.dart';
 
@@ -26,6 +27,7 @@ class _ProfileState extends ConsumerState<ProfileScreen> {
           isOwner: true,
           onEdit: () => context.go('/profile/edit'),
           onSettings: openSettings,
+          statActions: ownStatActions(context),
           contentFor: (tab) => profileContent(ref, profile.userId, tab),
         ),
         loading: () => const ProfileSkeleton(),
@@ -43,16 +45,32 @@ class _ProfileState extends ConsumerState<ProfileScreen> {
       );
 }
 
-class EditProfileScreen extends ConsumerWidget {
+class EditProfileScreen extends ConsumerStatefulWidget {
   const EditProfileScreen({super.key});
   @override
-  Widget build(BuildContext context, WidgetRef ref) => ReadingWidth(
+  ConsumerState<EditProfileScreen> createState() => _EditProfileState();
+}
+
+class _EditProfileState extends ConsumerState<EditProfileScreen> {
+  /// Bumped to start the form over from the newest profile. The version isn't
+  /// part of the form's identity: a photo change moves it on, and that must
+  /// not throw away what has been typed.
+  int generation = 0;
+
+  void reload() {
+    setState(() => generation++);
+    ref.invalidate(profileProvider);
+  }
+
+  @override
+  Widget build(BuildContext context) => ReadingWidth(
     child: ref
         .watch(profileProvider)
         .when(
           data: (profile) => ProfileForm(
-            key: ValueKey('${profile.userId}:${profile.version}'),
+            key: ValueKey('${profile.userId}:$generation'),
             profile: profile,
+            onReload: reload,
           ),
           loading: () => const VibeLoading(),
           error: (e, s) => FailureCard(

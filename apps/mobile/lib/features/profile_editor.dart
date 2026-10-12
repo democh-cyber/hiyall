@@ -3,13 +3,21 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/api.dart';
+import '../core/avatar_upload.dart';
 import '../core/profile_labels.dart';
 import '../core/state.dart';
+import '../core/theme.dart';
+import '../shared/avatar_sheet.dart';
+import '../shared/person_avatar.dart';
 import '../shared/widgets.dart';
 
 class ProfileForm extends ConsumerStatefulWidget {
   final Profile profile;
-  const ProfileForm({super.key, required this.profile});
+
+  /// Asked to load the newest profile and start the form over, after another
+  /// device changed it. Without one, the profile is just reloaded.
+  final VoidCallback? onReload;
+  const ProfileForm({super.key, required this.profile, this.onReload});
   @override
   ConsumerState<ProfileForm> createState() => _ProfileFormState();
 }
@@ -27,6 +35,10 @@ class _ProfileFormState extends ConsumerState<ProfileForm> {
   late final pronouns = TextEditingController(text: widget.profile.pronouns);
   late final vibe = TextEditingController(text: widget.profile.currentVibe);
   final interest = TextEditingController();
+  late String gender =
+      const ['woman', 'man', 'nonbinary'].contains(widget.profile.gender)
+      ? widget.profile.gender
+      : '';
   late String? country = widget.profile.country;
   late final languages = [...widget.profile.languages];
   late final interests = [...widget.profile.interests];
@@ -43,8 +55,38 @@ class _ProfileFormState extends ConsumerState<ProfileForm> {
       : 'minimal';
   bool busy = false, conflict = false;
   String? error;
+
+  /// The profile as last seen by this form. A photo change moves its version
+  /// on, and the next Save must carry that version.
+  late Profile current = widget.profile;
+  late final avatar = AvatarUploadController(ref.read(imagePickerProvider));
+  bool attaching = false;
+  String? avatarError, uploadedId;
+
+  bool get avatarWorking => avatar.uploading || attaching;
+
+  @override
+  void initState() {
+    super.initState();
+    avatar.addListener(_avatarChanged);
+  }
+
+  void _avatarChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void didUpdateWidget(ProfileForm old) {
+    super.didUpdateWidget(old);
+    // The same version again means our own photo change was read back; take
+    // it for its fresh photo URLs. A different one is someone else's edit, and
+    // is left to the conflict path so their changes aren't overwritten.
+    if (widget.profile.version == current.version) current = widget.profile;
+  }
+
   @override
   void dispose() {
+    avatar.dispose();
     for (final controller in [
       name,
       username,
@@ -70,7 +112,7 @@ class _ProfileFormState extends ConsumerState<ProfileForm> {
     try {
       await ref.read(apiProvider).updateProfile(
         ref.read(sessionProvider).asData!.value!,
-        widget.profile,
+        current,
         {
           'displayName': name.text.trim(),
           'username': username.text.trim(),
@@ -79,6 +121,7 @@ class _ProfileFormState extends ConsumerState<ProfileForm> {
           'quote': quote.text.trim(),
           'profession': profession.text.trim(),
           'pronouns': pronouns.text.trim(),
+          'gender': gender,
           'country': country,
           'languages': languages.map((v) => v.toJson()).toList(),
           'interests': interests,
@@ -103,6 +146,166 @@ class _ProfileFormState extends ConsumerState<ProfileForm> {
     } finally {
       if (mounted) setState(() => busy = false);
     }
+  }
+
+  Future<void> chooseAvatar() async {
+    if (busy || avatarWorking) return;
+    final action = await showAvatarSheet(
+      context,
+      hasPhoto: current.avatarUrl != null || avatar.photo != null,
+    );
+    if (action == null || !mounted) return;
+    setState(() => avatarError = null);
+    switch (action) {
+      case AvatarAction.gallery || AvatarAction.camera:
+        final picked = await avatar.pick(
+          action == AvatarAction.camera
+              ? AvatarSource.camera
+              : AvatarSource.gallery,
+        );
+        if (picked != null) {
+          uploadedId = null;
+          await sendAvatar();
+        }
+      case AvatarAction.remove:
+        await removeAvatar();
+    }
+  }
+
+  /// Uploads the chosen photo, then makes it the profile photo. A failed
+  /// attach keeps the upload, so trying again doesn't send the photo twice.
+  Future<void> sendAvatar() async {
+    final session = ref.read(sessionProvider).asData?.value;
+    if (session == null || avatar.photo == null || avatarWorking) return;
+    setState(() => avatarError = null);
+    final api = ref.read(apiProvider);
+    final id = uploadedId ?? await avatar.upload(api, session);
+    if (id == null || !mounted) return;
+    uploadedId = id;
+    setState(() => attaching = true);
+    try {
+      current = await api.setAvatar(session, current, id);
+      uploadedId = null;
+      avatar.clear();
+      ref.invalidate(profileProvider);
+      if (mounted) showMessage(context, 'Photo updated.');
+    } on ApiFailure catch (failure) {
+      if (mounted) setState(() => avatarError = failure.message);
+    } finally {
+      if (mounted) setState(() => attaching = false);
+    }
+  }
+
+  Future<void> removeAvatar() async {
+    final session = ref.read(sessionProvider).asData?.value;
+    if (session == null) return;
+    uploadedId = null;
+    avatar.clear();
+    if (current.avatarUrl == null) return;
+    setState(() => attaching = true);
+    try {
+      current = await ref.read(apiProvider).setAvatar(session, current, null);
+      ref.invalidate(profileProvider);
+      if (mounted) showMessage(context, 'Photo removed.');
+    } on ApiFailure catch (failure) {
+      if (mounted) setState(() => avatarError = failure.message);
+    } finally {
+      if (mounted) setState(() => attaching = false);
+    }
+  }
+
+  Widget _avatarEditor() {
+    final scheme = Theme.of(context).colorScheme;
+    final failure = avatar.error?.message ?? avatarError;
+    return Column(
+      children: [
+        Semantics(
+          button: true,
+          label: 'Change profile photo',
+          excludeSemantics: true,
+          child: InkWell(
+            key: const Key('edit-avatar'),
+            customBorder: const CircleBorder(),
+            onTap: busy || avatarWorking ? null : chooseAvatar,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                PersonAvatar(
+                  name: current.displayName,
+                  bytes: avatar.photo?.bytes,
+                  avatarUrl: current.avatarFor(112),
+                  userId: current.userId,
+                  radius: 56,
+                ),
+                if (avatarWorking)
+                  Positioned.fill(
+                    child: DecoratedBox(
+                      decoration: const BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.black38,
+                      ),
+                      child: Center(
+                        child: CircularProgressIndicator(
+                          key: const Key('avatar-progress'),
+                          value: avatar.uploading && avatar.progress > 0
+                              ? avatar.progress
+                              : null,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                Positioned(
+                  right: 0,
+                  bottom: 0,
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: VibeColors.lime,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: scheme.surface, width: 3),
+                    ),
+                    child: const Icon(
+                      Icons.photo_camera_rounded,
+                      size: 18,
+                      color: VibeColors.ink,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        if (avatar.uploading)
+          TextButton(
+            key: const Key('avatar-cancel'),
+            onPressed: avatar.clear,
+            child: const Text('Cancel'),
+          )
+        else
+          Text(
+            'Your photo is public, like the rest of your profile.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+          ),
+        if (failure != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            failure,
+            key: const Key('avatar-error'),
+            textAlign: TextAlign.center,
+            style: TextStyle(color: scheme.error),
+          ),
+          if (avatar.photo != null && (avatar.error?.canRetry ?? true))
+            TextButton(
+              key: const Key('avatar-retry'),
+              onPressed: avatarWorking ? null : sendAvatar,
+              child: const Text('Try again'),
+            ),
+        ],
+      ],
+    );
   }
 
   void addInterest(String value) {
@@ -143,6 +346,10 @@ class _ProfileFormState extends ConsumerState<ProfileForm> {
         title: 'A little more you.',
         subtitle: 'Your personality, in your own words.',
       ),
+      Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: _avatarEditor(),
+      ),
       Form(
         key: form,
         child: Column(
@@ -177,6 +384,12 @@ class _ProfileFormState extends ConsumerState<ProfileForm> {
             _heading('About me'),
             _field(profession, 'Profession', 100),
             _field(pronouns, 'Pronouns', 40),
+            _choice('Gender', gender, const {
+              '': 'Prefer not to say',
+              'woman': 'Woman',
+              'man': 'Man',
+              'nonbinary': 'Non-binary',
+            }, (v) => gender = v),
             Card(
               child: ListTile(
                 enabled: !busy,
@@ -195,18 +408,6 @@ class _ProfileFormState extends ConsumerState<ProfileForm> {
                     setState(() => country = result.isEmpty ? null : result);
                   }
                 },
-              ),
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'Optional details start private. Choose their audience in Privacy & visibility.',
-              style: TextStyle(fontSize: 12, height: 1.6),
-            ),
-            Align(
-              alignment: AlignmentDirectional.centerStart,
-              child: TextButton(
-                onPressed: busy ? null : () => context.go('/profile/privacy'),
-                child: const Text('Privacy & visibility'),
               ),
             ),
             _heading('Languages'),
@@ -358,11 +559,12 @@ class _ProfileFormState extends ConsumerState<ProfileForm> {
               ),
             if (conflict)
               TextButton(
-                onPressed: () => ref.invalidate(profileProvider),
+                onPressed:
+                    widget.onReload ?? () => ref.invalidate(profileProvider),
                 child: const Text('Reload latest profile'),
               ),
             FilledButton(
-              onPressed: busy || conflict ? null : save,
+              onPressed: busy || conflict || avatarWorking ? null : save,
               child: Text(busy ? 'Saving…' : 'Save profile'),
             ),
             const SizedBox(height: 16),

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/theme.dart';
+import '../shared/person_avatar.dart';
 import '../shared/widgets.dart';
 
 // Presentation groups use only Notification.type values in the existing
@@ -740,22 +741,16 @@ class _ActorAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final name = actor['displayName'] as String? ?? '';
-    final initial = name.trim().isEmpty
-        ? ''
-        : name.trim().characters.first.toUpperCase();
-    final fallback = ColoredBox(
-      color: tint,
-      child: Center(
-        child: Text(
-          initial,
-          textScaler: TextScaler.noScaling,
-          style: const TextStyle(
-            fontFamily: 'SpaceGrotesk',
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-            color: VibeColors.ink,
-          ),
-        ),
+    final avatar = PersonAvatar(
+      name: name,
+      avatarUrl: image == null ? actor['avatarUrl'] as String? : null,
+      userId: actor['userId'] as String? ?? '',
+      radius: 20,
+      tint: tint,
+      initialStyle: const TextStyle(
+        fontFamily: 'SpaceGrotesk',
+        fontSize: 18,
+        fontWeight: FontWeight.w700,
       ),
     );
     return ExcludeSemantics(
@@ -769,15 +764,15 @@ class _ActorAvatar extends StatelessWidget {
             width: 2,
           ),
         ),
-        child: ClipOval(
-          child: image == null
-              ? fallback
-              : Image(
+        child: image == null
+            ? avatar
+            : ClipOval(
+                child: Image(
                   image: ResizeImage.resizeIfNeeded(96, 96, image!),
                   fit: BoxFit.cover,
-                  errorBuilder: (_, _, _) => fallback,
+                  errorBuilder: (_, _, _) => avatar,
                 ),
-        ),
+              ),
       ),
     );
   }

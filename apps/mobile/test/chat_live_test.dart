@@ -1,13 +1,14 @@
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:dio/dio.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:kairova/core/chat/chat_api.dart';
-import 'package:kairova/core/chat/chat_engine.dart';
-import 'package:kairova/core/chat/chat_store.dart';
-import 'package:kairova/core/state.dart';
-import 'package:kairova/src/rust/frb_generated.dart';
+import 'package:hiyall/core/chat/chat_api.dart';
+import 'package:hiyall/core/chat/chat_engine.dart';
+import 'package:hiyall/core/chat/chat_store.dart';
+import 'package:hiyall/core/state.dart';
+import 'package:hiyall/src/rust/frb_generated.dart';
 
 const base = String.fromEnvironment(
   'API_BASE_URL',
@@ -34,9 +35,10 @@ void main() {
   );
 
   setUpAll(() async {
+    if (!const bool.fromEnvironment('RUN_LIVE_CHAT_TEST')) return;
     await RustLib.init(
       externalLibrary: ExternalLibrary.open(
-        'rust/target/release/libkairova_e2ee.so',
+        'rust/target/release/libhiyall_e2ee.${Platform.isMacOS ? 'dylib' : 'so'}',
       ),
     );
   });

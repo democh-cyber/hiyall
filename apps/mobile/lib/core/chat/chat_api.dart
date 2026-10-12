@@ -4,9 +4,29 @@ import 'package:dio/dio.dart';
 class ChatFailure implements Exception {
   final String code, message;
   final int? status;
-  const ChatFailure(this.code, this.message, [this.status]);
+
+  /// How long the server asked the caller to wait (Retry-After), when it did.
+  final Duration? retryAfter;
+  const ChatFailure(this.code, this.message, [this.status, this.retryAfter]);
   @override
   String toString() => message;
+}
+
+Duration? _retryAfter(String? header) {
+  final seconds = int.tryParse(header?.trim() ?? '');
+  return seconds == null || seconds < 0 ? null : Duration(seconds: seconds);
+}
+
+/// An upload slot for one encrypted blob: where to PUT the ciphertext and the
+/// exact headers the signature covers. The URL is a credential, so it is never
+/// printed or stored.
+class BlobSlot {
+  final String blobId, uploadUrl;
+  final Map<String, String> headers;
+  final DateTime? expiresAt;
+  const BlobSlot(this.blobId, this.uploadUrl, this.headers, this.expiresAt);
+  @override
+  String toString() => 'BlobSlot($blobId)';
 }
 
 /// Thin client for the ciphertext relay. Pure Dart so tests and the command-line
@@ -14,30 +34,67 @@ class ChatFailure implements Exception {
 class ChatApi {
   final Dio _dio;
   final String token;
-  ChatApi(String baseUrl, this.token, {Dio? dio})
-    : _dio =
-          dio ??
-          Dio(
-            BaseOptions(
-              baseUrl: baseUrl,
-              connectTimeout: const Duration(seconds: 8),
-              receiveTimeout: const Duration(seconds: 15),
-              contentType: 'application/json',
-            ),
-          );
 
-  Future<dynamic> _call(String method, String path, [Object? body]) async {
+  /// Reads the newest token per request; Firebase rotates it hourly.
+  final String Function()? tokenOf;
+
+  /// Asks the identity provider for a brand-new token after a 401, as
+  /// [ApiClient] does; a different token means the first was only stale.
+  final Future<String?> Function()? tokenRefresher;
+
+  /// Called when the relay still refuses the session after a refresh.
+  final void Function()? onUnauthorized;
+  ChatApi(
+    String baseUrl,
+    this.token, {
+    this.tokenOf,
+    this.tokenRefresher,
+    this.onUnauthorized,
+    Dio? dio,
+  }) : _dio =
+           dio ??
+           Dio(
+             BaseOptions(
+               baseUrl: baseUrl,
+               connectTimeout: const Duration(seconds: 8),
+               receiveTimeout: const Duration(seconds: 15),
+               contentType: 'application/json',
+             ),
+           );
+
+  Future<dynamic> _call(
+    String method,
+    String path, [
+    Object? body,
+    String? retryToken,
+  ]) async {
+    final sent = retryToken ?? tokenOf?.call() ?? token;
     try {
       final response = await _dio.request<Map<String, dynamic>>(
         path,
         data: body,
         options: Options(
           method: method,
-          headers: {'Authorization': 'Bearer $token'},
+          headers: {'Authorization': 'Bearer $sent'},
         ),
       );
       return response.data!['data'];
     } on DioException catch (error) {
+      final status = error.response?.statusCode;
+      if (status == 401) {
+        if (retryToken == null) {
+          final fresh = await tokenRefresher?.call();
+          if (fresh != null && fresh != sent) {
+            return _call(method, path, body, fresh);
+          }
+        }
+        onUnauthorized?.call();
+        throw ChatFailure(
+          'UNAUTHENTICATED',
+          'Your session has expired. Sign in again.',
+          status,
+        );
+      }
       final data = error.response?.data;
       final failure = data is Map ? data['error'] : null;
       throw ChatFailure(
@@ -45,7 +102,8 @@ class ChatApi {
         failure is Map
             ? '${failure['message']}'
             : 'Could not reach the chat service. Check your connection.',
-        error.response?.statusCode,
+        status,
+        _retryAfter(error.response?.headers.value('retry-after')),
       );
     }
   }
@@ -104,18 +162,87 @@ class ChatApi {
             : null,
       );
 
-  /// Returns the server's createdAt for the stored message.
+  /// Returns the server's createdAt for the stored message. [blobIds] claims
+  /// uploaded attachment blobs for it; sending the same message id again is
+  /// answered with the first result, so a retry never duplicates.
   Future<DateTime?> send(
     String conversationId,
-    Map<String, dynamic> message,
-  ) async {
+    Map<String, dynamic> message, {
+    List<String> blobIds = const [],
+  }) async {
     final data = await _call(
       'POST',
       '/v1/conversations/$conversationId/messages',
-      message,
+      {...message, if (blobIds.isNotEmpty) 'blobIds': blobIds},
     );
     return DateTime.tryParse((data as Map)['createdAt'] as String? ?? '');
   }
+
+  /// Asks for a slot to upload one ciphertext blob of [sizeBytes] whose
+  /// SHA-256 is [ctSha256] (base64). Refusals the app explains: 403
+  /// ATTACHMENTS_NOT_ALLOWED (the peer has not replied), 413 TOO_LARGE, 429
+  /// RATE_LIMITED or QUOTA, 503 CHAT_MEDIA_UNAVAILABLE.
+  Future<BlobSlot> createBlobSlot(
+    String conversationId,
+    String role,
+    int sizeBytes,
+    String ctSha256,
+  ) async {
+    final data = await _call(
+      'POST',
+      '/v1/conversations/$conversationId/blobs',
+      {'role': role, 'sizeBytes': sizeBytes, 'ctSha256': ctSha256},
+    ) as Map;
+    final id = data['blobId'],
+        url = data['uploadUrl'],
+        headers = data['headers'];
+    final uri = url is String ? Uri.tryParse(url) : null;
+    // Ciphertext may travel over plain http only in development builds.
+    final secure =
+        uri?.scheme == 'https' ||
+        (uri?.scheme == 'http' &&
+            !const bool.fromEnvironment('dart.vm.product'));
+    if (id is! String ||
+        headers is! Map ||
+        !secure ||
+        (data['method'] ?? 'PUT') != 'PUT') {
+      throw const ChatFailure(
+        'BAD_SLOT',
+        'The chat service sent an unusable upload.',
+      );
+    }
+    return BlobSlot(id, url as String, {
+      for (final e in headers.entries) '${e.key}': '${e.value}',
+    }, DateTime.tryParse('${data['expiresAt']}'));
+  }
+
+  /// Tells the server the PUT is done; it checks the stored size. Safe to repeat.
+  Future<void> completeBlob(String blobId) =>
+      _call('POST', '/v1/blobs/$blobId/complete');
+
+  /// A short-lived signed GET for a member of the conversation. 404 means the
+  /// blob is gone or not for this caller, 410 BLOB_EXPIRED that it aged out.
+  Future<({String url, int? sizeBytes})> blobDownloadUrl(
+    String conversationId,
+    String blobId,
+  ) async {
+    final data = await _call(
+      'GET',
+      '/v1/conversations/$conversationId/blobs/$blobId/url',
+    ) as Map;
+    final url = data['url'], uri = url is String ? Uri.tryParse(url) : null;
+    if (uri == null || !(uri.scheme == 'https' || uri.scheme == 'http')) {
+      throw const ChatFailure(
+        'BAD_SLOT',
+        'The chat service sent an unusable link.',
+      );
+    }
+    return (url: url as String, sizeBytes: data['sizeBytes'] as int?);
+  }
+
+  /// Removes a blob this device uploaded (best effort; held evidence stays).
+  Future<void> deleteBlob(String blobId) =>
+      _call('DELETE', '/v1/blobs/$blobId');
 
   Future<void> markRead(String conversationId, DateTime upTo) => _call(
     'POST',

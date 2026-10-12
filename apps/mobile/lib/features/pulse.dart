@@ -11,8 +11,15 @@ import '../core/api.dart';
 import '../core/feed_state.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
+import '../shared/person_avatar.dart';
+import '../shared/person_link.dart';
+import '../shared/press_scale.dart';
 import '../shared/widgets.dart';
+import '../shared/story_canvas.dart';
+import 'people_lists.dart' show storyTimeLeft;
 import 'safety.dart';
+
+export 'story_composer.dart' show StoryComposerScreen;
 
 /// "now", "5m", "3h", "2d", then a date: compact enough for a card header.
 String shortAgo(DateTime at, [DateTime? now]) {
@@ -23,27 +30,6 @@ String shortAgo(DateTime at, [DateTime? now]) {
   if (d.inDays < 7) return '${d.inDays}d';
   final l = at.toLocal();
   return '${l.day}/${l.month}/${l.year % 100}';
-}
-
-/// The photo type from its first bytes, or null if it isn't one we accept.
-/// Uploads are labelled by content, never by file name.
-String? sniffImageType(Uint8List b) {
-  if (b.length > 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) {
-    return 'image/jpeg';
-  }
-  if (b.length > 8 &&
-      b[0] == 0x89 &&
-      b[1] == 0x50 &&
-      b[2] == 0x4E &&
-      b[3] == 0x47) {
-    return 'image/png';
-  }
-  if (b.length > 12 &&
-      String.fromCharCodes(b.sublist(0, 4)) == 'RIFF' &&
-      String.fromCharCodes(b.sublist(8, 12)) == 'WEBP') {
-    return 'image/webp';
-  }
-  return null;
 }
 
 const audienceLabels = {
@@ -63,15 +49,6 @@ String defaultAudience(String? setting) => switch (setting) {
   'public' => 'public',
   'followers' => 'followers',
   _ => 'friends',
-};
-
-const storyColors = {
-  'lime': VibeColors.lime,
-  'lilac': VibeColors.lilac,
-  'pink': VibeColors.pink,
-  'mint': VibeColors.mint,
-  'peach': VibeColors.peach,
-  'ink': VibeColors.ink,
 };
 
 Future<void> showCreateSheet(BuildContext context) =>
@@ -108,7 +85,7 @@ Future<void> showCreateSheet(BuildContext context) =>
                 key: const Key('create-story'),
                 leading: const Icon(Icons.auto_awesome_motion_outlined),
                 title: const Text('Add to your story'),
-                subtitle: const Text('Gone in 24 hours'),
+                subtitle: const Text('Gone in 24 hours or less'),
                 onTap: () {
                   Navigator.pop(sheet);
                   context.push('/story/new');
@@ -121,21 +98,40 @@ Future<void> showCreateSheet(BuildContext context) =>
       ),
     );
 
+/// A post, comment or story author's avatar.
 class _Avatar extends StatelessWidget {
-  final String name;
+  final String name, userId;
+  final String? avatarUrl;
   final double radius;
-  const _Avatar(this.name, {this.radius = 20});
+  const _Avatar(
+    this.name, {
+    this.radius = 20,
+    this.userId = '',
+    this.avatarUrl,
+  });
+  _Avatar.of(Person person, {double radius = 20})
+    : this(
+        person.name,
+        radius: radius,
+        userId: person.userId,
+        avatarUrl: person.avatarUrl,
+      );
   @override
-  Widget build(BuildContext context) => CircleAvatar(
+  Widget build(BuildContext context) => PersonAvatar(
+    name: name,
+    avatarUrl: avatarUrl,
+    userId: userId,
     radius: radius,
-    backgroundColor: VibeColors.lilac,
-    foregroundColor: VibeColors.ink,
-    child: Text(
-      name.replaceFirst('@', '').characters.firstOrNull?.toUpperCase() ?? '?',
-      style: TextStyle(fontWeight: FontWeight.w800, fontSize: radius * .8),
-    ),
   );
 }
+
+/// Builds the pixels for a post photo. Replaced in tests, which must not
+/// reach the network or the on-disk image cache.
+@visibleForTesting
+ImageProvider Function(String url, String cacheKey) postPhotoFactory = (
+  url,
+  cacheKey,
+) => CachedNetworkImageProvider(url, cacheKey: cacheKey);
 
 /// A photo loaded from a signed URL but cached by media id, so a fresh URL
 /// for the same photo never downloads it again.
@@ -147,20 +143,33 @@ class _Photo extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final url = media.url;
-    if (url.isEmpty) return ColoredBox(color: scheme.surfaceContainerHighest);
-    return CachedNetworkImage(
-      imageUrl: url,
-      cacheKey: 'media:${media.mediaId}:full',
-      fit: fit,
-      fadeInDuration: const Duration(milliseconds: 150),
-      placeholder: (_, _) => ColoredBox(color: scheme.surfaceContainerHighest),
-      errorWidget: (_, _, _) => ColoredBox(
-        color: scheme.surfaceContainerHighest,
-        child: Icon(
-          Icons.broken_image_outlined,
-          color: scheme.onSurfaceVariant,
+    final blank = ColoredBox(color: scheme.surfaceContainerHighest);
+    if (url.isEmpty) return blank;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        blank,
+        Image(
+          image: postPhotoFactory(url, 'media:${media.mediaId}:full'),
+          fit: fit,
+          excludeFromSemantics: true,
+          frameBuilder: (_, child, frame, synchronous) => synchronous
+              ? child
+              : AnimatedOpacity(
+                  opacity: frame == null ? 0 : 1,
+                  duration: MediaQuery.disableAnimationsOf(context)
+                      ? Duration.zero
+                      : const Duration(milliseconds: 150),
+                  child: child,
+                ),
+          errorBuilder: (_, _, _) => Center(
+            child: Icon(
+              Icons.broken_image_outlined,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
         ),
-      ),
+      ],
     );
   }
 }
@@ -284,8 +293,10 @@ class PostCard extends ConsumerWidget {
     void react(String? reaction) =>
         guarded(() => feed.react(post.postId, reaction));
 
+    // A short line with no photo is the whole post, so it gets to be big.
+    final statement = post.media.isEmpty && post.body.length <= 90;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.only(bottom: 16),
       child: Material(
         key: Key('post-${post.postId}'),
         color: scheme.surface,
@@ -298,19 +309,20 @@ class PostCard extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(14, 12, 4, 8),
+              padding: const EdgeInsets.fromLTRB(14, 12, 2, 8),
               child: Row(
                 children: [
-                  InkWell(
-                    customBorder: const CircleBorder(),
-                    onTap: () => context.go(
-                      post.mine
-                          ? '/profile'
-                          : '/discover/person/${post.author.userId}',
-                    ),
-                    child: _Avatar(post.author.name),
+                  PressScale(
+                    borderRadius: BorderRadius.circular(100),
+                    semanticLabel: post.mine
+                        ? 'Open your profile'
+                        : 'Open ${post.author.name}’s profile',
+                    onTap: () => post.mine
+                        ? context.go('/profile')
+                        : openPerson(context, post.author.userId),
+                    child: _Avatar.of(post.author, radius: 22),
                   ),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -319,7 +331,10 @@ class PostCard extends ConsumerWidget {
                           post.author.name,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontWeight: FontWeight.w800),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 15.5,
+                          ),
                         ),
                         Row(
                           children: [
@@ -329,7 +344,7 @@ class PostCard extends ConsumerWidget {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                  fontSize: 12,
+                                  fontSize: 12.5,
                                   color: scheme.onSurfaceVariant,
                                 ),
                               ),
@@ -345,64 +360,174 @@ class PostCard extends ConsumerWidget {
                       ],
                     ),
                   ),
-                  IconButton(
-                    key: Key('post-menu-${post.postId}'),
-                    tooltip: 'Post options',
-                    icon: const Icon(Icons.more_horiz_rounded),
-                    onPressed: () => _postMenu(context, ref, post, mode),
+                  Tooltip(
+                    message: 'Post options',
+                    child: PressScale(
+                      key: Key('post-menu-${post.postId}'),
+                      minHeight: 48,
+                      semanticLabel: 'Post options',
+                      onTap: () => _postMenu(context, ref, post, mode),
+                      child: SizedBox(
+                        width: 48,
+                        height: 48,
+                        child: Icon(
+                          Icons.more_horiz_rounded,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
                   ),
                 ],
               ),
             ),
             if (post.body.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                padding: EdgeInsets.fromLTRB(
+                  18,
+                  statement ? 4 : 0,
+                  18,
+                  statement ? 14 : 12,
+                ),
                 child: Text(
                   post.body,
-                  style: const TextStyle(fontSize: 15, height: 1.45),
+                  style: statement
+                      ? const TextStyle(
+                          fontFamily: 'SpaceGrotesk',
+                          fontSize: 22,
+                          height: 1.3,
+                          letterSpacing: -.4,
+                          fontWeight: FontWeight.w600,
+                        )
+                      : const TextStyle(fontSize: 15.5, height: 1.5),
                 ),
               ),
             if (post.media.isNotEmpty)
-              _MediaCarousel(
-                media: post.media,
-                onDoubleTap: () {
-                  if (post.myReaction == null) react('heart');
-                },
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(VibeRadius.surface - 6),
+                  child: _MediaCarousel(
+                    media: post.media,
+                    onDoubleTap: () {
+                      if (post.myReaction == null) react('heart');
+                    },
+                  ),
+                ),
               ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(6, 2, 6, 4),
-              child: Row(
-                children: [
-                  _ReactButton(post: post, onReact: react),
-                  TextButton.icon(
-                    key: Key('comments-${post.postId}'),
-                    onPressed: () => showComments(context, ref, post, mode),
-                    icon: const Icon(Icons.mode_comment_outlined, size: 20),
-                    label: Text(
-                      post.commentCount == 0
+            // The count pills stay on one line however large the text is set.
+            MediaQuery.withClampedTextScaling(
+              maxScaleFactor: 1.3,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(10, 4, 2, 6),
+                child: Row(
+                  children: [
+                    _ReactButton(post: post, onReact: react),
+                    const SizedBox(width: 8),
+                    _ActionPill(
+                      key: Key('comments-${post.postId}'),
+                      semanticLabel: post.commentCount == 0
                           ? 'Comment'
+                          : '${post.commentCount} comments',
+                      onTap: () => showComments(context, ref, post, mode),
+                      icon: const Icon(Icons.mode_comment_outlined, size: 20),
+                      label: post.commentCount == 0
+                          ? ''
                           : '${post.commentCount}',
                     ),
-                    style: TextButton.styleFrom(
-                      foregroundColor: scheme.onSurface,
+                    const Spacer(),
+                    Tooltip(
+                      message: post.saved ? 'Remove from saved' : 'Save',
+                      child: PressScale(
+                        key: Key('save-${post.postId}'),
+                        minHeight: 48,
+                        semanticLabel: post.saved
+                            ? 'Remove from saved'
+                            : 'Save',
+                        onTap: () =>
+                            guarded(() => feed.toggleSave(post.postId)),
+                        child: SizedBox(
+                          width: 48,
+                          height: 48,
+                          child: Icon(
+                            post.saved
+                                ? Icons.bookmark_rounded
+                                : Icons.bookmark_border_rounded,
+                            color: post.saved ? scheme.primary : null,
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    key: Key('save-${post.postId}'),
-                    tooltip: post.saved ? 'Remove from saved' : 'Save',
-                    onPressed: () =>
-                        guarded(() => feed.toggleSave(post.postId)),
-                    icon: Icon(
-                      post.saved
-                          ? Icons.bookmark_rounded
-                          : Icons.bookmark_border_rounded,
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A chunky pill in a post's action bar: an icon or emoji and a count.
+class _ActionPill extends StatelessWidget {
+  final Widget icon;
+  final String label, semanticLabel;
+  final String? semanticHint;
+  final bool active;
+  final VoidCallback onTap;
+  final VoidCallback? onLongPress;
+  const _ActionPill({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.semanticLabel,
+    required this.onTap,
+    this.semanticHint,
+    this.onLongPress,
+    this.active = false,
+  });
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return PressScale(
+      minHeight: 48,
+      semanticLabel: semanticLabel,
+      semanticHint: semanticHint,
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: Align(
+        widthFactor: 1,
+        child: AnimatedContainer(
+          duration: VibeMotion.duration(context),
+          height: 40,
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          decoration: BoxDecoration(
+            color: active
+                ? VibeColors.lime.withValues(alpha: dark ? .2 : .6)
+                : (dark
+                      ? Colors.white.withValues(alpha: .09)
+                      : VibeColors.ink.withValues(alpha: .06)),
+            borderRadius: BorderRadius.circular(100),
+            border: Border.all(
+              color: active ? VibeColors.lime : Colors.transparent,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              icon,
+              if (label.isNotEmpty) ...[
+                const SizedBox(width: 7),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );
@@ -445,40 +570,24 @@ class _ReactButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final mine = post.myReaction;
     final scheme = Theme.of(context).colorScheme;
-    return Semantics(
-      button: true,
-      label: mine == null ? 'React' : 'Remove reaction',
-      hint: 'Long press for more reactions',
-      child: InkWell(
-        key: Key('react-${post.postId}'),
-        borderRadius: BorderRadius.circular(20),
-        onTap: () => onReact(mine == null ? 'heart' : null),
-        onLongPress: () => pick(context),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (mine == null)
-                Icon(
-                  Icons.favorite_border_rounded,
-                  size: 21,
-                  color: scheme.onSurface,
-                )
-              else
-                Text(
-                  postReactions[mine] ?? '❤️',
-                  style: const TextStyle(fontSize: 18),
-                ),
-              const SizedBox(width: 6),
-              Text(
-                post.reactionCount == 0 ? 'React' : '${post.reactionCount}',
-                style: const TextStyle(fontWeight: FontWeight.w700),
-              ),
-            ],
-          ),
-        ),
-      ),
+    return _ActionPill(
+      key: Key('react-${post.postId}'),
+      active: mine != null,
+      semanticLabel: mine == null ? 'React' : 'Remove reaction',
+      semanticHint: 'Long press for more reactions',
+      onTap: () => onReact(mine == null ? 'heart' : null),
+      onLongPress: () => pick(context),
+      icon: mine == null
+          ? Icon(
+              Icons.favorite_border_rounded,
+              size: 21,
+              color: scheme.onSurface,
+            )
+          : Text(
+              postReactions[mine] ?? '❤️',
+              style: const TextStyle(fontSize: 18),
+            ),
+      label: post.reactionCount == 0 ? '' : '${post.reactionCount}',
     );
   }
 }
@@ -539,6 +648,9 @@ Future<void> _postMenu(
   final session = ref.read(sessionProvider).asData?.value;
   if (session == null) return;
   final api = ref.read(apiProvider);
+  // The post's card can be gone (deleted, scrolled away) by the time the
+  // server answers; the container outlives it.
+  final container = ProviderScope.containerOf(context, listen: false);
   try {
     switch (choice) {
       case 'delete':
@@ -564,15 +676,15 @@ Future<void> _postMenu(
         );
         if (sure != true) return;
         await api.deletePost(session, post.postId);
-        ref.invalidate(profilePostsProvider);
+        container.invalidate(profilePostsProvider);
         for (final m in ['following', 'everyone']) {
-          ref.read(feedProvider(m).notifier).remove(post.postId);
+          container.read(feedProvider(m).notifier).remove(post.postId);
         }
         if (context.mounted) showMessage(context, 'Post deleted.');
       case 'mute':
         await api.setMuted(session, post.author.userId, true);
         for (final m in ['following', 'everyone']) {
-          ref.invalidate(feedProvider(m));
+          container.invalidate(feedProvider(m));
         }
         if (context.mounted) {
           showMessage(context, '${post.author.name} is muted.');
@@ -622,7 +734,7 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
   String? next;
   Object? error;
   PostComment? replyTo;
-  bool sending = false;
+  bool sending = false, loadingMore = false;
 
   Session get session => ref.read(sessionProvider).asData!.value!;
 
@@ -639,25 +751,36 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
   }
 
   Future<void> load({bool more = false}) async {
+    // One "Show more" at a time; a double tap would fetch the page twice.
+    if (more && (loadingMore || next == null)) return;
+    if (more) setState(() => loadingMore = true);
     try {
       final page = await ref
           .read(apiProvider)
           .comments(session, widget.post.postId, more ? next : null);
       if (!mounted) return;
       setState(() {
-        items = [...more ? items ?? const [] : const [], ...page.items];
+        final kept = more ? items ?? const <PostComment>[] : const [];
+        final seen = {for (final c in kept) c.commentId};
+        items = [...kept, ...page.items.where((c) => seen.add(c.commentId))];
         next = page.nextCursor;
         error = null;
       });
     } catch (e) {
       if (mounted) setState(() => error = e);
+    } finally {
+      if (more && mounted) setState(() => loadingMore = false);
     }
   }
+
+  /// Read before an await: the sheet may be closed when the server answers.
+  FeedController get _feed => ref.read(feedProvider(widget.mode).notifier);
 
   Future<void> send() async {
     final text = input.text.trim();
     if (text.isEmpty || sending) return;
     setState(() => sending = true);
+    final feed = _feed;
     try {
       final comment = await ref
           .read(apiProvider)
@@ -667,9 +790,7 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
             text,
             parentId: replyTo?.commentId,
           );
-      ref
-          .read(feedProvider(widget.mode).notifier)
-          .commentCountChanged(widget.post.postId, 1);
+      feed.commentCountChanged(widget.post.postId, 1);
       if (!mounted) return;
       input.clear();
       setState(() {
@@ -721,11 +842,10 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
       case 'reply':
         setState(() => replyTo = c);
       case 'delete':
+        final feed = _feed;
         try {
           await ref.read(apiProvider).deleteComment(session, c.commentId);
-          ref
-              .read(feedProvider(widget.mode).notifier)
-              .commentCountChanged(widget.post.postId, -1);
+          feed.commentCountChanged(widget.post.postId, -1);
           if (mounted) {
             setState(
               () =>
@@ -786,7 +906,7 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
                             left: c.parentId == null ? 4 : 40,
                             right: 4,
                           ),
-                          leading: _Avatar(c.author.name, radius: 16),
+                          leading: _Avatar.of(c.author, radius: 16),
                           title: Text.rich(
                             TextSpan(
                               children: [
@@ -824,7 +944,9 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
                         ),
                       if (next != null)
                         TextButton(
-                          onPressed: () => load(more: true),
+                          onPressed: loadingMore
+                              ? null
+                              : () => load(more: true),
                           child: const Text('Show more'),
                         ),
                     ],
@@ -885,21 +1007,25 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
 }
 
 /// A photo picked for a post or story, uploading as soon as it's chosen.
-class _Pending {
+class PendingPhoto {
   final Uint8List bytes;
   String? mediaId;
   double progress = 0;
   String? error;
-  _Pending(this.bytes);
+
+  /// Set when a limit stopped the upload: retrying at once cannot work, so the tile offers no retry.
+  bool limited = false;
+  PendingPhoto(this.bytes);
   bool get done => mediaId != null;
 }
 
-Future<void> _upload(
+Future<void> uploadPendingPhoto(
   WidgetRef ref,
-  _Pending p,
+  PendingPhoto p,
   String purpose,
-  void Function() changed,
-) async {
+  void Function() changed, {
+  void Function(String message)? onLimit,
+}) async {
   final type = sniffImageType(p.bytes);
   if (type == null) {
     p.error = 'Use a JPEG, PNG or WebP photo';
@@ -921,7 +1047,14 @@ Future<void> _upload(
           },
         );
   } catch (e) {
-    p.error = e is ApiFailure ? e.message : 'Upload failed';
+    if (e is ApiFailure && e.code == 'QUOTA') {
+      // The server's own calm words go in a message; the tile only says why it stopped.
+      p.limited = true;
+      p.error = 'Photo limit reached';
+      onLimit?.call(e.displayMessage);
+    } else {
+      p.error = e is ApiFailure ? e.displayMessage : 'Upload failed';
+    }
   }
   changed();
 }
@@ -936,7 +1069,7 @@ class ComposePostScreen extends ConsumerStatefulWidget {
 
 class _ComposePostScreenState extends ConsumerState<ComposePostScreen> {
   final body = TextEditingController();
-  final photos = <_Pending>[];
+  final photos = <PendingPhoto>[];
   String? audience;
   bool sharing = false;
 
@@ -963,13 +1096,13 @@ class _ComposePostScreenState extends ConsumerState<ComposePostScreen> {
       imageQuality: 85,
     );
     for (final f in files.take(room)) {
-      final p = _Pending(await f.readAsBytes());
+      final p = PendingPhoto(await f.readAsBytes());
       if (!mounted) return;
       setState(() => photos.add(p));
       unawaited(
-        _upload(ref, p, 'post', () {
+        uploadPendingPhoto(ref, p, 'post', () {
           if (mounted) setState(() {});
-        }),
+        }, onLimit: (m) => mounted ? showMessage(context, m) : null),
       );
     }
   }
@@ -1038,7 +1171,11 @@ class _ComposePostScreenState extends ConsumerState<ComposePostScreen> {
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _Avatar(profile?.displayName ?? '?'),
+                _Avatar(
+                  profile?.displayName ?? '?',
+                  userId: profile?.userId ?? '',
+                  avatarUrl: profile?.avatarUrl,
+                ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: TextField(
@@ -1092,14 +1229,23 @@ class _ComposePostScreenState extends ConsumerState<ComposePostScreen> {
                                 Material(
                                   color: Colors.black54,
                                   child: InkWell(
-                                    onTap: () => _upload(ref, p, 'post', () {
-                                      if (mounted) setState(() {});
-                                    }),
+                                    onTap: p.limited
+                                        ? null
+                                        : () => uploadPendingPhoto(
+                                            ref,
+                                            p,
+                                            'post',
+                                            () {
+                                              if (mounted) setState(() {});
+                                            },
+                                          ),
                                     child: Center(
                                       child: Padding(
                                         padding: const EdgeInsets.all(6),
                                         child: Text(
-                                          '${p.error!}\nTap to retry',
+                                          p.limited
+                                              ? p.error!
+                                              : '${p.error!}\nTap to retry',
                                           textAlign: TextAlign.center,
                                           style: const TextStyle(
                                             color: Colors.white,
@@ -1214,42 +1360,52 @@ class StoryTray extends ConsumerWidget {
     return MediaQuery(
       data: MediaQuery.of(context).copyWith(textScaler: scaler),
       child: SizedBox(
-        height: 80 + scaler.scale(17),
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          clipBehavior: Clip.none,
-          children: [
-            _StoryBubble(
-              key: const Key('story-mine'),
-              name: profile?.displayName ?? 'You',
-              label: 'Your story',
-              ring: mine == null ? null : VibeColors.lime,
-              add: true,
-              onTap: mine == null
-                  ? () => context.push('/story/new')
-                  : () => open(mine),
-              onAdd: () => context.push('/story/new'),
-            ),
-            for (final g in others)
+        height: 104 + scaler.scale(17),
+        child: ScrollConfiguration(
+          behavior: const DragAnywhereBehavior(),
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            children: [
               _StoryBubble(
-                key: Key('story-${g.author.userId}'),
-                name: g.author.name,
-                label: g.author.name,
-                ring: g.allSeen
-                    ? Theme.of(context).colorScheme.outlineVariant
-                    : VibeColors.lime,
-                onTap: () => open(g),
+                key: const Key('story-mine'),
+                name: profile?.displayName ?? 'You',
+                userId: profile?.userId ?? '',
+                avatarUrl: profile?.avatarUrl,
+                label: 'Your story',
+                ring: mine == null ? _Ring.none : _Ring.unseen,
+                add: true,
+                onTap: mine == null
+                    ? () => context.push('/story/new')
+                    : () => open(mine),
+                onAdd: () => context.push('/story/new'),
               ),
-          ],
+              for (final g in others)
+                _StoryBubble(
+                  key: Key('story-${g.author.userId}'),
+                  name: g.author.name,
+                  userId: g.author.userId,
+                  avatarUrl: g.author.avatarUrl,
+                  label: g.author.name,
+                  ring: g.allSeen ? _Ring.seen : _Ring.unseen,
+                  onTap: () => open(g),
+                ),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-class _StoryBubble extends StatelessWidget {
-  final String name, label;
-  final Color? ring;
+/// The ring around a story avatar: bright when there is something new, quiet
+/// once it has been watched, absent when there is no story at all.
+enum _Ring { none, seen, unseen }
+
+class _StoryBubble extends StatefulWidget {
+  final String name, label, userId;
+  final String? avatarUrl;
+  final _Ring ring;
   final bool add;
   final VoidCallback onTap;
   final VoidCallback? onAdd;
@@ -1258,76 +1414,138 @@ class _StoryBubble extends StatelessWidget {
     required this.name,
     required this.label,
     required this.onTap,
-    this.ring,
+    this.userId = '',
+    this.avatarUrl,
+    this.ring = _Ring.none,
     this.add = false,
     this.onAdd,
   });
   @override
+  State<_StoryBubble> createState() => _StoryBubbleState();
+}
+
+class _StoryBubbleState extends State<_StoryBubble> {
+  bool _pressed = false, _focused = false;
+
+  @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final unseen = widget.ring == _Ring.unseen;
     return Padding(
-      padding: const EdgeInsets.only(right: 12),
+      padding: const EdgeInsets.only(right: 10),
       child: Semantics(
         button: true,
-        label: add && ring == null
+        label: widget.add && widget.ring == _Ring.none
             ? 'Add to your story'
-            : 'Stories from $label',
+            : 'Stories from ${widget.label}',
         excludeSemantics: true,
         child: InkWell(
+          // The default hover and press highlight is a tall grey pill around the
+          // avatar and its name. Feedback is a small press scale on the avatar and a
+          // ring around it for keyboard focus instead.
+          overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+          splashFactory: NoSplash.splashFactory,
           borderRadius: BorderRadius.circular(40),
-          onTap: onTap,
+          onHighlightChanged: (value) => setState(() => _pressed = value),
+          onFocusChange: (value) => setState(() => _focused = value),
+          onTap: widget.onTap,
           child: SizedBox(
-            width: 70,
+            width: 82,
             child: Column(
               children: [
-                Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(3),
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: ring ?? Colors.transparent,
-                          width: 3,
-                        ),
+                AnimatedScale(
+                  scale: _pressed ? 0.94 : 1,
+                  duration: MediaQuery.disableAnimationsOf(context)
+                      ? Duration.zero
+                      : const Duration(milliseconds: 90),
+                  child: Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: _focused ? scheme.onSurface : Colors.transparent,
+                        width: 2,
                       ),
-                      child: _Avatar(name, radius: 27),
                     ),
-                    if (add)
-                      Positioned(
-                        right: -2,
-                        bottom: -2,
-                        child: GestureDetector(
-                          onTap: onAdd,
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(3.5),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: widget.ring == _Ring.seen
+                                ? scheme.outlineVariant
+                                : widget.ring == _Ring.none
+                                ? scheme.outlineVariant.withValues(alpha: .6)
+                                : null,
+                            gradient: unseen
+                                ? const SweepGradient(
+                                    colors: [
+                                      VibeColors.lime,
+                                      Color(0xff2dd4bf),
+                                      Color(0xffa855f7),
+                                      Color(0xffff5c8a),
+                                      VibeColors.lime,
+                                    ],
+                                  )
+                                : null,
+                          ),
                           child: Container(
+                            padding: const EdgeInsets.all(3),
                             decoration: BoxDecoration(
-                              color: VibeColors.ink,
                               shape: BoxShape.circle,
-                              border: Border.all(
-                                color: scheme.surface,
-                                width: 2,
-                              ),
+                              color: theme.scaffoldBackgroundColor,
                             ),
-                            padding: const EdgeInsets.all(2),
-                            child: const Icon(
-                              Icons.add_rounded,
-                              size: 16,
-                              color: VibeColors.lime,
+                            child: _Avatar(
+                              widget.name,
+                              radius: 31,
+                              userId: widget.userId,
+                              avatarUrl: widget.avatarUrl,
                             ),
                           ),
                         ),
-                      ),
-                  ],
+                        if (widget.add)
+                          Positioned(
+                            right: -2,
+                            bottom: -2,
+                            child: GestureDetector(
+                              onTap: widget.onAdd,
+                              child: Container(
+                                width: 28,
+                                height: 28,
+                                decoration: BoxDecoration(
+                                  color: VibeColors.lime,
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: theme.scaffoldBackgroundColor,
+                                    width: 3,
+                                  ),
+                                ),
+                                child: const Icon(
+                                  Icons.add_rounded,
+                                  size: 18,
+                                  color: VibeColors.ink,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  label,
+                  widget.label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: widget.add ? FontWeight.w800 : FontWeight.w600,
+                    color: widget.ring == _Ring.seen
+                        ? scheme.onSurfaceVariant
+                        : scheme.onSurface,
                   ),
                 ),
               ],
@@ -1372,6 +1590,10 @@ class _StoryViewerState extends ConsumerState<StoryViewer>
   final viewed = <String>{};
   final removed = <String>{};
 
+  /// Set once the viewer starts closing. The timer finishing, a tap and a
+  /// swipe can all ask to close in the same frame; only the first pops.
+  bool closing = false;
+
   static int _firstUnseen(StoryGroup g) {
     final i = g.stories.indexWhere((s) => !s.seen);
     return g.mine || i < 0 ? 0 : i;
@@ -1395,6 +1617,7 @@ class _StoryViewerState extends ConsumerState<StoryViewer>
   }
 
   void show() {
+    if (closing) return;
     final list = stories;
     if (list.isEmpty) {
       next();
@@ -1416,11 +1639,15 @@ class _StoryViewerState extends ConsumerState<StoryViewer>
   }
 
   void close() {
+    if (closing || !mounted) return;
+    closing = true;
+    timer.stop();
     ref.invalidate(storyTrayProvider);
     Navigator.of(context).pop();
   }
 
   void next() {
+    if (closing) return;
     if (index + 1 < stories.length) {
       setState(() => index++);
     } else if (group + 1 < widget.groups.length) {
@@ -1436,6 +1663,7 @@ class _StoryViewerState extends ConsumerState<StoryViewer>
   }
 
   void previous() {
+    if (closing) return;
     if (index > 0) {
       setState(() => index--);
     } else if (group > 0) {
@@ -1479,6 +1707,7 @@ class _StoryViewerState extends ConsumerState<StoryViewer>
     if (choice == 'delete' && session != null) {
       try {
         await ref.read(apiProvider).deleteStory(session, story.storyId);
+        if (!mounted) return;
         setState(() => removed.add(story.storyId));
         show();
         return;
@@ -1494,7 +1723,7 @@ class _StoryViewerState extends ConsumerState<StoryViewer>
         name: g.author.name,
       );
     }
-    if (mounted) timer.forward();
+    if (mounted && !closing) timer.forward();
   }
 
   Future<void> viewers(Story story) async {
@@ -1521,8 +1750,8 @@ class _StoryViewerState extends ConsumerState<StoryViewer>
               children: [
                 for (final v in list)
                   ListTile(
-                    leading: _Avatar(
-                      Person.fromJson(v['user'] as Map).name,
+                    leading: _Avatar.of(
+                      Person.fromJson(v['user'] as Map),
                       radius: 18,
                     ),
                     title: Text(Person.fromJson(v['user'] as Map).name),
@@ -1536,7 +1765,7 @@ class _StoryViewerState extends ConsumerState<StoryViewer>
         ),
       ),
     );
-    if (mounted) timer.forward();
+    if (mounted && !closing) timer.forward();
   }
 
   @override
@@ -1545,8 +1774,6 @@ class _StoryViewerState extends ConsumerState<StoryViewer>
     final list = stories;
     if (list.isEmpty) return const ColoredBox(color: Colors.black);
     final story = list[index.clamp(0, list.length - 1)];
-    final bg = storyColors[story.background] ?? VibeColors.lime;
-    final ink = story.background == 'ink' ? VibeColors.cream : VibeColors.ink;
     return Scaffold(
       backgroundColor: Colors.black,
       body: GestureDetector(
@@ -1555,51 +1782,23 @@ class _StoryViewerState extends ConsumerState<StoryViewer>
             ? previous()
             : next(),
         onLongPressStart: (_) => timer.stop(),
-        onLongPressEnd: (_) => timer.forward(),
+        onLongPressEnd: (_) {
+          if (!closing) timer.forward();
+        },
         onVerticalDragEnd: (d) {
           if ((d.primaryVelocity ?? 0) > 300) close();
         },
         child: Stack(
           fit: StackFit.expand,
           children: [
-            if (story.media != null)
-              Center(child: _Photo(story.media!, fit: BoxFit.contain))
-            else
-              ColoredBox(
-                color: bg,
-                child: Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(32),
-                    child: Text(
-                      story.body,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontFamily: 'SpaceGrotesk',
-                        fontSize: 32,
-                        height: 1.2,
-                        fontWeight: FontWeight.w700,
-                        color: ink,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            if (story.media != null && story.body.isNotEmpty)
-              Positioned(
-                left: 24,
-                right: 24,
-                bottom: 120,
-                child: Text(
-                  story.body,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    shadows: [Shadow(blurRadius: 8)],
-                  ),
-                ),
-              ),
+            // The same canvas the composer and My stories draw, so a story looks as it was made.
+            StoryCanvas(
+              key: ValueKey(story.storyId),
+              background: story.background,
+              textStyle: story.textStyle,
+              body: story.body,
+              photo: story.media == null ? null : _Photo(story.media!),
+            ),
             // Keeps the white header readable on light photos and colours.
             const Positioned(
               top: 0,
@@ -1652,11 +1851,11 @@ class _StoryViewerState extends ConsumerState<StoryViewer>
                     const SizedBox(height: 10),
                     Row(
                       children: [
-                        _Avatar(g.author.name, radius: 16),
+                        _Avatar.of(g.author, radius: 16),
                         const SizedBox(width: 10),
                         Expanded(
                           child: Text(
-                            '${g.mine ? 'Your story' : g.author.name}  ·  ${shortAgo(story.createdAt)}',
+                            '${g.mine ? 'Your story' : g.author.name}  ·  ${shortAgo(story.createdAt)}${g.mine ? '  ·  ${storyTimeLeft(story.expiresAt)}' : ''}',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
@@ -1701,256 +1900,6 @@ class _StoryViewerState extends ConsumerState<StoryViewer>
                   ),
                 ),
               ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Making a story: a photo, or words on a colour.
-class StoryComposerScreen extends ConsumerStatefulWidget {
-  final ImagePicker? picker;
-  const StoryComposerScreen({super.key, this.picker});
-  @override
-  ConsumerState<StoryComposerScreen> createState() =>
-      _StoryComposerScreenState();
-}
-
-class _StoryComposerScreenState extends ConsumerState<StoryComposerScreen> {
-  final text = TextEditingController();
-  _Pending? photo;
-  String background = 'lime';
-  String? audience;
-  bool sharing = false;
-
-  ImagePicker get picker => widget.picker ?? ImagePicker();
-
-  @override
-  void dispose() {
-    text.dispose();
-    super.dispose();
-  }
-
-  Future<void> pick(ImageSource source) async {
-    final file = await picker.pickImage(
-      source: source,
-      maxWidth: 2048,
-      maxHeight: 2048,
-      imageQuality: 85,
-    );
-    if (file == null) return;
-    final p = _Pending(await file.readAsBytes());
-    if (!mounted) return;
-    setState(() => photo = p);
-    await _upload(ref, p, 'story', () {
-      if (mounted) setState(() {});
-    });
-  }
-
-  bool get ready =>
-      !sharing && (photo == null ? text.text.trim().isNotEmpty : photo!.done);
-
-  Future<void> share(String chosen) async {
-    setState(() => sharing = true);
-    try {
-      await ref
-          .read(apiProvider)
-          .createStory(
-            ref.read(sessionProvider).asData!.value!,
-            body: text.text.trim(),
-            background: background,
-            mediaId: photo?.mediaId,
-            audience: chosen,
-          );
-      ref.invalidate(storyTrayProvider);
-      if (mounted) {
-        showMessage(context, 'Added to your story.');
-        context.canPop() ? context.pop() : context.go('/home');
-      }
-    } catch (e) {
-      if (mounted) showMessage(context, e.toString());
-    } finally {
-      if (mounted) setState(() => sharing = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final setting =
-        ref.watch(privacyProvider).asData?.value.values['storyAudience']
-            as String?;
-    final chosen = audience ?? defaultAudience(setting);
-    final bg = storyColors[background]!;
-    final ink = background == 'ink' ? VibeColors.cream : VibeColors.ink;
-    return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          tooltip: 'Close',
-          icon: const Icon(Icons.close_rounded),
-          onPressed: () =>
-              context.canPop() ? context.pop() : context.go('/home'),
-        ),
-        title: const Text('Your story'),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: FilledButton(
-              key: const Key('share-story'),
-              onPressed: ready ? () => share(chosen) : null,
-              child: Text(sharing ? 'Sharing…' : 'Share'),
-            ),
-          ),
-        ],
-      ),
-      body: ReadingWidth(
-        child: ListView(
-          padding: const EdgeInsets.all(20),
-          children: [
-            AspectRatio(
-              aspectRatio: 9 / 14,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(24),
-                child: photo != null
-                    ? Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          Image.memory(photo!.bytes, fit: BoxFit.cover),
-                          if (!photo!.done)
-                            ColoredBox(
-                              color: Colors.black38,
-                              child: Center(
-                                child: photo!.error != null
-                                    ? Text(
-                                        photo!.error!,
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                        ),
-                                      )
-                                    : CircularProgressIndicator(
-                                        value: photo!.progress > 0
-                                            ? photo!.progress
-                                            : null,
-                                        color: Colors.white,
-                                      ),
-                              ),
-                            ),
-                          Positioned(
-                            top: 8,
-                            right: 8,
-                            child: IconButton.filled(
-                              tooltip: 'Remove photo',
-                              style: IconButton.styleFrom(
-                                backgroundColor: Colors.black54,
-                              ),
-                              onPressed: () => setState(() => photo = null),
-                              icon: const Icon(
-                                Icons.close_rounded,
-                                color: Colors.white,
-                              ),
-                            ),
-                          ),
-                        ],
-                      )
-                    : ColoredBox(
-                        color: bg,
-                        child: Center(
-                          child: Padding(
-                            padding: const EdgeInsets.all(28),
-                            child: TextField(
-                              key: const Key('story-text'),
-                              controller: text,
-                              maxLength: 280,
-                              maxLines: null,
-                              textAlign: TextAlign.center,
-                              onChanged: (_) => setState(() {}),
-                              style: TextStyle(
-                                fontFamily: 'SpaceGrotesk',
-                                fontSize: 28,
-                                fontWeight: FontWeight.w700,
-                                color: ink,
-                              ),
-                              decoration: InputDecoration(
-                                hintText: 'Say something…',
-                                hintStyle: TextStyle(
-                                  color: ink.withValues(alpha: .5),
-                                ),
-                                border: InputBorder.none,
-                                counterText: '',
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-              ),
-            ),
-            const SizedBox(height: 14),
-            if (photo == null)
-              Wrap(
-                spacing: 10,
-                children: [
-                  for (final e in storyColors.entries)
-                    Semantics(
-                      button: true,
-                      selected: e.key == background,
-                      label: '${e.key} background',
-                      child: GestureDetector(
-                        onTap: () => setState(() => background = e.key),
-                        child: Container(
-                          width: 34,
-                          height: 34,
-                          decoration: BoxDecoration(
-                            color: e.value,
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              width: e.key == background ? 3 : 1,
-                              color: Theme.of(context).colorScheme.onSurface,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    key: const Key('story-gallery'),
-                    onPressed: () => pick(ImageSource.gallery),
-                    icon: const Icon(Icons.photo_library_outlined),
-                    label: const Text('Photo'),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => pick(ImageSource.camera),
-                    icon: const Icon(Icons.photo_camera_outlined),
-                    label: const Text('Camera'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            Text(
-              'Who can see this?',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 8),
-            SegmentedButton<String>(
-              segments: [
-                for (final e in audienceLabels.entries)
-                  ButtonSegment(
-                    value: e.key,
-                    label: Text(e.value),
-                    icon: Icon(audienceIcon(e.key)),
-                  ),
-              ],
-              selected: {chosen},
-              onSelectionChanged: (s) => setState(() => audience = s.single),
-            ),
           ],
         ),
       ),

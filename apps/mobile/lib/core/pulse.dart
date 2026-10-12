@@ -2,11 +2,15 @@ part of 'api.dart';
 
 class Person {
   final String userId, username, displayName;
-  const Person(this.userId, this.username, this.displayName);
+
+  /// Signed thumbnail URL, or null when they have no photo.
+  final String? avatarUrl;
+  const Person(this.userId, this.username, this.displayName, {this.avatarUrl});
   factory Person.fromJson(Map json) => Person(
     json['userId'] as String,
     json['username'] as String,
     json['displayName'] as String? ?? '',
+    avatarUrl: json['avatarUrl'] as String?,
   );
 
   /// Display name, or @username when there isn't one.
@@ -32,6 +36,27 @@ class PostMedia {
     json['height'] as int? ?? 0,
   );
   double get aspect => width > 0 && height > 0 ? width / height : 1;
+}
+
+/// The photo type from its first bytes, or null if it isn't one we accept.
+/// Uploads are labelled by content, never by file name.
+String? sniffImageType(Uint8List b) {
+  if (b.length > 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) {
+    return 'image/jpeg';
+  }
+  if (b.length > 8 &&
+      b[0] == 0x89 &&
+      b[1] == 0x50 &&
+      b[2] == 0x4E &&
+      b[3] == 0x47) {
+    return 'image/png';
+  }
+  if (b.length > 12 &&
+      String.fromCharCodes(b.sublist(0, 4)) == 'RIFF' &&
+      String.fromCharCodes(b.sublist(8, 12)) == 'WEBP') {
+    return 'image/webp';
+  }
+  return null;
 }
 
 /// Reactions in the order the picker shows them.
@@ -130,6 +155,9 @@ class PostComment {
 
 class Story {
   final String storyId, body, background, audience;
+
+  /// How the words are drawn; stories from before text styles are clean.
+  final String textStyle;
   final PostMedia? media;
   final DateTime createdAt, expiresAt;
   final bool seen;
@@ -141,6 +169,7 @@ class Story {
     required this.audience,
     required this.createdAt,
     required this.expiresAt,
+    this.textStyle = 'clean',
     this.media,
     this.seen = false,
     this.viewCount,
@@ -149,6 +178,7 @@ class Story {
     storyId: json['storyId'] as String,
     body: json['body'] as String? ?? '',
     background: json['background'] as String? ?? 'lime',
+    textStyle: json['textStyle'] as String? ?? 'clean',
     audience: json['audience'] as String? ?? 'followers',
     createdAt: DateTime.parse(json['createdAt'] as String),
     expiresAt: DateTime.parse(json['expiresAt'] as String),
@@ -314,10 +344,10 @@ mixin PulseApi {
     try {
       await _uploads.put<void>(
         made['uploadUrl'] as String,
-        data: Stream.fromIterable([bytes]),
-        options: Options(
-          headers: {...headers, Headers.contentLengthHeader: bytes.length},
-        ),
+        // The bytes themselves, so the body is exactly the declared size: Dio derives the
+        // Content-Length from them and the signed URL refuses any other length.
+        data: bytes,
+        options: Options(headers: headers),
         onSendProgress: onProgress == null
             ? null
             : (sent, total) => onProgress(total > 0 ? sent / total : 0),
@@ -344,6 +374,8 @@ mixin PulseApi {
     Session s, {
     String body = '',
     String background = 'lime',
+    String textStyle = 'clean',
+    int lifetimeHours = 24,
     String? mediaId,
     required String audience,
   }) async => await _request(
@@ -353,6 +385,8 @@ mixin PulseApi {
     body: {
       'body': body,
       'background': background,
+      'textStyle': textStyle,
+      'lifetimeHours': lifetimeHours,
       'audience': audience,
       'mediaId': ?mediaId,
     },

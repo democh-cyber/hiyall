@@ -6,9 +6,9 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:kairova/app.dart';
-import 'package:kairova/core/api.dart';
-import 'package:kairova/core/state.dart';
+import 'package:hiyall/app.dart';
+import 'package:hiyall/core/api.dart';
+import 'package:hiyall/core/state.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
 
@@ -96,7 +96,6 @@ void main() {
     '/notifications',
     '/profile',
     '/profile/edit',
-    '/profile/privacy',
     '/profile/sessions',
     '/profile/settings',
     '/profile/reports',
@@ -131,7 +130,7 @@ void main() {
                 size: size,
                 textScaler: TextScaler.linear(scale),
               ),
-              child: RepaintBoundary(key: capture, child: const KairovaApp()),
+              child: RepaintBoundary(key: capture, child: const HiyallApp()),
             ),
           ),
         );
@@ -173,7 +172,7 @@ void main() {
               });
             }
             // Traverse long settings/forms too; validate controls below the fold.
-            for (var i = 0; i < (route == '/profile/privacy' ? 11 : 2); i++) {
+            for (var i = 0; i < 2; i++) {
               final lists = find.byType(ListView);
               if (lists.evaluate().isNotEmpty) {
                 await tester.drag(lists.last, Offset(0, -size.height * .65));
@@ -203,7 +202,7 @@ void main() {
             size: Size(320, 740),
             textScaler: TextScaler.linear(2),
           ),
-          child: KairovaApp(),
+          child: HiyallApp(),
         ),
       ),
     );

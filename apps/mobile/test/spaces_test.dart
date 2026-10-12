@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:kairova/core/api.dart';
-import 'package:kairova/core/state.dart';
-import 'package:kairova/features/spaces.dart';
+import 'package:hiyall/core/api.dart';
+import 'package:hiyall/core/state.dart';
+import 'package:hiyall/features/spaces.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
 
@@ -189,9 +189,16 @@ void main() {
       ),
     );
     await pump(t, a, const SpaceScreen(id: 'circle'));
+    await t.scrollUntilVisible(
+      find.text('Private circle thought'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('Private circle thought'), findsOneWidget);
     a.fail = true;
-    await t.tap(find.byTooltip('Refresh'));
+    await t.tap(find.byKey(const Key('space-menu')));
+    await t.pumpAndSettle();
+    await t.tap(find.text('Refresh'));
     await t.pumpAndSettle();
     expect(find.text('Private circle thought'), findsNothing);
     expect(find.text('Access removed'), findsOneWidget);
@@ -200,7 +207,11 @@ void main() {
   testWidgets('Composer validates capacity before API call', (t) async {
     final a = SpacesFake();
     await pump(t, a, const CreateSpaceScreen());
-    await t.ensureVisible(find.byKey(const Key('publish-space')));
+    await t.scrollUntilVisible(
+      find.byKey(const Key('publish-space')),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
     await t.pumpAndSettle();
     await t.tap(find.byKey(const Key('publish-space')));
     await t.pumpAndSettle();

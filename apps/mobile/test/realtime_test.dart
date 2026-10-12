@@ -3,14 +3,23 @@ import 'dart:convert';
 
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:kairova/core/chat/chat_engine.dart';
-import 'package:kairova/core/realtime/realtime_client.dart';
-import 'package:kairova/core/realtime/socket.dart';
+import 'package:hiyall/core/chat/chat_engine.dart';
+import 'package:hiyall/core/realtime/realtime_client.dart';
+import 'package:hiyall/core/realtime/socket.dart';
 
 class FakeSocket implements RealtimeSocket {
   final incoming = StreamController<String>();
   final sent = <String>[];
   bool closed = false;
+  @override
+  int? closeCode;
+
+  /// The server closes the socket with [code].
+  void serverClose(int code) {
+    closeCode = code;
+    incoming.close();
+  }
+
   @override
   Stream<String> get messages => incoming.stream;
   @override
@@ -99,6 +108,122 @@ void main() {
       expect(sockets.last.closed, isTrue);
       async.elapse(const Duration(minutes: 1));
       expect(attempts, 3);
+      client.dispose();
+    });
+  });
+
+  test(
+    'Pause and resume during a handshake leaves exactly one socket',
+    () async {
+      final pending = <Completer<RealtimeSocket>>[];
+      final client = RealtimeClient(
+        'http://127.0.0.1:8080',
+        't',
+        connect: (_, _) {
+          final c = Completer<RealtimeSocket>();
+          pending.add(c);
+          return c.future;
+        },
+      );
+      client.start(); // App opens; the handshake is in flight.
+      client.stop(); // Paused before it finishes.
+      client.start(); // Resumed straight away.
+      final a = FakeSocket(), b = FakeSocket();
+      pending[0].complete(a);
+      pending[1].complete(b);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+      expect(a.closed, isTrue, reason: 'the stale handshake is closed');
+      expect(b.closed, isFalse);
+      expect(client.connected.value, isTrue);
+      client.stop();
+      await Future<void>.delayed(Duration.zero);
+      expect(a.closed && b.closed, isTrue);
+      expect(client.connected.value, isFalse);
+    },
+  );
+
+  test('A handshake that finishes after dispose is closed quietly', () async {
+    final pending = Completer<RealtimeSocket>();
+    final client = RealtimeClient(
+      'http://127.0.0.1:8080',
+      't',
+      connect: (_, _) => pending.future,
+    );
+    client.start();
+    client.dispose();
+    final s = FakeSocket();
+    pending.complete(s);
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+    expect(s.closed, isTrue);
+  });
+
+  test('A session-ended close retries once with a fresh token', () {
+    fakeAsync((async) {
+      final tokens = <String>[];
+      final sockets = <FakeSocket>[];
+      var ended = 0;
+      var fresh = 'token-1';
+      final client = RealtimeClient(
+        'http://127.0.0.1:8080',
+        'token-1',
+        tokenOf: () => fresh,
+        refreshToken: () async => fresh = 'token-2',
+        onSessionEnded: () => ended++,
+        connect: (url, token) async {
+          tokens.add(token);
+          final s = FakeSocket();
+          sockets.add(s);
+          return s;
+        },
+      );
+      client.start();
+      async.flushMicrotasks();
+      // 1013 is an ordinary "resync": reconnect with backoff, same token.
+      sockets.last.serverClose(1013);
+      async.flushMicrotasks();
+      async.elapse(const Duration(seconds: 2));
+      expect(tokens, ['token-1', 'token-1']);
+      sockets.last.incoming.add(jsonEncode({'type': 'ready'}));
+      async.flushMicrotasks();
+
+      // 1008: the session ended. One immediate retry with a fresh token.
+      sockets.last.serverClose(1008);
+      async.flushMicrotasks();
+      expect(tokens, ['token-1', 'token-1', 'token-2']);
+      expect(client.connected.value, isTrue);
+      expect(ended, 0);
+
+      // Refused again: stop for good and hand over to the session layer.
+      sockets.last.serverClose(1008);
+      async.flushMicrotasks();
+      async.elapse(const Duration(minutes: 5));
+      expect(tokens, hasLength(3));
+      expect(ended, 1);
+      expect(client.connected.value, isFalse);
+      client.dispose();
+    });
+  });
+
+  test('A refused handshake after a fresh token stops reconnecting', () {
+    fakeAsync((async) {
+      var attempts = 0, ended = 0;
+      final client = RealtimeClient(
+        'http://127.0.0.1:8080',
+        'token-1',
+        refreshToken: () async => 'token-2',
+        onSessionEnded: () => ended++,
+        connect: (url, token) async {
+          attempts++;
+          throw const RealtimeUnauthorized(401);
+        },
+      );
+      client.start();
+      async.flushMicrotasks();
+      async.elapse(const Duration(minutes: 5));
+      expect(attempts, 2);
+      expect(ended, 1);
       client.dispose();
     });
   });

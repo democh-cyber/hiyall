@@ -5,62 +5,137 @@ import 'package:go_router/go_router.dart';
 
 import 'core/theme.dart';
 import 'core/activity_state.dart';
+import 'core/home_prefs.dart';
+import 'core/location_sync.dart';
 import 'core/state.dart';
 import 'features/chat.dart';
 import 'features/home.dart';
 import 'features/live_sync.dart';
+import 'features/auth/auth_screens.dart';
+import 'features/auth/onboarding_screen.dart';
 import 'features/screens.dart';
 import 'features/profile.dart';
-import 'features/privacy.dart';
 import 'features/pulse.dart';
 import 'features/safety.dart';
 import 'features/settings.dart';
 import 'features/spaces.dart';
-import 'features/design_studio.dart';
+import 'features/discovery.dart' show FindPeopleScreen;
+import 'features/people_lists.dart';
+import 'shared/person_avatar.dart';
 import 'shared/widgets.dart';
 import 'shared/navigation_dock.dart';
 
+/// Pages a signed-out visitor may open.
+const _openRoutes = {'/welcome', '/login', '/signup', '/forgot-password'};
+
+/// Where each sign-in state belongs. Re-evaluated whenever the session, or an
+/// account waiting on email verification, changes.
+String? authRedirect(Ref ref, String location) {
+  final session = ref.read(sessionProvider);
+  final controller = ref.read(sessionProvider.notifier);
+  if (controller.booting) return location == '/splash' ? null : '/splash';
+  final active = session.asData?.value;
+  if (active == null) {
+    if (ref.read(awaitingVerificationProvider) != null) {
+      return location == '/verify-email' ? null : '/verify-email';
+    }
+    // Signed in with the provider but the API could not be reached.
+    if (session.hasError && ref.read(authGatewayProvider).currentUser != null) {
+      return location == '/splash' ? null : '/splash';
+    }
+    return _openRoutes.contains(location) ? null : '/welcome';
+  }
+  if (!active.onboarded) {
+    return location == '/onboarding' ? null : '/onboarding';
+  }
+  if (_openRoutes.contains(location) ||
+      const {'/onboarding', '/verify-email', '/splash'}.contains(location)) {
+    return '/home';
+  }
+  return null;
+}
+
 final routerProvider = Provider<GoRouter>((ref) {
-  bool signedIn() => ref.read(sessionProvider).asData?.value != null;
+  final refresh = ValueNotifier<int>(0);
+  ref.listen(sessionProvider, (_, _) => refresh.value++);
+  ref.listen(awaitingVerificationProvider, (_, _) => refresh.value++);
   final router = GoRouter(
     initialLocation: '/home',
+    refreshListenable: refresh,
+    redirect: (context, state) => authRedirect(ref, state.matchedLocation),
     routes: [
       GoRoute(
-        path: '/design',
-        builder: (context, state) => const DesignStudioScreen(),
-        routes: [
-          GoRoute(
-            path: ':id',
-            builder: (context, state) => ScreenPreview(
-              key: ValueKey(state.pathParameters['id']),
-              id: state.pathParameters['id']!,
-            ),
-          ),
-        ],
+        path: '/splash',
+        builder: (context, state) => const SplashScreen(),
       ),
-      // Full-screen creation, outside the dock; signed-out visitors go home.
+      GoRoute(
+        path: '/welcome',
+        builder: (context, state) => const WelcomeScreen(),
+      ),
+      GoRoute(path: '/login', builder: (context, state) => const LoginScreen()),
+      GoRoute(
+        path: '/signup',
+        builder: (context, state) => const SignupScreen(),
+      ),
+      GoRoute(
+        path: '/forgot-password',
+        builder: (context, state) => const ForgotPasswordScreen(),
+      ),
+      GoRoute(
+        path: '/verify-email',
+        builder: (context, state) => const VerifyEmailScreen(),
+      ),
+      GoRoute(
+        path: '/onboarding',
+        builder: (context, state) => const OnboardingScreen(),
+      ),
+      // Full-screen creation, outside the dock.
       GoRoute(
         path: '/compose',
-        redirect: (context, state) => signedIn() ? null : '/home',
         builder: (context, state) => const ComposePostScreen(),
       ),
       GoRoute(
         path: '/story/new',
-        redirect: (context, state) => signedIn() ? null : '/home',
         builder: (context, state) => const StoryComposerScreen(),
       ),
       GoRoute(
         path: '/spaces/new',
-        redirect: (context, state) => signedIn() ? null : '/home',
         builder: (context, state) => CreateSpaceScreen(
           kind: state.uri.queryParameters['kind'] ?? 'community',
           parentId: state.uri.queryParameters['parent'],
         ),
       ),
       GoRoute(
+        path: '/people',
+        builder: (context, state) => const FindPeopleScreen(),
+      ),
+      // A profile opened from a full-screen page (a space, Find people). The
+      // docked '/discover/person/:id' can't be pushed above those pages.
+      GoRoute(
+        path: '/person/:id',
+        builder: (context, state) => Scaffold(
+          body: SafeArea(child: PersonScreen(id: state.pathParameters['id']!)),
+        ),
+      ),
+      // Another member's lists, outside the dock so they open above any profile.
+      for (final kind in ['followers', 'following'])
+        GoRoute(
+          path: '/person/:id/$kind',
+          builder: (context, state) => Scaffold(
+            body: SafeArea(
+              child: ConnectionsScreen(
+                kind: kind,
+                userId: state.pathParameters['id']!,
+              ),
+            ),
+          ),
+        ),
+      GoRoute(
         path: '/spaces',
-        builder: (context, state) =>
-            SpacesScreen(parentId: state.uri.queryParameters['parent']),
+        builder: (context, state) => SpacesScreen(
+          parentId: state.uri.queryParameters['parent'],
+          initialKind: state.uri.queryParameters['kind'],
+        ),
         routes: [
           GoRoute(
             path: ':id',
@@ -74,8 +149,10 @@ final routerProvider = Provider<GoRouter>((ref) {
               ),
               GoRoute(
                 path: 'members',
-                builder: (context, state) =>
-                    SpaceMembersScreen(id: state.pathParameters['id']!),
+                builder: (context, state) => SpaceMembersScreen(
+                  id: state.pathParameters['id']!,
+                  initialState: state.uri.queryParameters['state'],
+                ),
               ),
             ],
           ),
@@ -95,11 +172,41 @@ final routerProvider = Provider<GoRouter>((ref) {
             routes: [
               GoRoute(
                 path: ':id',
-                builder: (context, state) => ConversationScreen(
-                  id: state.pathParameters['id']!,
-                  peerId: state.uri.queryParameters['peer'] ?? '',
-                  peerName: state.uri.queryParameters['name'] ?? 'Chat',
-                ),
+                // A conversation (Say hi from Discover, a profile's Message, a
+                // tap in Chats) glides up and fades in over about 220 ms instead
+                // of cutting in; with reduced motion it just appears.
+                pageBuilder: (context, state) {
+                  final still = MediaQuery.disableAnimationsOf(context);
+                  const glide = Duration(milliseconds: 220);
+                  return CustomTransitionPage<void>(
+                    key: state.pageKey,
+                    transitionDuration: still ? Duration.zero : glide,
+                    reverseTransitionDuration: still ? Duration.zero : glide,
+                    transitionsBuilder: (context, animation, _, child) {
+                      if (MediaQuery.disableAnimationsOf(context)) return child;
+                      final curved = CurvedAnimation(
+                        parent: animation,
+                        curve: Curves.easeOutCubic,
+                        reverseCurve: Curves.easeInCubic,
+                      );
+                      return FadeTransition(
+                        opacity: curved,
+                        child: SlideTransition(
+                          position: Tween(
+                            begin: const Offset(0, .04),
+                            end: Offset.zero,
+                          ).animate(curved),
+                          child: child,
+                        ),
+                      );
+                    },
+                    child: ConversationScreen(
+                      id: state.pathParameters['id']!,
+                      peerId: state.uri.queryParameters['peer'] ?? '',
+                      peerName: state.uri.queryParameters['name'] ?? 'Chat',
+                    ),
+                  );
+                },
               ),
             ],
           ),
@@ -127,8 +234,22 @@ final routerProvider = Provider<GoRouter>((ref) {
                 builder: (context, state) => const EditProfileScreen(),
               ),
               GoRoute(
-                path: 'privacy',
-                builder: (context, state) => const PrivacyScreen(),
+                path: 'following',
+                builder: (context, state) =>
+                    const ConnectionsScreen(kind: 'following'),
+              ),
+              GoRoute(
+                path: 'followers',
+                builder: (context, state) =>
+                    const ConnectionsScreen(kind: 'followers'),
+              ),
+              GoRoute(
+                path: 'visitors',
+                builder: (context, state) => const VisitorsScreen(),
+              ),
+              GoRoute(
+                path: 'stories',
+                builder: (context, state) => const MyStoriesScreen(),
               ),
               GoRoute(
                 path: 'devices',
@@ -156,7 +277,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
     ],
   );
-  ref.onDispose(router.dispose);
+  ref.onDispose(() {
+    router.dispose();
+    refresh.dispose();
+  });
   return router;
 });
 final themeProvider = NotifierProvider<ThemeController, ThemeMode>(
@@ -193,14 +317,14 @@ class ThemeController extends Notifier<ThemeMode> {
   void useSystem() => set(ThemeMode.system);
 }
 
-class KairovaApp extends ConsumerWidget {
-  const KairovaApp({super.key});
+class HiyallApp extends ConsumerWidget {
+  const HiyallApp({super.key});
   @override
   Widget build(BuildContext context, WidgetRef ref) => MaterialApp.router(
-    title: 'Kairova',
+    title: 'Hiyall',
     debugShowCheckedModeBanner: false,
-    theme: kairovaTheme(Brightness.light),
-    darkTheme: kairovaTheme(Brightness.dark),
+    theme: hiyallTheme(Brightness.light),
+    darkTheme: hiyallTheme(Brightness.dark),
     themeMode: ref.watch(themeProvider),
     routerConfig: ref.watch(routerProvider),
   );
@@ -232,11 +356,14 @@ class AppShell extends ConsumerWidget {
     Icons.person_outline_rounded,
   ];
 
+  /// An open conversation (`/chats/<id>`) is immersive: no app header and no
+  /// dock, only the conversation's own compact header and composer.
+  static bool inConversation(String path) =>
+      RegExp(r'^/chats/[^/]+').hasMatch(path);
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    if (ref.watch(sessionProvider).asData?.value == null) {
-      return const WelcomeScreen();
-    }
+    final immersive = inConversation(path);
     final selected = routes.indexWhere((r) => path.startsWith(r));
     final index = selected < 0 ? 0 : selected;
     final wide = MediaQuery.sizeOf(context).width >= 900;
@@ -247,21 +374,22 @@ class AppShell extends ConsumerWidget {
     final unreadActivity = ref.watch(
       activityProvider.select((s) => s.asData?.value.unread ?? 0),
     );
-    final avatar = profile?.displayName.characters.first ?? 'K';
     Widget logo() => Row(
       children: [
-        const BrandMark(size: 38),
+        const BrandMark(size: 36),
         const SizedBox(width: 10),
         Flexible(
+          // The wordmark is the logo: it keeps its size at large text settings.
           child: Text(
-            'kairova',
+            'hiyall',
             maxLines: 1,
+            textScaler: TextScaler.noScaling,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
               fontFamily: 'SpaceGrotesk',
               fontWeight: FontWeight.w700,
-              fontSize: 29,
-              letterSpacing: -1.7,
+              fontSize: 27,
+              letterSpacing: -1.6,
               color: scheme.onSurface,
             ),
           ),
@@ -329,76 +457,15 @@ class AppShell extends ConsumerWidget {
         children: [
           logo(),
           const SizedBox(height: 38),
-          Padding(
-            padding: const EdgeInsets.only(left: 14, bottom: 16),
-            child: Text(
-              'YOUR DAILY ORBIT',
-              style: TextStyle(
-                fontWeight: FontWeight.w800,
-                fontSize: 10,
-                letterSpacing: 1.3,
-                color: scheme.onSurfaceVariant,
-              ),
-            ),
-          ),
           Expanded(child: ListView(children: List.generate(5, destination))),
-          if (MediaQuery.sizeOf(context).height > 640 &&
-              MediaQuery.textScalerOf(context).scale(1) < 1.4) ...[
-            VibePanel(
-              color: VibeColors.lilac,
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Icon(Icons.auto_awesome_rounded, color: VibeColors.ink),
-                  const SizedBox(height: 18),
-                  const Text(
-                    'A little more you.\nA lot less noise.',
-                    style: TextStyle(
-                      fontFamily: 'SpaceGrotesk',
-                      fontWeight: FontWeight.w700,
-                      fontSize: 21,
-                      height: 1.1,
-                      color: VibeColors.ink,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextButton(
-                    onPressed: () => context.go('/profile/privacy'),
-                    style: TextButton.styleFrom(
-                      foregroundColor: VibeColors.ink,
-                      padding: EdgeInsets.zero,
-                      alignment: Alignment.centerLeft,
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Flexible(child: Text('Make it your space')),
-                        SizedBox(width: 4),
-                        Icon(Icons.arrow_outward_rounded, size: 14),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 18),
-          ],
-          Text(
-            'KAIROVA / EARLY ACCESS',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: scheme.onSurfaceVariant,
-              fontSize: 9,
-              letterSpacing: 1.5,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
         ],
       ),
     );
     final header = Padding(
-      padding: EdgeInsets.symmetric(horizontal: wide ? 32 : 18, vertical: 16),
+      padding: EdgeInsets.symmetric(
+        horizontal: wide ? 32 : 20,
+        vertical: wide ? 16 : 8,
+      ),
       child: Row(
         children: [
           if (!wide)
@@ -410,30 +477,17 @@ class AppShell extends ConsumerWidget {
                 children: [
                   Text(
                     index == 0
-                        ? 'Hey, ${profile?.displayName ?? 'you'}'
+                        ? homeGreeting(
+                            ref.watch(homeClockProvider)(),
+                            profile?.displayName,
+                          )
                         : labels[index],
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.titleLarge,
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    'YOUR SPACE. YOUR FREQUENCY.',
-                    style: TextStyle(
-                      fontSize: 10,
-                      letterSpacing: 1.5,
-                      fontWeight: FontWeight.w700,
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
                 ],
               ),
-            ),
-          if (wide)
-            IconButton(
-              tooltip: 'Explore all screen designs',
-              onPressed: () => context.go('/design'),
-              icon: const Icon(Icons.design_services_outlined, size: 21),
             ),
           IconButton(
             tooltip: unreadActivity > 0
@@ -445,7 +499,7 @@ class AppShell extends ConsumerWidget {
               label: Text(unreadActivity > 99 ? '99+' : '$unreadActivity'),
               backgroundColor: VibeColors.lime,
               textColor: VibeColors.ink,
-              child: const Icon(Icons.notifications_none_rounded, size: 21),
+              child: const Icon(Icons.notifications_none_rounded, size: 23),
             ),
           ),
           IconButton(
@@ -455,7 +509,7 @@ class AppShell extends ConsumerWidget {
             onPressed: () => ref.read(themeProvider.notifier).toggle(!dark),
             icon: Icon(
               dark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
-              size: 21,
+              size: 23,
             ),
           ),
           const SizedBox(width: 8),
@@ -465,22 +519,16 @@ class AppShell extends ConsumerWidget {
             child: InkWell(
               onTap: () => context.go('/profile'),
               borderRadius: BorderRadius.circular(18),
-              child: Container(
-                width: 44,
-                height: 44,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: VibeColors.lilac,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Text(
-                  avatar,
-                  style: const TextStyle(
-                    color: VibeColors.ink,
-                    fontFamily: 'SpaceGrotesk',
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                  ),
+              child: PersonAvatar(
+                name: profile?.displayName ?? 'K',
+                avatarUrl: profile?.avatarUrl,
+                userId: profile?.userId ?? '',
+                radius: 22,
+                cornerRadius: 16,
+                initialStyle: const TextStyle(
+                  fontFamily: 'SpaceGrotesk',
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
             ),
@@ -489,38 +537,37 @@ class AppShell extends ConsumerWidget {
       ),
     );
     return Scaffold(
-      body: LiveSync(
-        child: SafeArea(
-          child: Row(
-            children: [
-              if (wide) sidebar,
-              Expanded(
-                child: Column(
-                  children: [
-                    header,
-                    Expanded(child: child),
-                  ],
+      body: LocationSync(
+        child: LiveSync(
+          // An open conversation draws to the bottom edge itself (its composer
+          // keeps clear of the home indicator), so its backdrop is unbroken.
+          child: SafeArea(
+            bottom: !immersive,
+            child: Row(
+              children: [
+                if (wide) sidebar,
+                Expanded(
+                  child: Column(
+                    children: [
+                      if (!immersive) header,
+                      Expanded(child: child),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
-      floatingActionButton: path == '/home'
-          ? FloatingActionButton(
-              tooltip: 'Make a little space',
-              backgroundColor: VibeColors.lime,
-              foregroundColor: VibeColors.ink,
-              elevation: 2,
-              onPressed: () => showCreateSheet(context),
-              child: const Icon(Icons.auto_awesome_rounded),
-            )
-          : null,
-      bottomNavigationBar: wide
+      bottomNavigationBar: wide || immersive
           ? null
           : NavigationDock(
               selectedIndex: index,
               profileName: profile?.displayName ?? 'K',
+              profilePhoto: avatarProvider(
+                profile?.userId ?? '',
+                profile?.avatarUrl,
+              ),
               newActivity: unreadActivity > 0,
               unreadChats: unreadChats,
               onSelected: (i) => context.go(routes[i]),

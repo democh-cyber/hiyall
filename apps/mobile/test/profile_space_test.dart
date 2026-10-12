@@ -6,11 +6,11 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:kairova/app.dart';
-import 'package:kairova/core/api.dart';
-import 'package:kairova/core/state.dart';
-import 'package:kairova/features/profile_editor.dart';
-import 'package:kairova/shared/profile_space.dart';
+import 'package:hiyall/app.dart';
+import 'package:hiyall/core/api.dart';
+import 'package:hiyall/core/state.dart';
+import 'package:hiyall/features/profile_editor.dart';
+import 'package:hiyall/shared/profile_space.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
 
@@ -249,7 +249,7 @@ void main() {
           apiProvider.overrideWithValue(api),
           sessionProvider.overrideWith(SignedIn.new),
         ],
-        child: const KairovaApp(),
+        child: const HiyallApp(),
       ),
     );
     await tester.pumpAndSettle();
@@ -327,6 +327,8 @@ void main() {
     expect(api.saved!['interests'], expressive.interests);
     expect(api.saved!['profileAccent'], 'lime');
     expect(api.saved!['profilePattern'], 'orbit');
+    // Gender is optional: unsaid stays empty rather than being guessed.
+    expect(api.saved!['gender'], '');
     expect(api.saved!.keys, isNot(contains('email')));
     expect(find.text('A new little chapter'), findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -356,44 +358,39 @@ void main() {
       expect(find.byType(ProfileForm), findsOneWidget);
     },
   );
-  testWidgets('Settings stay reachable while scrolling and lead to privacy', (
-    tester,
-  ) async {
-    final api = ProfileApi();
-    await launchEditor(tester, api);
-    final container = ProviderScope.containerOf(
-      tester.element(find.byType(ProfileForm)),
-    );
-    container.read(routerProvider).go('/profile');
-    await tester.pumpAndSettle();
-    expect(find.text('Sign out'), findsNothing);
-    await tester.drag(find.byType(CustomScrollView), const Offset(0, -550));
-    await tester.pumpAndSettle();
-    expect(
-      find.byKey(const ValueKey('collapsed-profile-identity')),
-      findsOneWidget,
-    );
-    await tester.tap(find.byTooltip('Your space settings'));
-    await tester.pumpAndSettle();
-    expect(find.text('Settings'), findsWidgets);
-    await tester.tap(find.byKey(const Key('settings-/profile/privacy')));
-    await tester.pumpAndSettle();
-    expect(find.text('Who can view my profile?'), findsOneWidget);
-    // Privacy leads back to Settings, not straight to the profile.
-    await tester.tap(find.widgetWithText(TextButton, 'Settings'));
-    await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(
-      find.byKey(const Key('sign-out')),
-      300,
-      scrollable: find.byType(Scrollable).first,
-    );
-    expect(find.byKey(const Key('sign-out')), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
+  testWidgets(
+    'Settings stay reachable while scrolling and keep one visibility option',
+    (tester) async {
+      final api = ProfileApi();
+      await launchEditor(tester, api);
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(ProfileForm)),
+      );
+      container.read(routerProvider).go('/profile');
+      await tester.pumpAndSettle();
+      expect(find.text('Sign out'), findsNothing);
+      await tester.drag(find.byType(CustomScrollView), const Offset(0, -550));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('collapsed-profile-identity')),
+        findsOneWidget,
+      );
+      await tester.tap(find.byTooltip('Your space settings'));
+      await tester.pumpAndSettle();
+      expect(find.text('Settings'), findsWidgets);
+      expect(find.byKey(const Key('online-toggle')), findsOneWidget);
+      expect(find.byKey(const Key('settings-/profile/privacy')), findsNothing);
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('sign-out')),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.byKey(const Key('sign-out')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
-  testWidgets('Share copies the profile handle and preserves privacy', (
-    tester,
-  ) async {
+  testWidgets('Share copies the profile handle', (tester) async {
     String? copied;
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
       SystemChannels.platform,
@@ -421,7 +418,7 @@ void main() {
     await tester.tap(find.text('Share'));
     await tester.pumpAndSettle();
     expect(
-      find.text('Your privacy settings still decide who can see your profile.'),
+      find.text('Share your username so friends can find you on Hiyall.'),
       findsOneWidget,
     );
     await tester.tap(find.text('Copy username'));
