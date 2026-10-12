@@ -1,10 +1,10 @@
-# Kairova UX and design system
+# Hiyall UX and design system
 
 **Status:** foundation screens implemented and visually redesigned, 7 October 2026. Feature flows beyond profile/privacy/session management remain a roadmap.
 
 ## Brand and interaction direction
 
-Kairova uses an expressive, playful visual direction: lime, lilac, pink and mint against warm cream and near-black; large Space Grotesk headings; Manrope interface text; rounded cards; and original vector art with smiles, stars and orbits. Fonts are bundled locally with their SIL Open Font License files in `apps/mobile/assets/fonts`, with no remote font requests. The brand mark is an eight-point star in a lime rounded square. Brand clearance precedes public release.
+Hiyall uses an expressive, playful visual direction: lime, lilac, pink and mint against warm cream and near-black; large Space Grotesk headings; Manrope interface text; rounded cards; and original vector art with smiles, stars and orbits. Fonts are bundled locally with their SIL Open Font License files in `apps/mobile/assets/fonts`, with no remote font requests. The brand mark is an eight-point star in a lime rounded square. Brand clearance precedes public release.
 
 Implemented layouts use a floating dark bottom bar on phones and a 238-pixel sidebar at widths of 900 pixels or more. Reading width is capped at 1060 pixels. Hero and paired-card layouts become stacked on narrow screens or at large text sizes. Profile identity and preferences sit beside each other on wider screens. Every feature screen has its own headline, illustration and supporting layout; unavailable features have explicit coming-soon text, with no fabricated conversations, notifications or social counters.
 
@@ -34,7 +34,7 @@ flowchart TD
 
 Onboarding can skip optional photo, location, profession, education, and interests. Set a system-derived language/time zone that the user can change. Before the first post or request, explain the relevant audience/contact default in context. Do not request contacts, microphone, camera, or location until the feature needs them. A permissions denial always has a usable alternative.
 
-Privacy defaults: messages from friends; strangers use bounded requests; precise location hidden; online and last-seen hidden; discoverability explicitly chosen; profiles friends-only until chosen otherwise. Public creators choose public explicitly. Share only eligible profile fields on discovery cards. Nearby and age filters are deferred pending a separate safety design; no sensitive-trait filters are accepted.
+Privacy defaults (owner decision, October 2026; supersedes the earlier friends-only design): profiles are public and discoverable; every field is visible; the followers and following lists open to followers (friends only for minors); messages from friends; strangers use bounded requests; last seen hidden; online shown, with one "show when I'm online" toggle as the only member control for now; precise location is never stored. Nearby is coarse and expiring and shown as distance buckets (the app sends the position automatically; see the safety note for what that means without an in-app opt-out) ([Nearby and open access](../api/19-nearby-and-open-access.md)). Share only the profile fields a member shows on discovery cards. Age filters remain unimplemented and no sensitive-trait filters are accepted.
 
 ## Screen inventory and route map
 
@@ -75,7 +75,7 @@ These are spatial wireframes, not final rendered mockups. Wide tablets keep the 
 ```text
 HOME                                DISCOVER
 ┌─────────────────────────────┐     ┌─────────────────────────────┐
-│ Kairova               [+]   │     │ Discover               [⌕] │
+│ Hiyall               [+]   │     │ Discover               [⌕] │
 │ [Your story] [Aya] [Niko] →  │     │ Find people through shared │
 │ For you  Friends  Following │     │ interests                  │
 │─────────────────────────────│     │ [Photography] [Tech] [+]    │

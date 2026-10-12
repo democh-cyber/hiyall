@@ -1,4 +1,4 @@
-# Kairova: the next social space
+# Hiyall: the next social space
 
 Design specification and Flutter implementation map · 7 October 2026
 
@@ -6,7 +6,7 @@ This specification answers the Gen Z UI/UX brief before extending the implementa
 
 ## Brand and personality
 
-**Concept: your orbit.** People have many overlapping interests and changing moods. Kairova gives them a small digital space in which to express themselves and meet people through context, rather than chasing public popularity. Its signature is a lime star, an orbit line and a playful ambient smile. The line connects illustrations, profile covers, the creation orb and interest tiles.
+**Concept: your orbit.** People have many overlapping interests and changing moods. Hiyall gives them a small digital space in which to express themselves and meet people through context, rather than chasing public popularity. Its signature is a lime star, an orbit line and a playful ambient smile. The line connects illustrations, profile covers, the creation orb and interest tiles.
 
 The voice is warm, short and clear: “Meet your people,” “Share your world,” “Good vibes. Clear boundaries.” Slang is occasional and natural. No forced hype, streak pressure, countdown anxiety or exaggerated security promises. Names remain Home, Chats, Discover, Activity and Me where labels fit; descriptive labels remain available to assistive technology. Familiar destination names avoid requiring users to learn metaphors to navigate.
 
@@ -167,6 +167,23 @@ Each interactive component declares its semantic label, state, hit target and pr
 **Signature: the orbit opens.** Home’s lime creation star expands into a short creation sheet with seven clearly labeled actions. Press feedback is immediate. Selection uses a short scale/fade; content transitions fade for 160–220ms. Reduced motion sets durations to zero and removes ambient movement. A four-step welcome changes the artwork/state without heavy video or continuous background animation. Reaction demo selection gives a small scale pulse and a count update, not confetti. Haptics are optional, never used for every navigation tap.
 
 Stories expose Next/Back/Pause controls in addition to gestures. Long press never hides critical actions. No notification animation, automatic call, forced audio or unread state without actual data. No animation claims of server completion before acknowledgment.
+
+## Home screen
+
+Home is a place to hang out, not a dashboard: the feed is the hero and everything above it is one line or one row. Top to bottom on a phone:
+
+1. **Greeting**: one line with the hour's personality (`gm Mira ☀️`, `hey Mira 🌤️`, `hey Mira 🌙`, `still up, Mira? 👀`), first name only. The clock is injectable (`homeClockProvider`) for tests.
+2. **Vibe check**: "What's your vibe today?" and a scrolling row of emoji chips. One tap saves `currentVibe` through the profile update (the same text the profile editor's chips write); the current vibe is preselected, a vibe typed in the editor leads the row, a second tap on the chosen chip turns it off. Feedback is inline ("Saving…", "Vibe saved" with a check on the chip), never a snackbar; a failed save puts the highlight back and says so. The strip owns its state so a tap repaints only itself.
+3. **Finish your profile · 3/6**: a slim pill with a progress ring that opens the editor. The close button hides it for this account on this device (secure storage, `lib/core/home_prefs.dart`, same pattern as story drafts). It is absent at 6/6.
+4. **Stories**: larger bubbles with a gradient ring for unseen, a quiet ring once seen, and a lime + on "Your story". Tray logic and viewer are unchanged.
+5. **For you**: one swipeable row of pastel sticker cards that exists only when something needs the member: friend request and follow request cards (Accept / Not now, optimistic with rollback), `N chats waiting`, and `N new activity` (unread activity that is not already a request card). Nothing waiting, nothing rendered. Counts live on the dock and the bell, so there are no stat tiles.
+6. **Pulse**: a pill toggle (Your people / Everyone) and then the posts: 28 px cards, large inset photos, one-tap reaction pill (long press for the other reactions), comment pill and save. A short post with no photo is set large. After about the third post (or at the end of a short feed) a snap carousel of "People you might vibe with" shows shared interests and a Follow button, from the existing Discover first page.
+7. **Quiet, loading and error states**: a friendly empty card with the orbit artwork and two buttons (Share a post, Find people); placeholder cards while loading (no shimmer); the shared failure card with Retry.
+8. **Create**: one lime pill with + at the bottom right opening the create sheet; it folds to a plain + while scrolling down and opens again on the way up.
+
+**Wide (content area at least 880 px, i.e. a window of about 1120 px with the sidebar):** two columns. The centre column (max 640) holds stories, the toggle and Pulse; a 340 px right rail holds the vibe strip (wrapped), the profile pill, For you and the suggestions. The greeting moves to the shell header. The dock and sidebar behave as before.
+
+**Motion and touch:** sections fade and lift in with a 50 ms stagger, at most 400 ms in total, and not at all with reduced motion. Every tappable card uses the press-scale pattern (`PressScale`): no grey ink or hover highlight, a small scale while pressed and a focus ring for the keyboard. Targets are at least 48 dp; cards cap text growth at 1.3x so swipeable rows keep one height. Pull to refresh springs.
 
 ## Accessibility and global readiness
 

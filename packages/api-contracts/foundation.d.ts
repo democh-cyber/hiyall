@@ -98,7 +98,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read a profile with your relationship; audiences that exclude you return a locked card; blocked and inactive accounts return 404 */
+        /** Read a profile with your relationship; opening it records you as a visitor (once per member, never exposed, not for your own profile, the locked card does count); audiences that exclude you return a locked card; another member's age in whole years is included when known and its audience allows you, never on the locked card or your own profile; blocked and inactive accounts, and members in the other age band (minors and adults are kept apart, with AGE_BAND_ISOLATION on), return 404 exactly as a block does */
         get: operations["getPublicProfile_v1_users_userId_profile"];
         put?: never;
         post?: never;
@@ -126,6 +126,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/me/onboarding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read whether onboarding is complete; allowed before onboarding */
+        get: operations["getOnboardingState_v1_me_onboarding"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/onboarding/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Declare your birth date (13 or over) and accept the current terms; idempotent; needs a chosen name and username; allowed before onboarding. The birth date is stored privately (the first one is final) and puts you in the minor or adult age band; a declared age under 18 also applies the stricter minor defaults once (presence hidden, country shown to friends only) */
+        post: operations["postOnboardingState_v1_me_onboarding_complete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/usernames/{username}/availability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Check a username against the profile grammar; your own name is available; generated member_ names never are; shares the per-account search rate limit; allowed before onboarding */
+        get: operations["getUsernameAvailability_v1_usernames_username_availability"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/discovery/search": {
         parameters: {
             query?: never;
@@ -135,8 +186,44 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Search opted-in public adult-eligible profiles; public fields only, OR within a collection and AND across dimensions; 20 per page, at most 10 pages, principal/query-bound cursors */
+        /** Search discoverable public profiles of every onboarded member in your own age band (no eligibility step; minors and adults never see each other, like a block); only the fields each member shows, OR within a collection and AND across dimensions, plus ageMin/ageMax and gender filters (each filter, age included, matches only members whose audience for that field is everyone); 20 per page, at most 10 pages, principal/query-bound cursors */
         post: operations["postPeoplePage_v1_discovery_search"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/location": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Whether you are sharing a location now (a stored point younger than 24 hours); never returns coordinates */
+        get: operations["getLocationState_v1_me_location"];
+        /** Share your location: the server rounds both coordinates before storing, to 2 decimal places (about 1.1 km) for adults and 1 decimal place (about 11 km) for minors, decided by your age band when you write, so a precise position is never kept, logged or echoed. Replaces any earlier point; it counts as shared for 24 hours and is deleted after 7 days */
+        put: operations["putLocationState_v1_me_location"];
+        post?: never;
+        /** Stop sharing: deletes the stored point; idempotent; you leave everyone's Nearby results immediately */
+        delete: operations["deleteLocationStopped_v1_me_location"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/discover/nearby": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** People near your stored location, nearest distance bucket first and then by user id: active, onboarded, discoverable and public members in your own age band whose fresh stored point is within the radius of yours, never you, never anyone blocked in either direction. The body takes the same optional filters as people search (interests, languages, country, vibe, ageMin, ageMax, gender, online; OR within a collection, AND across dimensions, matching only members whose field audience is everyone, fieldAudiences.age for the age filter) plus radiusKm; unknown keys are refused. 20 per page, at most 10 pages, cursor bound to you, the radius, the filters and your stored point, expiring after 15 minutes */
+        post: operations["postNearbyPage_v1_discover_nearby"];
         delete?: never;
         options?: never;
         head?: never;
@@ -152,7 +239,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Revoke the current session */
+        /** Revoke the current session and end its realtime connections (closed with 1008) */
         post: operations["postRevoked_v1_auth_logout"];
         delete?: never;
         options?: never;
@@ -167,7 +254,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List only your sessions with a principal-bound cursor */
+        /** List only your sessions that are still signed in, newest first, with a principal-bound cursor: not revoked, and either unexpired or, for a sign-in from the identity provider (which refreshes its tokens), used within the last 30 days */
         get: operations["getSessionPage_v1_auth_sessions"];
         put?: never;
         post?: never;
@@ -187,7 +274,7 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Revoke an owned session; foreign sessions return 404 */
+        /** Revoke an owned session, expired or not, and end its realtime connections; a revoked sign-in never comes back with a refreshed token; foreign sessions return 404 */
         delete: operations["deleteRevoked_v1_auth_sessions_sessionId"];
         options?: never;
         head?: never;
@@ -203,7 +290,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Follow; approval policies yield pending, "nobody" returns 403 FOLLOW_NOT_ALLOWED; idempotent */
+        /** Follow; instant by default (active); a member whose policy is approval yields pending, "nobody" returns 403 FOLLOW_NOT_ALLOWED; idempotent. Following has no effect on messaging */
         post: operations["postFollowState_v1_users_userId_follow"];
         /** Unfollow or withdraw a pending request; idempotent */
         delete: operations["deleteFollowState_v1_users_userId_follow"];
@@ -280,6 +367,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/me/visitors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Who opened your own profile, newest first visit first: owner only (there is no route for anyone else's visitors), one row per member with the time of their first visit. Inactive accounts and anyone blocked with you in either direction or in the other age band are left out, so the list can be shorter than the visitors count. Returns at most your VisitorListLimit most recent visitors (200 on Free) across all pages. Visitors are not notified and cannot opt out. Cursor bound to you, expiring after 15 minutes */
+        get: operations["getVisitorPage_v1_me_visitors"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/users/{userId}/friend-requests": {
         parameters: {
             query?: never;
@@ -289,7 +393,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Send a friend request under the target requestsFrom policy; crossing requests accept; 7-day cooldown after a decline (429 REQUEST_COOLDOWN) */
+        /** Send a friend request under the target requestsFrom policy; crossing requests accept; 7-day cooldown after a decline (429 REQUEST_COOLDOWN, Retry-After the seconds left) */
         post: operations["postFriendRequest_v1_users_userId_friend-requests"];
         delete?: never;
         options?: never;
@@ -406,7 +510,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Another person's friends; needs profile and connections audience access (403 CONNECTIONS_PRIVATE); blocked and inactive accounts are omitted */
+        /** Another person's friends; needs profile and connections audience access (403 CONNECTIONS_PRIVATE): an active follower or friend of an adult member may open followers and following, friends only for a minor, and the friends list is friends-only unless the owner chose everyone; blocked, other-age-band and inactive accounts are omitted */
         get: operations["getConnectionPage_v1_users_userId_friends"];
         put?: never;
         post?: never;
@@ -440,7 +544,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Another person's followers; needs profile and connections audience access (403 CONNECTIONS_PRIVATE); blocked and inactive accounts are omitted */
+        /** Another person's followers; needs profile and connections audience access (403 CONNECTIONS_PRIVATE): an active follower or friend of an adult member may open followers and following, friends only for a minor, and the friends list is friends-only unless the owner chose everyone; blocked, other-age-band and inactive accounts are omitted */
         get: operations["getConnectionPage_v1_users_userId_followers"];
         put?: never;
         post?: never;
@@ -474,7 +578,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Another person's following; needs profile and connections audience access (403 CONNECTIONS_PRIVATE); blocked and inactive accounts are omitted */
+        /** Another person's following; needs profile and connections audience access (403 CONNECTIONS_PRIVATE): an active follower or friend of an adult member may open followers and following, friends only for a minor, and the friends list is friends-only unless the owner chose everyone; blocked, other-age-band and inactive accounts are omitted */
         get: operations["getConnectionPage_v1_users_userId_following"];
         put?: never;
         post?: never;
@@ -628,7 +732,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Another person's devices, only if their messagesFrom allows you (403 MESSAGES_NOT_ALLOWED) */
+        /** Another person's devices, if their messagesFrom allows you (open by default: anyone not blocked and in your age band; 403 MESSAGES_NOT_ALLOWED when a member set friends, followers or nobody) */
         get: operations["getDeviceList_v1_users_userId_devices"];
         put?: never;
         post?: never;
@@ -647,7 +751,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Claim a one-time key exactly once; falls back to the fallback key */
+        /** Claim a one-time key exactly once; falls back to the fallback key when none remain or the device has already handed out 100 one-time keys in the last hour */
         post: operations["postClaimedKey_v1_users_userId_devices_deviceId_claim"];
         delete?: never;
         options?: never;
@@ -665,7 +769,7 @@ export interface paths {
         /** Your active conversations, most recent first */
         get: operations["getDirectConversationPage_v1_conversations"];
         put?: never;
-        /** Open or reopen the direct conversation with a person */
+        /** Open or reopen the direct conversation with a person. Anyone may message anyone who is not blocked and is in the same age band (a member in the other band, or who blocked you, is 404 as for a block), with no friendship or follow needed. Opening a conversation with someone you have never exchanged a message with uses a tighter budget on top of the general limit: a burst of 10, then one a minute, then 429 RATE_LIMITED with Retry-After 60. Starting a conversation (being the first to open it) also counts against a per-member daily limit (Free: 40 per rolling 24 hours, counted by creation time and never refunded; reopening one never counts), then 429 QUOTA with Retry-After */
         post: operations["postDirectConversation_v1_conversations"];
         delete?: never;
         options?: never;
@@ -741,6 +845,592 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/sessions/revoke-others": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sign out every other session, including idle sign-ins whose last token expired, end their realtime connections, and refuse any Firebase sign-in from before now that has no session yet; returns how many sessions were revoked */
+        post: operations["postRevokedCount_v1_auth_sessions_revoke-others"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/conversations/unread": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The Chats badge: unread messages and conversations with any, leaving out muted chats, restricted people and barred pairs */
+        get: operations["getChatUnread_v1_conversations_unread"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/conversations/{conversationId}/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Move your read pointer forward; your devices are signalled, the peer only when read receipts are on for both */
+        post: operations["postReadPointer_v1_conversations_conversationId_read"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/devices/{deviceId}/push": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Attach a push token to your device (a token moved from another device is detached from it); pushes carry no content */
+        put: operations["putPushRegistered_v1_devices_deviceId_push"];
+        post?: never;
+        /** Remove your device's push token */
+        delete: operations["deletePushRegistered_v1_devices_deviceId_push"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/users/{userId}/mute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mute a member until a time or until removed: their posts and stories leave your Pulse and their activity and pushes are silenced; never visible to them. 422 for yourself; 404 for unknown, inactive, not onboarded or other-age-band members */
+        post: operations["postMuteState_v1_users_userId_mute"];
+        /** Remove your mute; idempotent */
+        delete: operations["deleteMuteState_v1_users_userId_mute"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/users/{userId}/restrict": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restrict a member: activity and pushes silenced, their chats leave your badge, receipts and typing off both ways, their comments on your posts visible only to them; never visible to them. 422 for yourself; 404 for unknown, inactive, not onboarded or other-age-band members */
+        post: operations["postRestrictState_v1_users_userId_restrict"];
+        /** Remove your restrict; idempotent */
+        delete: operations["deleteRestrictState_v1_users_userId_restrict"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/conversations/{conversationId}/mute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mute your side of a chat until a time or until removed: no push and out of the unread badge; never shown to the peer */
+        post: operations["postMuteState_v1_conversations_conversationId_mute"];
+        /** Unmute your side of a chat */
+        delete: operations["deleteMuteState_v1_conversations_conversationId_mute"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/blocked": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Your blocked accounts, newest first; expired mutes and inactive accounts omitted */
+        get: operations["getControlPage_v1_me_blocked"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/muted": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Your muted accounts, newest first; expired mutes and inactive accounts omitted, and members in the other age band or not onboarded */
+        get: operations["getControlPage_v1_me_muted"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/restricted": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Your restricted accounts, newest first; expired mutes and inactive accounts omitted, and members in the other age band or not onboarded */
+        get: operations["getControlPage_v1_me_restricted"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Report a member, chat, message, post, comment, story, space or space entry; 201 for a new report, 200 with duplicate true while your earlier report of the same target is open. Evidence is opt-in decrypted text you chose. A report against a member you may not know is accepted but names nobody */
+        post: operations["postReportCreated_v1_reports"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Your own reports and their status */
+        get: operations["getReportPage_v1_me_reports"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/media/uploads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start a photo upload (purpose post, story or avatar; same size and type limits for all): returns a signed PUT URL that pins the content type and the exact size. Per member: at most 50 pending uploads, at most 50 slots and 300 MiB of declared size per rolling 24 hours for every purpose together (counted by creation time whatever became of the upload), and 2 GiB of stored photos; 503 MEDIA_UNAVAILABLE without storage */
+        post: operations["postMediaUpload_v1_media_uploads"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/media/{mediaId}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Process an uploaded photo: re-encoded without metadata into full and thumbnail variants; 415 UNSUPPORTED_MEDIA when it cannot be read */
+        post: operations["postMediaReady_v1_media_mediaId_complete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/feed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Posts you may see, newest first: your circle (yourself, people you follow and friends) for following, recent public posts for everyone; muted and blocked accounts and the other age band never appear */
+        get: operations["getPostPage_v1_feed"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/posts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish a post with up to 10 of your own ready, unattached post photos (409 MEDIA_NOT_READY otherwise). At most 20 posts per rolling 24 hours, counted by creation time including deleted posts and text-only posts */
+        post: operations["postPost_v1_posts"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/posts/{postId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A post you may see; otherwise 404 */
+        get: operations["getPost_v1_posts_postId"];
+        put?: never;
+        post?: never;
+        /** Delete your post */
+        delete: operations["deleteDeleted_v1_posts_postId"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/posts/{postId}/reaction": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set your one reaction on a post */
+        put: operations["putReactionSet_v1_posts_postId_reaction"];
+        post?: never;
+        /** Remove your reaction */
+        delete: operations["deleteReactionState_v1_posts_postId_reaction"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/posts/{postId}/save": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Save a post you may see; idempotent */
+        put: operations["putSavedState_v1_posts_postId_save"];
+        post?: never;
+        /** Unsave a post you may see; idempotent */
+        delete: operations["deleteSavedState_v1_posts_postId_save"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/posts/{postId}/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Comments on a post you may see, oldest first */
+        get: operations["getCommentPage_v1_posts_postId_comments"];
+        put?: never;
+        /** Comment or reply (parentId); the post's comment setting applies (403 COMMENTS_NOT_ALLOWED) */
+        post: operations["postComment_v1_posts_postId_comments"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/comments/{commentId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete your comment, or any comment on your post */
+        delete: operations["deleteDeleted_v1_comments_commentId"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/users/{userId}/posts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A member's posts you may see, newest first */
+        get: operations["getPostPage_v1_users_userId_posts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/saved": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Posts you saved and can still see, most recently saved first */
+        get: operations["getPostPage_v1_me_saved"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/stories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish a story; it stays up for lifetimeHours (6, 12 or 24, default 24). At most 30 stories per rolling 24 hours, counted by creation time including deleted stories and text-only stories */
+        post: operations["postStoryCreated_v1_stories"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/stories/tray": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Active stories you may see, grouped by author: your own first, then unseen, newest first; at most each author's newest 100 and 1500 in all */
+        get: operations["getStoryTray_v1_stories_tray"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/stories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Your own active stories (not deleted, not yet expired), newest first, each with viewCount: how many members saw it, counted as the viewers list shows them (inactive accounts and anyone blocked with you or in the other age band are left out). Only ever the caller's own; cursor bound to you, expiring after 15 minutes */
+        get: operations["getStoryPage_v1_me_stories"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/users/{userId}/stories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Another member's active stories that you may watch (their audience, blocks, the age band and inactive accounts apply; exactly what the stories count on their profile counts), newest first, each with whether you have seen it. Empty for a member you cannot see. Cursor bound to you and that member, expiring after 15 minutes */
+        get: operations["getStoryPage_v1_users_userId_stories"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/stories/{storyId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete your story; someone else's, an unknown or an already deleted story is 404 */
+        delete: operations["deleteDeleted_v1_stories_storyId"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/stories/{storyId}/view": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record that you viewed a story you may see; once per viewer; your own are not counted */
+        post: operations["postViewed_v1_stories_storyId_view"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/stories/{storyId}/viewers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Who viewed your story, most recent first; authors only (anyone else, and a deleted story, is 404); inactive accounts and anyone blocked with you or in the other age band are left out */
+        get: operations["getConnectionPage_v1_stories_storyId_viewers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/conversations/{conversationId}/blobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reserve an upload slot for one end-to-end encrypted attachment blob (ciphertext the server cannot read; role full or thumb). You must be in an active conversation, not blocked or in the other age band, allowed to message the peer, and the peer must have replied in it or be your friend. Per member: at most 100 blobs and 300 MiB per rolling 24 hours (counted by creation time, deleting does not refund), at most 10 pending. 503 CHAT_MEDIA_UNAVAILABLE without chat storage */
+        post: operations["postChatBlobSlot_v1_conversations_conversationId_blobs"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/blobs/{blobId}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Finish an upload: the stored object must be exactly the declared size. Idempotent for your own blob; a wrong size deletes the object and kills the slot (409 BLOB_SIZE_MISMATCH, ask for a new slot); no object yet is 409 BLOB_NOT_READY. An uploaded blob that no message claims expires an hour after completion */
+        post: operations["postChatBlobState_v1_blobs_blobId_complete"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/conversations/{conversationId}/blobs/{blobId}/url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** A short-lived signed GET for a blob that is uploaded, sent in a message and unexpired, for either member of an active conversation who is not barred from the peer (muting or restricting the sender does not matter). Responses are Cache-Control no-store. A blob that is not sent yet is 404 for the peer and 409 BLOB_NOT_READY for its uploader */
+        get: operations["getChatBlobUrl_v1_conversations_conversationId_blobs_blobId_url"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/blobs/{blobId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete your own blob (any state); the object is removed at once, or by the hourly clean-up if storage fails. Idempotent. A blob held as evidence in a report is left alone and the answer is the same. Someone else's blob or an unknown id is 404 */
+        delete: operations["deleteDeleted_v1_blobs_blobId"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/spaces": {
         parameters: {
             query?: never;
@@ -748,7 +1438,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Browse adult-only communities, Moments or events; private spaces preview metadata only */
+        /** Browse communities, Moments or events hosted by members of your own age band (others behave as blocked); private spaces preview metadata only */
         get: operations["getSharedSpacePage_v1_spaces"];
         put?: never;
         /** Create a shared space; scheduled spaces retain UTC plus an IANA host zone */
@@ -821,7 +1511,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Invite an eligible adult by exact username; hosts only */
+        /** Invite a member by exact username; hosts only. Usernames are public, so the answer is the same (the space, or the same refusal) whether the name belongs to a member you may invite or to someone in the other age band, blocked from you or the owner, not onboarded, or nobody; only a member you may invite is invited and notified */
         post: operations["postSharedSpace_v1_spaces_spaceId_invitations"];
         delete?: never;
         options?: never;
@@ -854,7 +1544,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Host or moderator approves, removes or bans; hierarchical roles protect owners and admins */
+        /** Host or moderator approves, removes or bans; hierarchical roles protect owners and admins. Removing needs a membership row and banning a row or a member you may reach (active, onboarded, not barred from you or the owner); otherwise 404. Only a real change notifies the member */
         put: operations["putSharedSpace_v1_spaces_spaceId_members_userId"];
         post?: never;
         delete?: never;
@@ -870,7 +1560,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Member-only shared discussion, with blocks and age eligibility checked on every page */
+        /** Member-only shared discussion, with blocks and membership checked on every page */
         get: operations["getSpaceEntryPage_v1_spaces_spaceId_entries"];
         put?: never;
         /** Create a server-readable discussion entry; active membership and an open schedule required */
@@ -907,7 +1597,10 @@ export interface components {
             username: string;
             displayName: string;
             bio?: string;
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description The id of your current profile photo, or null. Set it through PATCH /v1/me/profile.
+             */
             avatarMediaId?: string | null;
             /** Format: uuid */
             coverMediaId?: string | null;
@@ -946,16 +1639,34 @@ export interface components {
             profilePattern?: "" | "glow" | "orbit" | "plain";
             /** @enum {string} */
             avatarFrame?: "" | "minimal" | "orbit";
-            /** @description Counts of active persisted relationships, excluding inactive and blocked accounts. Omitted from visitor profiles unless allowed. */
+            /**
+             * @description Optional. Empty is unset or prefer not to say. Shown to others only when the gender field audience allows it (default everyone) and used by the gender filter only for members whose audience is everyone. Never returned in search or Nearby results.
+             * @enum {string}
+             */
+            gender: "" | "woman" | "man" | "nonbinary";
+            /**
+             * Format: uri
+             * @description Signed URL of a 640 px thumbnail of the profile photo, valid for an hour; null when there is no photo (or photo storage is not configured). The URL is minted per response and never stored, so refresh it with the profile rather than caching it for long; cache the image bytes by avatarMediaId or the URL path.
+             */
+            readonly avatarUrl: string | null;
+            /**
+             * Format: uri
+             * @description Signed URL of the full-size (at most 2048 px) profile photo, valid for an hour; null when there is no photo. On another member's profile it is null on the locked card, which shows the thumbnail only.
+             */
+            readonly avatarFullUrl: string | null;
+            /** @description Friends, following and followers count active persisted relationships, excluding inactive and blocked accounts; visitors and stories are described on SocialStats. Shown when the member's counts field audience allows the viewer (default everyone); omitted otherwise and never on the locked card. The owner always sees their own. */
             socialStats?: components["schemas"]["SocialStats"];
         };
         ProfilePatch: {
             username?: string;
             displayName?: string;
             bio?: string;
-            /** @description Uploads are not implemented; clearing a reference is allowed. */
-            avatarMediaId?: null;
-            /** @description Uploads are not implemented; clearing a reference is allowed. */
+            /**
+             * Format: uuid
+             * @description The mediaId of a photo you uploaded with purpose "avatar" and finished (POST /v1/media/{mediaId}/complete), or null to remove your photo. It must be yours, ready and not used elsewhere, otherwise 422 VALIDATION on avatarMediaId and nothing in the request is applied. Setting it attaches the photo and releases the previous one for deletion in the same transaction; sending the current id changes nothing about the photos. Photo uploads need a finished onboarding, so this is used afterwards.
+             */
+            avatarMediaId?: string | null;
+            /** @description Cover photos are not implemented; clearing a reference is allowed. */
             coverMediaId?: null;
             pronouns?: string;
             country?: string | null;
@@ -985,13 +1696,27 @@ export interface components {
             profilePattern?: "glow" | "orbit" | "plain";
             /** @enum {string} */
             avatarFrame?: "minimal" | "orbit";
+            /**
+             * @description Optional. Empty is unset or prefer not to say. Shown to others only when the gender field audience allows it (default everyone) and used by the gender filter only for members whose audience is everyone. Never returned in search or Nearby results.
+             * @enum {string}
+             */
+            gender?: "" | "woman" | "man" | "nonbinary";
         };
         PrivacySettings: {
-            /** @enum {string} */
+            /**
+             * @description New accounts start "public" and discoverable; no screen offers a choice for now, but the field stays editable.
+             * @enum {string}
+             */
             profileAudience: "public" | "friends" | "followers" | "private";
-            /** @enum {string} */
+            /**
+             * @description Who may start a conversation or message you. New accounts start "everyone": anyone who is not blocked and is in the same age band, with no friendship or follow needed, minors included (within their band). "friends", "followers" and "nobody" are honoured for members who set them through this API; no screen does.
+             * @enum {string}
+             */
             messagesFrom: "everyone" | "friends" | "followers" | "nobody";
-            /** @enum {string} */
+            /**
+             * @description New accounts start "everyone": a follow takes effect at once. "approval" holds follows as requests to approve and "nobody" refuses them, for members who set that through this API; no screen does.
+             * @enum {string}
+             */
             followPolicy: "everyone" | "approval" | "nobody";
             /** @enum {string} */
             requestsFrom: "everyone" | "friends" | "followers" | "nobody";
@@ -999,7 +1724,10 @@ export interface components {
             storyAudience: "public" | "friends" | "followers" | "private";
             /** @enum {string} */
             activityAudience: "everyone" | "friends" | "followers" | "nobody";
-            /** @enum {string} */
+            /**
+             * @description The one presence control in the app. "everyone" (the default) lets people see you are online while you are connected; any other value hides it completely. Last seen is never shown.
+             * @enum {string}
+             */
             onlineAudience: "everyone" | "friends" | "followers" | "nobody";
             /** @enum {string} */
             lastSeenAudience: "everyone" | "friends" | "followers" | "nobody";
@@ -1032,19 +1760,43 @@ export interface components {
                 languages: "everyone" | "friends" | "followers" | "nobody";
                 /** @enum {string} */
                 interests: "everyone" | "friends" | "followers" | "nobody";
-                /** @enum {string} */
+                /**
+                 * @description Who may open your followers and following lists. New adult accounts start "followers" (anyone who actively follows you, and your friends), so a follower can see who follows you and who you follow; members under 18 start "friends". Your friends list is friends-only whenever this is "followers" (it is read as "friends"). Your profile audience must admit the viewer too.
+                 * @enum {string}
+                 */
                 connections: "everyone" | "friends" | "followers" | "nobody";
                 /** @enum {string} */
                 vibe: "everyone" | "friends" | "followers" | "nobody";
+                /** @enum {string} */
+                gender: "everyone" | "friends" | "followers" | "nobody";
+                /**
+                 * @description Who may see your age in whole years on your profile; default everyone.
+                 * @enum {string}
+                 */
+                age: "everyone" | "friends" | "followers" | "nobody";
+                /**
+                 * @description Who may see the counts on your profile (friends, following, followers, visitors, stories); default everyone. The connection lists have their own audience, connections.
+                 * @enum {string}
+                 */
+                counts: "everyone" | "friends" | "followers" | "nobody";
             };
             readReceipts: boolean;
         };
         PrivacyPatch: {
-            /** @enum {string} */
+            /**
+             * @description New accounts start "public" and discoverable; no screen offers a choice for now, but the field stays editable.
+             * @enum {string}
+             */
             profileAudience?: "public" | "friends" | "followers" | "private";
-            /** @enum {string} */
+            /**
+             * @description Who may start a conversation or message you. New accounts start "everyone": anyone who is not blocked and is in the same age band, with no friendship or follow needed, minors included (within their band). "friends", "followers" and "nobody" are honoured for members who set them through this API; no screen does.
+             * @enum {string}
+             */
             messagesFrom?: "everyone" | "friends" | "followers" | "nobody";
-            /** @enum {string} */
+            /**
+             * @description New accounts start "everyone": a follow takes effect at once. "approval" holds follows as requests to approve and "nobody" refuses them, for members who set that through this API; no screen does.
+             * @enum {string}
+             */
             followPolicy?: "everyone" | "approval" | "nobody";
             /** @enum {string} */
             requestsFrom?: "everyone" | "friends" | "followers" | "nobody";
@@ -1052,7 +1804,10 @@ export interface components {
             storyAudience?: "public" | "friends" | "followers" | "private";
             /** @enum {string} */
             activityAudience?: "everyone" | "friends" | "followers" | "nobody";
-            /** @enum {string} */
+            /**
+             * @description The one presence control in the app. "everyone" (the default) lets people see you are online while you are connected; any other value hides it completely. Last seen is never shown.
+             * @enum {string}
+             */
             onlineAudience?: "everyone" | "friends" | "followers" | "nobody";
             /** @enum {string} */
             lastSeenAudience?: "everyone" | "friends" | "followers" | "nobody";
@@ -1081,10 +1836,25 @@ export interface components {
                 languages?: "everyone" | "friends" | "followers" | "nobody";
                 /** @enum {string} */
                 interests?: "everyone" | "friends" | "followers" | "nobody";
-                /** @enum {string} */
+                /**
+                 * @description Who may open your followers and following lists. New adult accounts start "followers" (anyone who actively follows you, and your friends), so a follower can see who follows you and who you follow; members under 18 start "friends". Your friends list is friends-only whenever this is "followers" (it is read as "friends"). Your profile audience must admit the viewer too.
+                 * @enum {string}
+                 */
                 connections?: "everyone" | "friends" | "followers" | "nobody";
                 /** @enum {string} */
                 vibe?: "everyone" | "friends" | "followers" | "nobody";
+                /** @enum {string} */
+                gender?: "everyone" | "friends" | "followers" | "nobody";
+                /**
+                 * @description Who may see your age in whole years on your profile; default everyone.
+                 * @enum {string}
+                 */
+                age?: "everyone" | "friends" | "followers" | "nobody";
+                /**
+                 * @description Who may see the counts on your profile (friends, following, followers, visitors, stories); default everyone. The connection lists have their own audience, connections.
+                 * @enum {string}
+                 */
+                counts?: "everyone" | "friends" | "followers" | "nobody";
             };
             readReceipts?: boolean;
         };
@@ -1123,16 +1893,49 @@ export interface components {
             profilePattern?: "" | "glow" | "orbit" | "plain";
             /** @enum {string} */
             avatarFrame?: "" | "minimal" | "orbit";
-            /** @description Counts of active persisted relationships, excluding inactive and blocked accounts. Omitted from visitor profiles unless allowed. */
+            /**
+             * @description Optional. Empty is unset or prefer not to say. Shown to others only when the gender field audience allows it (default everyone) and used by the gender filter only for members whose audience is everyone. Never returned in search or Nearby results.
+             * @enum {string}
+             */
+            gender?: "" | "woman" | "man" | "nonbinary";
+            /** @description Age in whole years, never the birth date or a band. Present only when ALL hold: the age is known (members who joined before birth dates were kept have none), the member's age field audience allows you (default everyone; the app has no screen to change it), the profile is not a locked card, and you are not looking at your own profile. Omitted otherwise, never null or 0. Members in the other age band return 404 as for a block. Not part of search or Nearby results or GET /v1/me/profile. */
+            readonly age?: number;
+            /**
+             * Format: uri
+             * @description Signed URL of a 640 px thumbnail of the profile photo, valid for an hour; null when there is no photo (or photo storage is not configured). The URL is minted per response and never stored, so refresh it with the profile rather than caching it for long; cache the image bytes by avatarMediaId or the URL path.
+             */
+            readonly avatarUrl: string | null;
+            /**
+             * Format: uri
+             * @description Signed URL of the full-size (at most 2048 px) profile photo, valid for an hour; null when there is no photo. On another member's profile it is null on the locked card, which shows the thumbnail only.
+             */
+            readonly avatarFullUrl: string | null;
+            /** @description Friends, following and followers count active persisted relationships, excluding inactive and blocked accounts; visitors and stories are described on SocialStats. Shown when the member's counts field audience allows the viewer (default everyone); omitted otherwise and never on the locked card. The owner always sees their own. */
             socialStats?: components["schemas"]["SocialStats"];
+            /** @description Whether you may open this member's followers and following lists (GET /v1/users/{userId}/followers and /following): their profile audience and their connections field audience both admit you, the rule behind 403 CONNECTIONS_PRIVATE. For an adult member (connections defaults to followers) that is true when you actively follow them or are their friend; a pending follow request does not count; for a member under 18 (friends) only friends. Friends lists are not opened by following. Absent on the locked card. The counts on socialStats have their own audience, so a count can show while its list is private. */
+            readonly canSeeConnections?: boolean;
+            /**
+             * @description Present, and always true, only while this member is online and their onlineAudience admits you (everyone; friends for accepted friends; followers for friends and active followers; nobody never, except yourself). Online means a live realtime connection on this node or session activity within the last 2 minutes. Omitted otherwise: offline, hidden and any other audience look the same. Never false. Not shown on a locked card.
+             * @constant
+             */
+            online?: true;
+            /**
+             * Format: date-time
+             * @description The member's latest session activity, rounded DOWN to 5 minutes (UTC, never an exact time). Present only when the member is not online, has been active, and their onlineAudience admits you (last seen has no control of its own and follows it). Omitted otherwise, so a member who hides presence looks exactly like one who was never seen. Not shown on a locked card.
+             */
+            lastSeenAt?: string;
             relationship?: components["schemas"]["Relationship"];
-            /** @description True when the profile audience excludes the viewer. A locked card carries only identity, style and relationship. */
+            /** @description True when the profile audience excludes the viewer. A locked card carries only identity (name and photo thumbnail), style and relationship. */
             locked?: boolean;
         };
         SocialStats: {
             readonly friends: number;
             readonly following: number;
             readonly followers: number;
+            /** @description How many different members have opened this profile, all time, counted once each however often they return; never who. Opening a locked card counts; opening your own profile does not. */
+            readonly visitors: number;
+            /** @description How many unexpired stories you may see on this profile (audience, expiry, blocks and age band apply); on your own profile, all your active stories. 0 when none. */
+            readonly stories: number;
         };
         Meta: {
             /** Format: uuid */
@@ -1184,6 +1987,17 @@ export interface components {
             languages?: string[];
             country?: string;
             vibe?: string;
+            /** @description Inclusive lower age. A plain JSON integer. Works on the private stored birth date; members whose age is unknown never match an age filter. Ages are never returned in search or Nearby results (another member's profile shows whole years when its age audience allows). */
+            ageMin?: number;
+            /** @description Inclusive upper age, at least ageMin when both are sent. */
+            ageMax?: number;
+            /**
+             * @description Empty means any. Matches only members whose gender field audience is everyone and whose gender equals this value.
+             * @enum {string}
+             */
+            gender?: "" | "woman" | "man" | "nonbinary";
+            /** @description True keeps only members whose onlineAudience admits you (same rule as the per-row online flag) and who had session activity within the last 2 minutes. Live realtime connections are per node and not part of the filter, so it can only under-report; every returned row carries the precise flag. false is the same as omitting it. Part of the cursor binding. */
+            online?: boolean;
             cursor?: string;
         };
         DiscoveryPerson: {
@@ -1191,6 +2005,11 @@ export interface components {
             userId: string;
             username: string;
             displayName: string;
+            /**
+             * Format: uri
+             * @description Signed URL of a 640 px thumbnail of the profile photo, valid for an hour; null when there is no photo (or photo storage is not configured). The URL is minted per response and never stored, so refresh it with the profile rather than caching it for long; cache the image bytes by avatarMediaId or the URL path.
+             */
+            readonly avatarUrl: string | null;
             headline: string;
             bio: string;
             interests?: string[] | null;
@@ -1201,14 +2020,112 @@ export interface components {
             }[] | null;
             currentVibe?: string;
             country?: string;
+            /** @description Up to 3 interests you and this member share, matched case-insensitively and spelled and ordered as you wrote them. Present, possibly empty, exactly when interests is present (the member's interests audience is everyone); one batched read of your own interests per page. */
+            sharedInterests?: string[];
+            /**
+             * @description Present, and always true, only while this member is online and their onlineAudience admits you (everyone; friends for accepted friends; followers for friends and active followers; nobody never, except yourself). Online means a live realtime connection on this node or session activity within the last 2 minutes. Omitted otherwise: offline, hidden and any other audience look the same. Never false.
+             * @constant
+             */
+            online?: true;
+            /**
+             * Format: date-time
+             * @description The member's latest session activity, rounded DOWN to 5 minutes (UTC, never an exact time). Present only when the member is not online, has been active, and their onlineAudience admits you (last seen has no control of its own and follows it). Omitted otherwise, so a member who hides presence looks exactly like one who was never seen.
+             */
+            lastSeenAt?: string;
         };
         PeoplePage: {
             items: components["schemas"]["DiscoveryPerson"][];
             nextCursor: string | null;
         };
+        NearbyPerson: {
+            /** Format: uuid */
+            userId: string;
+            username: string;
+            displayName: string;
+            /**
+             * Format: uri
+             * @description Signed URL of a 640 px thumbnail of the profile photo, valid for an hour; null when there is no photo (or photo storage is not configured). The URL is minted per response and never stored, so refresh it with the profile rather than caching it for long; cache the image bytes by avatarMediaId or the URL path.
+             */
+            readonly avatarUrl: string | null;
+            headline: string;
+            bio: string;
+            interests?: string[] | null;
+            languages?: {
+                code: string;
+                /** @enum {string} */
+                level?: "" | "basic" | "conversational" | "fluent" | "native";
+            }[] | null;
+            currentVibe?: string;
+            country?: string;
+            /** @description Up to 3 interests you and this member share, matched case-insensitively and spelled and ordered as you wrote them. Present, possibly empty, exactly when interests is present (the member's interests audience is everyone); one batched read of your own interests per page. */
+            sharedInterests?: string[];
+            /**
+             * @description Present, and always true, only while this member is online and their onlineAudience admits you (everyone; friends for accepted friends; followers for friends and active followers; nobody never, except yourself). Online means a live realtime connection on this node or session activity within the last 2 minutes. Omitted otherwise: offline, hidden and any other audience look the same. Never false.
+             * @constant
+             */
+            online?: true;
+            /**
+             * Format: date-time
+             * @description The member's latest session activity, rounded DOWN to 5 minutes (UTC, never an exact time). Present only when the member is not online, has been active, and their onlineAudience admits you (last seen has no control of its own and follows it). Omitted otherwise, so a member who hides presence looks exactly like one who was never seen.
+             */
+            lastSeenAt?: string;
+            /**
+             * @description A bucket: the smallest of 1, 2, 3, 5, 10, 15, 25, 50, 100 that is at least the distance between the two stored (grid-rounded) points. A viewer who is a minor sees only 10, 25, 50 and 100. Never a coordinate, grid cell or finer distance.
+             * @enum {integer}
+             */
+            distanceKm: 1 | 2 | 3 | 5 | 10 | 15 | 25 | 50 | 100;
+        };
+        NearbyPage: {
+            items: components["schemas"]["NearbyPerson"][];
+            nextCursor: string | null;
+        };
+        NearbySearch: {
+            /**
+             * @description Whole kilometres, a plain JSON integer. Send it unchanged with a cursor.
+             * @default 25
+             */
+            radiusKm: number;
+            interests?: string[];
+            languages?: string[];
+            country?: string;
+            vibe?: string;
+            /** @description Inclusive lower age. A plain JSON integer. Works on the private stored birth date; members whose age is unknown never match an age filter. Ages are never returned in search or Nearby results (another member's profile shows whole years when its age audience allows). */
+            ageMin?: number;
+            /** @description Inclusive upper age, at least ageMin when both are sent. */
+            ageMax?: number;
+            /**
+             * @description Empty means any. Matches only members whose gender field audience is everyone and whose gender equals this value.
+             * @enum {string}
+             */
+            gender?: "" | "woman" | "man" | "nonbinary";
+            /** @description True keeps only members whose onlineAudience admits you (same rule as the per-row online flag) and who had session activity within the last 2 minutes. Live realtime connections are per node and not part of the filter, so it can only under-report; every returned row carries the precise flag. false is the same as omitting it. Part of the cursor binding. */
+            online?: boolean;
+            /** @description Opaque, signed and expiring after 15 minutes; bound to you, the radius, the filters and your stored point. Changing any of them invalidates it (422 INVALID_CURSOR). */
+            cursor?: string;
+        };
+        LocationUpdate: {
+            latitude: number;
+            longitude: number;
+        };
+        LocationState: {
+            /** @description True while a stored location is younger than 24 hours. */
+            sharing: boolean;
+            /**
+             * Format: date-time
+             * @description When the shared point was stored; null unless sharing. Coordinates are never returned.
+             */
+            updatedAt: string | null;
+        };
+        LocationStopped: {
+            /** @constant */
+            sharing: false;
+        };
         DevelopmentLogin: {
-            /** @enum {string} */
-            userId: "019a4000-0000-7000-8000-000000000001" | "019a4000-0000-7000-8000-000000000002";
+            /**
+             * @description Anjali, Niko, and Sam (a fixture whose onboarding is not complete).
+             * @enum {string}
+             */
+            userId: "019a4000-0000-7000-8000-000000000001" | "019a4000-0000-7000-8000-000000000002" | "019a4000-0000-7000-8000-0000000000a1";
         };
         DevelopmentSession: {
             accessToken: string;
@@ -1223,6 +2140,11 @@ export interface components {
             userId: string;
             username: string;
             displayName: string;
+            /**
+             * Format: uri
+             * @description Signed URL of a 640 px thumbnail of the profile photo, valid for an hour; null when there is no photo (or photo storage is not configured). The URL is minted per response and never stored, so refresh it with the profile rather than caching it for long; cache the image bytes by avatarMediaId or the URL path.
+             */
+            readonly avatarUrl: string | null;
         };
         Relationship: {
             /**
@@ -1272,6 +2194,24 @@ export interface components {
             user: components["schemas"]["UserSummary"];
             /** Format: date-time */
             since: string;
+            /**
+             * @description Your own follow state on this person, so a followers list can offer Follow back. Present on followers, following, friends and follow-request rows; left out of story viewers.
+             * @enum {string}
+             */
+            following?: "none" | "pending" | "active";
+        };
+        Visitor: {
+            user: components["schemas"]["UserSummary"];
+            /**
+             * Format: date-time
+             * @description When this member first opened your profile; later visits do not move it.
+             */
+            firstVisitedAt: string;
+            /**
+             * @description Your own follow state on this visitor.
+             * @enum {string}
+             */
+            following: "none" | "pending" | "active";
         };
         FriendRequest: {
             /** Format: uuid */
@@ -1319,6 +2259,11 @@ export interface components {
             hasMore: boolean;
             unreadCount: number;
         };
+        VisitorPage: {
+            items: components["schemas"]["Visitor"][];
+            nextCursor: string | null;
+            hasMore: boolean;
+        };
         DeviceRegister: {
             /** Format: uuid */
             deviceId: string;
@@ -1326,7 +2271,7 @@ export interface components {
             identityKey: string;
             /** @description Unpadded base64 32-byte public key */
             signingKey: string;
-            /** @description Ed25519 over "kairova-device-v1\n{userId}\n{deviceId}\n{identityKey}\n{signingKey}" */
+            /** @description Ed25519 over "hiyall-device-v1\n{userId}\n{deviceId}\n{identityKey}\n{signingKey}" */
             signature: string;
             /** @enum {string} */
             platform?: "android" | "ios" | "web" | "linux" | "unknown";
@@ -1347,6 +2292,11 @@ export interface components {
             displayName: string;
             /** Format: date-time */
             createdAt: string;
+            /**
+             * Format: date-time
+             * @description Only on your own devices (GET /v1/me/devices), never to peers.
+             */
+            lastSeenAt?: string;
         };
         DeviceList: {
             items: components["schemas"]["Device"][];
@@ -1355,7 +2305,7 @@ export interface components {
             keyId: string;
             /** @description Unpadded base64 32-byte public key */
             publicKey: string;
-            /** @description Ed25519 over "kairova-otk-v1\n{userId}\n{deviceId}\n{keyId}\n{publicKey}" */
+            /** @description Ed25519 over "hiyall-otk-v1\n{userId}\n{deviceId}\n{keyId}\n{publicKey}" */
             signature: string;
         };
         KeyUpload: {
@@ -1380,16 +2330,56 @@ export interface components {
             /** Format: uuid */
             userId: string;
         };
+        ConversationPeer: {
+            /** Format: uuid */
+            userId: string;
+            username: string;
+            displayName: string;
+            /**
+             * Format: uri
+             * @description Signed URL of a 640 px thumbnail of the profile photo, valid for an hour; null when there is no photo (or photo storage is not configured). The URL is minted per response and never stored, so refresh it with the profile rather than caching it for long; cache the image bytes by avatarMediaId or the URL path.
+             */
+            readonly avatarUrl: string | null;
+            /**
+             * @description Present, and always true, only while this member is online and their onlineAudience admits you (everyone; friends for accepted friends; followers for friends and active followers; nobody never, except yourself). Online means a live realtime connection on this node or session activity within the last 2 minutes. Omitted otherwise: offline, hidden and any other audience look the same. Never false.
+             * @constant
+             */
+            online?: true;
+            /**
+             * Format: date-time
+             * @description The member's latest session activity, rounded DOWN to 5 minutes (UTC, never an exact time). Present only when the member is not online, has been active, and their onlineAudience admits you (last seen has no control of its own and follows it). Omitted otherwise, so a member who hides presence looks exactly like one who was never seen.
+             */
+            lastSeenAt?: string;
+        };
         DirectConversation: {
             /** Format: uuid */
             conversationId: string;
-            peer: components["schemas"]["UserSummary"];
+            peer: components["schemas"]["ConversationPeer"];
             /** @enum {string} */
             status: "active" | "closed";
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
             lastMessageAt: string | null;
+            /** @description The peer's messages after your read pointer. */
+            unreadCount: number;
+            /**
+             * Format: date-time
+             * @description Your read pointer.
+             */
+            readAt: string | null;
+            /**
+             * Format: date-time
+             * @description The peer's read pointer; only when both of you have read receipts on and neither restricted the other.
+             */
+            peerReadAt: string | null;
+            /**
+             * Format: date-time
+             * @description Set while you muted this chat; 9999-12-31 means until unmuted. Never shown to the peer.
+             */
+            mutedUntil: string | null;
+            /** @description Up to three interests you and the peer both list, matched case-insensitively and spelled and ordered as you wrote them. Empty when nothing is shared or when the peer's profile audience or interests audience does not admit you (the same rule as their profile). It never records a profile visit. */
+            sharedInterests: string[];
         };
         DirectConversationPage: {
             items: components["schemas"]["DirectConversation"][];
@@ -1414,6 +2404,8 @@ export interface components {
             senderDeviceId: string;
             /** @description Exactly one per active device of the peer and of the sender other than senderDeviceId; otherwise 409 DEVICES_CHANGED */
             envelopes: components["schemas"]["CiphertextEnvelope"][];
+            /** @description Encrypted attachments this message claims: uploaded (POST /v1/blobs/{blobId}/complete), unexpired, not yet in a message, uploaded by you in this conversation. Any mismatch, unknown and foreign ids included, rolls the whole message back with 409 BLOB_NOT_READY. Linking starts the 30 day retention. The sender must pass the same images gate as for upload slots (403 ATTACHMENTS_NOT_ALLOWED). A retry of an already stored messageId is answered as before and links nothing. */
+            blobIds?: string[];
         };
         MessageAccepted: {
             /** Format: uuid */
@@ -1446,6 +2438,33 @@ export interface components {
         };
         Acknowledged: {
             acknowledged: number;
+        };
+        OnboardingState: {
+            /** @description False until the account has declared it meets the minimum age (13) and accepted the terms. Until then most routes answer 403 ONBOARDING_REQUIRED. */
+            completed: boolean;
+            /** Format: date-time */
+            completedAt: string | null;
+            /**
+             * @description The current terms version; send it back when completing.
+             * @constant
+             */
+            termsVersion: "2026-10-01";
+        };
+        OnboardingCompletion: {
+            /**
+             * Format: date
+             * @description Strict ISO date, not in the future, year 1900 or later. Age is computed in UTC. The date is kept privately to place the member in an age band (minor under 18, adult otherwise); the first stored value is final and a later one is ignored. It is never returned, echoed, logged or put in an event. The minimum-age check (13) is a self-declaration, not age assurance, and can be falsified.
+             */
+            birthDate: string;
+            /**
+             * @description Must equal the current terms version.
+             * @constant
+             */
+            termsVersion: "2026-10-01";
+        };
+        UsernameAvailability: {
+            /** @description True when the name is free or already yours. Generated member_ names are never available. */
+            available: boolean;
         };
         HealthResponse: {
             /** @constant */
@@ -1483,10 +2502,40 @@ export interface components {
             data: components["schemas"]["Blocked"];
             meta: components["schemas"]["Meta"];
         };
+        OnboardingStateResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["OnboardingState"];
+            meta: components["schemas"]["Meta"];
+        };
+        UsernameAvailabilityResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["UsernameAvailability"];
+            meta: components["schemas"]["Meta"];
+        };
         PeoplePageResponse: {
             /** @constant */
             success: true;
             data: components["schemas"]["PeoplePage"];
+            meta: components["schemas"]["Meta"];
+        };
+        LocationStateResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["LocationState"];
+            meta: components["schemas"]["Meta"];
+        };
+        LocationStoppedResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["LocationStopped"];
+            meta: components["schemas"]["Meta"];
+        };
+        NearbyPageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["NearbyPage"];
             meta: components["schemas"]["Meta"];
         };
         RevokedResponse: {
@@ -1523,6 +2572,12 @@ export interface components {
             /** @constant */
             success: true;
             data: components["schemas"]["Removed"];
+            meta: components["schemas"]["Meta"];
+        };
+        VisitorPageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["VisitorPage"];
             meta: components["schemas"]["Meta"];
         };
         FriendRequestResponse: {
@@ -1625,6 +2680,527 @@ export interface components {
             /** @constant */
             success: true;
             data: components["schemas"]["Acknowledged"];
+            meta: components["schemas"]["Meta"];
+        };
+        RevokedCount: {
+            revoked: number;
+        };
+        ChatUnread: {
+            messages: number;
+            conversations: number;
+        };
+        ConversationRead: {
+            /**
+             * Format: date-time
+             * @description Read up to this message time; the pointer never moves back.
+             */
+            readAt: string;
+        };
+        ReadPointer: {
+            /** Format: date-time */
+            readAt: string | null;
+        };
+        PushToken: {
+            /** @enum {string} */
+            provider: "fcm" | "apns";
+            token: string;
+        };
+        PushRegistered: {
+            registered: boolean;
+        };
+        RevokedCountResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["RevokedCount"];
+            meta: components["schemas"]["Meta"];
+        };
+        ChatUnreadResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ChatUnread"];
+            meta: components["schemas"]["Meta"];
+        };
+        ReadPointerResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ReadPointer"];
+            meta: components["schemas"]["Meta"];
+        };
+        PushRegisteredResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["PushRegistered"];
+            meta: components["schemas"]["Meta"];
+        };
+        MuteRequest: {
+            /**
+             * Format: date-time
+             * @description A future time; omitted or null mutes until removed. Echoed in UTC.
+             */
+            until?: string | null;
+        };
+        MuteState: {
+            muted: boolean;
+            /** Format: date-time */
+            until: string | null;
+        };
+        RestrictState: {
+            restricted: boolean;
+            until: null;
+        };
+        Control: {
+            user: components["schemas"]["UserSummary"];
+            /** Format: date-time */
+            since: string;
+            /**
+             * Format: date-time
+             * @description Only on a mute with an end.
+             */
+            until?: string;
+        };
+        ControlPage: {
+            items: components["schemas"]["Control"][];
+            nextCursor: string | null;
+            hasMore: boolean;
+        };
+        ReportEvidence: {
+            /** Format: uuid */
+            messageId: string;
+            text: string;
+            /** Format: date-time */
+            sentAt: string;
+            /** @description Ignored; the server sets sender and time from the relay's records. */
+            fromMe?: boolean;
+            /** @description Encrypted images of this message the reporter chose to share. The named blobs are held against deletion (retention, uploader delete, block, account deletion) while the report keeps them. Staff only ever see blob ids, sizes and SHA-256 hashes in the moderation tool. */
+            attachments?: {
+                /** @description Blobs of this evidence message in the reported conversation; any other id is 422 VALIDATION and the report is not stored. */
+                blobIds: string[];
+                /** @description The decrypted attachment descriptor, including its key, shared by the reporter under disclosureConsent. At most 4 KiB; the server keeps it as given and never interprets it. */
+                descriptor: {
+                    [key: string]: unknown;
+                };
+            }[];
+        };
+        NewReport: {
+            /** @enum {string} */
+            targetType: "user" | "conversation" | "message" | "post" | "comment" | "story" | "space" | "space_entry";
+            /** Format: uuid */
+            targetId: string;
+            /** @enum {string} */
+            reasonCode: "spam" | "harassment" | "scam" | "hate" | "threats" | "sexual_content" | "violence" | "self_harm" | "underage" | "impersonation" | "copyright" | "other";
+            description?: string;
+            /** @description Only for conversation and message reports, and only with disclosureConsent. */
+            evidence?: components["schemas"]["ReportEvidence"][];
+            disclosureConsent?: boolean;
+            /** @description Also block the subject. */
+            block?: boolean;
+        };
+        /** @description username and displayName are empty strings when you may not know who the subject is (another age band, or not onboarded). */
+        ReportSubject: {
+            /** Format: uuid */
+            userId: string;
+            username: string;
+            displayName: string;
+        };
+        Report: {
+            /** Format: uuid */
+            reportId: string;
+            /** @enum {string} */
+            targetType: "user" | "conversation" | "message" | "post" | "comment" | "story" | "space" | "space_entry";
+            /** Format: uuid */
+            targetId: string;
+            subject: components["schemas"]["ReportSubject"];
+            /** @enum {string} */
+            reasonCode: "spam" | "harassment" | "scam" | "hate" | "threats" | "sexual_content" | "violence" | "self_harm" | "underage" | "impersonation" | "copyright" | "other";
+            /** @enum {string} */
+            status: "open" | "actioned" | "dismissed";
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            resolvedAt: string | null;
+        };
+        ReportPage: {
+            items: components["schemas"]["Report"][];
+            nextCursor: string | null;
+            hasMore: boolean;
+        };
+        ReportCreated: {
+            report: components["schemas"]["Report"];
+            duplicate: boolean;
+            blocked: boolean;
+        };
+        MuteStateResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["MuteState"];
+            meta: components["schemas"]["Meta"];
+        };
+        RestrictStateResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["RestrictState"];
+            meta: components["schemas"]["Meta"];
+        };
+        ControlPageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ControlPage"];
+            meta: components["schemas"]["Meta"];
+        };
+        ReportCreatedResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ReportCreated"];
+            meta: components["schemas"]["Meta"];
+        };
+        ReportPageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ReportPage"];
+            meta: components["schemas"]["Meta"];
+        };
+        MediaUploadRequest: {
+            /**
+             * @description avatar is for a profile photo, attached through PATCH /v1/me/profile (avatarMediaId); post and story photos are attached when the post or story is created.
+             * @enum {string}
+             */
+            purpose: "post" | "story" | "avatar";
+            /** @enum {string} */
+            contentType: "image/jpeg" | "image/png" | "image/webp";
+            sizeBytes: number;
+        };
+        MediaUpload: {
+            /** Format: uuid */
+            mediaId: string;
+            /**
+             * Format: uri
+             * @description Signed PUT URL valid for 15 minutes. It signs the content type and the exact body size (sizeBytes): the store refuses a body of any other length (403). Send the bytes as the raw body; the length is not a header to set.
+             */
+            uploadUrl: string;
+            /** @constant */
+            method: "PUT";
+            /** @description Headers to send with the PUT: only Content-Type. Content-Length is signed into the URL but is never listed; HTTP clients set it from the body. */
+            headers: {
+                [key: string]: string;
+            };
+            /**
+             * Format: date-time
+             * @description The upload URL lasts 15 minutes; the pending upload expires after an hour.
+             */
+            expiresAt: string;
+        };
+        MediaView: {
+            /** Format: uuid */
+            mediaId: string;
+            /**
+             * Format: uri
+             * @description Signed GET URL valid for an hour.
+             */
+            url: string;
+            /** Format: uri */
+            thumbUrl: string;
+            width: number;
+            height: number;
+        };
+        MediaReady: {
+            /** Format: uuid */
+            mediaId: string;
+            /**
+             * Format: uri
+             * @description Signed GET URL valid for an hour.
+             */
+            url: string;
+            /** Format: uri */
+            thumbUrl: string;
+            width: number;
+            height: number;
+            /** @constant */
+            status: "ready";
+        };
+        /** @description Write something or add a photo (or both). Text may span lines; other control characters are refused (422). */
+        NewPost: {
+            body?: string;
+            /** @enum {string} */
+            audience: "public" | "followers" | "friends";
+            mediaIds?: string[];
+        };
+        Post: {
+            /** Format: uuid */
+            postId: string;
+            author: components["schemas"]["UserSummary"];
+            body: string;
+            /** @enum {string} */
+            audience: "public" | "followers" | "friends";
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            editedAt: string | null;
+            media: components["schemas"]["MediaView"][];
+            reactionCount: number;
+            commentCount: number;
+            myReaction: ("heart" | "fire" | "laugh" | "wow" | "sad") | null;
+            saved: boolean;
+            mine: boolean;
+        };
+        PostPage: {
+            items: components["schemas"]["Post"][];
+            nextCursor: string | null;
+            hasMore: boolean;
+        };
+        ReactionSet: {
+            /** @enum {string} */
+            reaction: "heart" | "fire" | "laugh" | "wow" | "sad";
+        };
+        ReactionState: {
+            reaction: ("heart" | "fire" | "laugh" | "wow" | "sad") | null;
+        };
+        SavedState: {
+            saved: boolean;
+        };
+        Deleted: {
+            deleted: boolean;
+        };
+        NewComment: {
+            body: string;
+            /** Format: uuid */
+            parentId?: string | null;
+        };
+        Comment: {
+            /** Format: uuid */
+            commentId: string;
+            /** Format: uuid */
+            postId: string;
+            author: components["schemas"]["UserSummary"];
+            /** Format: uuid */
+            parentId: string | null;
+            body: string;
+            /** Format: date-time */
+            createdAt: string;
+            mine: boolean;
+            canDelete: boolean;
+        };
+        CommentPage: {
+            items: components["schemas"]["Comment"][];
+            nextCursor: string | null;
+            hasMore: boolean;
+        };
+        /** @description A photo or some words (or both); lives for lifetimeHours (24 when left out). */
+        NewStory: {
+            body?: string;
+            /**
+             * @description The six solid colours (lime, lilac, pink, mint, peach, ink) and the gradients. A client that meets a name it does not know draws lime.
+             * @default lime
+             * @enum {string}
+             */
+            background: "lime" | "lilac" | "pink" | "mint" | "peach" | "ink" | "sunset" | "bubblegum" | "aurora" | "ocean" | "grape" | "mango" | "midnight" | "freshmint";
+            /**
+             * @description How the words are drawn; clients that predate it send none and get clean.
+             * @default clean
+             * @enum {string}
+             */
+            textStyle: "clean" | "loud" | "soft" | "glow" | "stamp" | "type";
+            /**
+             * @description How long the story stays up, in hours. Which hours a member may choose are their entitlements (6, 12 and 24 for everyone today); any other number is refused with 422 VALIDATION and nothing is stored. Omitted or null means 24.
+             * @default 24
+             * @example 6
+             * @example 12
+             * @example 24
+             */
+            lifetimeHours: number | null;
+            /** Format: uuid */
+            mediaId?: string | null;
+            /** @enum {string} */
+            audience: "public" | "followers" | "friends";
+        };
+        StoryCreated: {
+            /** Format: uuid */
+            storyId: string;
+        };
+        Story: {
+            /** Format: uuid */
+            storyId: string;
+            body: string;
+            /** @enum {string} */
+            background: "lime" | "lilac" | "pink" | "mint" | "peach" | "ink" | "sunset" | "bubblegum" | "aurora" | "ocean" | "grape" | "mango" | "midnight" | "freshmint";
+            /**
+             * @description Always present; stories made before text styles existed are clean. A newer server may add styles: draw an unknown one as clean.
+             * @enum {string}
+             */
+            textStyle: "clean" | "loud" | "soft" | "glow" | "stamp" | "type";
+            media: components["schemas"]["MediaView"] | null;
+            /** @enum {string} */
+            audience: "public" | "followers" | "friends";
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            seen: boolean;
+            /** @description Only on your own stories. */
+            viewCount?: number;
+        };
+        StoryGroup: {
+            author: components["schemas"]["UserSummary"];
+            stories: components["schemas"]["Story"][];
+            allSeen: boolean;
+            mine: boolean;
+            /** Format: date-time */
+            latest: string;
+        };
+        StoryPage: {
+            items: components["schemas"]["Story"][];
+            nextCursor: string | null;
+            hasMore: boolean;
+        };
+        StoryTray: {
+            items: components["schemas"]["StoryGroup"][];
+        };
+        Viewed: {
+            viewed: boolean;
+        };
+        MediaUploadResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["MediaUpload"];
+            meta: components["schemas"]["Meta"];
+        };
+        MediaReadyResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["MediaReady"];
+            meta: components["schemas"]["Meta"];
+        };
+        PostPageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["PostPage"];
+            meta: components["schemas"]["Meta"];
+        };
+        PostResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["Post"];
+            meta: components["schemas"]["Meta"];
+        };
+        DeletedResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["Deleted"];
+            meta: components["schemas"]["Meta"];
+        };
+        ReactionSetResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ReactionSet"];
+            meta: components["schemas"]["Meta"];
+        };
+        ReactionStateResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ReactionState"];
+            meta: components["schemas"]["Meta"];
+        };
+        SavedStateResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["SavedState"];
+            meta: components["schemas"]["Meta"];
+        };
+        CommentPageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["CommentPage"];
+            meta: components["schemas"]["Meta"];
+        };
+        CommentResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["Comment"];
+            meta: components["schemas"]["Meta"];
+        };
+        StoryCreatedResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["StoryCreated"];
+            meta: components["schemas"]["Meta"];
+        };
+        StoryTrayResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["StoryTray"];
+            meta: components["schemas"]["Meta"];
+        };
+        StoryPageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["StoryPage"];
+            meta: components["schemas"]["Meta"];
+        };
+        ViewedResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["Viewed"];
+            meta: components["schemas"]["Meta"];
+        };
+        ChatBlobRequest: {
+            /** @enum {string} */
+            role: "full" | "thumb";
+            /** @description Exact ciphertext size. At most 4194304 (4 MiB) for full and 262144 (256 KiB) for thumb, otherwise 413 TOO_LARGE; under 32 is 422. */
+            sizeBytes: number;
+            /** @description Standard padded base64 of the 32-byte SHA-256 of the whole ciphertext object. */
+            ctSha256: string;
+        };
+        ChatBlobSlot: {
+            /** Format: uuid */
+            blobId: string;
+            /**
+             * Format: uri
+             * @description Signed PUT URL valid for 15 minutes. It signs the content type, the SHA-256 header and the exact body size (sizeBytes): the object store refuses a body with another checksum (400 BadDigest), another length or a request without the headers (403). Content-Length is signed but never listed in headers; HTTP clients set it from the body.
+             */
+            uploadUrl: string;
+            /** @constant */
+            method: "PUT";
+            headers: {
+                /** @constant */
+                "Content-Type": "application/octet-stream";
+                /** @description Standard padded base64 of the 32-byte SHA-256 of the whole ciphertext object. */
+                "x-amz-checksum-sha256": string;
+            };
+            /** Format: date-time */
+            expiresAt: string;
+        };
+        ChatBlobState: {
+            /** Format: uuid */
+            blobId: string;
+            /** @constant */
+            state: "uploaded";
+        };
+        ChatBlobUrl: {
+            /**
+             * Format: uri
+             * @description Signed GET URL valid for 5 minutes; ask again when needed.
+             */
+            url: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** @description Ciphertext size. */
+            sizeBytes: number;
+        };
+        ChatBlobSlotResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ChatBlobSlot"];
+            meta: components["schemas"]["Meta"];
+        };
+        ChatBlobStateResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ChatBlobState"];
+            meta: components["schemas"]["Meta"];
+        };
+        ChatBlobUrlResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ChatBlobUrl"];
             meta: components["schemas"]["Meta"];
         };
         NewSpace: {
@@ -2135,7 +3711,7 @@ export interface operations {
                     "application/json": components["schemas"]["SelfProfileResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -2144,7 +3720,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -2216,7 +3792,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -2252,7 +3828,7 @@ export interface operations {
                     "application/json": components["schemas"]["SelfProfileResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -2261,7 +3837,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -2333,7 +3909,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -2362,7 +3938,7 @@ export interface operations {
                     "application/json": components["schemas"]["PrivacySettingsResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -2371,7 +3947,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -2443,7 +4019,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -2479,7 +4055,7 @@ export interface operations {
                     "application/json": components["schemas"]["PrivacySettingsResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -2488,7 +4064,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -2560,7 +4136,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -2591,7 +4167,7 @@ export interface operations {
                     "application/json": components["schemas"]["PublicProfileResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -2600,7 +4176,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -2672,7 +4248,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -2703,7 +4279,7 @@ export interface operations {
                     "application/json": components["schemas"]["BlockedResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -2712,7 +4288,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -2784,7 +4360,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -2815,7 +4391,7 @@ export interface operations {
                     "application/json": components["schemas"]["BlockedResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -2824,7 +4400,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -2896,7 +4472,343 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getOnboardingState_v1_me_onboarding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OnboardingStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postOnboardingState_v1_me_onboarding_complete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OnboardingCompletion"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OnboardingStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403 AGE_REQUIREMENT_NOT_MET: "Hiyall is for people 13 and over." Nothing is stored. A self-declaration is not age assurance and can be falsified. EMAIL_NOT_VERIFIED also applies. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422. VALIDATION: birthDate is not a strict past ISO date from 1900 on, termsVersion is not current, or a field is missing or unknown. PROFILE_INCOMPLETE: "Choose a name and username first." while the generated username or name remains. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getUsernameAvailability_v1_usernames_username_availability: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsernameAvailabilityResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422 VALIDATION: the name does not match the username grammar. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: too many checks; retry after the Retry-After header. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -2929,7 +4841,7 @@ export interface operations {
                     "application/json": components["schemas"]["PeoplePageResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -2938,7 +4850,117 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422. VALIDATION: unsupported or malformed filter, including ageMin or ageMax that is not an integer from 13 to 99, ageMin above ageMax, or a gender other than woman, man, nonbinary or empty. INVALID_CURSOR: the cursor is tampered, expired, or was issued for other filters, another search or another account. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: shared per-account search limit; retry after the Retry-After header. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getLocationState_v1_me_location: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3010,7 +5032,345 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putLocationState_v1_me_location: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LocationUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422 VALIDATION: the body is not exactly {latitude, longitude} as finite numbers in range. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: a burst of 3 changes per account, then one every 2 minutes; retry after the Retry-After header (120 seconds). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteLocationStopped_v1_me_location: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LocationStoppedResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postNearbyPage_v1_discover_nearby: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NearbySearch"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NearbyPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409 LOCATION_NOT_SHARED: "Share your location to see people nearby." You have no stored location younger than 24 hours. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422. VALIDATION: radiusKm is not an integer from 1 to 100, a filter is malformed (ageMin/ageMax must be integers from 13 to 99 with ageMin not above ageMax, gender one of woman, man, nonbinary or empty) or an unknown key was sent (a position is never accepted). INVALID_CURSOR: the cursor is tampered, expired, from another account, or was issued for another radius, other filters or before you moved. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: shares the per-account search limit; retry after the Retry-After header. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -3039,7 +5399,7 @@ export interface operations {
                     "application/json": components["schemas"]["RevokedResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -3048,7 +5408,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3120,7 +5480,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -3152,7 +5512,7 @@ export interface operations {
                     "application/json": components["schemas"]["SessionPageResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -3161,7 +5521,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3233,7 +5593,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -3264,7 +5624,7 @@ export interface operations {
                     "application/json": components["schemas"]["RevokedResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -3273,7 +5633,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3345,7 +5705,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -3376,7 +5736,7 @@ export interface operations {
                     "application/json": components["schemas"]["FollowStateResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -3385,7 +5745,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3457,7 +5817,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -3488,7 +5848,7 @@ export interface operations {
                     "application/json": components["schemas"]["FollowStateResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -3497,7 +5857,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3569,7 +5929,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -3600,7 +5960,7 @@ export interface operations {
                     "application/json": components["schemas"]["FollowerStateResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -3609,7 +5969,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3681,7 +6041,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -3714,7 +6074,7 @@ export interface operations {
                     "application/json": components["schemas"]["ConnectionPageResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -3723,7 +6083,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3795,7 +6155,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -3826,7 +6186,7 @@ export interface operations {
                     "application/json": components["schemas"]["RemovedResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -3835,7 +6195,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -3907,7 +6267,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -3938,7 +6298,7 @@ export interface operations {
                     "application/json": components["schemas"]["RemovedResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -3947,7 +6307,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -4019,7 +6379,121 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getVisitorPage_v1_me_visitors: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VisitorPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: at most 30 reads in a burst, then two a second; retry after the Retry-After header (1 second). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -4050,7 +6524,7 @@ export interface operations {
                     "application/json": components["schemas"]["FriendRequestResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -4059,7 +6533,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -4131,7 +6605,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -4165,7 +6639,7 @@ export interface operations {
                     "application/json": components["schemas"]["FriendRequestPageResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -4174,7 +6648,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -4246,7 +6720,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -4277,7 +6751,7 @@ export interface operations {
                     "application/json": components["schemas"]["FriendRequestResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -4286,7 +6760,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -4358,7 +6832,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -4389,7 +6863,7 @@ export interface operations {
                     "application/json": components["schemas"]["FriendRequestResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -4398,7 +6872,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -4470,7 +6944,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -4501,7 +6975,7 @@ export interface operations {
                     "application/json": components["schemas"]["CancelledResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -4510,7 +6984,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -4582,7 +7056,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -4613,7 +7087,7 @@ export interface operations {
                     "application/json": components["schemas"]["FriendshipStateResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -4622,7 +7096,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -4694,7 +7168,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -4727,7 +7201,7 @@ export interface operations {
                     "application/json": components["schemas"]["ConnectionPageResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -4736,7 +7210,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -4808,7 +7282,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -4843,7 +7317,7 @@ export interface operations {
                     "application/json": components["schemas"]["ConnectionPageResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -4852,7 +7326,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -4924,7 +7398,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -4957,7 +7431,7 @@ export interface operations {
                     "application/json": components["schemas"]["ConnectionPageResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -4966,7 +7440,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5038,7 +7512,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -5073,7 +7547,7 @@ export interface operations {
                     "application/json": components["schemas"]["ConnectionPageResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -5082,7 +7556,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5154,7 +7628,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -5187,7 +7661,7 @@ export interface operations {
                     "application/json": components["schemas"]["ConnectionPageResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -5196,7 +7670,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5268,7 +7742,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -5303,7 +7777,7 @@ export interface operations {
                     "application/json": components["schemas"]["ConnectionPageResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -5312,7 +7786,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5384,7 +7858,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -5418,7 +7892,7 @@ export interface operations {
                     "application/json": components["schemas"]["NotificationPageResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -5427,7 +7901,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5499,7 +7973,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -5528,7 +8002,7 @@ export interface operations {
                     "application/json": components["schemas"]["UnreadCountResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -5537,7 +8011,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5609,7 +8083,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -5638,7 +8112,7 @@ export interface operations {
                     "application/json": components["schemas"]["ReadAllResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -5647,7 +8121,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5719,7 +8193,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -5750,7 +8224,7 @@ export interface operations {
                     "application/json": components["schemas"]["ReadResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -5759,7 +8233,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5831,7 +8305,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -5864,7 +8338,7 @@ export interface operations {
                     "application/json": components["schemas"]["DeviceResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -5873,7 +8347,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -5945,7 +8419,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -5974,7 +8448,7 @@ export interface operations {
                     "application/json": components["schemas"]["DeviceListResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -5983,7 +8457,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6055,7 +8529,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6086,7 +8560,7 @@ export interface operations {
                     "application/json": components["schemas"]["RevokedResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -6095,7 +8569,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6167,7 +8641,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6198,7 +8672,7 @@ export interface operations {
                     "application/json": components["schemas"]["KeyCountResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -6207,7 +8681,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6279,7 +8753,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6314,7 +8788,7 @@ export interface operations {
                     "application/json": components["schemas"]["KeyCountResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -6323,7 +8797,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6395,7 +8869,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6426,7 +8900,7 @@ export interface operations {
                     "application/json": components["schemas"]["DeviceListResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -6435,7 +8909,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6507,7 +8981,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6539,7 +9013,7 @@ export interface operations {
                     "application/json": components["schemas"]["ClaimedKeyResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -6548,7 +9022,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6602,7 +9076,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 429; no internal details disclosed */
+            /** @description Error 429. KEY_CLAIMS_LIMITED: you claimed 10 keys of this device in the last hour; Retry-After is the seconds until your oldest of them is an hour old. RATE_LIMITED: the general per-account limit. */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -6620,7 +9094,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6653,7 +9127,7 @@ export interface operations {
                     "application/json": components["schemas"]["DirectConversationPageResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -6662,7 +9136,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6734,7 +9208,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6767,7 +9241,7 @@ export interface operations {
                     "application/json": components["schemas"]["DirectConversationResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -6776,7 +9250,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403 MESSAGES_NOT_ALLOWED: the member set messagesFrom to friends, followers or nobody through the API and you do not qualify. EMAIL_NOT_VERIFIED and ONBOARDING_REQUIRED also apply. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6830,7 +9304,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 429; no internal details disclosed */
+            /** @description Error 429. QUOTA: you have started the day's limit of new conversations (Retry-After is when enough of the oldest ones you started leave the 24 hour window); the block, privacy and age-band rules are applied first. RATE_LIMITED: too many new conversations with people you have never messaged (burst 10, then one a minute; Retry-After 60), or the general graph limit (Retry-After 2). */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -6848,7 +9322,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6879,7 +9353,7 @@ export interface operations {
                     "application/json": components["schemas"]["DirectConversationResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -6888,7 +9362,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6960,7 +9434,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6995,7 +9469,7 @@ export interface operations {
                     "application/json": components["schemas"]["MessageAcceptedResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7004,7 +9478,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7076,7 +9550,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -7109,7 +9583,7 @@ export interface operations {
                     "application/json": components["schemas"]["InboxResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7118,7 +9592,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7190,7 +9664,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -7225,7 +9699,7 @@ export interface operations {
                     "application/json": components["schemas"]["AcknowledgedResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7234,7 +9708,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7306,7 +9780,4836 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    "postRevokedCount_v1_auth_sessions_revoke-others": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevokedCountResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getChatUnread_v1_conversations_unread: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatUnreadResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postReadPointer_v1_conversations_conversationId_read: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationRead"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadPointerResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putPushRegistered_v1_devices_deviceId_push: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deviceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PushToken"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PushRegisteredResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deletePushRegistered_v1_devices_deviceId_push: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deviceId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PushRegisteredResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postMuteState_v1_users_userId_mute: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["MuteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MuteStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteMuteState_v1_users_userId_mute: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MuteStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postRestrictState_v1_users_userId_restrict: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestrictStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteRestrictState_v1_users_userId_restrict: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestrictStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postMuteState_v1_conversations_conversationId_mute: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["MuteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MuteStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteMuteState_v1_conversations_conversationId_mute: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MuteStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getControlPage_v1_me_blocked: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControlPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getControlPage_v1_me_muted: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControlPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getControlPage_v1_me_restricted: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ControlPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postReportCreated_v1_reports: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewReport"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportCreatedResponse"];
+                };
+            };
+            /** @description Successful operation */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportCreatedResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: a burst of 10 reports, then one a minute (Retry-After 60). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getReportPage_v1_me_reports: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postMediaUpload_v1_media_uploads: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaUploadRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaUploadResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 413 TOO_LARGE: photos can be up to 15 MB. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 415 UNSUPPORTED_MEDIA: JPEG, PNG or WebP only. */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429. QUOTA: the day's upload slots or bytes are used (Retry-After is when enough of your oldest slots leave the 24 hour window), or the photo storage is full (no Retry-After: delete posts or stories to free space). RATE_LIMITED: 50 uploads are pending (Retry-After is when the oldest expires), or the per-account limiter (Retry-After 5). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postMediaReady_v1_media_mediaId_complete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mediaId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaReadyResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 415 UNSUPPORTED_MEDIA: the photo could not be read. */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getPostPage_v1_feed: {
+        parameters: {
+            query?: {
+                mode?: "following" | "everyone";
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postPost_v1_posts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewPost"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429. QUOTA: the day's 20 posts are used (Retry-After is when your oldest post in the window leaves it). RATE_LIMITED: the per-account limiter (Retry-After 5). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getPost_v1_posts_postId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                postId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteDeleted_v1_posts_postId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                postId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletedResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putReactionSet_v1_posts_postId_reaction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                postId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReactionSet"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReactionSetResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteReactionState_v1_posts_postId_reaction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                postId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReactionStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putSavedState_v1_posts_postId_save: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                postId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteSavedState_v1_posts_postId_save: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                postId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getCommentPage_v1_posts_postId_comments: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                postId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommentPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postComment_v1_posts_postId_comments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                postId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewComment"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommentResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteDeleted_v1_comments_commentId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commentId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletedResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getPostPage_v1_users_userId_posts: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getPostPage_v1_me_saved: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PostPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postStoryCreated_v1_stories: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewStory"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoryCreatedResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422 VALIDATION: the field named is not acceptable (an unknown background or textStyle, a lifetimeHours the member does not have, no words and no photo). Nothing is stored and no limit is used. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429. QUOTA: the day's 30 stories are used (Retry-After is when your oldest story in the window leaves it). RATE_LIMITED: the per-account limiter (Retry-After 5). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getStoryTray_v1_stories_tray: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoryTrayResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getStoryPage_v1_me_stories: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoryPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: at most 30 reads in a burst, then two a second; retry after the Retry-After header (5 seconds). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getStoryPage_v1_users_userId_stories: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoryPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: at most 30 reads in a burst, then two a second; retry after the Retry-After header (5 seconds). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteDeleted_v1_stories_storyId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                storyId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletedResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postViewed_v1_stories_storyId_view: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                storyId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewedResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getConnectionPage_v1_stories_storyId_viewers: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                storyId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectionPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postChatBlobSlot_v1_conversations_conversationId_blobs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatBlobRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatBlobSlotResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403 ATTACHMENTS_NOT_ALLOWED: the peer has not replied and you are not friends. MESSAGES_NOT_ALLOWED: the peer's messagesFrom setting refuses you. EMAIL_NOT_VERIFIED and ONBOARDING_REQUIRED also apply. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404: not a member, a blocked or other-age-band pair, or a closed conversation. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 413 TOO_LARGE: over the role's ciphertext cap (full 4 MiB, thumb 256 KiB). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429. QUOTA: the daily blob or byte quota is used (Retry-After is when enough of your oldest blobs leave the 24 hour window). RATE_LIMITED: 10 uploads are pending (Retry-After is when the oldest expires), or the per-account limiter. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503 CHAT_MEDIA_UNAVAILABLE: chat storage is not configured or failed. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postChatBlobState_v1_blobs_blobId_complete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                blobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatBlobStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404: not your blob, an unknown id, or a closed or barred conversation. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409. BLOB_NOT_READY: nothing was uploaded to the signed URL yet. BLOB_SIZE_MISMATCH: the stored size is not the declared one; the object was removed. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 410 BLOB_EXPIRED: the slot or blob expired or was deleted. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503 CHAT_MEDIA_UNAVAILABLE: chat storage is not configured or failed. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getChatBlobUrl_v1_conversations_conversationId_blobs_blobId_url: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversationId: string;
+                blobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatBlobUrlResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404: not a member, a barred pair, a closed conversation, an unknown blob, or someone else's unsent blob. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409 BLOB_NOT_READY: your own blob is not sent yet. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 410 BLOB_EXPIRED: past its 30 days, deleted, or its chat was blocked. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503 CHAT_MEDIA_UNAVAILABLE: chat storage is not configured or failed. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteDeleted_v1_blobs_blobId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                blobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletedResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503 CHAT_MEDIA_UNAVAILABLE: chat storage is not configured. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -7342,7 +14645,7 @@ export interface operations {
                     "application/json": components["schemas"]["SharedSpacePageResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7351,7 +14654,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7423,7 +14726,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -7456,7 +14759,7 @@ export interface operations {
                     "application/json": components["schemas"]["SharedSpaceResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7465,7 +14768,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7537,7 +14840,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -7568,7 +14871,7 @@ export interface operations {
                     "application/json": components["schemas"]["SharedSpaceResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7577,7 +14880,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7649,7 +14952,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -7684,7 +14987,7 @@ export interface operations {
                     "application/json": components["schemas"]["SharedSpaceResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7693,7 +14996,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7765,7 +15068,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -7800,7 +15103,7 @@ export interface operations {
                     "application/json": components["schemas"]["SharedSpaceResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7809,7 +15112,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7881,7 +15184,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -7912,7 +15215,7 @@ export interface operations {
                     "application/json": components["schemas"]["SharedSpaceResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -7921,7 +15224,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7993,7 +15296,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -8028,7 +15331,7 @@ export interface operations {
                     "application/json": components["schemas"]["SharedSpaceResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -8037,7 +15340,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8109,7 +15412,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -8144,7 +15447,7 @@ export interface operations {
                     "application/json": components["schemas"]["SharedSpaceResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -8153,7 +15456,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8225,7 +15528,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -8261,7 +15564,7 @@ export interface operations {
                     "application/json": components["schemas"]["SpaceMemberPageResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -8270,7 +15573,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8342,7 +15645,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -8378,7 +15681,7 @@ export interface operations {
                     "application/json": components["schemas"]["SharedSpaceResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -8387,7 +15690,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8459,7 +15762,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -8494,7 +15797,7 @@ export interface operations {
                     "application/json": components["schemas"]["SpaceEntryPageResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -8503,7 +15806,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8575,7 +15878,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -8610,7 +15913,7 @@ export interface operations {
                     "application/json": components["schemas"]["SpaceEntryCreatedResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -8619,7 +15922,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8691,7 +15994,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -8723,7 +16026,7 @@ export interface operations {
                     "application/json": components["schemas"]["SpaceEntryDeletedResponse"];
                 };
             };
-            /** @description Error 401; no internal details disclosed */
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -8732,7 +16035,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 403; no internal details disclosed */
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8804,7 +16107,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; no internal details disclosed */
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;

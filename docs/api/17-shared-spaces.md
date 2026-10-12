@@ -7,13 +7,13 @@ There is no unencrypted private or event chat endpoint.
 
 ## Using the app
 
-Discover → Communities · Moments · Events opens the space browser. Filter by
+Discover → Circles or Moments, then Find your circle, opens the space browser. Filter by
 kind or Joined, pull to refresh and load subsequent pages. Create a space with
 its description, rules, capacity and audience. A community host can create
 Moments and events under that community. The global creation sheet also links
 here. Invitations and approvals appear in Activity and open the space.
 
-Public spaces accept eligible adults immediately. Private spaces show preview
+Public spaces accept any active, onboarded member immediately. Private spaces show preview
 metadata and require host approval; discussion, participants and private event
 locations require active membership. Invite-only spaces are invisible to
 uninvited people; hosts invite by exact username. Invited people accept before
@@ -28,7 +28,7 @@ rejoining until a host unbans the person.
 
 ## API
 
-All routes require authentication and current trusted adult eligibility.
+All routes require authentication and a completed onboarding. There is no age or eligibility check beyond that: the old `403 ADULT_SPACE_REQUIRED` and the `discovery_eligibility` gate are gone (see [Nearby and open access](19-nearby-and-open-access.md)), and spaces are open to every member who declared the minimum age of 13, within their own age band: a space hosted by a member of the other band (minors and adults are kept apart, `AGE_BAND_ISOLATION`) is invisible and cannot be joined, read or written, exactly as if its host had blocked you.
 
 | Method | Route | Purpose |
 |---|---|---|
@@ -41,6 +41,10 @@ All routes require authentication and current trusted adult eligibility.
 | PUT | `/v1/spaces/{id}/members/{userId}` | Approve, invite, remove, ban, unban or set role |
 | GET / POST | `/v1/spaces/{id}/entries` | Read / publish discussion |
 | DELETE | `/v1/spaces/{id}/entries/{entryId}` | Author/moderator removal |
+
+**Invitations by username reveal nothing.** Anyone can check whether a username is taken (`GET /v1/usernames/{name}/availability`), so `POST /v1/spaces/{id}/invitations` answers exactly the same, status and body, whether the name belongs to a member the host may invite, to someone in the other age band, blocked from (or blocking) the owner or the inviting host, not onboarded, or to nobody: the space as a successful invitation returns it, or the same refusal a real invitation would meet first (`403 SPACE_ROLE_REQUIRED`, `403 SPACE_MEMBER_REQUIRED` for a child space when the person is not in the parent community, `409 SPACE_CLOSED`, `409 SPACE_FULL` at 1000 outstanding). Only a member the host may reach is invited, notified, signalled and pushed. The invited-members list (`?state=invited`) still shows only real invitations, to moderators. `PUT /v1/spaces/{id}/members/{userId}` with `invite` takes an id, which the profile endpoint already answers 404 for, and keeps answering 404 for someone who cannot be invited.
+
+**Moderation needs someone in the space.** `remove` needs an existing membership row and `ban` needs a row or a member the actor may reach (active, onboarded, not barred, by block or age band, from the owner or from the acting moderator); `approve`, `unban` and role changes need the matching state. Anything else, including an id that names no account, is `404 NOT_FOUND`, never a 500 (a foreign-key violation on a caller-supplied id is mapped to 404 everywhere). The barrier is checked against the acting moderator as well as the owner for invitations and approvals too. Only a change to the membership row (state, role or RSVP) signals and pushes the target, and the push respects the target's mute or restrict of the actor.
 
 Browse accepts `kind=community|moment|event`, optional `parentId` and `mine=true`.
 Every list supports `limit=1..50` and opaque cursors bound to user, space, kind
@@ -57,17 +61,17 @@ entries only between start and end. Expired/closed/archived discussions remain
 readable to members. A host can edit/extend the schedule and reopen the space;
 changing its audience or parent is prohibited to protect existing discussions.
 
-Eligibility, host account status, two-way blocks and bans are rechecked on every
-request. Parent community membership gates child spaces. Losing parent access
+Member status (active and onboarded), host account status, two-way blocks and bans are
+rechecked on every request. Parent community membership gates child spaces. Losing parent access
 immediately hides children; existing child membership records are retained so
 rejoining the parent restores them. Entries and participant lists omit blocked
-or no-longer-eligible adults. Space and entry reporting uses `/v1/reports` with
+or deactivated members. Space and entry reporting uses `/v1/reports` with
 `targetType=space|space_entry`; entry reports require current membership.
 
 ## Verification and limits
 
 Integration tests cover admission, invitation-only previews, parent gates,
-role hierarchy, moderation, reporting, current age eligibility, block filtering,
+role hierarchy, moderation, reporting, members with no eligibility row, members who are not onboarded or active, block filtering,
 cursor isolation, schedule expiry, simultaneous joins at capacity and role
 revocation while a moderator is waiting on a row lock. Widget
 tests cover browse filters, joining, discussion posting, revoked-access clearing,

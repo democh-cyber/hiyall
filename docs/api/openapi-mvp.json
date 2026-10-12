@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.1",
   "info": {
-    "title": "Kairova MVP API",
+    "title": "Hiyall MVP API",
     "version": "0.2.0-draft-e2ee",
     "description": "Architecture review contract. No server exists. All hosts are placeholders. Advanced groups/communities/calls/events/AI/Moments and provider-specific passkey/MFA enrollment contracts are deferred. Strict unknown-field rejection, 64 KiB default request cap (upload-complete up to 1 MiB), private no-store responses, body redaction, current authorization, distributed limits, and source-transaction idempotency are runtime obligations. API UUID IDs and decimal-string sequence/version fields supersede abbreviated examples in prose. All default operations require a live consumer session unless security overrides it. ServerTime returned on every JSON response. Safe 503 when authoritative policy unavailable. User security update: direct chat/private chat attachments require E2EE from launch. No plaintext message fields; server sees minimized routing/receipt metadata. Established protocol/native library, exact wire suite, key directory/transparency and recovery APIs require integration review before chat code. Certificate pinning resists ordinary proxy interception but cannot guarantee invisible traffic or plaintext on instrumented endpoints."
   },

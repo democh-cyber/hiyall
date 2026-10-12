@@ -8,12 +8,12 @@
 
 | Decision | Default / reason | Consequence |
 |---|---|---|
-| Product | Provisional Kairova; five familiar tabs; stories on Home; Interest Passport and consent requests | Original product direction, brand clearance before public launch |
+| Product | Provisional Hiyall; five familiar tabs; stories on Home; Interest Passport and consent requests | Original product direction, brand clearance before public launch |
 | Client | Flutter/Riverpod/go_router/Drift + secure storage | Native Android/iOS integration and real-device testing; future web shares contracts |
 | Backend | Go modular monolith with isolated runtime processes; React admin | Small initial operational footprint; extract only with measured scaling/ownership needs |
 | Sources | PostgreSQL source transactions; Redis ephemeral; private S3/CDN; OpenSearch separate from source DB | No giant single store; search and feed candidates never authorize access |
 | Messaging | User now requires E2EE direct chat/attachments, encrypted device envelopes and durable retry mapping | Reviewed suite/device/recovery integration before chat code; no server plaintext chat processing |
-| Safety | Adult-only launch assumption; opt-in profile/discovery fields; strangers use bounded requests | Launch eligibility/age assurance must be implemented for selected markets; no age/precise-location discovery filters |
+| Safety | Not adult-only (owner decision, minimum age 13 self-declared); open, discoverable profiles by default; coarse, expiring Nearby with no in-app opt-out; strangers use bounded requests | Minors and adults are kept apart (`AGE_BAND_ISOLATION`) and minors get stricter defaults, but on a self-declared, falsifiable birth date; age assurance, moderation staffing, COPPA/GDPR-K and EU parental-consent review and content restrictions for minors are recommended and not done (`docs/api/19-nearby-and-open-access.md`); no age filters; precise location is never stored |
 | Scope | Profiles, posts/stories, friends/follows, discovery, 1:1 chat, notifications, safety/privacy | Moments/groups/communities/events/calls/AI deferred; no extra bottom tabs |
 | Deployment | AWS example; one region Multi-AZ first, regional ownership later | Actual market/region/provider configuration precedes connected deployment, not architecture review |
 
