@@ -8,11 +8,11 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:kairova/core/theme.dart';
-import 'package:kairova/shared/widgets.dart';
+import 'package:hiyall/core/theme.dart';
+import 'package:hiyall/shared/widgets.dart';
 
 void main() {
-  testWidgets('Export Kairova vector mark to platform icon sizes', (
+  testWidgets('Export Hiyall vector mark to platform icon sizes', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;

@@ -1,9 +1,10 @@
-//! Kairova's end-to-end encryption core: a deliberately small surface over
+//! Hiyall's end-to-end encryption core: a deliberately small surface over
 //! vodozemac's Olm (3DH + Double Ratchet). No custom cryptography lives here;
 //! this file only converts types and enforces our usage rules:
 //! - sessions use Olm version 1 only (no downgrade or experimental configs);
 //! - every peer Curve25519 key must be contributory (non-low-order);
 //! - pickles are encrypted with a 32-byte key held by the platform keystore.
+//!
 //! See docs/security/12-e2ee-library-evaluation.md.
 
 use flutter_rust_bridge::frb;
@@ -148,10 +149,8 @@ impl OlmAccount {
         if !is_contributory(&message.base_key()) {
             return Err("rejected a non-contributory (low-order) key".into());
         }
-        let result = self
-            .account
-            .create_inbound_session(CONFIG(), identity, &message)
-            .map_err(|e| format!("could not accept session: {e}"))?;
+        let result =
+            self.account.create_inbound_session(CONFIG(), identity, &message).map_err(|e| format!("could not accept session: {e}"))?;
         let plaintext = String::from_utf8(result.plaintext).map_err(|_| "plaintext is not UTF-8".to_string())?;
         Ok((OlmSession { session: result.session }, plaintext))
     }
@@ -286,11 +285,11 @@ mod tests {
     #[test]
     fn signatures_are_strict() {
         let alice = OlmAccount::create();
-        let statement = "kairova-device-v1\nuser\ndevice\nkey\nsigner".to_string();
+        let statement = "hiyall-device-v1\nuser\ndevice\nkey\nsigner".to_string();
         let signature = alice.sign(statement.clone());
         assert!(verify_signature(alice.signing_key(), statement.clone(), signature.clone()));
         assert!(!verify_signature(alice.signing_key(), statement + "x", signature.clone()));
-        assert!(!verify_signature(OlmAccount::create().signing_key(), "kairova".into(), signature));
+        assert!(!verify_signature(OlmAccount::create().signing_key(), "hiyall".into(), signature));
     }
 
     #[test]

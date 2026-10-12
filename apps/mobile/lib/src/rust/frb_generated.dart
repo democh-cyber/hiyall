@@ -3,6 +3,7 @@
 
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
+import 'api/blob.dart';
 import 'api/e2ee.dart';
 
 import 'dart:async';
@@ -67,11 +68,11 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 52968273;
+  int get rustContentHash => 1674410531;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
-        stem: 'kairova_e2ee',
+        stem: 'hiyall_e2ee',
         ioDirectory: 'rust/target/release/',
         webPrefix: 'pkg/',
         wasmBindgenName: 'wasm_bindgen',
@@ -151,7 +152,37 @@ abstract class RustLibApi extends BaseApi {
 
   String crateApiE2EeOlmSessionSessionId({required OlmSession that});
 
+  Future<Uint8List> crateApiBlobDecryptBlob({
+    required List<int> key,
+    required String role,
+    required String blobId,
+    required String conversationId,
+    required String mime,
+    required int chunkSize,
+    required int plainLen,
+    required List<int> ctSha256,
+    required List<int> ciphertext,
+  });
+
+  Future<SealedBlob> crateApiBlobEncryptBlob({
+    required List<int> key,
+    required String role,
+    required String blobId,
+    required String conversationId,
+    required String mime,
+    required int chunkSize,
+    required List<int> plaintext,
+  });
+
+  Uint8List crateApiBlobGenerateBlobKey();
+
   bool crateApiE2EeIsContributoryKey({required String key});
+
+  Future<PreparedImage> crateApiBlobPrepareChatImage({
+    required List<int> input,
+  });
+
+  Future<RgbaPreview> crateApiBlobPreviewToRgba({required List<int> preview});
 
   bool crateApiE2EeVerifySignature({
     required String signingKey,
@@ -721,13 +752,163 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<Uint8List> crateApiBlobDecryptBlob({
+    required List<int> key,
+    required String role,
+    required String blobId,
+    required String conversationId,
+    required String mime,
+    required int chunkSize,
+    required int plainLen,
+    required List<int> ctSha256,
+    required List<int> ciphertext,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(key, serializer);
+          sse_encode_String(role, serializer);
+          sse_encode_String(blobId, serializer);
+          sse_encode_String(conversationId, serializer);
+          sse_encode_String(mime, serializer);
+          sse_encode_u_32(chunkSize, serializer);
+          sse_encode_u_32(plainLen, serializer);
+          sse_encode_list_prim_u_8_loose(ctSha256, serializer);
+          sse_encode_list_prim_u_8_loose(ciphertext, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 18,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiBlobDecryptBlobConstMeta,
+        argValues: [
+          key,
+          role,
+          blobId,
+          conversationId,
+          mime,
+          chunkSize,
+          plainLen,
+          ctSha256,
+          ciphertext,
+        ],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBlobDecryptBlobConstMeta => const TaskConstMeta(
+    debugName: "decrypt_blob",
+    argNames: [
+      "key",
+      "role",
+      "blobId",
+      "conversationId",
+      "mime",
+      "chunkSize",
+      "plainLen",
+      "ctSha256",
+      "ciphertext",
+    ],
+  );
+
+  @override
+  Future<SealedBlob> crateApiBlobEncryptBlob({
+    required List<int> key,
+    required String role,
+    required String blobId,
+    required String conversationId,
+    required String mime,
+    required int chunkSize,
+    required List<int> plaintext,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(key, serializer);
+          sse_encode_String(role, serializer);
+          sse_encode_String(blobId, serializer);
+          sse_encode_String(conversationId, serializer);
+          sse_encode_String(mime, serializer);
+          sse_encode_u_32(chunkSize, serializer);
+          sse_encode_list_prim_u_8_loose(plaintext, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 19,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_sealed_blob,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiBlobEncryptBlobConstMeta,
+        argValues: [
+          key,
+          role,
+          blobId,
+          conversationId,
+          mime,
+          chunkSize,
+          plaintext,
+        ],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBlobEncryptBlobConstMeta => const TaskConstMeta(
+    debugName: "encrypt_blob",
+    argNames: [
+      "key",
+      "role",
+      "blobId",
+      "conversationId",
+      "mime",
+      "chunkSize",
+      "plaintext",
+    ],
+  );
+
+  @override
+  Uint8List crateApiBlobGenerateBlobKey() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 20)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiBlobGenerateBlobKeyConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBlobGenerateBlobKeyConstMeta =>
+      const TaskConstMeta(debugName: "generate_blob_key", argNames: []);
+
+  @override
   bool crateApiE2EeIsContributoryKey({required String key}) {
     return handler.executeSync(
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(key, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 18)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 21)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -744,6 +925,64 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "is_contributory_key", argNames: ["key"]);
 
   @override
+  Future<PreparedImage> crateApiBlobPrepareChatImage({
+    required List<int> input,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(input, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 22,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_prepared_image,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiBlobPrepareChatImageConstMeta,
+        argValues: [input],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBlobPrepareChatImageConstMeta =>
+      const TaskConstMeta(debugName: "prepare_chat_image", argNames: ["input"]);
+
+  @override
+  Future<RgbaPreview> crateApiBlobPreviewToRgba({required List<int> preview}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(preview, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 23,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_rgba_preview,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiBlobPreviewToRgbaConstMeta,
+        argValues: [preview],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBlobPreviewToRgbaConstMeta =>
+      const TaskConstMeta(debugName: "preview_to_rgba", argNames: ["preview"]);
+
+  @override
   bool crateApiE2EeVerifySignature({
     required String signingKey,
     required String message,
@@ -756,7 +995,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(signingKey, serializer);
           sse_encode_String(message, serializer);
           sse_encode_String(signature, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 19)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 24)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -918,6 +1157,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  PreparedImage dco_decode_prepared_image(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    return PreparedImage(
+      full: dco_decode_list_prim_u_8_strict(arr[0]),
+      fullW: dco_decode_u_32(arr[1]),
+      fullH: dco_decode_u_32(arr[2]),
+      thumb: dco_decode_list_prim_u_8_strict(arr[3]),
+      thumbW: dco_decode_u_32(arr[4]),
+      thumbH: dco_decode_u_32(arr[5]),
+      preview: dco_decode_list_prim_u_8_strict(arr[6]),
+    );
+  }
+
+  @protected
   PublicKeyEntry dco_decode_public_key_entry(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -944,6 +1200,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         arr[0],
       ),
       dco_decode_String(arr[1]),
+    );
+  }
+
+  @protected
+  RgbaPreview dco_decode_rgba_preview(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return RgbaPreview(
+      w: dco_decode_u_32(arr[0]),
+      h: dco_decode_u_32(arr[1]),
+      rgba: dco_decode_list_prim_u_8_strict(arr[2]),
+    );
+  }
+
+  @protected
+  SealedBlob dco_decode_sealed_blob(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return SealedBlob(
+      ciphertext: dco_decode_list_prim_u_8_strict(arr[0]),
+      ctSha256: dco_decode_list_prim_u_8_strict(arr[1]),
+      plainLen: dco_decode_u_32(arr[2]),
+      chunks: dco_decode_u_32(arr[3]),
     );
   }
 
@@ -1141,6 +1424,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  PreparedImage sse_decode_prepared_image(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_full = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_fullW = sse_decode_u_32(deserializer);
+    var var_fullH = sse_decode_u_32(deserializer);
+    var var_thumb = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_thumbW = sse_decode_u_32(deserializer);
+    var var_thumbH = sse_decode_u_32(deserializer);
+    var var_preview = sse_decode_list_prim_u_8_strict(deserializer);
+    return PreparedImage(
+      full: var_full,
+      fullW: var_fullW,
+      fullH: var_fullH,
+      thumb: var_thumb,
+      thumbW: var_thumbW,
+      thumbH: var_thumbH,
+      preview: var_preview,
+    );
+  }
+
+  @protected
   PublicKeyEntry sse_decode_public_key_entry(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_keyId = sse_decode_String(deserializer);
@@ -1160,6 +1464,30 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         );
     var var_field1 = sse_decode_String(deserializer);
     return (var_field0, var_field1);
+  }
+
+  @protected
+  RgbaPreview sse_decode_rgba_preview(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_w = sse_decode_u_32(deserializer);
+    var var_h = sse_decode_u_32(deserializer);
+    var var_rgba = sse_decode_list_prim_u_8_strict(deserializer);
+    return RgbaPreview(w: var_w, h: var_h, rgba: var_rgba);
+  }
+
+  @protected
+  SealedBlob sse_decode_sealed_blob(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_ciphertext = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_ctSha256 = sse_decode_list_prim_u_8_strict(deserializer);
+    var var_plainLen = sse_decode_u_32(deserializer);
+    var var_chunks = sse_decode_u_32(deserializer);
+    return SealedBlob(
+      ciphertext: var_ciphertext,
+      ctSha256: var_ctSha256,
+      plainLen: var_plainLen,
+      chunks: var_chunks,
+    );
   }
 
   @protected
@@ -1374,6 +1702,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_prepared_image(PreparedImage self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_prim_u_8_strict(self.full, serializer);
+    sse_encode_u_32(self.fullW, serializer);
+    sse_encode_u_32(self.fullH, serializer);
+    sse_encode_list_prim_u_8_strict(self.thumb, serializer);
+    sse_encode_u_32(self.thumbW, serializer);
+    sse_encode_u_32(self.thumbH, serializer);
+    sse_encode_list_prim_u_8_strict(self.preview, serializer);
+  }
+
+  @protected
   void sse_encode_public_key_entry(
     PublicKeyEntry self,
     SseSerializer serializer,
@@ -1395,6 +1735,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       serializer,
     );
     sse_encode_String(self.$2, serializer);
+  }
+
+  @protected
+  void sse_encode_rgba_preview(RgbaPreview self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.w, serializer);
+    sse_encode_u_32(self.h, serializer);
+    sse_encode_list_prim_u_8_strict(self.rgba, serializer);
+  }
+
+  @protected
+  void sse_encode_sealed_blob(SealedBlob self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_list_prim_u_8_strict(self.ciphertext, serializer);
+    sse_encode_list_prim_u_8_strict(self.ctSha256, serializer);
+    sse_encode_u_32(self.plainLen, serializer);
+    sse_encode_u_32(self.chunks, serializer);
   }
 
   @protected

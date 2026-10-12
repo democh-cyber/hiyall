@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 52968273;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1674410531;
 
 // Section: executor
 
@@ -60,15 +60,8 @@ fn wire__crate__api__e2ee__OlmAccount_create_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             deserializer.end();
             transform_result_sse::<_, ()>((move || {
                 let output_ok = Ok::<_, ()>(crate::api::e2ee::OlmAccount::create())?;
@@ -89,29 +82,18 @@ fn wire__crate__api__e2ee__OlmAccount_create_inbound_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>,
-            >>::sse_decode(&mut deserializer);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>>::sse_decode(&mut deserializer);
             let api_their_identity_key = <String>::sse_decode(&mut deserializer);
             let api_ciphertext = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, String>((move || {
                 let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, true,
-                        ),
-                    ]);
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, true),
+                ]);
                 for i in decode_indices_ {
                     match i {
                         0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
@@ -119,11 +101,7 @@ fn wire__crate__api__e2ee__OlmAccount_create_inbound_impl(
                     }
                 }
                 let mut api_that_guard = api_that_guard.unwrap();
-                let output_ok = crate::api::e2ee::OlmAccount::create_inbound(
-                    &mut *api_that_guard,
-                    api_their_identity_key,
-                    api_ciphertext,
-                )?;
+                let output_ok = crate::api::e2ee::OlmAccount::create_inbound(&mut *api_that_guard, api_their_identity_key, api_ciphertext)?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -141,29 +119,18 @@ fn wire__crate__api__e2ee__OlmAccount_create_outbound_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>,
-            >>::sse_decode(&mut deserializer);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>>::sse_decode(&mut deserializer);
             let api_identity_key = <String>::sse_decode(&mut deserializer);
             let api_one_time_key = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, String>((move || {
                 let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, false,
-                        ),
-                    ]);
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false),
+                ]);
                 for i in decode_indices_ {
                     match i {
                         0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
@@ -171,11 +138,7 @@ fn wire__crate__api__e2ee__OlmAccount_create_outbound_impl(
                     }
                 }
                 let api_that_guard = api_that_guard.unwrap();
-                let output_ok = crate::api::e2ee::OlmAccount::create_outbound(
-                    &*api_that_guard,
-                    api_identity_key,
-                    api_one_time_key,
-                )?;
+                let output_ok = crate::api::e2ee::OlmAccount::create_outbound(&*api_that_guard, api_identity_key, api_one_time_key)?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -193,27 +156,16 @@ fn wire__crate__api__e2ee__OlmAccount_generate_fallback_key_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>,
-            >>::sse_decode(&mut deserializer);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, ()>((move || {
                 let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, true,
-                        ),
-                    ]);
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, true),
+                ]);
                 for i in decode_indices_ {
                     match i {
                         0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
@@ -221,9 +173,7 @@ fn wire__crate__api__e2ee__OlmAccount_generate_fallback_key_impl(
                     }
                 }
                 let mut api_that_guard = api_that_guard.unwrap();
-                let output_ok = Ok::<_, ()>(crate::api::e2ee::OlmAccount::generate_fallback_key(
-                    &mut *api_that_guard,
-                ))?;
+                let output_ok = Ok::<_, ()>(crate::api::e2ee::OlmAccount::generate_fallback_key(&mut *api_that_guard))?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -241,28 +191,17 @@ fn wire__crate__api__e2ee__OlmAccount_generate_one_time_keys_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>,
-            >>::sse_decode(&mut deserializer);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>>::sse_decode(&mut deserializer);
             let api_count = <u32>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, ()>((move || {
                 let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, true,
-                        ),
-                    ]);
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, true),
+                ]);
                 for i in decode_indices_ {
                     match i {
                         0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
@@ -270,10 +209,7 @@ fn wire__crate__api__e2ee__OlmAccount_generate_one_time_keys_impl(
                     }
                 }
                 let mut api_that_guard = api_that_guard.unwrap();
-                let output_ok = Ok::<_, ()>(crate::api::e2ee::OlmAccount::generate_one_time_keys(
-                    &mut *api_that_guard,
-                    api_count,
-                ))?;
+                let output_ok = Ok::<_, ()>(crate::api::e2ee::OlmAccount::generate_one_time_keys(&mut *api_that_guard, api_count))?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -291,27 +227,16 @@ fn wire__crate__api__e2ee__OlmAccount_identity_key_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>,
-            >>::sse_decode(&mut deserializer);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, ()>((move || {
                 let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, false,
-                        ),
-                    ]);
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false),
+                ]);
                 for i in decode_indices_ {
                     match i {
                         0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
@@ -319,8 +244,7 @@ fn wire__crate__api__e2ee__OlmAccount_identity_key_impl(
                     }
                 }
                 let api_that_guard = api_that_guard.unwrap();
-                let output_ok =
-                    Ok::<_, ()>(crate::api::e2ee::OlmAccount::identity_key(&*api_that_guard))?;
+                let output_ok = Ok::<_, ()>(crate::api::e2ee::OlmAccount::identity_key(&*api_that_guard))?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -338,27 +262,16 @@ fn wire__crate__api__e2ee__OlmAccount_mark_keys_as_published_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>,
-            >>::sse_decode(&mut deserializer);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, ()>((move || {
                 let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, true,
-                        ),
-                    ]);
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, true),
+                ]);
                 for i in decode_indices_ {
                     match i {
                         0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
@@ -386,28 +299,17 @@ fn wire__crate__api__e2ee__OlmAccount_pickle_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>,
-            >>::sse_decode(&mut deserializer);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>>::sse_decode(&mut deserializer);
             let api_pickle_key = <Vec<u8>>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, String>((move || {
                 let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, false,
-                        ),
-                    ]);
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false),
+                ]);
                 for i in decode_indices_ {
                     match i {
                         0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
@@ -415,8 +317,7 @@ fn wire__crate__api__e2ee__OlmAccount_pickle_impl(
                     }
                 }
                 let api_that_guard = api_that_guard.unwrap();
-                let output_ok =
-                    crate::api::e2ee::OlmAccount::pickle(&*api_that_guard, api_pickle_key)?;
+                let output_ok = crate::api::e2ee::OlmAccount::pickle(&*api_that_guard, api_pickle_key)?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -434,15 +335,8 @@ fn wire__crate__api__e2ee__OlmAccount_restore_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_pickle = <String>::sse_decode(&mut deserializer);
             let api_pickle_key = <Vec<u8>>::sse_decode(&mut deserializer);
             deserializer.end();
@@ -465,28 +359,17 @@ fn wire__crate__api__e2ee__OlmAccount_sign_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>,
-            >>::sse_decode(&mut deserializer);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>>::sse_decode(&mut deserializer);
             let api_message = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, ()>((move || {
                 let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, false,
-                        ),
-                    ]);
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false),
+                ]);
                 for i in decode_indices_ {
                     match i {
                         0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
@@ -494,10 +377,7 @@ fn wire__crate__api__e2ee__OlmAccount_sign_impl(
                     }
                 }
                 let api_that_guard = api_that_guard.unwrap();
-                let output_ok = Ok::<_, ()>(crate::api::e2ee::OlmAccount::sign(
-                    &*api_that_guard,
-                    api_message,
-                ))?;
+                let output_ok = Ok::<_, ()>(crate::api::e2ee::OlmAccount::sign(&*api_that_guard, api_message))?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -515,27 +395,16 @@ fn wire__crate__api__e2ee__OlmAccount_signing_key_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>,
-            >>::sse_decode(&mut deserializer);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, ()>((move || {
                 let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, false,
-                        ),
-                    ]);
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false),
+                ]);
                 for i in decode_indices_ {
                     match i {
                         0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
@@ -543,8 +412,7 @@ fn wire__crate__api__e2ee__OlmAccount_signing_key_impl(
                     }
                 }
                 let api_that_guard = api_that_guard.unwrap();
-                let output_ok =
-                    Ok::<_, ()>(crate::api::e2ee::OlmAccount::signing_key(&*api_that_guard))?;
+                let output_ok = Ok::<_, ()>(crate::api::e2ee::OlmAccount::signing_key(&*api_that_guard))?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -562,29 +430,18 @@ fn wire__crate__api__e2ee__OlmSession_decrypt_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>,
-            >>::sse_decode(&mut deserializer);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>>>::sse_decode(&mut deserializer);
             let api_message_type = <u8>::sse_decode(&mut deserializer);
             let api_ciphertext = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, String>((move || {
                 let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, true,
-                        ),
-                    ]);
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, true),
+                ]);
                 for i in decode_indices_ {
                     match i {
                         0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
@@ -592,11 +449,7 @@ fn wire__crate__api__e2ee__OlmSession_decrypt_impl(
                     }
                 }
                 let mut api_that_guard = api_that_guard.unwrap();
-                let output_ok = crate::api::e2ee::OlmSession::decrypt(
-                    &mut *api_that_guard,
-                    api_message_type,
-                    api_ciphertext,
-                )?;
+                let output_ok = crate::api::e2ee::OlmSession::decrypt(&mut *api_that_guard, api_message_type, api_ciphertext)?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -614,28 +467,17 @@ fn wire__crate__api__e2ee__OlmSession_encrypt_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>,
-            >>::sse_decode(&mut deserializer);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>>>::sse_decode(&mut deserializer);
             let api_plaintext = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, String>((move || {
                 let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, true,
-                        ),
-                    ]);
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, true),
+                ]);
                 for i in decode_indices_ {
                     match i {
                         0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
@@ -643,8 +485,7 @@ fn wire__crate__api__e2ee__OlmSession_encrypt_impl(
                     }
                 }
                 let mut api_that_guard = api_that_guard.unwrap();
-                let output_ok =
-                    crate::api::e2ee::OlmSession::encrypt(&mut *api_that_guard, api_plaintext)?;
+                let output_ok = crate::api::e2ee::OlmSession::encrypt(&mut *api_that_guard, api_plaintext)?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -662,28 +503,17 @@ fn wire__crate__api__e2ee__OlmSession_matches_pre_key_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>,
-            >>::sse_decode(&mut deserializer);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>>>::sse_decode(&mut deserializer);
             let api_ciphertext = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, ()>((move || {
                 let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, false,
-                        ),
-                    ]);
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false),
+                ]);
                 for i in decode_indices_ {
                     match i {
                         0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
@@ -691,10 +521,7 @@ fn wire__crate__api__e2ee__OlmSession_matches_pre_key_impl(
                     }
                 }
                 let api_that_guard = api_that_guard.unwrap();
-                let output_ok = Ok::<_, ()>(crate::api::e2ee::OlmSession::matches_pre_key(
-                    &*api_that_guard,
-                    api_ciphertext,
-                ))?;
+                let output_ok = Ok::<_, ()>(crate::api::e2ee::OlmSession::matches_pre_key(&*api_that_guard, api_ciphertext))?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -712,28 +539,17 @@ fn wire__crate__api__e2ee__OlmSession_pickle_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>,
-            >>::sse_decode(&mut deserializer);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>>>::sse_decode(&mut deserializer);
             let api_pickle_key = <Vec<u8>>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, String>((move || {
                 let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, false,
-                        ),
-                    ]);
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false),
+                ]);
                 for i in decode_indices_ {
                     match i {
                         0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
@@ -741,8 +557,7 @@ fn wire__crate__api__e2ee__OlmSession_pickle_impl(
                     }
                 }
                 let api_that_guard = api_that_guard.unwrap();
-                let output_ok =
-                    crate::api::e2ee::OlmSession::pickle(&*api_that_guard, api_pickle_key)?;
+                let output_ok = crate::api::e2ee::OlmSession::pickle(&*api_that_guard, api_pickle_key)?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -760,15 +575,8 @@ fn wire__crate__api__e2ee__OlmSession_restore_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_pickle = <String>::sse_decode(&mut deserializer);
             let api_pickle_key = <Vec<u8>>::sse_decode(&mut deserializer);
             deserializer.end();
@@ -791,27 +599,16 @@ fn wire__crate__api__e2ee__OlmSession_session_id_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>,
-            >>::sse_decode(&mut deserializer);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>>>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, ()>((move || {
                 let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, false,
-                        ),
-                    ]);
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false),
+                ]);
                 for i in decode_indices_ {
                     match i {
                         0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
@@ -819,8 +616,113 @@ fn wire__crate__api__e2ee__OlmSession_session_id_impl(
                     }
                 }
                 let api_that_guard = api_that_guard.unwrap();
-                let output_ok =
-                    Ok::<_, ()>(crate::api::e2ee::OlmSession::session_id(&*api_that_guard))?;
+                let output_ok = Ok::<_, ()>(crate::api::e2ee::OlmSession::session_id(&*api_that_guard))?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
+fn wire__crate__api__blob__decrypt_blob_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "decrypt_blob",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_key = <Vec<u8>>::sse_decode(&mut deserializer);
+            let api_role = <String>::sse_decode(&mut deserializer);
+            let api_blob_id = <String>::sse_decode(&mut deserializer);
+            let api_conversation_id = <String>::sse_decode(&mut deserializer);
+            let api_mime = <String>::sse_decode(&mut deserializer);
+            let api_chunk_size = <u32>::sse_decode(&mut deserializer);
+            let api_plain_len = <u32>::sse_decode(&mut deserializer);
+            let api_ct_sha256 = <Vec<u8>>::sse_decode(&mut deserializer);
+            let api_ciphertext = <Vec<u8>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::api::blob::decrypt_blob(
+                        api_key,
+                        api_role,
+                        api_blob_id,
+                        api_conversation_id,
+                        api_mime,
+                        api_chunk_size,
+                        api_plain_len,
+                        api_ct_sha256,
+                        api_ciphertext,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__blob__encrypt_blob_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "encrypt_blob",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_key = <Vec<u8>>::sse_decode(&mut deserializer);
+            let api_role = <String>::sse_decode(&mut deserializer);
+            let api_blob_id = <String>::sse_decode(&mut deserializer);
+            let api_conversation_id = <String>::sse_decode(&mut deserializer);
+            let api_mime = <String>::sse_decode(&mut deserializer);
+            let api_chunk_size = <u32>::sse_decode(&mut deserializer);
+            let api_plaintext = <Vec<u8>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::api::blob::encrypt_blob(
+                        api_key,
+                        api_role,
+                        api_blob_id,
+                        api_conversation_id,
+                        api_mime,
+                        api_chunk_size,
+                        api_plaintext,
+                    )?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__blob__generate_blob_key_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "generate_blob_key",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let output_ok = Ok::<_, ()>(crate::api::blob::generate_blob_key())?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -838,21 +740,66 @@ fn wire__crate__api__e2ee__is_contributory_key_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_key = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, ()>((move || {
                 let output_ok = Ok::<_, ()>(crate::api::e2ee::is_contributory_key(api_key))?;
                 std::result::Result::Ok(output_ok)
             })())
+        },
+    )
+}
+fn wire__crate__api__blob__prepare_chat_image_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "prepare_chat_image",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_input = <Vec<u8>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::api::blob::prepare_chat_image(api_input)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__blob__preview_to_rgba_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "preview_to_rgba",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_preview = <Vec<u8>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::api::blob::preview_to_rgba(api_preview)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
         },
     )
 }
@@ -868,25 +815,14 @@ fn wire__crate__api__e2ee__verify_signature_impl(
             mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
         },
         move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_signing_key = <String>::sse_decode(&mut deserializer);
             let api_message = <String>::sse_decode(&mut deserializer);
             let api_signature = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             transform_result_sse::<_, ()>((move || {
-                let output_ok = Ok::<_, ()>(crate::api::e2ee::verify_signature(
-                    api_signing_key,
-                    api_message,
-                    api_signature,
-                ))?;
+                let output_ok = Ok::<_, ()>(crate::api::e2ee::verify_signature(api_signing_key, api_message, api_signature))?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -895,21 +831,15 @@ fn wire__crate__api__e2ee__verify_signature_impl(
 
 // Section: related_funcs
 
-flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
-    flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>
-);
-flutter_rust_bridge::frb_generated_moi_arc_impl_value!(
-    flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>
-);
+flutter_rust_bridge::frb_generated_moi_arc_impl_value!(flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>);
+flutter_rust_bridge::frb_generated_moi_arc_impl_value!(flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>);
 
 // Section: dart2rust
 
 impl SseDecode for OlmAccount {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut inner = <RustOpaqueMoi<
-            flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>,
-        >>::sse_decode(deserializer);
+        let mut inner = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>>::sse_decode(deserializer);
         return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);
     }
 }
@@ -917,16 +847,12 @@ impl SseDecode for OlmAccount {
 impl SseDecode for OlmSession {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut inner = <RustOpaqueMoi<
-            flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>,
-        >>::sse_decode(deserializer);
+        let mut inner = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>>>::sse_decode(deserializer);
         return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);
     }
 }
 
-impl SseDecode
-    for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>
-{
+impl SseDecode for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut inner = <usize>::sse_decode(deserializer);
@@ -934,9 +860,7 @@ impl SseDecode
     }
 }
 
-impl SseDecode
-    for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>>
-{
+impl SseDecode for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut inner = <usize>::sse_decode(deserializer);
@@ -964,10 +888,7 @@ impl SseDecode for crate::api::e2ee::EncryptedMessage {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_messageType = <u8>::sse_decode(deserializer);
         let mut var_ciphertext = <String>::sse_decode(deserializer);
-        return crate::api::e2ee::EncryptedMessage {
-            message_type: var_messageType,
-            ciphertext: var_ciphertext,
-        };
+        return crate::api::e2ee::EncryptedMessage { message_type: var_messageType, ciphertext: var_ciphertext };
     }
 }
 
@@ -1006,15 +927,34 @@ impl SseDecode for Option<crate::api::e2ee::PublicKeyEntry> {
     }
 }
 
+impl SseDecode for crate::api::blob::PreparedImage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_full = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_fullW = <u32>::sse_decode(deserializer);
+        let mut var_fullH = <u32>::sse_decode(deserializer);
+        let mut var_thumb = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_thumbW = <u32>::sse_decode(deserializer);
+        let mut var_thumbH = <u32>::sse_decode(deserializer);
+        let mut var_preview = <Vec<u8>>::sse_decode(deserializer);
+        return crate::api::blob::PreparedImage {
+            full: var_full,
+            full_w: var_fullW,
+            full_h: var_fullH,
+            thumb: var_thumb,
+            thumb_w: var_thumbW,
+            thumb_h: var_thumbH,
+            preview: var_preview,
+        };
+    }
+}
+
 impl SseDecode for crate::api::e2ee::PublicKeyEntry {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_keyId = <String>::sse_decode(deserializer);
         let mut var_publicKey = <String>::sse_decode(deserializer);
-        return crate::api::e2ee::PublicKeyEntry {
-            key_id: var_keyId,
-            public_key: var_publicKey,
-        };
+        return crate::api::e2ee::PublicKeyEntry { key_id: var_keyId, public_key: var_publicKey };
     }
 }
 
@@ -1024,6 +964,32 @@ impl SseDecode for (OlmSession, String) {
         let mut var_field0 = <OlmSession>::sse_decode(deserializer);
         let mut var_field1 = <String>::sse_decode(deserializer);
         return (var_field0, var_field1);
+    }
+}
+
+impl SseDecode for crate::api::blob::RgbaPreview {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_w = <u32>::sse_decode(deserializer);
+        let mut var_h = <u32>::sse_decode(deserializer);
+        let mut var_rgba = <Vec<u8>>::sse_decode(deserializer);
+        return crate::api::blob::RgbaPreview { w: var_w, h: var_h, rgba: var_rgba };
+    }
+}
+
+impl SseDecode for crate::api::blob::SealedBlob {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_ciphertext = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_ctSha256 = <Vec<u8>>::sse_decode(deserializer);
+        let mut var_plainLen = <u32>::sse_decode(deserializer);
+        let mut var_chunks = <u32>::sse_decode(deserializer);
+        return crate::api::blob::SealedBlob {
+            ciphertext: var_ciphertext,
+            ct_sha256: var_ctSha256,
+            plain_len: var_plainLen,
+            chunks: var_chunks,
+        };
     }
 }
 
@@ -1069,6 +1035,10 @@ fn pde_ffi_dispatcher_primary_impl(
 ) {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
+        18 => wire__crate__api__blob__decrypt_blob_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__blob__encrypt_blob_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__blob__prepare_chat_image_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__blob__preview_to_rgba_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1084,22 +1054,10 @@ fn pde_ffi_dispatcher_sync_impl(
         1 => wire__crate__api__e2ee__OlmAccount_create_impl(ptr, rust_vec_len, data_len),
         2 => wire__crate__api__e2ee__OlmAccount_create_inbound_impl(ptr, rust_vec_len, data_len),
         3 => wire__crate__api__e2ee__OlmAccount_create_outbound_impl(ptr, rust_vec_len, data_len),
-        4 => wire__crate__api__e2ee__OlmAccount_generate_fallback_key_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        5 => wire__crate__api__e2ee__OlmAccount_generate_one_time_keys_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
+        4 => wire__crate__api__e2ee__OlmAccount_generate_fallback_key_impl(ptr, rust_vec_len, data_len),
+        5 => wire__crate__api__e2ee__OlmAccount_generate_one_time_keys_impl(ptr, rust_vec_len, data_len),
         6 => wire__crate__api__e2ee__OlmAccount_identity_key_impl(ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__e2ee__OlmAccount_mark_keys_as_published_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
+        7 => wire__crate__api__e2ee__OlmAccount_mark_keys_as_published_impl(ptr, rust_vec_len, data_len),
         8 => wire__crate__api__e2ee__OlmAccount_pickle_impl(ptr, rust_vec_len, data_len),
         9 => wire__crate__api__e2ee__OlmAccount_restore_impl(ptr, rust_vec_len, data_len),
         10 => wire__crate__api__e2ee__OlmAccount_sign_impl(ptr, rust_vec_len, data_len),
@@ -1110,8 +1068,9 @@ fn pde_ffi_dispatcher_sync_impl(
         15 => wire__crate__api__e2ee__OlmSession_pickle_impl(ptr, rust_vec_len, data_len),
         16 => wire__crate__api__e2ee__OlmSession_restore_impl(ptr, rust_vec_len, data_len),
         17 => wire__crate__api__e2ee__OlmSession_session_id_impl(ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__e2ee__is_contributory_key_impl(ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__e2ee__verify_signature_impl(ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__blob__generate_blob_key_impl(ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__e2ee__is_contributory_key_impl(ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__e2ee__verify_signature_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1121,8 +1080,7 @@ fn pde_ffi_dispatcher_sync_impl(
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for FrbWrapper<OlmAccount> {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self.0)
-            .into_dart()
+        flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self.0).into_dart()
     }
 }
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for FrbWrapper<OlmAccount> {}
@@ -1136,8 +1094,7 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<OlmAccount>> for OlmAccount {
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for FrbWrapper<OlmSession> {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self.0)
-            .into_dart()
+        flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self.0).into_dart()
     }
 }
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for FrbWrapper<OlmSession> {}
@@ -1151,42 +1108,75 @@ impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<OlmSession>> for OlmSession {
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::e2ee::EncryptedMessage {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.message_type.into_into_dart().into_dart(), self.ciphertext.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::e2ee::EncryptedMessage {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::e2ee::EncryptedMessage> for crate::api::e2ee::EncryptedMessage {
+    fn into_into_dart(self) -> crate::api::e2ee::EncryptedMessage {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::blob::PreparedImage {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
-            self.message_type.into_into_dart().into_dart(),
-            self.ciphertext.into_into_dart().into_dart(),
+            self.full.into_into_dart().into_dart(),
+            self.full_w.into_into_dart().into_dart(),
+            self.full_h.into_into_dart().into_dart(),
+            self.thumb.into_into_dart().into_dart(),
+            self.thumb_w.into_into_dart().into_dart(),
+            self.thumb_h.into_into_dart().into_dart(),
+            self.preview.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
 }
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::e2ee::EncryptedMessage
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::e2ee::EncryptedMessage>
-    for crate::api::e2ee::EncryptedMessage
-{
-    fn into_into_dart(self) -> crate::api::e2ee::EncryptedMessage {
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::blob::PreparedImage {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::blob::PreparedImage> for crate::api::blob::PreparedImage {
+    fn into_into_dart(self) -> crate::api::blob::PreparedImage {
         self
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::e2ee::PublicKeyEntry {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.key_id.into_into_dart().into_dart(), self.public_key.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::e2ee::PublicKeyEntry {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::e2ee::PublicKeyEntry> for crate::api::e2ee::PublicKeyEntry {
+    fn into_into_dart(self) -> crate::api::e2ee::PublicKeyEntry {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::blob::RgbaPreview {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [self.w.into_into_dart().into_dart(), self.h.into_into_dart().into_dart(), self.rgba.into_into_dart().into_dart()].into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::blob::RgbaPreview {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::blob::RgbaPreview> for crate::api::blob::RgbaPreview {
+    fn into_into_dart(self) -> crate::api::blob::RgbaPreview {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::blob::SealedBlob {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
-            self.key_id.into_into_dart().into_dart(),
-            self.public_key.into_into_dart().into_dart(),
+            self.ciphertext.into_into_dart().into_dart(),
+            self.ct_sha256.into_into_dart().into_dart(),
+            self.plain_len.into_into_dart().into_dart(),
+            self.chunks.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
 }
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::e2ee::PublicKeyEntry
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::e2ee::PublicKeyEntry>
-    for crate::api::e2ee::PublicKeyEntry
-{
-    fn into_into_dart(self) -> crate::api::e2ee::PublicKeyEntry {
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::blob::SealedBlob {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::blob::SealedBlob> for crate::api::blob::SealedBlob {
+    fn into_into_dart(self) -> crate::api::blob::SealedBlob {
         self
     }
 }
@@ -1194,20 +1184,24 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::e2ee::PublicKeyEntry>
 impl SseEncode for OlmAccount {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>>::sse_encode(flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self), serializer);
+        <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>>::sse_encode(
+            flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self),
+            serializer,
+        );
     }
 }
 
 impl SseEncode for OlmSession {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>>>::sse_encode(flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self), serializer);
+        <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>>>::sse_encode(
+            flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self),
+            serializer,
+        );
     }
 }
 
-impl SseEncode
-    for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>
-{
+impl SseEncode for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         let (ptr, size) = self.sse_encode_raw();
@@ -1216,9 +1210,7 @@ impl SseEncode
     }
 }
 
-impl SseEncode
-    for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>>
-{
+impl SseEncode for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         let (ptr, size) = self.sse_encode_raw();
@@ -1279,6 +1271,19 @@ impl SseEncode for Option<crate::api::e2ee::PublicKeyEntry> {
     }
 }
 
+impl SseEncode for crate::api::blob::PreparedImage {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<u8>>::sse_encode(self.full, serializer);
+        <u32>::sse_encode(self.full_w, serializer);
+        <u32>::sse_encode(self.full_h, serializer);
+        <Vec<u8>>::sse_encode(self.thumb, serializer);
+        <u32>::sse_encode(self.thumb_w, serializer);
+        <u32>::sse_encode(self.thumb_h, serializer);
+        <Vec<u8>>::sse_encode(self.preview, serializer);
+    }
+}
+
 impl SseEncode for crate::api::e2ee::PublicKeyEntry {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -1292,6 +1297,25 @@ impl SseEncode for (OlmSession, String) {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <OlmSession>::sse_encode(self.0, serializer);
         <String>::sse_encode(self.1, serializer);
+    }
+}
+
+impl SseEncode for crate::api::blob::RgbaPreview {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u32>::sse_encode(self.w, serializer);
+        <u32>::sse_encode(self.h, serializer);
+        <Vec<u8>>::sse_encode(self.rgba, serializer);
+    }
+}
+
+impl SseEncode for crate::api::blob::SealedBlob {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Vec<u8>>::sse_encode(self.ciphertext, serializer);
+        <Vec<u8>>::sse_encode(self.ct_sha256, serializer);
+        <u32>::sse_encode(self.plain_len, serializer);
+        <u32>::sse_encode(self.chunks, serializer);
     }
 }
 
@@ -1317,10 +1341,7 @@ impl SseEncode for () {
 impl SseEncode for usize {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        serializer
-            .cursor
-            .write_u64::<NativeEndian>(self as _)
-            .unwrap();
+        serializer.cursor.write_u64::<NativeEndian>(self as _).unwrap();
     }
 }
 
@@ -1340,9 +1361,7 @@ mod io {
 
     use super::*;
     use crate::api::e2ee::*;
-    use flutter_rust_bridge::for_generated::byteorder::{
-        NativeEndian, ReadBytesExt, WriteBytesExt,
-    };
+    use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
     use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
     use flutter_rust_bridge::{Handler, IntoIntoDart};
 
@@ -1351,28 +1370,28 @@ mod io {
     flutter_rust_bridge::frb_generated_boilerplate_io!();
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn frbgen_kairova_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccount(
+    pub extern "C" fn frbgen_hiyall_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccount(
         ptr: *const std::ffi::c_void,
     ) {
         MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>::increment_strong_count(ptr as _);
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn frbgen_kairova_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccount(
+    pub extern "C" fn frbgen_hiyall_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccount(
         ptr: *const std::ffi::c_void,
     ) {
         MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>::decrement_strong_count(ptr as _);
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn frbgen_kairova_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmSession(
+    pub extern "C" fn frbgen_hiyall_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmSession(
         ptr: *const std::ffi::c_void,
     ) {
         MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>>::increment_strong_count(ptr as _);
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn frbgen_kairova_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmSession(
+    pub extern "C" fn frbgen_hiyall_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmSession(
         ptr: *const std::ffi::c_void,
     ) {
         MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>>::decrement_strong_count(ptr as _);
@@ -1391,9 +1410,7 @@ mod web {
 
     use super::*;
     use crate::api::e2ee::*;
-    use flutter_rust_bridge::for_generated::byteorder::{
-        NativeEndian, ReadBytesExt, WriteBytesExt,
-    };
+    use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
     use flutter_rust_bridge::for_generated::wasm_bindgen;
     use flutter_rust_bridge::for_generated::wasm_bindgen::prelude::*;
     use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};

@@ -3,6 +3,7 @@
 
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
+import 'api/blob.dart';
 import 'api/e2ee.dart';
 
 import 'dart:async';
@@ -102,6 +103,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PublicKeyEntry? dco_decode_opt_box_autoadd_public_key_entry(dynamic raw);
 
   @protected
+  PreparedImage dco_decode_prepared_image(dynamic raw);
+
+  @protected
   PublicKeyEntry dco_decode_public_key_entry(dynamic raw);
 
   @protected
@@ -109,6 +113,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_olm_session_string(
     dynamic raw,
   );
+
+  @protected
+  RgbaPreview dco_decode_rgba_preview(dynamic raw);
+
+  @protected
+  SealedBlob dco_decode_sealed_blob(dynamic raw);
 
   @protected
   int dco_decode_u_32(dynamic raw);
@@ -201,6 +211,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  PreparedImage sse_decode_prepared_image(SseDeserializer deserializer);
+
+  @protected
   PublicKeyEntry sse_decode_public_key_entry(SseDeserializer deserializer);
 
   @protected
@@ -208,6 +221,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   sse_decode_record_auto_owned_rust_opaque_flutter_rust_bridgefor_generated_rust_auto_opaque_inner_olm_session_string(
     SseDeserializer deserializer,
   );
+
+  @protected
+  RgbaPreview sse_decode_rgba_preview(SseDeserializer deserializer);
+
+  @protected
+  SealedBlob sse_decode_sealed_blob(SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_32(SseDeserializer deserializer);
@@ -320,6 +339,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_prepared_image(PreparedImage self, SseSerializer serializer);
+
+  @protected
   void sse_encode_public_key_entry(
     PublicKeyEntry self,
     SseSerializer serializer,
@@ -331,6 +353,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     (OlmSession, String) self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_rgba_preview(RgbaPreview self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_sealed_blob(SealedBlob self, SseSerializer serializer);
 
   @protected
   void sse_encode_u_32(int self, SseSerializer serializer);
@@ -373,7 +401,7 @@ class RustLibWire implements BaseWire {
 
   late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccountPtr =
       _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
-        'frbgen_kairova_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccount',
+        'frbgen_hiyall_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccount',
       );
   late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccount =
       _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccountPtr
@@ -390,7 +418,7 @@ class RustLibWire implements BaseWire {
 
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccountPtr =
       _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
-        'frbgen_kairova_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccount',
+        'frbgen_hiyall_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccount',
       );
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccount =
       _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccountPtr
@@ -407,7 +435,7 @@ class RustLibWire implements BaseWire {
 
   late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmSessionPtr =
       _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
-        'frbgen_kairova_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmSession',
+        'frbgen_hiyall_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmSession',
       );
   late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmSession =
       _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmSessionPtr
@@ -424,7 +452,7 @@ class RustLibWire implements BaseWire {
 
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmSessionPtr =
       _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
-        'frbgen_kairova_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmSession',
+        'frbgen_hiyall_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmSession',
       );
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmSession =
       _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmSessionPtr

@@ -1,5 +1,5 @@
 [package]
-name = "kairova_e2ee"
+name = "hiyall_e2ee"
 version = "0.1.0"
 edition = "2021"
 license = "LicenseRef-Proprietary"
@@ -16,6 +16,21 @@ flutter_rust_bridge = "=2.13.0"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 zeroize = "1"
+# Attachment crypto (docs/security/14-encrypted-chat-attachments.md). Pinned exactly like
+# vodozemac: a bump changes the ciphertext format, so it must pass the test vectors in
+# src/api/blob.rs and a review of docs/security/12-e2ee-library-evaluation.md first.
+aead-stream = { version = "=0.6.0", features = ["alloc"] }
+chacha20poly1305 = { version = "=0.11.0", features = ["zeroize"] }
+hkdf = "=0.13.0"
+sha2 = "=0.11.0"
+# Image preparation: decode with limits, orient, resize, re-encode from pixels (strips metadata).
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+thumbhash = "=0.1.0"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
+
+# Dependencies (ciphers, image codecs) are optimised even in debug and test builds, which keeps
+# the attachment tests fast; the crate itself stays unoptimised for debugging.
+[profile.dev.package."*"]
+opt-level = 3
