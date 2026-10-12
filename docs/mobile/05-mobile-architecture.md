@@ -1,4 +1,4 @@
-# Kairova Flutter mobile architecture
+# Hiyall Flutter mobile architecture
 
 **Status:** Architecture draft; local foundation implementation authorized on 7 October 2026
 
@@ -288,7 +288,7 @@ The client does not treat presence as authoritative and does not use a permanent
 - Request a short-lived server upload session, then upload directly to object storage.
 - Use multipart/resumable uploads with pause/resume and background task APIs where supported.
 - Keep original bytes out of Dart heap where possible; stream from file handles.
-- Social-media previews are for UX; server scan/transcode is authoritative for server-visible social assets. Chat attachments and thumbnails are prepared and encrypted before upload; the server cannot scan/transcode their decrypted content.
+- Social-media previews are for UX; server scan/transcode is authoritative for server-visible social assets. Chat attachments and thumbnails are prepared and encrypted before upload; the server cannot scan/transcode their decrypted content. In the app (Android and iOS only) a photo goes through `PhotoOutbox` (prepare, encrypt, upload each blob, complete, send, every step saved so a retry resumes), received photos through `ChatMedia` (hash check before decrypt, ciphertext-only file cache under `chat_blobs`, in-memory LRU of decoded images); see [encrypted chat attachments](../security/14-encrypted-chat-attachments.md).
 - Render processing, rejected, quarantined, and ready states.
 - Use image cache size limits, thumbnail-first loading, video poster frames, and viewport-based prefetch.
 - Strip or minimise EXIF in the client preview; server repeats the policy check.
@@ -326,7 +326,7 @@ Use WebRTC with STUN/TURN, adaptive bitrate, ICE restart, network-change handlin
 
 ### Visual language
 
-- Provisional Kairova identity: calm “aurora” accent, neutral surfaces, high-contrast text, rounded but not decorative containers, and restrained motion.
+- Provisional Hiyall identity: calm “aurora” accent, neutral surfaces, high-contrast text, rounded but not decorative containers, and restrained motion.
 - Light/dark themes use semantic tokens rather than hard-coded colours.
 - Components expose loading, error, disabled, focused, selected, pressed, and accessibility states.
 - Avoid relying on colour alone for viewed/unviewed, online, moderation, or message state.
@@ -466,7 +466,7 @@ Remote flags have safe local defaults, an expiry/owner, and a kill switch. Flags
 
 Default library families are Riverpod, go_router, Dio, Drift/SQLite, platform secure storage, Firebase messaging for FCM/APNs registration, and a reviewed WebRTC adapter in the advanced phase. Pin exact compatible versions during setup, generate a lockfile and check licenses/security; these are chosen dependencies, not claims that unbuilt packages already work together.
 
-Flutter's architecture guide separates UI and data concerns, and its offline-first guidance puts local/remote reconciliation behind repositories. Kairova adapts that split to feature slices and Riverpod controllers; a repository is the single client entry point for cached and remote data, while the server remains authoritative for access and durability. [Flutter architecture](https://docs.flutter.dev/app-architecture/guide), [offline-first guidance](https://docs.flutter.dev/app-architecture/design-patterns/offline-first).
+Flutter's architecture guide separates UI and data concerns, and its offline-first guidance puts local/remote reconciliation behind repositories. Hiyall adapts that split to feature slices and Riverpod controllers; a repository is the single client entry point for cached and remote data, while the server remains authoritative for access and durability. [Flutter architecture](https://docs.flutter.dev/app-architecture/guide), [offline-first guidance](https://docs.flutter.dev/app-architecture/design-patterns/offline-first).
 
 | Interface | Input/output contract | Test boundary |
 |---|---|---|
@@ -487,3 +487,7 @@ Internationalization uses ARB keys and generated Flutter localization code for E
 Events specify an instant and organizer zone. Creation from local date/time requires resolving DST ambiguity explicitly: choose first/second occurrence when a time repeats, reject a nonexistent local time with an accessible alternative. Quiet hours are local wall-clock times in the user's chosen zone, reevaluated when offset changes; security alerts follow the mandatory security policy. Never assume every day is exactly 24 hours when scheduling recurring quiet windows.
 
 Background sockets are best effort. OS background restrictions can defer upload/sync; keep durable pending state and reconcile at foreground wake. Token expiry, privacy/block pending state, storage pressure, cache retention and offline retry age are user-visible recovery states. The server may reject a queued command under new permissions, and the client must preserve the draft without repeatedly resending it.
+
+## Chat screens (app)
+
+The chat list and conversation are split by job: `features/chat.dart` holds the screens' state and the providers (search debounce, filters, scroll-to-latest state), `chat_list.dart` the rows, heading, search, filter chips, Meet card and empty/loading cards, `chat_header.dart` the 56 px header, `chat_thread.dart` the bubbles, typing dots and scroll button, `chat_composer.dart` the unified message dock, `chat_intro.dart` the dismissible new-chat card and skeleton, `chat_menu.dart` the conversation menu, `chat_parts.dart` small shared parts (atmosphere backdrop, icon button, encryption chip), `chat_format.dart` the pure helpers (relative times, grouping, filtering, preview mapping, auto-scroll and bubble-corner decisions) and `chat_photo.dart` the photo bubble, viewer and sheets. Colours come from the `ChatTokens` theme extension (`shared/chat_tokens.dart`), also used by `NavigationDock`; photo-less avatars use `shared/avatar_gradient.dart` through `PersonAvatar`. `AppShell` hides its header and the dock while `/chats/:id` is open. Nothing in `core/chat/` changed. `chatClockProvider` supplies "now" for relative times so tests are deterministic. Behaviour and look are described in [chat experience](../ux/14-chat-experience.md).

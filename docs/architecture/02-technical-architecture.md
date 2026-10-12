@@ -1,4 +1,4 @@
-# Kairova technical architecture
+# Hiyall technical architecture
 
 **Status:** Architecture draft; local foundation implementation authorized on 7 October 2026
 
@@ -10,7 +10,7 @@
 
 ## 1. Executive architecture decision
 
-Kairova starts as a **modular monolith with independently scalable runtime processes** rather than dozens of microservices:
+Hiyall starts as a **modular monolith with independently scalable runtime processes** rather than dozens of microservices:
 
 ```text
 One repository / strict domain modules

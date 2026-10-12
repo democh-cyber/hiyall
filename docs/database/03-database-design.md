@@ -1,4 +1,4 @@
-# Kairova database design
+# Hiyall database design
 
 **Status:** Architecture draft — logical model, not executable migrations
 
@@ -567,7 +567,7 @@ Additional advanced-only `moments`, `moment_participants`, `calls`, `call_partic
 - `friendships`: low < high, requester is one endpoint; only recipient accepts, block wins; decline/cancel cooldown enforced.
 - `follows`: no self-edge; private target yields pending until recipient approves; a block revokes both active directions and outstanding requests.
 - `posts/comments`: allowed type/body lengths; active audience; parent comment belongs to same post; reply depth ≤2 for MVP. At scale carry `post_id` through composite parent keys.
-- `stories`: expires_at > published_at, exactly 24h after publication for MVP; read-time expiry always applies, even while cleanup is late. Archived highlights require separate audience consent.
+- `stories`: expires_at > published_at, by default 24h after publication and otherwise the lifetime (6, 12 or 24 hours on every plan today, `Entitlements.StoryLifetimes`) the author chose from the server's allowlist; read-time expiry always applies, even while cleanup is late. Archived highlights require separate audience consent.
 - `conversations`: exactly two active participants for direct chats; unique unordered pair; account and block checks inside create/send; membership epoch/version fences writes after removal.
 - `messages`: sequence allocated and encrypted device envelopes, durable retry mapping, relay state and outbox committed together; sender is authorized current member. Protocol bytes, eligible recipient-device set and aggregate size are checked. Sequence values may have gaps; ordering never relies on client clock. Decrypted body/reply/author-control validation is client-side under the protocol.
 - `conversation_members`: delivered/read watermarks monotonic and ≤highest eligible sequence; join-history boundaries and member removal enforced; receipt visibility follows policy.

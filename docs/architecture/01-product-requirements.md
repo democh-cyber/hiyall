@@ -1,14 +1,14 @@
-# Kairova product requirements
+# Hiyall product requirements
 
 **Status:** Architecture draft; local foundation implementation authorized on 7 October 2026
 
 **Date:** 2026-10-07
 
-**Working codename:** Kairova (not trademark-cleared)
+**Working codename:** Hiyall (not trademark-cleared)
 
 ## 1. Product vision
 
-Kairova helps people form meaningful, consent-based connections across interests, languages, and time zones. It combines a fast personalized social feed with bounded conversation spaces, private messaging, communities, and global discovery.
+Hiyall helps people form meaningful, consent-based connections across interests, languages, and time zones. It combines a fast personalized social feed with bounded conversation spaces, private messaging, communities, and global discovery.
 
 The product should feel premium and calm rather than noisy or addictive:
 
@@ -27,11 +27,11 @@ The product should feel premium and calm rather than noisy or addictive:
 5. **Language Bridge** — on-demand translation that preserves the original message and clearly labels the translated version.
 6. **Quiet Controls** — quiet mode, digest notifications, reduced-activity views, and per-surface notification controls.
 
-These primitives are intended to differentiate Kairova from a follower-first feed, an open inbox, or a clone of an existing chat product.
+These primitives are intended to differentiate Hiyall from a follower-first feed, an open inbox, or a clone of an existing chat product.
 
 ## 2. Target users and personas
 
-The initial experience is designed for adults. A youth experience is a separate product and safety program, not an implied extension of the adult defaults.
+Owner decision, October 2026: Hiyall is for Gen Z and is not adult-only. The minimum age is a self-declared 13 and members get the same open defaults whatever their age; there is no separate youth experience. The earlier assumption here, that a youth experience would be a separate product and safety program, is superseded. What that leaves open for minors is written up in [Nearby and open access](../api/19-nearby-and-open-access.md#safety-note-for-the-owner), as recommendations that are not implemented.
 
 ### 2.1 Global Bridge Builder
 
@@ -114,7 +114,7 @@ flowchart TD
 ### 5.2 Home, stories, and Pulse
 
 - Stories tray with add-story, viewed/unviewed state, expiry, privacy audience, close friends, highlights, replies, mentions, polls, questions, music, location stickers, and emoji reactions.
-- Default story expiry is 24 hours; the server owns expiry and the client renders the configured value.
+- Default story expiry is 24 hours; the author may choose 6, 12 or 24 hours (the server validates the choice against the member's entitlements, `docs/architecture/11-plans-and-entitlements.md`), the server owns expiry and the client renders it.
 - Pulse supports text, image, video, carousel, poll, question, link, location, music, temporary, repost, and shared posts.
 - Post actions: like, typed reaction, comment, threaded reply, share, repost, save, report, hide, not interested, and copy link.
 - Cursor pagination, pull-to-refresh, skeleton states, optimistic low-risk actions, offline cache, lazy media, and bounded page sizes.
@@ -293,8 +293,8 @@ Initial targets are hypotheses for research validation, not production guarantee
 
 ## 11. Product decisions requiring approval
 
-1. Approve Kairova as a provisional codename and confirm final brand work is separate.
-2. Confirm adult-only MVP or provide the legal/safety requirements for a youth experience.
+1. Approve Hiyall as a provisional codename and confirm final brand work is separate.
+2. Decided: not adult-only (minimum age 13, self-declared). Age bands (minors and adults kept apart) and stricter minor defaults are now implemented on a self-declared birth date; still open: moderation staffing, parental consent, COPPA/GDPR-K review, age assurance and content restrictions for minors; see the safety note in `docs/api/19-nearby-and-open-access.md`.
 3. Confirm the Moment + Pulse combination as the original information architecture.
 4. Direct-chat/attachment E2EE is now required by the user. Review the device-key/recovery, local search, consent-based evidence and interception-test design before chat implementation.
 5. Confirm launch regions, supported languages, data-residency constraints, and the initial cloud account/region.

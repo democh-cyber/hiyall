@@ -1,4 +1,4 @@
-# Kairova API specification
+# Hiyall API specification
 
 **Status:** Architecture draft; typed MVP contract in `openapi-mvp.json`, advanced routes below are design inventory
 
@@ -102,6 +102,13 @@ Messages are safe for end users. Stack traces, SQL, provider payloads, tokens, a
 | 422 | semantically invalid but well-formed input |
 | 429 | rate limit; include `Retry-After` |
 | 500/503 | safe server/dependency failure; return request ID |
+
+Implemented conventions (foundation API):
+
+- **Retry-After** is the real time until the refusal lifts, in whole seconds: the limiter's refill for rate limits, the seconds left of a 7-day friend-request cooldown, until the oldest pending upload expires, until the oldest key claim of the hour ages out. A refusal that lifts only when the caller acts (for example `Close an existing space before creating another`) has no `Retry-After`. Every 429, spaces included, follows this.
+- **Timestamps** are always UTC with a `Z` suffix, whatever the server's own time zone: the database pool scans `timestamptz` in UTC and runs its sessions in UTC, and times taken from a request (a mute's `until`) are echoed in UTC.
+- **Text** fields refuse NUL and other control characters (only tab, line feed and carriage return are allowed, and not in one-line values such as interests and filters) with `422 VALIDATION`; text the database still cannot store (SQLSTATE 22021/22P05) is also a 422, never a 500. A profile `timezone` must be a real IANA zone (`Local` is refused).
+- **Every response carries `X-Request-Id`** and the standard headers (`Cache-Control: no-store`, `nosniff`, `no-referrer`, CSP), including refusals of `/v1/realtime` before the upgrade. A 500 is logged with the request id, method, path and the underlying error (never a body, credential, birth date or position).
 
 ## 4. Resource summaries
 
@@ -482,7 +489,7 @@ Before implementation is called complete:
 
 ## 17. Frozen MVP transport rules
 
-The machine-readable [MVP contract](openapi-mvp.json) is the authoritative route/schema subset for implementation planning. The preceding tables include advanced inventory and abbreviated examples; they do not override the typed contract. IDs serialize as canonical UUID strings, sequence/version counters as decimal strings (checked against signed bigint bounds), and dates as UTC ISO-8601. OpenAPI 3.1 permits JSON Schema constructs for conditional body validation. Generator compatibility must be checked at repository setup, not assumed from parsing this document. [OpenAPI 3.1.1 specification](https://spec.openapis.org/oas/v3.1.1.html).
+The machine-readable [MVP contract](openapi-mvp.json) is the authoritative route/schema subset for implementation planning. The preceding tables include advanced inventory and abbreviated examples; they do not override the typed contract. IDs serialize as canonical UUID strings (lowercase, hyphenated) and are accepted only in that form: `urn:uuid:`, braced, bare-hex and upper-case spellings are 404 in a path and 422 in a body (`domain.IsID`), sequence/version counters as decimal strings (checked against signed bigint bounds), and dates as UTC ISO-8601. OpenAPI 3.1 permits JSON Schema constructs for conditional body validation. Generator compatibility must be checked at repository setup, not assumed from parsing this document. [OpenAPI 3.1.1 specification](https://spec.openapis.org/oas/v3.1.1.html).
 
 - Default page 20, hard cap 50; request body 64 KiB, upload-completion metadata at most 1 MiB. Reject unknown properties and unsupported query keys. No mobile binary media bytes on these endpoints.
 - Cursor contains principal/surface, normalized filter hash, sort tuple or rank epoch/position, authorization-relevant scope, expiry, and signature version. Invalid, altered, cross-user or wrong-filter cursor returns `400 CURSOR_INVALID`; expired rank snapshot returns `400 CURSOR_EXPIRED`. Do not carry credentials or private content in a cursor.

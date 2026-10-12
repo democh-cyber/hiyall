@@ -1,4 +1,4 @@
-# Kairova implementation plan and approval gate
+# Hiyall implementation plan and approval gate
 
 **Status:** Architecture draft complete; first local foundation implemented after user authorization
 
@@ -21,7 +21,7 @@ This slice proves the highest-risk contracts early: authentication, authorizatio
 
 ### Product and policy — before public release
 
-- Final product name/brand clearance; Kairova is provisional.
+- Final product name/brand clearance; Hiyall is provisional.
 - MVP age policy and youth-safety boundary.
 - Launch countries/regions, supported locales, data-residency obligations, and retention schedule.
 - Mandatory direct-chat/attachment E2EE, reviewed protocol/library integration, device identity verification and recovery policy.
@@ -181,7 +181,7 @@ Only checks actually run may be reported as passed. Application checks now exist
 
 ## 8. Architecture approval boundary
 
-The requested brief explicitly puts implementation after architecture approval. Review the defaults in `docs/architecture/10-review-and-traceability.md`: Flutter/Riverpod, Go modular monolith, separate search, adult-only safety assumptions, consent-based E2EE MVP chat, and one-region AWS example. Approval of this architecture authorizes the local foundation slice below.
+The requested brief explicitly puts implementation after architecture approval. Review the defaults in `docs/architecture/10-review-and-traceability.md`: Flutter/Riverpod, Go modular monolith, separate search, the not-adult-only safety posture (minimum age 13, see `docs/api/19-nearby-and-open-access.md`), consent-based E2EE MVP chat, and one-region AWS example. Approval of this architecture authorizes the local foundation slice below.
 
 Market/region/vendor credentials and operational policies are selected before their connected integrations or public release. Brand clearance, complete future call infrastructure, and production cloud accounts do not block local repository setup. Direct-chat/attachment E2EE is now required. Complete suite-specific key/device/recovery/reporting integration review before implementing chat; the updated ciphertext transport contract is a draft, not cryptographic proof.
 

@@ -41,7 +41,7 @@ Caveats to accept explicitly:
 
 Build these before any chat UI:
 
-1. A Rust crate `kairova_e2ee` wrapping vodozemac 0.11.x behind a minimal API, exposed to Dart with `flutter_rust_bridge`. Includes the all-zero shared-secret check and vodozemac's own test vectors in CI.
+1. A Rust crate `hiyall_e2ee` wrapping vodozemac 0.11.x behind a minimal API, exposed to Dart with `flutter_rust_bridge`. Includes the all-zero shared-secret check and vodozemac's own test vectors in CI.
 2. Pickled account and session state encrypted with a key held by Android Keystore / iOS Keychain (`flutter_secure_storage`).
 3. API endpoints: upload device identity and signed one-time/fallback keys, claim a one-time key, list a user's devices, and send/fetch ciphertext envelopes addressed per device. The Go server never handles plaintext.
 4. A two-device test on Android and iOS emulators. Then intercept the traffic and inspect the database to confirm no plaintext appears, the measured acceptance statements from the security requirement.
@@ -52,6 +52,39 @@ Build these before any chat UI:
 - Accept vodozemac, with your own bindings, for the 1:1 MVP.
 - Accept Android and iOS first, with web chat deferred.
 - Confirm the app remains proprietary. That's what rules out the AGPL options.
+
+## Attachment crypto and image dependencies (12 October 2026)
+
+Added to `apps/mobile/rust` for [encrypted chat attachments](14-encrypted-chat-attachments.md). Every crate below is permissive (checked with `cargo metadata` on `Cargo.lock`); none is GPL, AGPL or LGPL. The direct dependencies are pinned with `=` like vodozemac. Changing any of the crypto crates (`aead-stream`, `chacha20poly1305`, `hkdf`, `sha2`) changes the attachment format, so a bump needs a review of the release notes and must keep the fixed test vectors in `src/api/blob.rs` passing; a vector change is a format break, not a test update. `sha2`, `hkdf`, `chacha20poly1305` and their RustCrypto dependencies were already in the lock file through vodozemac.
+
+| Crate (direct in bold) | Version | Licence | Role |
+|---|---|---|---|
+| **aead-stream** | 0.6.0 | Apache-2.0 OR MIT | STREAM-BE32 chunked AEAD (RustCrypto) |
+| **chacha20poly1305** (feature `zeroize`) | 0.11.0 | Apache-2.0 OR MIT | XChaCha20-Poly1305 (already present) |
+| **hkdf** | 0.13.0 | MIT OR Apache-2.0 | HKDF-SHA256 key derivation (already present) |
+| **sha2** | 0.11.0 | MIT OR Apache-2.0 | SHA-256 of ciphertext (already present) |
+| **image** | 0.25.10 | MIT OR Apache-2.0 | decode, resize, JPEG encode; features `jpeg`, `png`, `webp` only |
+| **thumbhash** | 0.1.0 | MIT | ~25-byte image placeholder (reference Rust port by the format's author) |
+| image-webp | 0.2.4 | MIT OR Apache-2.0 | WebP decode (transitive) |
+| png | 0.18.1 | MIT OR Apache-2.0 | PNG decode (transitive) |
+| zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib | JPEG decode (transitive) |
+| zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib | (transitive) |
+| moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | colour management used by `image` (transitive) |
+| pxfm | 0.1.30 | BSD-3-Clause OR Apache-2.0 | maths for moxcms (transitive) |
+| fdeflate | 0.3.7 | MIT OR Apache-2.0 | deflate for PNG (transitive) |
+| flate2 | 1.1.10 | MIT OR Apache-2.0 | deflate for PNG (transitive) |
+| miniz_oxide | 0.9.1 (0.8.9 already present) | MIT OR Zlib OR Apache-2.0 | deflate backend (transitive) |
+| zlib-rs | 0.6.8 | Zlib | deflate backend (transitive) |
+| crc32fast | 1.5.2 | MIT OR Apache-2.0 | PNG checksums (transitive) |
+| simd-adler32 | 0.3.10 | MIT | PNG checksums (transitive) |
+| byteorder-lite | 0.1.0 | Unlicense OR MIT | byte reading (transitive) |
+| num-traits | 0.2.19 | MIT OR Apache-2.0 | (transitive) |
+| quick-error | 2.0.1 | MIT/Apache-2.0 | (transitive) |
+| autocfg | 1.5.1 | Apache-2.0 OR MIT | build script helper (transitive) |
+
+The image decoders are untrusted-input parsers. Mitigations: dimension, pixel and allocation limits before decoding, a 64 MiB input cap, JPEG/PNG/WebP only, results re-encoded from pixels, and garbage-input tests. They do not remove the need to track security advisories for these crates; `cargo audit` is not yet part of `scripts/check.sh`.
+
+The code generator `flutter_rust_bridge_codegen` 2.13.0 is a development tool, not a shipped dependency, and is installed into the project toolchain (see [development](../development.md)).
 
 ## Sources
 

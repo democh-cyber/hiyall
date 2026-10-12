@@ -1,4 +1,4 @@
-# Kairova capacity, deployment, and recovery plan
+# Hiyall capacity, deployment, and recovery plan
 
 **Status:** quantitative planning model and proposed runbooks, 7 October 2026. No infrastructure is deployed, no capacity benchmark has run, and no costs below are vendor quotes.
 
