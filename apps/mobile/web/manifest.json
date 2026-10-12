@@ -1,16 +1,16 @@
 {
-  "name": "Kairova",
-  "short_name": "Kairova",
+  "name": "Hiyall",
+  "short_name": "Hiyall",
   "start_url": ".",
   "display": "standalone",
   "background_color": "#F7F8F2",
   "theme_color": "#D2F65A",
-  "description": "Your space. Your frequency.",
+  "description": "Say hi to y’all. Meet people everywhere.",
   "orientation": "portrait-primary",
   "prefer_related_applications": false,
   "icons": [
     {
-      "src": "kairova.svg",
+      "src": "hiyall.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"

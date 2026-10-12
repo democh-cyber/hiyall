@@ -1,0 +1,21 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "hiyall-web",
+      "runtimeExecutable": "./scripts/dev-mobile.sh",
+      "runtimeArgs": [],
+      "port": 49321,
+      "autoPort": false,
+      "url": "http://localhost:49321"
+    },
+    {
+      "name": "hiyall-api",
+      "runtimeExecutable": "./scripts/dev-api.sh",
+      "runtimeArgs": [],
+      "port": 8080,
+      "autoPort": false,
+      "url": "http://127.0.0.1:8080"
+    }
+  ]
+}
