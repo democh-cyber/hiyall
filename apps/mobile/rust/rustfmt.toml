@@ -1,0 +1,3 @@
+# Matches the existing e2ee.rs layout (wide lines, compact short expressions).
+max_width = 140
+use_small_heuristics = "Max"

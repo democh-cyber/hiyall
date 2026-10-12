@@ -5,17 +5,17 @@ cmake_minimum_required(VERSION 3.10)
 cmake_policy(SET CMP0079 NEW)
 
 # Project-level configuration.
-set(PROJECT_NAME "kairova_e2ee")
+set(PROJECT_NAME "hiyall_e2ee")
 project(${PROJECT_NAME} LANGUAGES CXX)
 
 include("../cargokit/cmake/cargokit.cmake")
-apply_cargokit(${PROJECT_NAME} ../../rust kairova_e2ee "")
+apply_cargokit(${PROJECT_NAME} ../../rust hiyall_e2ee "")
 target_link_libraries(${BINARY_NAME} PRIVATE "${${PROJECT_NAME}_cargokit_lib}")
 
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an
 # external build triggered from this build file.
-set(kairova_e2ee_bundled_libraries
+set(hiyall_e2ee_bundled_libraries
   "${${PROJECT_NAME}_cargokit_lib}"
   PARENT_SCOPE
 )

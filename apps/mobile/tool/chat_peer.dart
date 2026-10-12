@@ -9,10 +9,10 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
-import 'package:kairova/core/chat/chat_api.dart';
-import 'package:kairova/core/chat/chat_engine.dart';
-import 'package:kairova/core/chat/chat_store.dart';
-import 'package:kairova/src/rust/frb_generated.dart';
+import 'package:hiyall/core/chat/chat_api.dart';
+import 'package:hiyall/core/chat/chat_engine.dart';
+import 'package:hiyall/core/chat/chat_store.dart';
+import 'package:hiyall/src/rust/frb_generated.dart';
 
 const accounts = {
   'anjali': '019a4000-0000-7000-8000-000000000001',
@@ -55,7 +55,7 @@ Future<void> main(List<String> args) async {
   final me = option(args, 'as') ?? 'niko';
   final base = option(args, 'api') ?? 'http://127.0.0.1:8080';
   final userId = accounts[me]!;
-  await RustLib.init(externalLibrary: ExternalLibrary.open('rust/target/release/libkairova_e2ee.so'));
+  await RustLib.init(externalLibrary: ExternalLibrary.open('rust/target/release/libhiyall_e2ee.${Platform.isMacOS ? 'dylib' : 'so'}'));
   final token = (await Dio().post('$base/dev/session', data: {'userId': userId})).data['data']['accessToken'] as String;
   final engine = ChatEngine(
     userId: userId,
