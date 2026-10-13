@@ -1,0 +1,114 @@
+> **DRAFT for legal review. Not legal advice. Placeholders in [BRACKETS] must be filled by the operator.**
+
+# Terms of Service
+
+Version: 2026-10-01
+
+Effective date: [EFFECTIVE DATE]
+
+These are the rules for using Hiyall. We have tried to write them in plain language. Please read them, and the other documents they point to, before you create an account.
+
+## 1. Who we are
+
+Hiyall is run by [COMPANY LEGAL NAME], [COMPANY ADDRESS] ("Hiyall", "we", "us"). You can reach us at [SUPPORT EMAIL].
+
+By creating an account you agree to these Terms and to our Privacy Policy. If you do not agree, please do not use Hiyall.
+
+## 2. Who can use Hiyall
+
+- You must be at least **13 years old**.
+- When you sign up we ask for your date of birth. You tell us the date; we do not check it against an ID or any other record. You must give your real date of birth.
+- Your date of birth is kept privately. It decides which age group you are in (13 to 17, or 18 and over) and which protections apply to you. It cannot be changed later.
+- If you are under 18, please read these Terms with a parent or guardian. Read "Children and Teens" to see how we protect younger members.
+- [LEGAL REVIEW: some countries require a parent's or guardian's consent for people below an age that is higher than 13, and for certain kinds of data such as location. Hiyall does not currently ask for or verify parental consent. The operator must decide which markets to open and what each requires.]
+- If we learn that someone is under 13, we will remove their account.
+
+## 3. Your account
+
+- You sign in with an email and password, with Google, or with Apple. Sign-in is handled by Firebase Authentication, a Google service.
+- Keep your sign-in details safe. You are responsible for what happens under your account.
+- One person, one account. Do not pretend to be someone else.
+- You can see where you are signed in, and sign out from other devices, in Settings.
+- Tell us at [SUPPORT EMAIL] if you think someone else has got into your account.
+
+## 4. What Hiyall is, and what other people can see
+
+Hiyall is a place to meet people and make friends. It is open by design. Here is what that means in practice:
+
+- **Your profile is visible to other members.** Everyone who has finished setting up an account can find you in Discover and open your profile, as long as they are in your age group and neither of you has blocked the other. Your display name, username, photo, bio and the details you add (such as interests, languages and country) can be seen by them.
+- **Your age in years can be seen** by members in your age group who open your profile. We never show your date of birth.
+- **Profile views are visible to you, and your views are visible to others.** When you open another member's profile, that member can see your name in their list of profile visitors. Members cannot turn this off. The list shows who visited and when they first visited.
+- **Followers can see connections.** For members aged 18 and over, anyone who follows them can open their followers and following lists. For members under 18, only their friends can.
+- **Online status and last seen.** Others can see when you are online and when you were last active, unless you turn this off in Settings. If you are under 18 it starts switched off.
+- **Nearby.** If you let the app read your location, you can appear in other members' Nearby lists, shown only as a rough distance. See the Privacy Policy for the detail.
+- **Anyone in your age group can message you.** There is no friend step. You can block or report anyone at any time.
+- **Posts, stories and spaces are not private.** Posts, stories and the discussions inside spaces can be read by the people who are allowed to see them, and by us. They are not end-to-end encrypted.
+- **Chats are different.** One-to-one chats are end-to-end encrypted. See the Privacy Policy for what that means and what it does not mean.
+
+## 5. What you post
+
+- You keep ownership of what you create. You give Hiyall permission to store it, show it to the people you chose, and process it (for example, resize a photo) so the service works. This permission ends when you delete the content or your account, except for copies we must keep for the reasons in the Data Retention document.
+- Only post things you have the right to post. Do not post other people's photos or private information without their permission.
+- Stories disappear from the app after the time you choose, but people can copy or screenshot what they see before then. Hiyall cannot stop that.
+- Deleting a post or story removes it from Hiyall. We cannot delete copies that other people have saved elsewhere.
+
+## 6. The rules
+
+Everyone must follow the Community Guidelines. In short: be kind, be honest about who you are, and do not hurt, scare, scam or exploit anyone. We may remove content or limit accounts that break the rules or put people at risk.
+
+You must not:
+
+- break the law or help anyone else to;
+- harass, threaten, stalk or target people, or share their private information;
+- share sexual content, or any content that sexualises or endangers a child;
+- scam, spam or send unwanted bulk messages;
+- try to get around our safety features, limits or age groups, including by giving a false date of birth;
+- scrape Hiyall, collect people's information in bulk, or attack, overload or reverse engineer the service;
+- use Hiyall for anything that is not personal and non-commercial without our written permission.
+
+## 7. Safety, reports and what we do about them
+
+- You can block, mute or restrict any member, and report people, chats and messages from the app.
+- Reports are looked at by people. Reports about serious harm go to the front of the queue. We can warn an account, remove content, or suspend an account.
+- Because chats are end-to-end encrypted, we cannot read them. A report about a chat only includes the messages and photos that you choose to include. Sending them is your choice.
+- If you think we got a decision wrong, write to [APPEALS EMAIL] and tell us what happened. A person will look again. [OPERATOR: set a target response time.]
+- We may share information with the authorities or with others where the law requires, or where it is needed to protect someone from serious harm. [LEGAL REVIEW]
+- Hiyall is not an emergency service. If someone is in danger, contact your local emergency number.
+
+## 8. Cost
+
+Hiyall is free to use today and has no ads. If we add paid features in future, we will tell you clearly before you pay for anything. Using Hiyall may use data from your phone plan.
+
+## 9. Ending your account
+
+- You can stop using Hiyall at any time. In the app, go to **Settings > Account > Download my data** to get a copy of your information, and **Settings > Account > Delete account** to delete your account. The Data Retention document explains what is removed and when.
+- We may suspend or end an account that breaks these Terms or puts others at risk. Where we can, we will tell you why.
+- Some parts of these Terms keep applying after your account ends (for example, rules about liability and disputes).
+
+## 10. Our rights
+
+The Hiyall app, name, logo and software belong to us or our licensors. We give you a personal, non-transferable permission to use the app as these Terms allow. [LEGAL REVIEW: add open-source notices if required.]
+
+If you believe something on Hiyall infringes your copyright, write to [COPYRIGHT EMAIL] with the details. [LEGAL REVIEW]
+
+## 11. Changes
+
+We may change the service or these Terms. When we make a change that matters, we will publish a new version number and ask you to accept it before you carry on. The version you accepted is recorded against your account with the date. If you do not agree to a change, you can delete your account.
+
+## 12. Disclaimers and liability
+
+[LEGAL REVIEW: this section needs a lawyer. Consumer law in many countries limits what can be excluded, especially for children and for harm caused by negligence. Do not publish placeholder wording.]
+
+In plain terms: we work hard to keep Hiyall running and safe, but we cannot promise it will always be available or free of mistakes. We are not responsible for what other members say or do, and you should take care when meeting anyone you first met online. Nothing in these Terms limits any right you have by law that cannot be limited.
+
+## 13. Governing law and disputes
+
+These Terms are governed by the laws of [GOVERNING LAW / JURISDICTION]. [LEGAL REVIEW: courts or arbitration, and how this applies to members who are children or who live in countries with mandatory consumer rules.]
+
+## 14. Contact
+
+[COMPANY LEGAL NAME]
+[COMPANY ADDRESS]
+General: [SUPPORT EMAIL]
+Safety: [SAFETY EMAIL]
+Privacy: [PRIVACY EMAIL]
