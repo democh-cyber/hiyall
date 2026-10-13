@@ -1,6 +1,6 @@
 # Hiyall capacity, deployment, and recovery plan
 
-**Status:** quantitative planning model and proposed runbooks, 7 October 2026. No infrastructure is deployed, no capacity benchmark has run, and no costs below are vendor quotes.
+**Status:** quantitative planning model and proposed runbooks, 7 October 2026; status line updated 13 October 2026. The target architecture below (ECS, Redis, OpenSearch, SQS, regional cells) is a plan, not what exists: today there is one Go API process, PostgreSQL and S3-compatible storage (Cloudflare R2). What now exists for operating that is small and is described in the [first-production deploy guide](10-deploy-guide.md): a container image with a separate migrate entrypoint, `/healthz` and `/readyz`, Prometheus metrics on a private listener, panic recovery, single-instance hourly cleanup (advisory lock), and optional database-shared rate limits. All of it is verified by tests on a developer machine only. No infrastructure is deployed, no capacity benchmark has run, the container build and CI image job have not been run, and no costs here or in the deploy guide are vendor quotes.
 
 ## Capacity inputs and calculations
 

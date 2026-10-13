@@ -25,6 +25,12 @@ jobs:
         with:
           go-version-file: services/api/go.mod
           cache-dependency-path: services/api/go.sum
+      - run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then echo "needs gofmt:"; echo "$unformatted"; exit 1; fi
+        working-directory: services/api
+      - run: go build ./...
+        working-directory: services/api
       - run: go run ./cmd/migrate && go vet ./... && go test -race ./...
         working-directory: services/api
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0 && govulncheck ./...
@@ -52,3 +58,66 @@ jobs:
           cache: npm
       - run: npm ci && npm audit --audit-level=moderate && python3 scripts/validate_architecture.py && npm run contracts:lint && npm run contracts:build
       - run: git diff --exit-code -- docs/api/openapi-foundation.json packages/api-contracts/foundation.d.ts
+  rust:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: apps/mobile/rust
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The toolchain pinned in toolchains.lock.json; rustup is preinstalled on the runner image.
+      - run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy && rustup default 1.99.0
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/mobile/rust/target
+          key: rust-${{ runner.os }}-1.99.0-${{ hashFiles('apps/mobile/rust/Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-1.99.0-
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+  docker:
+    # Builds the API image exactly as a deploy would (nothing is pushed), then runs the release steps
+    # against a throwaway database: /migrate, then the API, and waits for /readyz and the metrics port.
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16.15
+        env:
+          POSTGRES_USER: hiyall
+          POSTGRES_PASSWORD: ci-only-disposable
+          POSTGRES_DB: hiyall_image
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U hiyall -d hiyall_image"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      IMAGE_DATABASE_URL: postgresql://hiyall:ci-only-disposable@127.0.0.1:5432/hiyall_image?sslmode=disable
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: docker build -f services/api/Dockerfile -t hiyall-api:ci .
+      - name: Image runs as a non-root user
+        run: test "$(docker image inspect --format '{{.Config.User}}' hiyall-api:ci)" = "nonroot:nonroot"
+      - name: Migrate (release step)
+        run: docker run --rm --network host -e DATABASE_URL="$IMAGE_DATABASE_URL" --entrypoint /migrate hiyall-api:ci
+      - name: Start the API
+        run: >-
+          docker run -d --name api --network host
+          -e APP_ENV=development -e DATABASE_URL="$IMAGE_DATABASE_URL" -e FIREBASE_PROJECT_ID=ci-smoke-test
+          -e LISTEN_ADDR=127.0.0.1:8080 -e METRICS_ADDR=127.0.0.1:9090 -e RATE_LIMIT_BACKEND=postgres
+          hiyall-api:ci
+      - name: Ready and serving metrics
+        run: |
+          for i in $(seq 1 30); do
+            if docker exec api /api healthcheck -ready; then break; fi
+            if [ "$i" = 30 ]; then docker logs api; exit 1; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:9090/metrics | grep -q '^hiyall_http_requests_total'
+          # Metrics are never on the public listener.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/metrics)" != 200
+      - if: failure()
+        run: docker logs api || true

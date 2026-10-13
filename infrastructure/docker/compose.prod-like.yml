@@ -1,0 +1,82 @@
+# Local smoke test of the production shape: the real API image, migrations run as a one-shot release
+# step before the API starts, health checks, and the metrics listener behind a token.
+#
+#   docker compose -f infrastructure/docker/compose.prod-like.yml up --build --abort-on-container-exit
+#   (in another shell, see "Smoke test" in docs/deployment/10-deploy-guide.md, or the 4 curl lines below)
+#   curl -s localhost:8080/healthz ; curl -s localhost:8080/readyz
+#   curl -s -H 'Authorization: Bearer smoke-test-metrics-token' localhost:9090/metrics | head
+#   docker compose -f infrastructure/docker/compose.prod-like.yml down -v
+#
+# "Prod-like", not production: this Postgres has no TLS, so the API runs with APP_ENV=development
+# (production requires sslmode=verify-full). Sign-in is a Firebase project id that does not exist, so
+# real tokens are refused and only the probes, metrics and unauthenticated paths work; that is all a
+# smoke test of the deploy mechanics needs. Nothing here is a secret: the passwords and tokens are
+# local-only values for a throwaway database that is not published on the network.
+#
+# Photos: media is optional. To exercise it, create infrastructure/docker/api.env from api.example.env
+# with your Cloudflare R2 MEDIA_* / CHAT_MEDIA_* values (it is git-ignored); the API picks it up below.
+# No object-store container is included on purpose: R2 is what production uses, and there is no
+# officially maintained MinIO image to pin.
+name: hiyall-prod-like
+
+x-api-image: &api-image
+  image: hiyall-api:prod-like
+  build:
+    context: ../..
+    dockerfile: services/api/Dockerfile
+
+services:
+  postgres:
+    image: postgres:16.15-alpine
+    environment:
+      POSTGRES_USER: hiyall
+      POSTGRES_PASSWORD: local-smoke-only
+      POSTGRES_DB: hiyall
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hiyall -d hiyall"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    # Not published: only the other containers reach it.
+
+  # The release step. Same image as the API, different entrypoint. Exits 0 when the schema is current.
+  migrate:
+    <<: *api-image
+    entrypoint: ["/migrate"]
+    environment:
+      DATABASE_URL: postgresql://hiyall:local-smoke-only@postgres:5432/hiyall?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *api-image
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - path: ./api.env
+        required: false
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql://hiyall:local-smoke-only@postgres:5432/hiyall?sslmode=disable
+      FIREBASE_PROJECT_ID: hiyall-smoke-test
+      LISTEN_ADDR: 0.0.0.0:8080
+      METRICS_ADDR: 0.0.0.0:9090
+      METRICS_TOKEN: smoke-test-metrics-token
+      RATE_LIMIT_BACKEND: postgres
+    ports:
+      # Loopback only on the host.
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9090:9090"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    # The image's own HEALTHCHECK (`/api healthcheck`) applies; docker compose ps shows it.
+
+volumes:
+  pgdata:
