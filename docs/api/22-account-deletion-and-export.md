@@ -1,0 +1,80 @@
+# Account deletion and data export
+
+A member can delete their account and download their data from the app (Settings, Account). Both are enforced on the server; the app only asks. Code: `store/account.go` (deletion, purge), `store/export.go` (export), `httpapi/account.go` (routes), `identity/firebase_delete.go` (identity provider), migration `0028_account_deletion.sql`.
+
+## Deletion
+
+```text
+active ──POST /v1/me/deletion──▶ pending_deletion ──(30 days, hourly purge job)──▶ deleting ──▶ deleted
+   ▲                                   │
+   └──────DELETE /v1/me/deletion───────┘   (only before the due date)
+```
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /v1/me/deletion` | `{pending, scheduledAt, dueAt, canCancel}`. Reachable for a member in the grace period. |
+| `POST /v1/me/deletion` `{confirmUsername}` | Schedules deletion in 30 days. Body is exactly that one key; the value is the member's username (compared without case and without a leading `@`). |
+| `DELETE /v1/me/deletion` | Cancels during the grace period. |
+
+Errors: `422 VALIDATION` (missing or wrong `confirmUsername`, extra keys), `403 REAUTH_REQUIRED` (the session's sign-in is older than 5 minutes), `404 NOT_FOUND` (cancel with nothing scheduled), `409 DELETION_WINDOW_CLOSED` (cancel after `dueAt`: the purge may already be running), `429 RATE_LIMITED` (shared per-account graph limit, `Retry-After`), `401 UNAUTHENTICATED` as for any inactive account.
+
+**Recent sign-in.** The check reads the Firebase `auth_time` that is part of the session id (`fb:<uid>:<auth_time>`). Older than 5 minutes: `REAUTH_REQUIRED`; the app re-authenticates (Google or password), force-refreshes the ID token and retries. A session that carries no `auth_time` (development sessions) is allowed only when `ENABLE_DEV_AUTH` is on; any other session without one is refused.
+
+**What happens at once, in one transaction.** `users.status = 'pending_deletion'`, `deletion_scheduled_at = now()`, `deletion_due_at = now() + 30 days`; every session is revoked and the identity's `sessions_revoked_before` watermark is set (so sign-ins this server never saw cannot reopen the account); push tokens are cleared; a `pg_notify` tells every API node to close the account's sockets (the same mechanism as a suspension), and each socket also checks its session at every heartbeat. Because every read that wants a live account says `status = 'active'`, the member leaves Discover, Nearby, search, Pulse, lists, conversations and all follower, following and friend counts immediately, and the counts decrement. Asking again while pending changes nothing (the first due date stands). Blocks, mutes and age-band rules are untouched, and cancelling returns the account exactly as it was.
+
+**Signing in while pending.** Sign-in succeeds (a new interactive sign-in is needed, since all sessions were revoked) and the principal is marked `PendingDeletion`. Such a principal may reach only `GET` and `DELETE /v1/me/deletion` and the sign-out routes (`POST /v1/auth/logout`, `POST /v1/auth/sessions/revoke-others`, `DELETE /v1/auth/sessions/{id}`). Everything else, and `/v1/realtime`, answers `401 UNAUTHENTICATED`, the existing inactive-account error. `/v1/me/deletion` also works before onboarding is complete.
+
+**The purge job.** `PurgeDeletedAccounts` runs in the hourly `maintain` loop (batch of 50 accounts per run, one advisory lock per account so two nodes never purge the same one). It selects `pending_deletion` accounts past `deletion_due_at` and accounts already `deleting`, re-reading the status under a row lock at every step, so an active or cancelled account is never touched. Each run, per account:
+
+1. In one transaction: status to `deleting`, then delete the content (below). The transaction rolls back as a whole on any error.
+2. Call the `IdentityDeleter` for each identity not yet marked `provider_deleted_at`. For Firebase this is `POST identitytoolkit.googleapis.com/v1/projects/{project}/accounts:delete` with a service-account token (configured by `FIREBASE_SERVICE_ACCOUNT_FILE` and `FIREBASE_PROJECT_ID`; a user that is already gone counts as deleted). Without the file the step is a logged no-op and the Firebase user remains: signing in with it creates a new, empty member. On failure the account stays `deleting` and the next run retries.
+3. Run the content purge again and, once nothing of the member is left in object storage bookkeeping, set `status = 'deleted'` and insert the `deleted_users` tombstone.
+
+Objects are not deleted by this job. Photo rows are released for the media cleanup (`MediaGarbage`) and chat attachments are marked deleted for `PurgeChatBlobs`, the same mechanisms every other delete uses; the account becomes `deleted` on the first run after both have removed the objects (normally the next hour; in practice up to about two days when the other member of a shared chat uploaded an attachment recently, because those rows count towards that member's daily quota until then). The identity rows (`auth_identities`) stay for 24 hours after the purge so a token minted before it cannot provision a new member for the same provider identity; `PurgeDeletedIdentities` then removes them.
+
+All steps are idempotent: a crash, a storage outage or a provider error leaves the account `deleting` and the next run carries on.
+
+### What is deleted, what is retained
+
+| Data | Result | Why and when |
+| --- | --- | --- |
+| Sessions, push tokens, one-time and fallback keys, key-claim records, notification preferences | Deleted | At request (sessions, tokens), at purge (the rest). |
+| Profile, privacy settings, onboarding row, birth date (`member_ages`), discovery row, location, `outbox_events` | Deleted | At purge. |
+| Posts with their comments, reactions, saves and counters; stories and their views | Deleted | At purge. Counters of other members' posts lose the member's reactions and comments. |
+| The member's comments on other people's posts | Deleted; a comment others replied to stays as an empty, deleted placeholder (author is the tombstone) so threads keep their shape | At purge. |
+| Photos and avatar (`media_assets`) | Rows and objects deleted | Released at purge, objects removed by the media cleanup, rows by the next purge pass. |
+| Follows, friendships, blocks, mutes and restrictions (both directions), notifications (sent and received), profile visits made and received | Deleted | At purge. The all-time visitor counters of other members keep their count (as for any deleted visitor). |
+| Space memberships and entries | Deleted | At purge. A space the member owned passes to its longest-standing active member (admins and moderators first); one with nobody else is deleted with its entries, and its child spaces become top-level. |
+| Chat: conversations, message metadata, undelivered ciphertext (envelopes), conversation membership, devices, attachments | Deleted. The other member's attachments in these conversations are deleted too | At purge. Message content never reached the server in the clear, and copies on devices are outside the server. |
+| Reports: open, or holding encrypted evidence (`chat_blobs.held_report_id`) | Kept whole, with the held attachment, its message and conversation row (ids and timestamps only) and the sender device's public keys (name and push data removed) | Safety and legal obligations (see [safety controls](14-safety-controls.md)): an open report must stay actionable and evidence stays held for as long as the hold does. The references point at the tombstone user row, which carries no personal data; nothing maps the id to a person once the profile and identity are gone. |
+| Reports resolved with a moderation action against someone else | Kept without the reporter's text and evidence | The other member's safety history. |
+| All other reports and moderation actions involving the member | Deleted | |
+| `users` row (id, status `deleted`, creation time, region) and `deleted_users` (id, time) | Kept | Tombstone: the id is never reused and a finished purge is never repeated. No personal data. |
+| Admin console audit entries and database backups | Kept | The audit log is append-only by design ([admin console](../security/15-admin-console.md)) and backups roll off on their own schedule; neither is a store the purge job can edit. |
+| Identity provider (Firebase) user | Deleted when a service account is configured | Otherwise it remains and must be removed by hand in the Firebase console. |
+
+A test (`TestPurgeCoversEveryTableThatReferencesUsers`) lists every foreign key to `users` from `information_schema` and fails when a column is neither purged nor explicitly retained, so a new table cannot be forgotten. Add the deletion to `purgeContent` first, then list the column in the test.
+
+## Export
+
+`GET /v1/me/export` returns one JSON document as an attachment (`Content-Disposition: attachment; filename="hiyall-data-YYYY-MM-DD.json"`). It is not wrapped in the usual `{success, data, meta}` envelope; errors are.
+
+- **Rate limit.** One export per member per 24 hours, kept in `users.last_export_at` and enforced on the server: a second request gets `429 RATE_LIMITED` with `Retry-After` set to the seconds left. The claim is taken before streaming and handed back if the export fails, so a failure does not use the day's slot. Members scheduled for deletion cannot export (cancel first); `403 ONBOARDING_REQUIRED` before onboarding.
+- **Streaming and caps.** One read-only snapshot, written as it is produced. Each list stops at 10,000 rows and the document at 32 MiB; anything cut is named in `truncated` and the document ends with `"complete": true`. A database error mid-way ends the document cleanly with `"complete": false` (and releases the claim). The request may run for up to two minutes.
+- **Contents.** `exportVersion`, `generatedAt`, `note`, `account` (id, username, status, created, age band, profile JSON, onboarding and terms), `settings` (privacy JSON, notification choices), `interests`, `posts`, `comments`, `reactions`, `saves`, `stories` (metadata), `connections` (`following`, `followers`, `friends`: ids and usernames), `blocks`, `mutes`, `restrictions`, `sessions` (no tokens), `devices` (public keys, no push tokens), `notifications`, `visits` (`made`, `ownProfileVisitors`), `location` (`sharing`, `updatedAt`), `spaces` (`memberships`, `owned`, `entries`), `reports` (their own words, status and whether evidence was shared, never the evidence), `media` (each ready photo with presigned `thumb` and `full` links valid 24 hours, left out when media storage is not configured), `chat`, `truncated`, `complete`.
+- **Other people.** People appear by id and username only while their account is active and the member could still see them: blocked pairs (either direction), the other age band and deactivated accounts are left out, as they are in the app's own lists.
+- **Chat.** Messages are end-to-end encrypted, so the server cannot include them. `chat` holds an explicit `note` saying so, totals, and per conversation the id, peer id (and username when visible), status, timestamps and counts of messages sent and received.
+- **Not included, on purpose.** The date of birth (no endpoint returns it, even to its owner; the age band is included), coordinates (only whether a point is shared), access tokens, push tokens, report evidence.
+
+## Configuration
+
+| Setting | Effect |
+| --- | --- |
+| `FIREBASE_SERVICE_ACCOUNT_FILE` | Path to a service-account key with the Firebase Authentication Admin role. Needs `FIREBASE_PROJECT_ID`. Unset: purges log that the identity provider account was not deleted. |
+| `FIREBASE_PROJECT_ID` | Already used for sign-in; selects the project whose users are deleted. |
+
+No plan or entitlement is involved: the 30 days, the 24 hour export interval and the caps are the same for every member.
+
+## App
+
+Settings, Account has two rows (`lib/features/account_data.dart`): "Download my data" and "Delete account". Deleting is a calm multi-step flow: what happens in the 30 days and that chat messages on their devices are removed, typing the username, re-authentication when the server answers `REAUTH_REQUIRED`, then sign-out. A signed-in member whose account is pending lands on a screen with the date and "Keep my account".
