@@ -170,17 +170,26 @@ class ChatApi {
   /// Returns the server's createdAt for the stored message. [blobIds] claims
   /// uploaded attachment blobs for it; sending the same message id again is
   /// answered with the first result, so a retry never duplicates.
+  ///
+  /// [aux] marks the message as a reaction for the relay (`aux: "reaction"`):
+  /// the relay then neither counts it unread nor pushes it. A reaction is not
+  /// a member "sending a message", so it does not trigger [onSent].
   Future<DateTime?> send(
     String conversationId,
     Map<String, dynamic> message, {
     List<String> blobIds = const [],
+    bool aux = false,
   }) async {
     final data = await _call(
       'POST',
       '/v1/conversations/$conversationId/messages',
-      {...message, if (blobIds.isNotEmpty) 'blobIds': blobIds},
+      {
+        ...message,
+        if (blobIds.isNotEmpty) 'blobIds': blobIds,
+        if (aux) 'aux': 'reaction',
+      },
     );
-    onSent?.call();
+    if (!aux) onSent?.call();
     return DateTime.tryParse((data as Map)['createdAt'] as String? ?? '');
   }
 

@@ -342,6 +342,8 @@ Discovery filters may include declared interests, language, coarse location, pro
 | `POST /conversations/{conversationId}/drafts` | member | `{clientDraftId,body,attachments?}` | `200`; drafts are private to author/device policy |
 | `GET /conversations/{conversationId}/search` | member | `q,limit,cursor` | Only if message-search policy allows; otherwise client-local search |
 
+Reactions are not REST resources in the implemented chat: they are end-to-end encrypted messages sent through the same route with the relay-visible hint `aux: "reaction"` ([chat reactions and replies](24-chat-reactions-and-replies.md)); the two reaction routes in the table above are not built.
+
 `POST /conversations/{conversationId}/messages` uses the client `clientMessageId` plus `Idempotency-Key`. A retry returns the original durable result, not a second message. Read/delivery state is represented by conversation/member watermarks rather than a row for every recipient/message whenever possible.
 
 ### WebSocket contract

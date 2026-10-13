@@ -67,7 +67,7 @@ func (k *keyedLimiter) reset(key string) {
 // rename one without accepting that its buckets restart full.
 func (a *API) limiters() map[string]*keyedLimiter {
 	return map[string]*keyedLimiter{
-		"clients": a.clients, "search": a.search, "graph": a.graph, "messages": a.messages, "reports": a.reports,
+		"clients": a.clients, "search": a.search, "graph": a.graph, "messages": a.messages, "aux_messages": a.auxMessages, "reports": a.reports,
 		"uploads": a.uploads, "blob_slots": a.blobSlots, "blob_urls": a.blobURLs, "content": a.content,
 		"lists": a.lists, "locations": a.locations, "first_chats": a.firstChats,
 	}

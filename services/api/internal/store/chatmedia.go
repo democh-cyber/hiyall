@@ -30,7 +30,7 @@ const blobReachable = `c.status='active' AND $1::uuid IN (c.user_low_id,c.user_h
 // are friends. It stops strangers from pushing unsolicited images; the peer replying is the consent.
 func peerMayReceiveImages(ctx context.Context, q querier, conversationID, sender, peer string) error {
 	var allowed bool
-	err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id=$1 AND sender_id=$3)
+	err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id=$1 AND sender_id=$3 AND NOT aux)
  OR EXISTS(SELECT 1 FROM friendships WHERE user_low_id=least($2::uuid,$3::uuid) AND user_high_id=greatest($2::uuid,$3::uuid) AND status='accepted')`, conversationID, sender, peer).Scan(&allowed)
 	if err != nil {
 		return err

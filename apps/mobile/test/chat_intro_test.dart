@@ -41,7 +41,12 @@ class SpyEngine extends UiEngine {
   SpyEngine(super.cloud);
   final sent = <String>[];
   @override
-  Future<void> send(String conversationId, String peerId, String text) async {
+  Future<void> send(
+    String conversationId,
+    String peerId,
+    String text, {
+    ChatMessage? replyTo,
+  }) async {
     sent.add(text);
   }
 }

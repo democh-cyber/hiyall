@@ -53,6 +53,7 @@ class EngineSpy extends ChatEngine {
     String peerId,
     Uint8List input, {
     String caption = '',
+    ChatMessage? replyTo,
   }) async {
     if (failSend != null) throw failSend!;
     sent.add((bytes: input, caption: caption));

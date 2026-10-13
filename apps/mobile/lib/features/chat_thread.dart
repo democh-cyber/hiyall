@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart' show CustomSemanticsAction;
 
 import '../core/chat/chat_attachment.dart';
 import '../core/chat/chat_engine.dart';
@@ -10,11 +12,13 @@ import '../shared/person_avatar.dart';
 import 'chat_format.dart';
 import 'chat_parts.dart';
 import 'chat_photo.dart';
+import 'chat_reactions_ui.dart';
 
 export 'chat_composer.dart';
 export 'chat_header.dart';
 export 'chat_intro.dart';
 export 'chat_parts.dart';
+export 'chat_reactions_ui.dart';
 
 // ----------------------------------------------------------- thread parts
 
@@ -260,6 +264,19 @@ class ChatBubble extends StatelessWidget {
 
   /// This is the newest outgoing message: its mark carries the `seen` key.
   final bool newestMine;
+
+  /// This account's id, to tell its reactions from the peer's.
+  final String selfId;
+
+  /// Reactions, reply and copy; null leaves the bubble inert.
+  final BubbleActions? actions;
+
+  /// The quote to draw at the top of the bubble, already resolved against the
+  /// local history by the screen.
+  final QuoteData? quote;
+
+  /// Briefly lit after a quote was tapped and brought this message into view.
+  final bool highlight;
   const ChatBubble({
     super.key,
     required this.row,
@@ -270,6 +287,10 @@ class ChatBubble extends StatelessWidget {
     required this.peerAvatarUrl,
     required this.seen,
     this.newestMine = false,
+    this.selfId = '',
+    this.actions,
+    this.quote,
+    this.highlight = false,
   });
 
   static const radius = ChatMetrics.bubbleRadius,
@@ -289,7 +310,18 @@ class ChatBubble extends StatelessWidget {
     final showMeta = row.last || m.status != SendStatus.sent;
     final meta = _Meta(message: m, seen: seen, markKey: newestMine);
     final ink = mine ? t.outgoingInk : t.incomingInk;
-    final emoji = !m.isPhoto && isEmojiOnly(m.text);
+    final emoji = !m.isPhoto && isEmojiOnly(m.text) && quote == null;
+    final quoteBlock = quote == null
+        ? null
+        : QuoteBlock(
+            who: quote!.who,
+            line: quote!.line,
+            image: quote!.image,
+            onOutgoing: mine,
+            onTap: quote!.jumpTo == null || actions == null
+                ? null
+                : () => actions!.onQuoteTap(quote!.jumpTo!),
+          );
 
     Widget body;
     if (emoji) {
@@ -344,6 +376,21 @@ class ChatBubble extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (quoteBlock != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 4, 4, 6),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: QuoteBlock(
+                      who: quote!.who,
+                      line: quote!.line,
+                      image: quote!.image,
+                      onOutgoing: mine,
+                      fill: true,
+                      onTap: quoteBlock.onTap,
+                    ),
+                  ),
+                ),
               overlay
                   ? Stack(
                       children: [
@@ -379,12 +426,55 @@ class ChatBubble extends StatelessWidget {
           ),
         );
       } else {
-        inner = _TextWithMeta(
+        final text = _TextWithMeta(
           text: m.text,
           style: TextStyle(color: ink, fontSize: 15.5, height: 1.35),
           meta: showMeta ? meta : null,
           metaWidth: showMeta ? _metaWidth(context, m) : 0,
         );
+        inner = quoteBlock == null
+            ? text
+            : LayoutBuilder(
+                builder: (context, box) {
+                  // The bubble is as wide as the wider of the text and the
+                  // quote, and the quote fills it.
+                  final textWidth = _blockWidth(
+                    context,
+                    m.text,
+                    TextStyle(color: ink, fontSize: 15.5, height: 1.35),
+                    showMeta ? _metaWidth(context, m) : 0,
+                    box.maxWidth,
+                  );
+                  final quoteWidth = quoteNaturalWidth(
+                    context,
+                    quote!.who,
+                    quote!.line,
+                    quote!.image,
+                  );
+                  return SizedBox(
+                    width: math.min(
+                      box.maxWidth,
+                      math.max(textWidth, quoteWidth),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        QuoteBlock(
+                          who: quote!.who,
+                          line: quote!.line,
+                          image: quote!.image,
+                          onOutgoing: mine,
+                          fill: true,
+                          onTap: quoteBlock.onTap,
+                        ),
+                        const SizedBox(height: 6),
+                        text,
+                      ],
+                    ),
+                  );
+                },
+              );
       }
       body = DecoratedBox(
         decoration: BoxDecoration(
@@ -416,14 +506,31 @@ class ChatBubble extends StatelessWidget {
     }
 
     final label = describeMessage(context, m, peerName, seen: seen);
-    // Text reads as one thing; a photo keeps its own button semantics.
-    final semantic = m.isPhoto
-        ? Semantics(container: true, label: label, child: body)
-        : Semantics(
-            container: true,
-            label: '$label: ${m.text}',
-            child: ExcludeSemantics(child: body),
-          );
+    final chips = reactionChips(m, selfId);
+    final interactive = actions != null && canInteract(m);
+
+    Widget semanticFor(
+      GlobalKey? bubbleKey,
+      Map<CustomSemanticsAction, VoidCallback>? custom,
+    ) {
+      // Text reads as one thing; a photo keeps its own button semantics.
+      final bubble = KeyedSubtree(key: bubbleKey, child: body);
+      return m.isPhoto
+          ? Semantics(
+              container: true,
+              label: label,
+              customSemanticsActions: custom,
+              child: bubble,
+            )
+          : Semantics(
+              container: true,
+              label: quote == null
+                  ? '$label: ${m.text}'
+                  : '$label, replying to ${quote!.who}: ${quote!.line}: ${m.text}',
+              customSemanticsActions: custom,
+              child: ExcludeSemantics(child: bubble),
+            );
+    }
 
     return Padding(
       padding: EdgeInsets.only(
@@ -432,7 +539,8 @@ class ChatBubble extends StatelessWidget {
       child: LayoutBuilder(
         builder: (context, box) {
           final room = box.maxWidth - gutter;
-          return Row(
+          final maxBubble = math.min(room * .9, 520.0);
+          Widget bubbleRow(Widget semantic) => Row(
             mainAxisAlignment: mine
                 ? MainAxisAlignment.end
                 : MainAxisAlignment.start,
@@ -460,16 +568,69 @@ class ChatBubble extends StatelessWidget {
                 ),
               Flexible(
                 child: ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxWidth: math.min(room * .9, 520),
-                  ),
+                  constraints: BoxConstraints(maxWidth: maxBubble),
                   child: semantic,
                 ),
               ),
             ],
           );
+          final Widget line = interactive
+              ? BubbleInteractions(
+                  message: m,
+                  selfId: selfId,
+                  actions: actions!,
+                  alignEnd: mine,
+                  doubleTapHeart: !m.isPhoto,
+                  builder: (context, key, custom) =>
+                      bubbleRow(semanticFor(key, custom)),
+                )
+              : bubbleRow(semanticFor(null, null));
+          final column = Column(
+            crossAxisAlignment: mine
+                ? CrossAxisAlignment.end
+                : CrossAxisAlignment.start,
+            children: [
+              line,
+              if (chips.isNotEmpty)
+                Padding(
+                  padding: EdgeInsets.only(left: mine ? 0 : gutter),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: maxBubble),
+                    child: ReactionChips(
+                      chips: chips,
+                      peerName: peerName,
+                      alignEnd: mine,
+                      onRemoveMine: interactive
+                          ? (_) => unawaited(actions!.onReact(m, null))
+                          : null,
+                    ),
+                  ),
+                ),
+            ],
+          );
+          return highlight ? _Lit(child: column) : column;
         },
       ),
+    );
+  }
+}
+
+/// A soft lime wash behind a message that a tapped quote has just brought into
+/// view. It fades out by itself (and simply holds, then disappears, when the
+/// device asks for reduced motion).
+class _Lit extends StatelessWidget {
+  final Widget child;
+  const _Lit({required this.child});
+  @override
+  Widget build(BuildContext context) {
+    final t = ChatTokens.of(context);
+    return DecoratedBox(
+      key: const Key('message-highlight'),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        color: t.accent.withValues(alpha: t.isDark ? .16 : .13),
+      ),
+      child: child,
     );
   }
 }
@@ -816,6 +977,36 @@ double _metaWidth(BuildContext context, ChatMessage m) {
   final w = tp.width + (m.mine ? 18 : 0);
   tp.dispose();
   return w;
+}
+
+/// The width [_TextWithMeta] takes for [text] in at most [maxWidth]: the text's
+/// own width, widened for the time when it fits on the last line or is wider
+/// than the text when it does not.
+double _blockWidth(
+  BuildContext context,
+  String text,
+  TextStyle style,
+  double metaWidth,
+  double maxWidth,
+) {
+  final tp = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: DefaultTextStyle.of(context).style.merge(style),
+    ),
+    textDirection: Directionality.of(context),
+    textScaler: MediaQuery.textScalerOf(context),
+    textWidthBasis: TextWidthBasis.longestLine,
+  )..layout(maxWidth: maxWidth);
+  final lines = tp.computeLineMetrics();
+  final lastLine = lines.isEmpty ? 0.0 : lines.last.width;
+  final width = tp.width;
+  tp.dispose();
+  if (metaWidth == 0) return width;
+  const gap = 10.0;
+  return lastLine + gap + metaWidth <= maxWidth
+      ? math.max(width, lastLine + gap + metaWidth)
+      : math.max(width, metaWidth);
 }
 
 /// Message text with the time tucked into the end of its last line when there

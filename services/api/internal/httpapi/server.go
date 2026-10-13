@@ -41,8 +41,12 @@ type API struct {
 	search    *keyedLimiter
 	graph     *keyedLimiter
 	messages  *keyedLimiter
-	reports   *keyedLimiter
-	uploads   *keyedLimiter
+	// auxMessages is the stricter budget for reactions, per sender and conversation: a burst of 60,
+	// refilling one every 10 seconds (60 per 10 minutes sustained). A reaction also takes a token from
+	// messages, so it can never be a way around the normal send limit.
+	auxMessages *keyedLimiter
+	reports     *keyedLimiter
+	uploads     *keyedLimiter
 	// blobSlots bounds encrypted-attachment upload slots, completions and deletes per account;
 	// blobURLs bounds download URLs (opening a chat with many photos asks for many).
 	blobSlots *keyedLimiter
@@ -85,21 +89,22 @@ type API struct {
 func New(s *store.Store, verify Verify, dev bool, origin string) *API {
 	a := &API{Store: s, Verify: verify, DevAuth: dev, Origin: origin,
 		// The instance budget is a backstop; each client address gets its own bucket.
-		budget:     rate.NewLimiter(2000, 4000),
-		clients:    newKeyedLimiter(50, 100, 16384),
-		search:     newKeyedLimiter(rate.Every(2*time.Second), 10, 4096),
-		graph:      newKeyedLimiter(rate.Every(2*time.Second), 20, 4096),
-		messages:   newKeyedLimiter(5, 40, 4096),
-		reports:    newKeyedLimiter(rate.Every(time.Minute), 10, 4096),
-		uploads:    newKeyedLimiter(rate.Every(2*time.Second), 30, 4096),
-		blobSlots:  newKeyedLimiter(rate.Every(500*time.Millisecond), 60, 4096),
-		blobURLs:   newKeyedLimiter(10, 60, 4096),
-		content:    newKeyedLimiter(1, 30, 4096),
-		lists:      newKeyedLimiter(2, 30, 4096),
-		locations:  newKeyedLimiter(rate.Every(2*time.Minute), 3, 4096),
-		firstChats: newKeyedLimiter(rate.Every(time.Minute), 10, 4096),
-		mediaSlots: make(chan struct{}, 4),
-		heartbeat:  pingEvery,
+		budget:      rate.NewLimiter(2000, 4000),
+		clients:     newKeyedLimiter(50, 100, 16384),
+		search:      newKeyedLimiter(rate.Every(2*time.Second), 10, 4096),
+		graph:       newKeyedLimiter(rate.Every(2*time.Second), 20, 4096),
+		messages:    newKeyedLimiter(5, 40, 4096),
+		auxMessages: newKeyedLimiter(rate.Every(10*time.Second), 60, 4096),
+		reports:     newKeyedLimiter(rate.Every(time.Minute), 10, 4096),
+		uploads:     newKeyedLimiter(rate.Every(2*time.Second), 30, 4096),
+		blobSlots:   newKeyedLimiter(rate.Every(500*time.Millisecond), 60, 4096),
+		blobURLs:    newKeyedLimiter(10, 60, 4096),
+		content:     newKeyedLimiter(1, 30, 4096),
+		lists:       newKeyedLimiter(2, 30, 4096),
+		locations:   newKeyedLimiter(rate.Every(2*time.Minute), 3, 4096),
+		firstChats:  newKeyedLimiter(rate.Every(time.Minute), 10, 4096),
+		mediaSlots:  make(chan struct{}, 4),
+		heartbeat:   pingEvery,
 	}
 	if _, err := rand.Read(a.cursorKey[:]); err != nil {
 		panic(err)
