@@ -1,26 +1,20 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"time"
 
 	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/push"
 	"hiyall/services/api/internal/store"
 )
 
-// wakeFrom pushes to recipient about actor's action unless the recipient has
-// muted or restricted actor. Errors fail open to sending, which only costs a
-// content-free wake-up.
-func (a *API) wakeFrom(ctx context.Context, kind, actor, recipient string) {
-	if a.Push == nil {
-		return
-	}
-	if quiet, err := a.Store.Quiet(ctx, recipient, actor); err == nil && quiet {
-		return
-	}
-	a.wake(kind, recipient)
+// wakeFrom pushes to recipient about actor's action. Whether that is allowed (mutes,
+// restricts, blocks, age band, the member's own choices) is decided by the push
+// dispatcher on a worker, not here.
+func (a *API) wakeFrom(kind, actor, recipient string) {
+	a.wake(push.Notice{Kind: kind, Actor: actor, Recipient: recipient})
 }
 
 // isID accepts only canonical ids (domain.IsID); every id from a path, query or body goes through it.

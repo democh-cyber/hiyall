@@ -2,7 +2,7 @@ import 'dart:async';
 
 /// The provider that vouched for an account. Matches Firebase's
 /// `sign_in_provider` claim so the API and the app agree on the vocabulary.
-enum AuthMethod { password, google, facebook, other }
+enum AuthMethod { password, google, facebook, apple, other }
 
 class AuthUser {
   final String uid;
@@ -55,6 +55,10 @@ abstract class AuthGateway {
   Future<AuthUser> signInWithEmail(String email, String password);
   Future<AuthUser> signInWithGoogle();
   Future<AuthUser> signInWithFacebook();
+
+  /// Sign in with Apple through Firebase's `AppleAuthProvider`. The address may
+  /// be Apple's private relay, and Apple vouches for it, so no verification step.
+  Future<AuthUser> signInWithApple();
   Future<void> sendEmailVerification();
 
   /// Re-reads the account from the provider (e.g. after the person tapped the
@@ -99,6 +103,8 @@ class UnconfiguredAuthGateway implements AuthGateway {
   Future<AuthUser> signInWithGoogle() => Future.error(_failure);
   @override
   Future<AuthUser> signInWithFacebook() => Future.error(_failure);
+  @override
+  Future<AuthUser> signInWithApple() => Future.error(_failure);
   @override
   Future<void> sendEmailVerification() => Future.error(_failure);
   @override

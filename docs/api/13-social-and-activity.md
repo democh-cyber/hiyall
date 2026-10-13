@@ -37,7 +37,7 @@ The app's tappable profile stats use these lists: Following and Followers (see [
 - Rate limit: a burst of 30 reads, then two a second (429 `RATE_LIMITED`, `Retry-After` 1).
 - The `visitors` count in `socialStats` keeps counting every member who ever opened the profile, including the excluded ones (blocked, in another age band, suspended) and members the limit cuts off, so the list can be shorter than the number. Deleting an account removes its visit rows but not the all-time count.
 - Visitors are **not notified** and cannot opt out. No other response names a visitor.
-- **Open launch item for the owner:** add a line to the Terms and Privacy copy that profile views are visible to the profile owner. The app already says "People can see that you visited their profile." on the Visitors screen. No legal text is written here.
+- **Disclosure:** the draft Terms of Service and Privacy Policy (`docs/legal/`) say that profile views are visible to the profile owner and that followers of an adult member can open their followers and following lists. They are drafts awaiting legal review. The app also says "People can see that you visited their profile." on the Visitors screen.
 
 ## Activity
 

@@ -28,6 +28,20 @@ type Config struct {
 	// chats answers 503 CHAT_MEDIA_UNAVAILABLE.
 	ChatMediaEndpoint, ChatMediaAccessKey, ChatMediaSecretKey, ChatMediaBucket, ChatMediaRegion string
 	ChatMediaSecure                                                                             bool
+	// Push notifications go out through FCM (Android and iOS). Both are optional: without
+	// FCM_SERVICE_ACCOUNT_FILE pushes are only logged. FCM_PROJECT_ID defaults to FIREBASE_PROJECT_ID,
+	// then to the project named in the service-account file.
+	FCMProjectID, FCMServiceAccountFile string
+	// FirebaseServiceAccountFile (FIREBASE_SERVICE_ACCOUNT_FILE) is a service-account key that may delete
+	// Firebase users. Optional: without it, an account purge leaves the Firebase user in place and logs that.
+	FirebaseServiceAccountFile string
+	// Operations. MetricsAddr is the separate Prometheus listener (METRICS_ADDR; default
+	// 127.0.0.1:9090, empty disables it) and MetricsToken (METRICS_TOKEN) the bearer token it then
+	// requires; it is mandatory for any non-loopback address. RateLimitBackend is "memory" (default,
+	// per node) or "postgres" (shared). MigrationsDir (MIGRATIONS_DIR) lets /readyz check that the
+	// database has every migration this release ships; unset, it falls back to the repository's
+	// database/migrations next to the source tree when that exists.
+	MetricsAddr, MetricsToken, RateLimitBackend, MigrationsDir string
 }
 
 func Load() (Config, error) {
@@ -116,8 +130,22 @@ func Load() (Config, error) {
 			}
 		}
 	}
+	c.FCMProjectID, c.FCMServiceAccountFile = os.Getenv("FCM_PROJECT_ID"), os.Getenv("FCM_SERVICE_ACCOUNT_FILE")
+	c.FirebaseServiceAccountFile = os.Getenv("FIREBASE_SERVICE_ACCOUNT_FILE")
+	if c.FirebaseServiceAccountFile != "" && c.FirebaseProjectID == "" {
+		return c, errors.New("FIREBASE_SERVICE_ACCOUNT_FILE requires FIREBASE_PROJECT_ID")
+	}
+	if c.FCMProjectID == "" {
+		c.FCMProjectID = c.FirebaseProjectID
+	}
+	if c.FCMProjectID != "" && !firebaseProjectPattern.MatchString(c.FCMProjectID) {
+		return c, errors.New("FCM_PROJECT_ID must be 4-64 lowercase letters, digits or hyphens")
+	}
 	if strings.Contains(c.Listen, "\n") {
 		return c, errors.New("invalid listen address")
+	}
+	if err := c.loadOps(); err != nil {
+		return c, err
 	}
 	return c, nil
 }

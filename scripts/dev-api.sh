@@ -67,6 +67,17 @@ if [[ -f "$chat_media_env" ]]; then
 else
   echo "Chat photos: off (copy config/chat-media.example.env to config/chat-media.local.env)"
 fi
+# Push notifications: a Firebase service-account key at config/fcm-service-account.local.json (see
+# config/fcm-service-account.example.json and docs/api/23-push-notifications.md). Without it pushes are only logged.
+fcm_key="$task_root/config/fcm-service-account.local.json"
+if [[ -z "${FCM_SERVICE_ACCOUNT_FILE:-}" && -f "$fcm_key" ]]; then
+  export FCM_SERVICE_ACCOUNT_FILE="$fcm_key"
+fi
+if [[ -n "${FCM_SERVICE_ACCOUNT_FILE:-}" ]]; then
+  echo "Push: FCM (service account file set)"
+else
+  echo "Push: off, only logged (copy config/fcm-service-account.example.json to config/fcm-service-account.local.json)"
+fi
 cd "$task_root/services/api"
 go run ./cmd/migrate
 exec go run ./cmd/api

@@ -9,6 +9,7 @@ import '../../core/auth/auth_gateway.dart';
 import '../../core/state.dart';
 import '../../core/theme.dart';
 import '../../shared/widgets.dart';
+import '../legal_screens.dart' show LegalFooter;
 import 'auth_widgets.dart';
 
 /// Shown while the app restores a sign-in, or when it could not reach the
@@ -121,6 +122,8 @@ class WelcomeScreen extends ConsumerWidget {
             onPressed: () => context.go('/login'),
             child: const Text('Log in'),
           ),
+          const SizedBox(height: 18),
+          const LegalFooter(),
           if (devLoginEnabled) ...[
             const SizedBox(height: 28),
             const Divider(),
@@ -336,6 +339,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with AuthActions {
           enabled: enabled,
           onGoogle: () => perform(gateway.signInWithGoogle),
           onFacebook: () => perform(gateway.signInWithFacebook),
+          onApple: () => perform(gateway.signInWithApple),
         ),
         const SizedBox(height: 26),
         Wrap(
@@ -349,6 +353,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with AuthActions {
             ),
           ],
         ),
+        const SizedBox(height: 14),
+        const LegalLine(),
       ],
     );
   }
@@ -437,6 +443,7 @@ class _SignupScreenState extends ConsumerState<SignupScreen> with AuthActions {
           enabled: enabled,
           onGoogle: () => perform(gateway.signInWithGoogle),
           onFacebook: () => perform(gateway.signInWithFacebook),
+          onApple: () => perform(gateway.signInWithApple),
         ),
         const SizedBox(height: 22),
         const LegalLine(),

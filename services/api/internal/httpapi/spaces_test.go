@@ -263,7 +263,7 @@ func TestSpaceInvitationByUsernameRevealsNothing(t *testing.T) {
 	}
 	eventually(t, func() bool { return len(sender.list()) >= 1 })
 	time.Sleep(100 * time.Millisecond)
-	if got := sender.list(); fmt.Sprint(got) != fmt.Sprint([]string{yui + ":activity"}) {
+	if got := sender.list(); fmt.Sprint(got) != fmt.Sprint([]string{yui + ":space_invite"}) {
 		t.Fatalf("pushes %v", got)
 	}
 	// The refusals a real invitation can meet come first for everyone alike.
@@ -278,8 +278,7 @@ func TestSpaceInvitationByUsernameRevealsNothing(t *testing.T) {
 }
 
 // Moderators act only on people in the space (or, to ban, someone they may reach): anything
-// else is 404, never a 500 or a silent success, and only a real change signals or wakes anyone,
-// respecting the target's mutes.
+// else is 404, never a 500 or a silent success, and only a real change signals anyone (moderation is never pushed).
 func TestSpaceModerationNeedsAMembership(t *testing.T) {
 	h := newSocialHarness(t)
 	_, sender := withRealtime(t, h)
@@ -319,15 +318,14 @@ func TestSpaceModerationNeedsAMembership(t *testing.T) {
 	if n := pushes(); n != 0 {
 		t.Fatalf("no-op woke the member: %v", sender.list())
 	}
+	// Moderation is signalled to the member's open apps but never pushed.
 	h.expect(member(cara, yui, "moderator"), 200, "")
-	eventually(t, func() bool { return len(sender.list()) == 1 })
-	// A member who muted the host is not woken by the host's moderation.
 	h.ok(yui, "POST", "/v1/users/"+cara+"/mute")
 	h.expect(member(cara, yui, "member"), 200, "")
 	h.expect(member(cara, yui, "remove"), 200, "")
 	h.expect(member(cara, yui, "remove"), 404, "NOT_FOUND")
-	if n := pushes(); n != 1 {
-		t.Fatalf("muted member woken: %v", sender.list())
+	if n := pushes(); n != 0 {
+		t.Fatalf("moderation woke the member: %v", sender.list())
 	}
 	// A moderator cannot reach someone who blocked them even when the owner can.
 	h.expect(h.send(yui, "PUT", "/v1/spaces/"+space+"/membership", map[string]string{}), 200, "")

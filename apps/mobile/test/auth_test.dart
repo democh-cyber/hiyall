@@ -95,6 +95,14 @@ class FakeGateway implements AuthGateway {
   }
 
   @override
+  Future<AuthUser> signInWithApple() async {
+    if (failure != null) throw failure!;
+    final next = _account(AuthMethod.apple);
+    _emit(next);
+    return next;
+  }
+
+  @override
   Future<void> sendEmailVerification() async => resends++;
   @override
   Future<AuthUser?> reload() async {

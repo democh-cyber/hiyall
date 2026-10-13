@@ -12,6 +12,7 @@ import (
 	"github.com/coder/websocket"
 	"golang.org/x/time/rate"
 	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/push"
 	"hiyall/services/api/internal/realtime"
 )
 
@@ -43,10 +44,12 @@ func (a *API) signal(ctx context.Context, typ string, data map[string]string, us
 	a.RT.Publish(ctx, typ, data, users...)
 }
 
-// wake queues a content-free push for users not connected to this node.
-func (a *API) wake(kind string, users ...string) {
+// wake is the one place a push is requested. It only names the event; internal/push
+// decides (kind allowlist, live socket, mutes, blocks, age band, member choices,
+// coalescing, daily cap) and builds a payload with no message content.
+func (a *API) wake(n push.Notice) {
 	if a.Push != nil {
-		a.Push.Notify(kind, users...)
+		a.Push.Notify(n)
 	}
 }
 
@@ -86,6 +89,10 @@ func (a *API) realtimeGateway(w http.ResponseWriter, r *http.Request) {
 		} else {
 			a.failure(w, r, 401, "UNAUTHENTICATED", "Sign in again")
 		}
+		return
+	}
+	if p.PendingDeletion {
+		a.failure(w, r, 401, "UNAUTHENTICATED", "Sign in again")
 		return
 	}
 	// Sockets carry activity and chat signals; they wait for onboarding like every other route.

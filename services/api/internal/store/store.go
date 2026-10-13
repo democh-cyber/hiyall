@@ -41,6 +41,10 @@ func WithQueryTracer(t pgx.QueryTracer) Option { return func(s *Store) { s.trace
 type Principal struct {
 	UserID, SessionID string
 	Onboarded         bool
+	// PendingDeletion is true while the account has asked to be deleted and is inside the grace
+	// period. Such a member can sign in, but the API serves them only the deletion status, the
+	// cancel route and the sign-out routes (see httpapi pendingDeletionAllowed).
+	PendingDeletion bool
 }
 type Session struct {
 	SessionID  string     `json:"sessionId"`
@@ -199,7 +203,7 @@ func SessionPlatform(value string) string {
 func (s *Store) CreateDevSession(ctx context.Context, userID, token, platform string) (Principal, error) {
 	hash := sha256.Sum256([]byte(token))
 	sid := newID()
-	tag, err := s.Pool.Exec(ctx, `INSERT INTO sessions(session_id,user_id,access_token_hash,expires_at,platform) SELECT $1,user_id,$2,now()+interval '30 minutes',$4 FROM users WHERE user_id=$3 AND status='active'`, sid, hash[:], userID, SessionPlatform(platform))
+	tag, err := s.Pool.Exec(ctx, `INSERT INTO sessions(session_id,user_id,access_token_hash,expires_at,platform) SELECT $1,user_id,$2,now()+interval '30 minutes',$4 FROM users WHERE user_id=$3 AND status IN ('active','pending_deletion')`, sid, hash[:], userID, SessionPlatform(platform))
 	if err != nil {
 		return Principal{}, err
 	}
@@ -214,8 +218,8 @@ func (s *Store) VerifyDevSession(ctx context.Context, token string) (Principal, 
 	// Every request authenticates, so the session row is read, not written;
 	// last_seen_at is refreshed at most once a minute.
 	var stale bool
-	err := s.Pool.QueryRow(ctx, `SELECT s.user_id::text,s.session_id::text,s.last_seen_at<now()-interval '1 minute',o.completed_at IS NOT NULL FROM sessions s JOIN users u ON u.user_id=s.user_id LEFT JOIN onboarding o ON o.user_id=s.user_id
- WHERE s.access_token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.status='active'`, hash[:]).Scan(&p.UserID, &p.SessionID, &stale, &p.Onboarded)
+	err := s.Pool.QueryRow(ctx, `SELECT s.user_id::text,s.session_id::text,s.last_seen_at<now()-interval '1 minute',o.completed_at IS NOT NULL,u.status='pending_deletion' FROM sessions s JOIN users u ON u.user_id=s.user_id LEFT JOIN onboarding o ON o.user_id=s.user_id
+ WHERE s.access_token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.status IN ('active','pending_deletion')`, hash[:]).Scan(&p.UserID, &p.SessionID, &stale, &p.Onboarded, &p.PendingDeletion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, domain.ErrUnauthorized
 	}
@@ -251,8 +255,10 @@ func (s *Store) ResolveOIDC(ctx context.Context, issuer, subject, sid string, ex
 	} else if err != nil {
 		return Principal{}, err
 	}
-	var active bool
-	if err = tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR UPDATE`, id).Scan(&active); err != nil || !active {
+	// A member who asked to delete their account signs in like anyone else; the API then serves them
+	// only the deletion routes (Principal.PendingDeletion). Any other state is refused.
+	var status string
+	if err = tx.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1 FOR UPDATE`, id).Scan(&status); err != nil || (status != "active" && status != "pending_deletion") {
 		return Principal{}, domain.ErrUnauthorized
 	}
 	// A Firebase sign-in from before "sign out everywhere else" never gets a session row it
@@ -280,6 +286,7 @@ func (s *Store) ResolveOIDC(ctx context.Context, issuer, subject, sid string, ex
 	if err != nil {
 		return p, err
 	}
+	p.PendingDeletion = status == "pending_deletion"
 	return p, tx.Commit(ctx)
 }
 

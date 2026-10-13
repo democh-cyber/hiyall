@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
@@ -9,6 +11,7 @@ part 'pulse.dart';
 part 'spaces.dart';
 part 'nearby.dart';
 part 'people.dart';
+part 'account.dart';
 
 const apiBaseUrl = String.fromEnvironment('API_BASE_URL');
 const devLoginEnabled = kDebugMode && bool.fromEnvironment('ENABLE_DEV_LOGIN');
@@ -374,6 +377,8 @@ const _policyCodes = {
   'AGE_REQUIREMENT_NOT_MET',
   'PROFILE_INCOMPLETE',
   'INVALID_CURSOR',
+  'REAUTH_REQUIRED',
+  'DELETION_WINDOW_CLOSED',
 };
 
 /// Reported on sign-in so the sessions list can say where each one is.
@@ -385,7 +390,8 @@ String get clientPlatform => kIsWeb
         _ => 'unknown',
       };
 
-class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi {
+class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
+  @override
   final Dio _dio;
 
   /// Sends photo bytes straight to object storage; no API base URL or token.
@@ -395,6 +401,9 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi {
   /// Called when a signed-in request is refused as unauthenticated: the
   /// session expired or was revoked elsewhere.
   void Function()? onUnauthorized;
+
+  /// Called after a follow went through (push notifications ask for permission then).
+  void Function()? onFollowed;
 
   /// Asks the identity provider for a brand-new token after a 401. A different
   /// token means the first was only stale, so the request is retried once.
@@ -475,6 +484,7 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi {
       if (status == 401 && token != null) onUnauthorized?.call();
       // Policy refusals carry server copy written to be shown as-is.
       if ((_policyCodes.contains(code) ||
+              (path == '/v1/me/deletion' && code == 'VALIDATION') ||
               (path.startsWith('/v1/spaces') && code == 'VALIDATION')) &&
           failure['message'] is String) {
         final wait = int.tryParse(
@@ -635,10 +645,15 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi {
         );
 
   // Social graph. Each call returns the server's resulting state.
-  Future<String> follow(Session s, String userId) async =>
-      (await _request('POST', '/v1/users/$userId/follow', token: s.token)
-              as Map<String, dynamic>)['following']
-          as String;
+  Future<String> follow(Session s, String userId) async {
+    final state =
+        (await _request('POST', '/v1/users/$userId/follow', token: s.token)
+                as Map<String, dynamic>)['following']
+            as String;
+    onFollowed?.call();
+    return state;
+  }
+
   Future<void> unfollow(Session s, String userId) async =>
       await _request('DELETE', '/v1/users/$userId/follow', token: s.token);
   Future<String> sendFriendRequest(Session s, String userId) async =>

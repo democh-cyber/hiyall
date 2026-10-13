@@ -23,3 +23,11 @@ apps/mobile/ios/Flutter/Firebase.xcconfig
 .firebase/
 config/media.local.env
 config/chat-media.local.env
+# FCM service account key (push notifications); see config/fcm-service-account.example.json
+config/fcm-service-account.local.json
+config/*service-account*.json
+!config/*service-account*.example.json
+
+# Filled-in container environment (infrastructure/docker/api.example.env is the template)
+infrastructure/docker/*.env
+!infrastructure/docker/*.example.env

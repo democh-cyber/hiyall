@@ -1,16 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/api.dart';
 import '../../core/avatar_upload.dart';
-import '../../core/auth/firebase_config.dart';
+import '../../core/legal_documents.dart';
 import '../../core/profile_labels.dart';
 import '../../core/state.dart';
 import '../../core/theme.dart';
 import '../../shared/avatar_sheet.dart';
 import '../../shared/person_avatar.dart';
 import '../../shared/widgets.dart';
+import '../legal_screens.dart' show LegalLink;
 import '../profile_editor.dart' show pickProfileLabel;
 
 const _interestSuggestions = [
@@ -287,6 +287,16 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
         if (gender != null) 'gender': gender,
       });
       final status = await api.onboarding(session);
+      if (!status.completed && status.termsVersion != kTermsVersion) {
+        // The service now asks for a revision this build does not show. Accepting
+        // it would record terms the person never saw.
+        if (mounted) {
+          setState(
+            () => error = 'The terms have changed since this version of Hiyall was released. Update the app to continue.',
+          );
+        }
+        return;
+      }
       if (!status.completed) {
         await api.completeOnboarding(
           session,
@@ -490,17 +500,6 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
 
   Widget _ageStep(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final linkStyle = TextStyle(
-      fontWeight: FontWeight.w700,
-      decoration: LegalLinks.terms.isEmpty ? null : TextDecoration.underline,
-    );
-    Widget link(String label, String url) => url.isEmpty
-        ? Text(label, style: linkStyle)
-        : InkWell(
-            onTap: () =>
-                launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication),
-            child: Text(label, style: linkStyle),
-          );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -532,12 +531,25 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
               const Text('I agree to the '),
-              link('Terms', LegalLinks.terms),
+              const LegalLink(LegalDoc.terms, label: 'Terms'),
+              const Text(', '),
+              const LegalLink(LegalDoc.privacy, label: 'Privacy Policy'),
               const Text(' and '),
-              link('Privacy Policy', LegalLinks.privacy),
+              const LegalLink(
+                LegalDoc.guidelines,
+                label: 'Community Guidelines',
+              ),
               const Text('.'),
             ],
           ),
+          subtitle: Text(
+            'Terms version $kTermsVersion',
+            key: const Key('onb-terms-version'),
+          ),
+        ),
+        const Align(
+          alignment: AlignmentDirectional.centerStart,
+          child: LegalLink(LegalDoc.teens, label: 'Children and Teens'),
         ),
         Text(
           'Your birth date stays private. Nobody can see it, and it can\u2019t be changed later.',

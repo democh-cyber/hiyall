@@ -73,6 +73,13 @@ type API struct {
 	Push *push.Dispatcher
 	// heartbeat is how often a realtime connection is pinged and its session checked.
 	heartbeat time.Duration
+	// Reporter receives panics and unexpected 500s (ops.go); the default does nothing.
+	Reporter ErrorReporter
+	// Migrations are the migration files this release needs applied; /readyz refuses while the
+	// database is behind. Empty disables the check.
+	Migrations []string
+	ready      readyCache
+	routes     routeSet
 }
 
 func New(s *store.Store, verify Verify, dev bool, origin string) *API {
@@ -97,6 +104,9 @@ func New(s *store.Store, verify Verify, dev bool, origin string) *API {
 	if _, err := rand.Read(a.cursorKey[:]); err != nil {
 		panic(err)
 	}
+	a.Reporter = NoopReporter{}
+	a.nameLimiters()
+	a.registerMetrics()
 	return a
 }
 
@@ -136,8 +146,26 @@ func (a *API) Handler() http.Handler {
 		response := &responseStatus{ResponseWriter: w}
 		w = response
 		id := uuid.NewString()
+		pattern := routePattern(r.URL.Path)
+		httpInFlight.Inc()
+		// The access log and the metrics carry the method, the route pattern, the status and the timing,
+		// never the query string (presigned URLs, tokens), headers or bodies.
 		defer func() {
-			slog.Info("request completed", "requestId", id, "status", response.status, "durationMs", time.Since(start).Milliseconds())
+			httpInFlight.Dec()
+			route := a.routes.label(pattern, response.status)
+			httpRequests.Inc(methodLabel(r.Method), route, statusClass(response.status))
+			if pattern != "/v1/realtime" {
+				httpDuration.Observe(time.Since(start).Seconds(), route)
+			}
+			slog.Info("request completed", "requestId", id, "method", r.Method, "route", route, "status", response.status, "durationMs", time.Since(start).Milliseconds())
+		}()
+		defer func() {
+			if rec := recover(); rec != nil {
+				if rec == http.ErrAbortHandler {
+					panic(rec)
+				}
+				a.panicked(w, r, id, pattern, rec, response.status != 0)
+			}
 		}()
 		r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, id))
 		w.Header().Set("X-Request-Id", id)
@@ -154,12 +182,6 @@ func (a *API) Handler() http.Handler {
 		deadline, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 		r = r.WithContext(deadline)
-		defer func() {
-			if recover() != nil {
-				slog.Error("request panic", "requestId", id)
-				a.failure(w, r, 500, "INTERNAL", "Something went wrong")
-			}
-		}()
 		origin := r.Header.Get("Origin")
 		if origin != "" {
 			allowed := origin == a.Origin && a.Origin != "" || a.DevAuth && (origin == "http://127.0.0.1:49321" || origin == "http://localhost:49321")
@@ -177,18 +199,9 @@ func (a *API) Handler() http.Handler {
 				return
 			}
 		}
-		if r.URL.Path == "/health/live" && r.Method == "GET" {
-			a.ok(w, r, map[string]string{"status": "ok"})
-			return
-		}
-		if r.URL.Path == "/health/ready" && r.Method == "GET" {
-			ctx, cancel := context.WithTimeout(r.Context(), time.Second)
-			defer cancel()
-			if a.Store.Pool.Ping(ctx) != nil {
-				a.failure(w, r, 503, "NOT_READY", "Database unavailable")
-				return
-			}
-			a.ok(w, r, map[string]string{"status": "ready"})
+		// Probes (/healthz, /readyz and the older /health/live, /health/ready) answer before rate
+		// limiting and authentication, so a busy or throttled node still reports itself.
+		if a.health(w, r) {
 			return
 		}
 		if !a.budget.Allow() || !a.clients.allow(clientAddress(r)) {
@@ -266,7 +279,9 @@ func (a *API) error(w http.ResponseWriter, r *http.Request, err error) {
 	default:
 		// The cause is logged for diagnosis: database and Go errors name the failing operation,
 		// never a request body, credential, birth date or position.
-		slog.Error("request failed", "requestId", r.Context().Value(requestIDKey{}), "method", r.Method, "path", r.URL.Path, "reason", err.Error())
+		slog.Error("request failed", "requestId", r.Context().Value(requestIDKey{}), "method", r.Method, "path", r.URL.Path, "reason", scrubURLs(err.Error()))
+		id, _ := r.Context().Value(requestIDKey{}).(string)
+		a.report(r.Context(), ErrorReport{RequestID: id, Method: r.Method, Route: routePattern(r.URL.Path), Err: err})
 		a.failure(w, r, 500, "INTERNAL", "Something went wrong")
 	}
 }
@@ -362,6 +377,12 @@ func (a *API) devSession(w http.ResponseWriter, r *http.Request) {
 func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 	ctx := r.Context()
 	path := r.URL.Path
+	// A member in the 30 day deletion grace period reaches only pendingDeletionAllowed; anything else is
+	// refused like any inactive account.
+	if p.PendingDeletion && !pendingDeletionAllowed(r.Method, path) {
+		a.failure(w, r, 401, "UNAUTHENTICATED", "Sign in to continue")
+		return
+	}
 	// The one place onboarding is enforced: until it is complete, only the routes
 	// in onboardingExempt are reachable, whatever handler would serve the request.
 	if !p.Onboarded && !onboardingExempt(r.Method, path) {
@@ -496,7 +517,7 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 		a.ok(w, r, map[string]bool{"revoked": true})
 		return
 	}
-	if a.onboardingRoute(w, r, p, parts) || a.nearbyRoute(w, r, p, parts) || a.chatRoute(w, r, p, parts) || a.socialRoute(w, r, p, parts) || a.safetyRoute(w, r, p, parts) || a.pulseRoute(w, r, p, parts) || a.spacesRoute(w, r, p, parts) {
+	if a.onboardingRoute(w, r, p, parts) || a.nearbyRoute(w, r, p, parts) || a.chatRoute(w, r, p, parts) || a.socialRoute(w, r, p, parts) || a.safetyRoute(w, r, p, parts) || a.pulseRoute(w, r, p, parts) || a.spacesRoute(w, r, p, parts) || a.accountRoute(w, r, p, parts) {
 		return
 	}
 	a.failure(w, r, 404, "NOT_FOUND", "Endpoint unavailable")

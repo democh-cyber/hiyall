@@ -256,8 +256,8 @@ var reportSubjectName = `CASE WHEN ` + knownToSQL("$1::uuid", "p.user_id") + ` T
 // ListReports pages the caller's own reports and their status. Subjects the caller may not
 // know are listed without a name (see reportSubjectName).
 func (s *Store) ListReports(ctx context.Context, reporter string, before *time.Time, beforeID string, limit int) ([]domain.Report, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT r.report_id::text,r.target_type,r.target_id::text,p.user_id::text,`+reportSubjectName+`,r.reason_code,r.status,r.created_at,r.resolved_at
- FROM reports r JOIN profiles p ON p.user_id=r.subject_id
+	rows, err := s.Pool.Query(ctx, `SELECT r.report_id::text,r.target_type,r.target_id::text,r.subject_id::text,`+reportSubjectName+`,r.reason_code,r.status,r.created_at,r.resolved_at
+ FROM reports r LEFT JOIN profiles p ON p.user_id=r.subject_id
  WHERE r.reporter_id=$1 AND ($2::timestamptz IS NULL OR (r.created_at,r.report_id)<($2,$3::uuid))
  ORDER BY r.created_at DESC,r.report_id DESC LIMIT $4`, reporter, before, beforeID, limit)
 	if err != nil {
@@ -282,10 +282,10 @@ type QueuedReport struct {
 
 // ReportQueue lists open reports, high severity first, then oldest first.
 func (s *Store) ReportQueue(ctx context.Context, limit int) ([]QueuedReport, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT r.report_id::text,r.target_type,r.target_id::text,r.reporter_id::text,r.subject_id::text,p.username,
+	rows, err := s.Pool.Query(ctx, `SELECT r.report_id::text,r.target_type,r.target_id::text,r.reporter_id::text,r.subject_id::text,coalesce(p.username,''),
  r.reason_code,r.severity,coalesce(r.description,''),r.evidence,
  (SELECT count(*) FROM reports o WHERE o.subject_id=r.subject_id AND o.report_id<>r.report_id)::int,r.created_at
- FROM reports r JOIN profiles p ON p.user_id=r.subject_id
+ FROM reports r LEFT JOIN profiles p ON p.user_id=r.subject_id
  WHERE r.status='open' ORDER BY r.severity='high' DESC,r.created_at LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -307,9 +307,21 @@ func (s *Store) ReportQueue(ctx context.Context, limit int) ([]QueuedReport, err
 	return queue, err
 }
 
+// ModerationHook runs inside the transaction of a moderation action, after the action itself, with the
+// member it concerned. The admin console records its audit entry there, so an action and its audit
+// entry commit together or not at all. Returning an error rolls the action back.
+type ModerationHook func(ctx context.Context, tx pgx.Tx, subject string) error
+
 // ResolveReport closes an open report with an operator action. Suspend
 // deactivates the subject and revokes their sessions in the same transaction.
 func (s *Store) ResolveReport(ctx context.Context, reportID, operator, action, note string) error {
+	return s.ResolveReportWith(ctx, reportID, operator, action, note, nil)
+}
+
+// ResolveReportWith is ResolveReport with a hook in the same transaction (nil for none). It is the one
+// implementation behind the moderate CLI and the admin console. A report that exists but is already
+// resolved answers REPORT_CLOSED (409) so a second operator is told apart from a wrong id (not found).
+func (s *Store) ResolveReportWith(ctx context.Context, reportID, operator, action, note string, hook ModerationHook) error {
 	if action != "dismiss" && action != "warn" && action != "suspend" {
 		return &domain.ValidationError{Field: "action", Message: "must be dismiss, warn or suspend"}
 	}
@@ -317,6 +329,12 @@ func (s *Store) ResolveReport(ctx context.Context, reportID, operator, action, n
 		status := map[string]string{"dismiss": "dismissed", "warn": "actioned", "suspend": "actioned"}[action]
 		var subject string
 		err := tx.QueryRow(ctx, `UPDATE reports SET status=$2,resolved_at=now(),resolution_code=$3 WHERE report_id=$1 AND status='open' RETURNING subject_id::text`, reportID, status, action).Scan(&subject)
+		if errors.Is(err, pgx.ErrNoRows) {
+			var exists bool
+			if e := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM reports WHERE report_id=$1)`, reportID).Scan(&exists); e == nil && exists {
+				return ErrReportClosed
+			}
+		}
 		if err != nil {
 			return mapped(err)
 		}
@@ -324,11 +342,19 @@ func (s *Store) ResolveReport(ctx context.Context, reportID, operator, action, n
 			return err
 		}
 		if action == "suspend" {
-			return suspend(ctx, tx, subject)
+			if err = suspend(ctx, tx, subject); err != nil {
+				return err
+			}
+		}
+		if hook != nil {
+			return hook(ctx, tx, subject)
 		}
 		return nil
 	})
 }
+
+// ErrReportClosed is answered when an operator resolves a report that was already resolved.
+var ErrReportClosed = &domain.PolicyError{Status: 409, Code: "REPORT_CLOSED", Message: "This report is already resolved"}
 
 // suspend deactivates the account and revokes every session. The realtime notice is sent on
 // commit (NOTIFY is transactional), so every API node listening on the bus ends the account's
@@ -347,6 +373,11 @@ func suspend(ctx context.Context, tx pgx.Tx, user string) error {
 
 // RestoreUser lifts a suspension, recording who did it and why.
 func (s *Store) RestoreUser(ctx context.Context, user, operator, note string) error {
+	return s.RestoreUserWith(ctx, user, operator, note, nil)
+}
+
+// RestoreUserWith is RestoreUser with a hook in the same transaction (nil for none), see ResolveReportWith.
+func (s *Store) RestoreUserWith(ctx context.Context, user, operator, note string, hook ModerationHook) error {
 	return s.inTx(ctx, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `UPDATE users SET status='active' WHERE user_id=$1 AND status='suspended'`, user)
 		if err != nil {
@@ -355,7 +386,12 @@ func (s *Store) RestoreUser(ctx context.Context, user, operator, note string) er
 		if tag.RowsAffected() == 0 {
 			return domain.ErrNotFound
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO moderation_actions(action_id,actor,subject_id,action_type,note) VALUES($1,$2,$3,'restore',nullif($4,''))`, newID(), operator, user, note)
-		return err
+		if _, err = tx.Exec(ctx, `INSERT INTO moderation_actions(action_id,actor,subject_id,action_type,note) VALUES($1,$2,$3,'restore',nullif($4,''))`, newID(), operator, user, note); err != nil {
+			return err
+		}
+		if hook != nil {
+			return hook(ctx, tx, user)
+		}
+		return nil
 	})
 }

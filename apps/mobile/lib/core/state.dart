@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'account_state.dart';
 import 'api.dart';
 import 'auth/auth_gateway.dart';
 import 'auth/firebase_config.dart';
@@ -76,6 +77,11 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
   int get accountEpoch => _accountEpoch;
   final _locationWrites = <Future<void>>{};
 
+  /// Work that needs the credential, run on sign-out before the session is
+  /// revoked (push notifications clear this device's token). Best effort: a
+  /// hook must not throw and should be quick.
+  final signOutHooks = <Future<void> Function()>[];
+
   /// Sends a position for the account of [epoch], unless it has signed out
   /// since. Sign-out waits for writes already on the wire.
   Future<void> shareLocation(int epoch, Future<void> Function() write) async {
@@ -141,7 +147,25 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
     final token = await gateway.idToken();
     String live() => gateway.cachedToken ?? token;
     final api = ref.read(apiProvider);
-    final profile = await api.profile(Session(token, '', live: live));
+    final Profile profile;
+    try {
+      profile = await api.profile(Session(token, '', live: live));
+    } on ApiFailure catch (error) {
+      // A member in the deletion grace period is refused everything but the deletion routes: they get
+      // the screen that offers to keep the account instead of being signed out.
+      if (error.status == 401) {
+        final pending = await pendingDeletionOf(
+          api,
+          Session(token, '', live: live),
+        );
+        if (pending != null) {
+          ref.read(pendingAccountProvider.notifier).set(pending);
+          return null;
+        }
+      }
+      rethrow;
+    }
+    ref.read(pendingAccountProvider.notifier).set(null);
     final session = Session(token, profile.userId, live: live);
     final status = await api.onboarding(session);
     return session.copyWith(onboarded: status.completed);
@@ -175,9 +199,40 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
       final api = ref.read(apiProvider);
       final session = await api.signInDevelopment(id);
       _devSession = true;
+      final OnboardingStatus status;
+      try {
+        status = await api.onboarding(session);
+      } on ApiFailure catch (error) {
+        final pending = error.status == 401
+            ? await pendingDeletionOf(api, session)
+            : null;
+        if (pending == null) rethrow;
+        ref.read(pendingAccountProvider.notifier).set(pending);
+        return null;
+      }
+      ref.read(pendingAccountProvider.notifier).set(null);
+      return session.copyWith(onboarded: status.completed);
+    });
+  }
+
+  /// The member kept their account (it was pending deletion): reconnect to the API as an ordinary one.
+  Future<void> resume(Session pending) async {
+    ref.read(pendingAccountProvider.notifier).set(null);
+    booting = true;
+    state = const AsyncLoading();
+    final result = await AsyncValue.guard<Session?>(() async {
+      final api = ref.read(apiProvider);
+      final profile = await api.profile(pending);
+      final session = Session(
+        pending.token,
+        profile.userId,
+        live: () => pending.token,
+      );
       final status = await api.onboarding(session);
       return session.copyWith(onboarded: status.completed);
     });
+    booting = false;
+    state = result;
   }
 
   /// The person finished onboarding; let them into the app.
@@ -212,6 +267,10 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
       try {
         await ref.read(apiProvider).stopSharingLocation(session);
       } catch (_) {}
+      // This device stops getting the account's pushes while the credential still works.
+      for (final hook in signOutHooks.toList()) {
+        await hook();
+      }
       try {
         await ref.read(apiProvider).logout(session);
       } on ApiFailure catch (error) {

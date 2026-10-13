@@ -1,11 +1,16 @@
 package httpapi
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"golang.org/x/time/rate"
+	"hiyall/services/api/internal/metrics"
+	"hiyall/services/api/internal/ratelimit"
 )
 
 func TestKeyedLimiterIsolatesKeysAndNeverLocksOut(t *testing.T) {
@@ -22,8 +27,8 @@ func TestKeyedLimiterIsolatesKeysAndNeverLocksOut(t *testing.T) {
 			t.Fatalf("new key %d refused when table was full", i)
 		}
 	}
-	if len(k.entries) > 3 {
-		t.Fatalf("table grew to %d entries", len(k.entries))
+	if n := k.backend.(*ratelimit.Memory).Len(); n > 3 {
+		t.Fatalf("table grew to %d entries", n)
 	}
 	if !k.allow("legit") {
 		t.Fatal("legitimate client locked out by a key flood")
@@ -31,5 +36,31 @@ func TestKeyedLimiterIsolatesKeysAndNeverLocksOut(t *testing.T) {
 	k.reset("a")
 	if !k.allow("a") {
 		t.Fatal("reset did not restore the budget")
+	}
+}
+
+type failingLimiter struct{}
+
+func (failingLimiter) Allow(context.Context, string) (ratelimit.Decision, error) {
+	return ratelimit.Decision{}, errors.New("database unavailable")
+}
+func (failingLimiter) Reset(context.Context, string) error { return errors.New("database unavailable") }
+
+func TestKeyedLimiterFailsOpenAndCountsErrorsAndRejections(t *testing.T) {
+	k := newKeyedLimiter(rate.Every(time.Hour), 1, 10)
+	k.name = "unit_limiter"
+	k.allow("a")
+	if k.allow("a") {
+		t.Fatal("not limited")
+	}
+	k.backend = failingLimiter{}
+	if !k.allow("a") || !k.take("a").Allowed {
+		t.Fatal("a failing shared backend must let requests through")
+	}
+	var sb strings.Builder
+	metrics.Default.WriteTo(&sb)
+	out := sb.String()
+	if !strings.Contains(out, `hiyall_rate_limit_rejections_total{limiter="unit_limiter"} 1`) || !strings.Contains(out, `hiyall_rate_limit_backend_errors_total{limiter="unit_limiter"} 2`) {
+		t.Fatalf("limiter metrics missing:\n%s", out)
 	}
 }

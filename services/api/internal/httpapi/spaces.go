@@ -125,7 +125,7 @@ func (a *API) spacesRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 		respond(x, e)
 		if e == nil && target != "" {
 			a.signal(ctx, "activity", nil, target)
-			a.wakeFrom(ctx, "activity", p.UserID, target)
+			a.wakeFrom("space_invite", p.UserID, target)
 		}
 	case n == 4 && parts[3] == "membership" && (r.Method == "PUT" || r.Method == "DELETE"):
 		rsvp := "going"
@@ -185,10 +185,9 @@ func (a *API) spacesRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 		case "approve", "invite", "remove", "ban", "unban", "admin", "moderator", "member":
 			x, changed, e := a.Store.ChangeSpaceMember(ctx, p.UserID, id, parts[4], in.Action, "going", a.signer(ctx))
 			respond(x, e)
-			// Only a real change is signalled, and the push respects the target's mutes.
+			// Only a real change is signalled. Space activity is not pushed (docs/api/23-push-notifications.md).
 			if e == nil && changed {
 				a.signal(ctx, "activity", nil, parts[4])
-				a.wakeFrom(ctx, "activity", p.UserID, parts[4])
 			}
 		default:
 			a.failure(w, r, 422, "VALIDATION", "Choose a member action")
