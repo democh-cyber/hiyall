@@ -1,0 +1,35 @@
+version: 2
+# Weekly update PRs for every ecosystem the repository uses. Grouping keeps the PR count low: minor and
+# patch bumps arrive together, majors one by one. Security fixes are opened immediately regardless of
+# the schedule. Pinned-on-purpose dependencies (vodozemac, the RustCrypto AEAD crates, flutter_rust_bridge)
+# are exact-pinned in Cargo.toml and need the review in docs/security/12-e2ee-library-evaluation.md:
+# a Dependabot PR for them is a prompt to do that review, never to merge blindly.
+updates:
+  - package-ecosystem: gomod
+    directory: /services/api
+    schedule: { interval: weekly, day: monday }
+    groups:
+      go-minor-patch: { update-types: [minor, patch] }
+  - package-ecosystem: pub
+    directory: /apps/mobile
+    schedule: { interval: weekly, day: monday }
+    groups:
+      pub-minor-patch: { update-types: [minor, patch] }
+  - package-ecosystem: cargo
+    directory: /apps/mobile/rust
+    schedule: { interval: weekly, day: monday }
+    groups:
+      cargo-minor-patch: { update-types: [minor, patch] }
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    groups:
+      npm-minor-patch: { update-types: [minor, patch] }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    groups:
+      actions-minor-patch: { update-types: [minor, patch] }
+  - package-ecosystem: docker
+    directory: /services/api
+    schedule: { interval: weekly, day: monday }
