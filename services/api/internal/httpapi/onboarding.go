@@ -18,6 +18,9 @@ func onboardingExempt(method, path string) bool {
 	switch path {
 	case "/v1/me/profile", "/v1/me/privacy":
 		return method == "GET" || method == "PATCH"
+	case "/v1/me/deletion":
+		// Someone who signed up by mistake can delete the account before finishing setup.
+		return true
 	case "/v1/me/onboarding":
 		return method == "GET"
 	case "/v1/me/onboarding/complete":

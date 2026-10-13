@@ -44,12 +44,17 @@ class ChatApi {
 
   /// Called when the relay still refuses the session after a refresh.
   final void Function()? onUnauthorized;
+
+  /// Called after the relay accepted a message the member sent (push
+  /// notifications ask for permission at that meaningful moment).
+  void Function()? onSent;
   ChatApi(
     String baseUrl,
     this.token, {
     this.tokenOf,
     this.tokenRefresher,
     this.onUnauthorized,
+    this.onSent,
     Dio? dio,
   }) : _dio =
            dio ??
@@ -175,6 +180,7 @@ class ChatApi {
       '/v1/conversations/$conversationId/messages',
       {...message, if (blobIds.isNotEmpty) 'blobIds': blobIds},
     );
+    onSent?.call();
     return DateTime.tryParse((data as Map)['createdAt'] as String? ?? '');
   }
 
@@ -261,6 +267,19 @@ class ChatApi {
         'provider': provider,
         'token': token,
       });
+  Future<void> clearPushToken(String deviceId) =>
+      _call('DELETE', '/v1/devices/$deviceId/push');
+
+  /// Push choices (`chat`, `social`), enforced by the server when it decides to push.
+  Future<Map<String, bool>> notificationPrefs() async =>
+      _prefs(await _call('GET', '/v1/me/notifications'));
+  Future<Map<String, bool>> setNotificationPrefs(
+    Map<String, bool> patch,
+  ) async => _prefs(await _call('PATCH', '/v1/me/notifications', patch));
+  Map<String, bool> _prefs(dynamic data) => {
+    'chat': (data as Map)['chat'] != false,
+    'social': data['social'] != false,
+  };
   Future<List<Map<String, dynamic>>> inbox(String deviceId) async =>
       _items(await _call('GET', '/v1/devices/$deviceId/inbox?limit=100'));
   Future<void> ack(String deviceId, List<String> messageIds) => _call(

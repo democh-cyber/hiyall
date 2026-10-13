@@ -61,7 +61,7 @@ func TestMuteSilencesActivityAndPushWithoutTellingTheTarget(t *testing.T) {
 		t.Fatalf("still muted %v", list)
 	}
 	h.expect(h.send(alice, "POST", path+"/messages", message(phone, bobPhone)), 200, "")
-	eventually(t, func() bool { return slices.Contains(sender.list()[pushes:], bob+":message") })
+	eventually(t, func() bool { return slices.Contains(sender.list()[pushes:], bob+":chat") })
 
 	// A timed mute lapses on its own.
 	h.ok(bob, "POST", "/v1/users/"+alice+"/mute")

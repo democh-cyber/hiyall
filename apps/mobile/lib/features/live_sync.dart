@@ -7,6 +7,7 @@ import '../core/activity_state.dart';
 import '../core/realtime/realtime_client.dart';
 import '../core/state.dart';
 import 'chat.dart';
+import 'notification_settings.dart' show PushHost;
 
 /// The signed-in account's socket. Null on web and when signed out.
 final realtimeProvider = Provider<RealtimeClient?>((ref) {
@@ -195,6 +196,7 @@ class _LiveSyncState extends ConsumerState<LiveSync> {
         if (mounted) attach(next);
       });
     }
-    return widget.child;
+    // PushHost starts push notifications and shows their explainer sheet.
+    return PushHost(child: widget.child);
   }
 }

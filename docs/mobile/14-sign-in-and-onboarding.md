@@ -1,6 +1,6 @@
 # Sign-in and onboarding (app)
 
-The app signs people in with Firebase Authentication: email and password and Google. Facebook sign-in is built but switched off (see below). Every provider ends in a Firebase ID token, which the app sends as the bearer token on each API request. The API verifies it directly ([accounts and onboarding](../api/18-accounts-and-onboarding.md)) and creates the Hiyall account on first sight.
+The app signs people in with Firebase Authentication: email and password, Google and Apple. Facebook sign-in is built but switched off (see below). Sign in with Apple is described in its own section below. Every provider ends in a Firebase ID token, which the app sends as the bearer token on each API request. The API verifies it directly ([accounts and onboarding](../api/18-accounts-and-onboarding.md)) and creates the Hiyall account on first sight.
 
 **Status:** the screens, state machine, token handling and tests are implemented and pass against a fake provider. The real Firebase project has not been connected, so no provider sign-in has been exercised end to end. Until keys are supplied the sign-in forms are visible but disabled, with a notice saying so.
 
@@ -24,8 +24,7 @@ The script is safe to re-run. It:
 
 ```bash
 flutter build apk --dart-define-from-file=../../config/firebase.local.json \
-  --dart-define=API_BASE_URL=https://api.example.com \
-  --dart-define=TERMS_URL=https://... --dart-define=PRIVACY_URL=https://...
+  --dart-define=API_BASE_URL=https://api.example.com
 ```
 
 Plain `http://` to the API is accepted only by debug builds (`flutter run`) and only for `localhost`, `127.0.0.1` or `10.0.2.2`; every other build, including `--release` and `--profile`, requires `https://`. A release build pointed at `http://127.0.0.1:8080` therefore shows "The service is not configured yet." after a successful sign-in, so test against the local API with `scripts/dev-mobile.sh`.
@@ -64,7 +63,7 @@ Social sign-in uses Firebase's provider flow: `signInWithProvider` on Android an
 | Session established, onboarding not finished | `/onboarding` |
 | Session established and onboarded | the app; the pages above redirect to `/home` |
 
-Password accounts are held on the verify screen and never reach the API. It re-checks every five seconds and on demand, and limits resending to once per 45 seconds. Google and Facebook accounts skip it because the provider has already verified the address.
+Password accounts are held on the verify screen and never reach the API. It re-checks every five seconds and on demand, and limits resending to once per 45 seconds. Google, Facebook and Apple accounts skip it because the provider has already verified the address (see Apple's private relay addresses below).
 
 After sign-in the app calls `GET /v1/me/profile` (which creates the account server side on first use) and `GET /v1/me/onboarding`, and builds the session from the result.
 
@@ -89,13 +88,56 @@ On finishing, the app saves the profile, then completes onboarding. Each call is
 ## What this does not do
 
 - The minimum-age confirmation is a self-declaration, not verified age assurance. Members of any age from 13 up can join, so Discover, Nearby and shared spaces are open to everyone; see the safety note in [open access and nearby](../api/19-nearby-and-open-access.md).
-- Terms and Privacy Policy text is not in the app. The sign-up and onboarding screens link to `TERMS_URL` and `PRIVACY_URL` when supplied and otherwise name the documents without a link; supply both before release.
+- The legal texts are drafts. They are bundled in the app (see [Legal documents](#legal-documents)) but still carry a banner saying they need legal review and placeholders for the operator's details.
 - The Google "G" is drawn in code to approximate the official mark. Replace it with the official asset before store submission to meet Google's branding rules.
 - Notification permission is not requested because push delivery is not implemented.
-- Account deletion, linking several providers to one account, and multi-factor sign-in are not implemented.
+- Account deletion (another piece of work is building it; see the Apple note below), linking several providers to one account, and multi-factor sign-in are not implemented.
 
 ## Development
 
 Debug builds started with `ENABLE_DEV_LOGIN=true` show three local accounts on Welcome: Anjali and Niko (already onboarded) and Sam, who has not finished onboarding, for trying that flow against the local API. They are removed from release builds at compile time.
 
 Tests use a fake provider (`test/auth_test.dart`): sign-in states and redirects, form validation, verification, restoring a session, token refresh and retry, and every onboarding step including server refusals. Run `flutter test`.
+
+## Legal documents
+
+Plain-language drafts live in `docs/legal/` (`terms-of-service.md`, `privacy-policy.md`, `community-guidelines.md`, `children-and-teens.md`, `data-retention.md`). Each opens with a banner (DRAFT for legal review, not legal advice, placeholders in [BRACKETS] to be filled by the operator) and a `Version:` line. Identical copies are bundled in `apps/mobile/assets/legal/` (declared in `pubspec.yaml`) and rendered in the app by `lib/features/legal_screens.dart` with a small markdown subset parser in `lib/core/legal_documents.dart` (headings, paragraphs, bullets, bold, quotes and tables; no package).
+
+| Where | What |
+|---|---|
+| Routes `/legal/terms`, `/legal/privacy`, `/legal/guidelines`, `/legal/teens`, `/legal/retention` | Outside the sign-in redirect, so they open signed out and in the middle of sign-up. They are pushed above the current page; Back returns to it. |
+| Welcome, log in and sign up footers | Terms, Privacy Policy, Community Guidelines and Teens and safety links. |
+| Onboarding step 1 | The consent line links Terms, Privacy Policy and Community Guidelines, a Children and Teens link sits below it, and "Terms version 2026-10-01" names what is accepted. |
+| Settings, Legal group | One row per document. |
+
+**One version, kept in step.** The server records the terms version a person accepts (`onboarding.terms_version`, constant `domain.TermsVersion` in `services/api/internal/domain/onboarding.go`). The app mirrors it as `kTermsVersion` (`lib/core/legal_documents.dart`) and every document carries the same `Version:` line. To publish a new revision, change all of them together and copy `docs/legal/*.md` over `apps/mobile/assets/legal/`. Tests fail when they diverge: `test/legal_test.dart` (bundled headers against `kTermsVersion`, against the Go constant, and the bundled files against `docs/legal`) and `TestLegalDocumentsCarryTheServersTermsVersion` in the API. At Finish, if the server asks for a revision other than `kTermsVersion` the app does not complete onboarding and tells the person to update, so nobody is recorded as accepting text they were not shown.
+
+**Before launch:** fill every [PLACEHOLDER], have a lawyer review the drafts (the documents mark the parts that need it), then remove the draft banner from both copies. The Privacy Policy lists what could not be verified from the code (push delivery, logs kept by the hosting provider, account export and deletion, backups); confirm each. The earlier `TERMS_URL` and `PRIVACY_URL` build options no longer exist.
+
+## Sign in with Apple
+
+Apple requires an app that offers a third-party sign-in such as Google to offer Sign in with Apple too (App Store guideline 4.8), so the app has **Continue with Apple** next to Google on log in and sign up. It uses Firebase's `AppleAuthProvider` (`FirebaseAuthGateway.signInWithApple`): `signInWithProvider` on iOS and macOS, a popup on the web.
+
+**Status:** implemented and tested with a fake provider and with locally signed tokens on the API side. It has **not** been run against Apple or Firebase, and nothing here shows it works end to end. The Xcode capability could not be checked on this machine (no Xcode).
+
+| Platform | Button |
+|---|---|
+| iOS, macOS | Always shown. |
+| Web | Only when the build sets `--dart-define=APPLE_SIGN_IN_WEB=true` (it needs a Services ID, below). |
+| Android | Never shown. Firebase can run Apple sign-in there through a web flow, but it needs the same Services ID, and Apple does not require it. |
+| Tests | Hidden unless a test injects the platform or `SocialSignIn.showApple`. |
+
+Behaviour: closing the Apple sheet is not an error and shows nothing (`canceled`, `user-cancelled`, `web-context-canceled`, `web-context-cancelled`, `popup-closed-by-user`); other failures use the same friendly copy as the other providers. A first sign-in creates the account on the API like any other and goes through the same five onboarding steps. Apple only gives the name on the very first authorisation, so the display name may be blank and onboarding asks for it. Apple's **Hide My Email** addresses (`@privaterelay.appleid.com`) are accepted: the API does not hold `apple.com` tokens for email verification (`firebaseClaims` only requires it for the `password` provider, and the API never stores the address), and the app has no verification step for Apple accounts. `services/api/internal/identity/apple_test.go` covers relay, real, missing and unverified addresses.
+
+### Owner setup
+
+1. **Apple Developer, App ID.** Certificates, Identifiers and Profiles, Identifiers, open the App ID `app.hiyall.hiyall` (create it if missing), tick **Sign in with Apple**, Save. Regenerate and download the provisioning profile if you sign manually.
+2. **Xcode.** Open `apps/mobile/ios/Runner.xcworkspace`, select the Runner target, Signing and Capabilities. **Sign in with Apple** should be listed. The repository already has `ios/Runner/Runner.entitlements` with `com.apple.developer.applesignin` and the project's `CODE_SIGN_ENTITLEMENTS` pointing at it (written by hand, not by Xcode); if the capability is missing, add it with the + button, and check that Xcode did not create a second entitlements file. If another feature has added keys such as `aps-environment` to the same file, keep them all. Build to a real device or simulator signed in to an Apple ID.
+3. **Firebase console.** Authentication, Sign-in method, Add new provider, **Apple**, enable. For iOS and macOS only, nothing else is needed.
+4. **Web (and Android, if ever wanted).** In Apple Developer create a **Services ID** (for example `app.hiyall.hiyall.web`), enable Sign in with Apple for it, and configure the domain `<project>.firebaseapp.com` and the return URL `https://<project>.firebaseapp.com/__/auth/handler` that the Firebase Apple provider panel shows. Create a **Key** with Sign in with Apple enabled, tied to the App ID, and download the `.p8` once. In the Firebase Apple provider enter the Services ID, your Apple Team ID, the Key ID and the contents of the private key. Never commit the key. Add the production web domain to Firebase authorized domains, then build the web app with `--dart-define=APPLE_SIGN_IN_WEB=true`.
+5. **Private email relay.** If you will ever email members, register your sending domain and address in Apple Developer, Certificates, Identifiers and Profiles, More, Configure Sign in with Apple for Email Communication, or relayed addresses will bounce.
+6. **App Store review.** Mention Sign in with Apple in the review notes and have an Apple sign-in test path ready.
+
+### Account deletion and token revocation (owner note)
+
+Apple requires an app that creates accounts to let people delete them inside the app, and for accounts made with Sign in with Apple the app must also **revoke the Apple tokens** when the account is deleted (App Store guideline 5.1.1(v)). Deleting the Firebase user does not do that. Revoking needs Apple's REST call `POST https://appleid.apple.com/auth/revoke` with the app's client ID (the bundle ID for native sign-ins, the Services ID for web), a client secret signed with the `.p8` key (a JWT with `iss` the Team ID, `sub` the client ID, `aud` `https://appleid.apple.com`), and the user's Apple refresh token (or access token). Either call it from your own server, or use the Firebase Authentication SDK's Apple token revocation (the Flutter `firebase_auth` package has a `revokeTokenWithAuthorizationCode` method for this; check the current documentation), which needs the Apple authorisation code from a fresh Apple sign-in and the key configured in the Firebase Apple provider. Either way the app must reauthenticate with Apple at deletion time to obtain the code, because the code is short-lived and is not kept. This has not been built: whoever implements account deletion must add the exchange at sign-in or reauthentication, store the refresh token privately, and call revoke during deletion, and until then Apple review may reject the app.

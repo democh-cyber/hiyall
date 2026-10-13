@@ -3,7 +3,6 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/api.dart';
 import '../../core/auth/auth_gateway.dart';
@@ -11,6 +10,7 @@ import '../../core/auth/firebase_config.dart';
 import '../../core/state.dart';
 import '../../core/theme.dart';
 import '../../shared/widgets.dart';
+import '../legal_screens.dart';
 
 /// True when this build can sign someone in with email or a social provider.
 /// (Debug-only development accounts are separate and always labelled.)
@@ -245,22 +245,38 @@ String? validateEmail(String? value) {
   return null;
 }
 
-/// "or" divider followed by the two social providers.
+/// "or" divider followed by the social providers.
 class SocialSignIn extends StatelessWidget {
   final bool enabled;
   final VoidCallback onGoogle, onFacebook;
 
+  /// Sign in with Apple. The button shows only when this is set and [showApple]
+  /// allows it, so a screen that does not offer Apple simply leaves it null.
+  final VoidCallback? onApple;
+
   /// Facebook is hidden unless the build turns it on (see [AuthProviders]).
   final bool showFacebook;
+
+  /// Defaults to the platform rules in [AuthProviders.appleAvailable]; tests
+  /// inject a value.
+  final bool? showApple;
   const SocialSignIn({
     super.key,
     required this.enabled,
     required this.onGoogle,
     required this.onFacebook,
+    this.onApple,
     this.showFacebook = AuthProviders.facebook,
+    this.showApple,
   });
   @override
-  Widget build(BuildContext context) => Column(
+  Widget build(BuildContext context) {
+    final apple =
+        onApple != null && (showApple ?? AuthProviders.appleAvailable());
+    return _build(context, apple);
+  }
+
+  Widget _build(BuildContext context, bool apple) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       const SizedBox(height: 22),
@@ -280,6 +296,10 @@ class SocialSignIn extends StatelessWidget {
         ],
       ),
       const SizedBox(height: 22),
+      if (apple) ...[
+        AppleButton(enabled: enabled, onPressed: onApple!),
+        const SizedBox(height: 12),
+      ],
       OutlinedButton.icon(
         key: const Key('google-button'),
         onPressed: enabled ? onGoogle : null,
@@ -297,6 +317,36 @@ class SocialSignIn extends StatelessWidget {
       ],
     ],
   );
+}
+
+/// "Continue with Apple" in Apple's own button style: black with white type, and
+/// the reverse in the dark theme, so it stays AA on either background.
+class AppleButton extends StatelessWidget {
+  final bool enabled;
+  final VoidCallback onPressed;
+  const AppleButton({
+    super.key,
+    required this.enabled,
+    required this.onPressed,
+  });
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final background = dark ? Colors.white : Colors.black;
+    final foreground = dark ? Colors.black : Colors.white;
+    return FilledButton.icon(
+      key: const Key('apple-button'),
+      onPressed: enabled ? onPressed : null,
+      style: FilledButton.styleFrom(
+        backgroundColor: background,
+        foregroundColor: foreground,
+        disabledBackgroundColor: background.withValues(alpha: .4),
+        disabledForegroundColor: foreground.withValues(alpha: .8),
+      ),
+      icon: const Icon(Icons.apple, size: 24),
+      label: const Text('Continue with Apple'),
+    );
+  }
 }
 
 /// The four-colour Google "G".
@@ -378,40 +428,10 @@ mixin AuthActions<T extends ConsumerStatefulWidget> on ConsumerState<T> {
   }
 }
 
-/// A line of body text with the Terms and Privacy Policy named, and linked when
-/// this build knows where they live.
+/// Who the app is for, with the Terms, Privacy Policy, Community Guidelines and
+/// Children and Teens pages one tap away (they open inside the app).
 class LegalLine extends StatelessWidget {
   const LegalLine({super.key});
   @override
-  Widget build(BuildContext context) {
-    final style = TextStyle(
-      fontSize: 12.5,
-      height: 1.6,
-      color: Theme.of(context).colorScheme.onSurfaceVariant,
-    );
-    Widget link(String label, String url) => url.isEmpty
-        ? Text(label, style: style.copyWith(fontWeight: FontWeight.w700))
-        : InkWell(
-            onTap: () =>
-                launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication),
-            child: Text(
-              label,
-              style: style.copyWith(
-                fontWeight: FontWeight.w700,
-                decoration: TextDecoration.underline,
-              ),
-            ),
-          );
-    return Wrap(
-      alignment: WrapAlignment.center,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        Text('Hiyall is for people 13 and over. See our ', style: style),
-        link('Terms', LegalLinks.terms),
-        Text(' and ', style: style),
-        link('Privacy Policy', LegalLinks.privacy),
-        Text('.', style: style),
-      ],
-    );
-  }
+  Widget build(BuildContext context) => const LegalFooter();
 }

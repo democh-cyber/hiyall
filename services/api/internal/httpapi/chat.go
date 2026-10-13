@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/push"
 	"hiyall/services/api/internal/store"
 )
 
@@ -196,6 +197,23 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 			}
 		}
 		respond(map[string]bool{"registered": token != ""}, a.Store.SetPushToken(ctx, p.UserID, parts[2], provider, token))
+	// Push choices: GET /v1/me/notifications, PATCH {chat?, social?}. Enforced when the server decides to push.
+	case n == 3 && parts[1] == "me" && parts[2] == "notifications" && method == "GET":
+		respond(a.Store.NotificationPrefs(ctx, p.UserID))
+	case n == 3 && parts[1] == "me" && parts[2] == "notifications" && method == "PATCH":
+		raw, ok := body()
+		if !ok {
+			return true
+		}
+		chat, social, err := domain.ParseNotificationPrefs(raw)
+		if err != nil {
+			a.error(w, r, err)
+			return true
+		}
+		if limited(a.graph) {
+			return true
+		}
+		respond(a.Store.SetNotificationPrefs(ctx, p.UserID, chat, social))
 	case n == 3 && parts[1] == "conversations" && isID(parts[2]) && method == "GET":
 		respond(a.Store.ConversationFor(ctx, p.UserID, parts[2], a.signer(ctx), a.presence))
 	case n == 4 && parts[1] == "conversations" && isID(parts[2]) && parts[3] == "messages" && method == "POST":
@@ -218,8 +236,9 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		}
 		// The sender's other devices also hold envelopes, so both users are signalled.
 		a.signal(ctx, "inbox", map[string]string{"conversationId": parts[2]}, peer, p.UserID)
+		// quiet is the cheap early answer; the dispatcher re-checks mutes, blocks, bands and the member's choices.
 		if !quiet {
-			a.wake("message", peer)
+			a.wake(push.Notice{Kind: "chat", Actor: p.UserID, Recipient: peer, Conversation: parts[2]})
 		}
 		a.ok(w, r, map[string]any{"messageId": m.MessageID, "createdAt": created})
 	default:

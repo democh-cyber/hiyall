@@ -8,6 +8,9 @@ import '../core/state.dart';
 import '../core/theme.dart';
 import '../shared/person_avatar.dart';
 import '../shared/widgets.dart';
+import 'account_data.dart' show AccountDataSettingsGroup;
+import 'legal_screens.dart' show LegalSettingsGroup;
+import 'notification_settings.dart' show NotificationSettingsGroup;
 import 'safety.dart';
 
 /// "Just now", "5 min ago", "3 h ago", "2 days ago", then a date.
@@ -283,6 +286,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             ),
           ]),
+          const NotificationSettingsGroup(),
+          const AccountDataSettingsGroup(),
+          const LegalSettingsGroup(),
           const SizedBox(height: 24),
           OutlinedButton.icon(
             key: const Key('sign-out'),

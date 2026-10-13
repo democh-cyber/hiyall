@@ -16,13 +16,18 @@ import (
 	"hiyall/services/api/internal/domain"
 	"hiyall/services/api/internal/httpapi"
 	"hiyall/services/api/internal/identity"
+	"hiyall/services/api/internal/maintenance"
 	"hiyall/services/api/internal/media"
 	"hiyall/services/api/internal/push"
+	"hiyall/services/api/internal/ratelimit"
 	"hiyall/services/api/internal/realtime"
 	"hiyall/services/api/internal/store"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheck(os.Args[2:], os.Stderr))
+	}
 	if err := run(); err != nil {
 		slog.Error("startup failed", "reason", err.Error())
 		os.Exit(1)
@@ -62,17 +67,32 @@ func run() error {
 	background, stopBackground := context.WithCancel(context.Background())
 	defer stopBackground()
 	api := httpapi.New(db, verify, cfg.DevAuth, cfg.Origin)
+	api.Migrations = expectedMigrations(cfg)
+	if cfg.RateLimitBackend == "postgres" {
+		// Per-account limits are shared by every node through the rate_limits table (migration 0030).
+		api.UseSharedRateLimits(db.Pool)
+	}
 	// Per node: 10 sockets per account, 100k in total before clients fall back to polling.
 	api.RT = realtime.NewHub(&realtime.PGBus{Pool: db.Pool, Config: db.Pool.Config().ConnConfig}, 10, 100_000)
 	go api.RT.Run(background, backoff)
-	api.Push = push.NewDispatcher(push.LogSender{}, func(ctx context.Context, users []string) ([]push.Target, error) {
-		rows, err := db.PushTargets(ctx, users)
-		targets := make([]push.Target, len(rows))
-		for i, t := range rows {
-			targets[i] = push.Target(t)
-		}
-		return targets, err
-	}, api.RT.Connected, 4096)
+	api.Push = push.NewDispatcher(push.Config{
+		Sender: pushSender(cfg), Online: api.RT.Connected, Queue: 4096,
+		Targets: func(ctx context.Context, users []string) ([]push.Target, error) {
+			rows, err := db.PushTargets(ctx, users)
+			targets := make([]push.Target, len(rows))
+			for i, t := range rows {
+				targets[i] = push.Target(t)
+			}
+			return targets, err
+		},
+		Check: func(ctx context.Context, n push.Notice, category string) (push.Eligibility, error) {
+			ok, name, err := db.PushAudience(ctx, n.Recipient, n.Actor, n.Conversation, category)
+			return push.Eligibility{OK: ok, ActorName: name}, err
+		},
+		Forget: func(ctx context.Context, t push.Target) error {
+			return db.ClearPushToken(ctx, t.DeviceID, t.Provider, t.Token)
+		},
+	})
 	api.Push.Run(background, 4)
 	if cfg.MediaEndpoint != "" {
 		objects, err := media.NewS3(ctx, media.S3Config{Endpoint: cfg.MediaEndpoint, AccessKey: cfg.MediaAccessKey, SecretKey: cfg.MediaSecretKey, Bucket: cfg.MediaBucket, Region: cfg.MediaRegion, Secure: cfg.MediaSecure})
@@ -93,7 +113,35 @@ func run() error {
 	} else {
 		slog.Warn("chat media storage not configured; sending photos in chats is off (CHAT_MEDIA_UNAVAILABLE)")
 	}
-	go maintain(background, db, api.Media, api.ChatMedia)
+	// The last step of an account purge removes the Firebase user; without a service account it only logs.
+	var identities store.IdentityDeleter = identity.LogDeleter{}
+	if cfg.FirebaseServiceAccountFile != "" {
+		deleter, err := identity.NewFirebaseDeleter(cfg.FirebaseProjectID, cfg.FirebaseServiceAccountFile)
+		if err != nil {
+			return err
+		}
+		identities = deleter
+	}
+	// Shutdown order: stop serving, then stop maintenance and wait (briefly) for it to give up the
+	// leader lock, then close the pool.
+	maintenanceDone := make(chan struct{})
+	go func() {
+		defer close(maintenanceDone)
+		maintain(background, db, api.Media, api.ChatMedia, identities)
+	}()
+	defer func() {
+		stopBackground()
+		select {
+		case <-maintenanceDone:
+		case <-time.After(5 * time.Second):
+		}
+	}()
+	stopMetrics := startMetrics(cfg)
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		stopMetrics(ctx)
+	}()
 	srv := &http.Server{Addr: cfg.Listen, Handler: api.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32768}
 	srv.RegisterOnShutdown(api.RT.CloseAll)
 	shutdown, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -116,6 +164,26 @@ func run() error {
 	}
 }
 
+// pushSender is FCM when FCM_SERVICE_ACCOUNT_FILE is set, otherwise the logging stand-in, so
+// development and tests need no credentials. A broken file stops nothing: pushes fall back to
+// logging and the reason is logged (never the key).
+func pushSender(cfg config.Config) push.Sender {
+	if cfg.FCMServiceAccountFile == "" {
+		slog.Warn("push notifications not configured; pushes are only logged (FCM_SERVICE_ACCOUNT_FILE)")
+		return push.LogSender{}
+	}
+	account, err := push.LoadServiceAccount(cfg.FCMServiceAccountFile)
+	if err == nil {
+		var sender *push.FCM
+		if sender, err = push.NewFCM(cfg.FCMProjectID, account); err == nil {
+			slog.Info("push notifications: FCM", "project", sender.ProjectID)
+			return sender
+		}
+	}
+	slog.Error("push notifications disabled; pushes are only logged", "reason", err.Error())
+	return push.LogSender{}
+}
+
 // backoff waits 1s, 2s, 4s … up to 30s, with jitter, between bus reconnects.
 func backoff(attempt int) time.Duration {
 	delay := min(time.Second<<min(attempt, 5), 30*time.Second)
@@ -130,9 +198,7 @@ func backoff(attempt int) time.Duration {
 // (they stop counting as shared after 24 hours). Encrypted chat attachments are removed from the chat
 // bucket 30 days after their message (an hour when never sent), and when deleted or their chat was blocked;
 // blobs held as report evidence are kept.
-func maintain(ctx context.Context, db *store.Store, objects, chatObjects media.Store) {
-	tick := time.NewTicker(time.Hour)
-	defer tick.Stop()
+func maintain(ctx context.Context, db *store.Store, objects, chatObjects media.Store, identities store.IdentityDeleter) {
 	jobs := []struct {
 		name string
 		run  func() (int64, error)
@@ -159,26 +225,17 @@ func maintain(ctx context.Context, db *store.Store, objects, chatObjects media.S
 			return db.PurgeChatBlobs(ctx, chatObjects, 5000)
 		}},
 		{"chat blob tombstone purge", func() (int64, error) { return db.PurgeChatBlobTombstones(ctx, 5000) }},
+		// Accounts past their 30 day grace period (docs/api/22-account-deletion-and-export.md). After the
+		// cleanups above, so a purge that marked files deleted last time finds them removed this time.
+		{"account purge", func() (int64, error) { return db.PurgeDeletedAccounts(ctx, identities, 50) }},
+		{"deleted identity purge", func() (int64, error) { return db.PurgeDeletedIdentities(ctx, 24*time.Hour, 5000) }},
+		{"rate limit purge", func() (int64, error) { return ratelimit.Purge(ctx, db.Pool, 5000) }},
 	}
-	for {
-		for _, job := range jobs {
-			for {
-				n, err := job.run()
-				if err != nil {
-					if ctx.Err() == nil {
-						slog.Warn(job.name+" failed", "reason", err.Error())
-					}
-					break
-				}
-				if n < 5000 {
-					break
-				}
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-		}
+	// Every instance runs this loop but only the one holding the advisory lock runs the jobs; the
+	// lock is given up on shutdown so another instance takes over at its next tick.
+	list := make([]maintenance.Job, len(jobs))
+	for i, j := range jobs {
+		list[i] = maintenance.Job{Name: j.name, Run: j.run}
 	}
+	maintenance.Run(ctx, db.NewLeader(store.MaintenanceLockKey), list, time.Hour, 5000)
 }

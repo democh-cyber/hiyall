@@ -236,7 +236,6 @@ func (a *API) pulseRoute(w http.ResponseWriter, r *http.Request, p store.Princip
 		}
 		if author != p.UserID {
 			a.signal(ctx, "activity", nil, author)
-			a.wakeFrom(ctx, "activity", p.UserID, author)
 		}
 		a.ok(w, r, map[string]string{"reaction": in.Reaction})
 	case n == 4 && parts[1] == "posts" && isID(parts[2]) && parts[3] == "reaction" && method == "DELETE":
@@ -267,7 +266,6 @@ func (a *API) pulseRoute(w http.ResponseWriter, r *http.Request, p store.Princip
 		}
 		if author != p.UserID && !hidden {
 			a.signal(ctx, "activity", nil, author)
-			a.wakeFrom(ctx, "activity", p.UserID, author)
 		}
 		created(comment, nil)
 	case n == 3 && parts[1] == "comments" && isID(parts[2]) && method == "DELETE":

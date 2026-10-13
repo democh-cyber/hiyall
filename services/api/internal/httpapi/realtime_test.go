@@ -115,10 +115,10 @@ type recordingSender struct {
 	sent []string
 }
 
-func (r *recordingSender) Send(_ context.Context, t push.Target, kind string) error {
+func (r *recordingSender) Send(_ context.Context, t push.Target, m push.Message) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.sent = append(r.sent, t.UserID+":"+kind)
+	r.sent = append(r.sent, t.UserID+":"+m.Kind)
 	return nil
 }
 
@@ -134,14 +134,22 @@ func withRealtime(t *testing.T, h *socialHarness) (*httptest.Server, *recordingS
 	h.api.RT = realtime.NewHub(realtime.NewLocalBus(), 2, 100)
 	go h.api.RT.Run(ctx, func(int) time.Duration { return 10 * time.Millisecond })
 	sender := &recordingSender{}
-	h.api.Push = push.NewDispatcher(sender, func(ctx context.Context, users []string) ([]push.Target, error) {
-		rows, err := h.api.Store.PushTargets(ctx, users)
-		out := make([]push.Target, len(rows))
-		for i, r := range rows {
-			out[i] = push.Target(r)
-		}
-		return out, err
-	}, h.api.RT.Connected, 16)
+	h.api.Push = push.NewDispatcher(push.Config{Sender: sender, Online: h.api.RT.Connected, Queue: 16,
+		Targets: func(ctx context.Context, users []string) ([]push.Target, error) {
+			rows, err := h.api.Store.PushTargets(ctx, users)
+			out := make([]push.Target, len(rows))
+			for i, r := range rows {
+				out[i] = push.Target(r)
+			}
+			return out, err
+		},
+		Check: func(ctx context.Context, n push.Notice, category string) (push.Eligibility, error) {
+			ok, name, err := h.api.Store.PushAudience(ctx, n.Recipient, n.Actor, n.Conversation, category)
+			return push.Eligibility{OK: ok, ActorName: name}, err
+		},
+		Forget: func(ctx context.Context, t push.Target) error {
+			return h.api.Store.ClearPushToken(ctx, t.DeviceID, t.Provider, t.Token)
+		}})
 	h.api.Push.Run(ctx, 1)
 	server := httptest.NewServer(h.api.Handler())
 	t.Cleanup(server.Close)
@@ -177,7 +185,7 @@ func TestRealtimeSignalsMessagesReadsTypingAndActivity(t *testing.T) {
 	// Bob is offline: a friend request reaches him by push, with no content.
 	h.ok(alice, "POST", "/v1/users/"+bob+"/friend-requests")
 	eventually(t, func() bool { return len(sender.list()) == 1 })
-	if got := sender.list(); got[0] != bob+":activity" {
+	if got := sender.list(); got[0] != bob+":friend_request" {
 		t.Fatalf("push %v", got)
 	}
 
@@ -275,7 +283,7 @@ func TestRealtimeSignalsMessagesReadsTypingAndActivity(t *testing.T) {
 	eventually(t, func() bool { return !h.api.RT.Connected(bob) })
 	h.expect(h.send(alice, "POST", path+"/messages", message(phone, bobPhone)), 200, "")
 	eventually(t, func() bool { return len(sender.list()) == 2 })
-	if got := sender.list(); got[1] != bob+":message" {
+	if got := sender.list(); got[1] != bob+":chat" {
 		t.Fatalf("push %v", got)
 	}
 	// Revoking the device removes its token.

@@ -43,9 +43,11 @@ Self-targets are 422, and unknown or inactive accounts are 404, and so is muting
 
 `GET /v1/me/reports` lists the caller's own reports with `status` (`open`, `actioned`, `dismissed`). The reported person cannot see that a report exists.
 
-## Operator tool
+## Operator tools
 
-Until the separate admin console exists, trust and safety use `go run ./cmd/moderate` with `DATABASE_URL`:
+Moderation is done in the **admin console** (`services/api/cmd/admin`, UI in `apps/admin`): a separate process and audience with its own staff accounts (password plus mandatory authenticator code), roles (`viewer`, `moderator`, `admin`), a mandatory written reason on every action and an append-only audit log of every case read and action. Reports involving a member under 18 are flagged and sorted first. It is not part of the public API or OpenAPI. Design, threat model, endpoints, what staff can and cannot see, deployment and incident steps: [Admin console](../security/15-admin-console.md). Start it for development with `scripts/dev-admin.sh`.
+
+The command line `go run ./cmd/moderate` (with `DATABASE_URL`) stays as the break-glass path with direct database access. It calls the same store methods as the console (`ResolveReport`, `RestoreUser`), so a report resolves identically from either:
 
 ```
 moderate queue [-limit 20]
@@ -55,4 +57,4 @@ moderate restore -user ID -operator NAME [-note TEXT]
 
 - The queue lists high severity first, then oldest, with the subject's earlier report count and any shared evidence. Held encrypted images are listed as blob id, role, size and SHA-256 only: the tool never fetches or decrypts them.
 - `suspend` sets the account to `suspended` and revokes every session in one transaction. Authentication already requires `active`, so the account is cut off immediately. The same transaction notifies the realtime channel, so every API node closes the account's live sockets (see [sessions](15-sessions-and-settings.md#realtime-connections-end-with-their-session)).
-- Every resolution and restore is written to `moderation_actions` as the audit trail.
+- Every resolution and restore is written to `moderation_actions` (actor, report, action, note). The console additionally writes `operator_audit`; the command line does not require a reason, the console always does. A report that is already resolved answers `REPORT_CLOSED` (409).

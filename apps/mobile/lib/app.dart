@@ -4,13 +4,18 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:go_router/go_router.dart';
 
 import 'core/theme.dart';
+import 'core/account_state.dart';
 import 'core/activity_state.dart';
 import 'core/home_prefs.dart';
+import 'core/legal_documents.dart';
 import 'core/location_sync.dart';
 import 'core/state.dart';
 import 'features/chat.dart';
 import 'features/home.dart';
+import 'features/legal_screens.dart';
 import 'features/live_sync.dart';
+import 'features/account_data.dart'
+    show DeletionScheduledScreen, PendingDeletionScreen;
 import 'features/auth/auth_screens.dart';
 import 'features/auth/onboarding_screen.dart';
 import 'features/screens.dart';
@@ -26,16 +31,28 @@ import 'shared/widgets.dart';
 import 'shared/navigation_dock.dart';
 
 /// Pages a signed-out visitor may open.
-const _openRoutes = {'/welcome', '/login', '/signup', '/forgot-password'};
+const _openRoutes = {
+  '/welcome',
+  '/login',
+  '/signup',
+  '/forgot-password',
+  '/account-deleted',
+};
 
 /// Where each sign-in state belongs. Re-evaluated whenever the session, or an
 /// account waiting on email verification, changes.
 String? authRedirect(Ref ref, String location) {
+  // Legal pages are readable in every state, including signed out and mid-sign-up.
+  if (LegalDoc.forPath(location) != null) return null;
   final session = ref.read(sessionProvider);
   final controller = ref.read(sessionProvider.notifier);
   if (controller.booting) return location == '/splash' ? null : '/splash';
   final active = session.asData?.value;
   if (active == null) {
+    // Signed in, but the account is scheduled for deletion: only the screen that can keep it.
+    if (ref.read(pendingAccountProvider) != null) {
+      return location == '/account-deletion' ? null : '/account-deletion';
+    }
     if (ref.read(awaitingVerificationProvider) != null) {
       return location == '/verify-email' ? null : '/verify-email';
     }
@@ -49,7 +66,12 @@ String? authRedirect(Ref ref, String location) {
     return location == '/onboarding' ? null : '/onboarding';
   }
   if (_openRoutes.contains(location) ||
-      const {'/onboarding', '/verify-email', '/splash'}.contains(location)) {
+      const {
+        '/onboarding',
+        '/verify-email',
+        '/splash',
+        '/account-deletion',
+      }.contains(location)) {
     return '/home';
   }
   return null;
@@ -59,6 +81,7 @@ final routerProvider = Provider<GoRouter>((ref) {
   final refresh = ValueNotifier<int>(0);
   ref.listen(sessionProvider, (_, _) => refresh.value++);
   ref.listen(awaitingVerificationProvider, (_, _) => refresh.value++);
+  ref.listen(pendingAccountProvider, (_, _) => refresh.value++);
   final router = GoRouter(
     initialLocation: '/home',
     refreshListenable: refresh,
@@ -80,6 +103,19 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/forgot-password',
         builder: (context, state) => const ForgotPasswordScreen(),
+      ),
+      for (final doc in LegalDoc.values)
+        GoRoute(
+          path: doc.path,
+          builder: (context, state) => LegalScreen(doc: doc),
+        ),
+      GoRoute(
+        path: '/account-deleted',
+        builder: (context, state) => const DeletionScheduledScreen(),
+      ),
+      GoRoute(
+        path: '/account-deletion',
+        builder: (context, state) => const PendingDeletionScreen(),
       ),
       GoRoute(
         path: '/verify-email',

@@ -89,13 +89,26 @@ abstract final class FirebaseConfig {
 /// Sign-in methods offered on the screens. Facebook is built but switched off
 /// until a Meta app is connected; build with `--dart-define=ENABLE_FACEBOOK_LOGIN=true`
 /// to show it.
+///
+/// Sign in with Apple is always offered on iOS and macOS (App Store guideline 4.8).
+/// On the web it needs an Apple Services ID configured in Firebase, so it only
+/// shows when the build says so with `--dart-define=APPLE_SIGN_IN_WEB=true`.
+/// It is never offered on Android, where Firebase would also need a Services ID.
 abstract final class AuthProviders {
   static const facebook = bool.fromEnvironment('ENABLE_FACEBOOK_LOGIN');
-}
+  static const appleWeb = bool.fromEnvironment('APPLE_SIGN_IN_WEB');
 
-/// Legal pages, supplied per build. Without them the sign-up screens still
-/// name the documents but cannot link to them.
-abstract final class LegalLinks {
-  static const terms = String.fromEnvironment('TERMS_URL');
-  static const privacy = String.fromEnvironment('PRIVACY_URL');
+  /// Whether the Apple button is shown. The arguments exist so tests can inject a
+  /// platform; the screens call it with none and get the running platform.
+  static bool appleAvailable({
+    bool? web,
+    TargetPlatform? platform,
+    bool? webEnabled,
+  }) {
+    if (web ?? kIsWeb) return webEnabled ?? appleWeb;
+    return switch (platform ?? defaultTargetPlatform) {
+      TargetPlatform.iOS || TargetPlatform.macOS => true,
+      _ => false,
+    };
+  }
 }

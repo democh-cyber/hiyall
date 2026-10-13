@@ -8,6 +8,9 @@
   "scripts": {
     "contracts:build": "python3 scripts/build_foundation_contract.py && openapi-typescript docs/api/openapi-foundation.json -o packages/api-contracts/foundation.d.ts",
     "contracts:lint": "redocly lint docs/api/openapi-foundation.json",
+    "admin:install": "npm --prefix apps/admin ci",
+    "admin:build": "npm --prefix apps/admin run build",
+    "admin:test": "npm --prefix apps/admin test",
     "check": "bash scripts/check.sh"
   },
   "license": "UNLICENSED",

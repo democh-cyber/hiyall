@@ -50,6 +50,8 @@ class FirebaseAuthGateway implements AuthGateway {
         ? AuthMethod.google
         : ids.contains('facebook.com')
         ? AuthMethod.facebook
+        : ids.contains('apple.com')
+        ? AuthMethod.apple
         : ids.contains('password')
         ? AuthMethod.password
         : AuthMethod.other;
@@ -134,6 +136,15 @@ class FirebaseAuthGateway implements AuthGateway {
   @override
   Future<AuthUser> signInWithFacebook() =>
       _run(() => _social(fb.FacebookAuthProvider()..addScope('email')));
+
+  @override
+  Future<AuthUser> signInWithApple() => _run(
+    () => _social(
+      fb.AppleAuthProvider()
+        ..addScope('email')
+        ..addScope('name'),
+    ),
+  );
 
   @override
   Future<void> sendEmailVerification() async {
@@ -250,6 +261,7 @@ class FirebaseAuthGateway implements AuthGateway {
     'popup-closed-by-user' ||
     'cancelled-popup-request' ||
     'web-context-canceled' ||
+    'web-context-cancelled' ||
     'canceled' ||
     'user-cancelled' => const AuthFailure(
       '',

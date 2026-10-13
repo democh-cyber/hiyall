@@ -904,7 +904,7 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Attach a push token to your device (a token moved from another device is detached from it); pushes carry no content */
+        /** Attach a push token to your device (a token moved from another device is detached from it). Use provider fcm on Android and iOS (the APNs key lives in the Firebase console); apns is accepted but nothing is delivered through it. Pushes carry no message content: title Hiyall, body New message, data {kind, conversationId} */
         put: operations["putPushRegistered_v1_devices_deviceId_push"];
         post?: never;
         /** Remove your device's push token */
@@ -912,6 +912,24 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/v1/me/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Your push notification choices; both are on until you change them */
+        get: operations["getNotificationPrefs_v1_me_notifications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Change one or both push choices (a key left out keeps its value; at least one is required). Enforced on the server when it decides to push; muting a chat or a person applies on top */
+        patch: operations["patchNotificationPrefs_v1_me_notifications"];
         trace?: never;
     };
     "/v1/users/{userId}/mute": {
@@ -1583,6 +1601,42 @@ export interface paths {
         post?: never;
         /** Author or moderator removes a discussion entry */
         delete: operations["deleteSpaceEntryDeleted_v1_spaces_spaceId_entries_entryId"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/deletion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Whether deletion is scheduled and until when. The only route besides cancel and sign-out that a member in the grace period can reach; allowed before onboarding */
+        get: operations["getDeletionState_v1_me_deletion"];
+        put?: never;
+        /** Schedule deletion of your account in 30 days. Needs a sign-in from the last 5 minutes (Firebase auth_time) and your username as confirmation. At once: the account leaves Discover, Nearby, search, lists, Pulse and everyone's counts; every session is revoked and live sockets are closed; push tokens are cleared. Idempotent while pending. Allowed before onboarding */
+        post: operations["postDeletionState_v1_me_deletion"];
+        /** Cancel a scheduled deletion during the grace period (sign in again first: sessions were revoked). The account is exactly as it was, with its content */
+        delete: operations["deleteDeletionState_v1_me_deletion"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download your data as one JSON file (Content-Disposition: attachment), streamed from a single snapshot. Not wrapped in the usual success envelope. One export per account per 24 hours, enforced by the server; a failed export does not use the slot. The date of birth is never included (the age band is), nor coordinates, tokens or report evidence */
+        get: operations["getExportDocument_v1_me_export"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2732,6 +2786,22 @@ export interface components {
             data: components["schemas"]["PushRegistered"];
             meta: components["schemas"]["Meta"];
         };
+        NotificationPrefs: {
+            /** @description New messages. Default true. */
+            chat: boolean;
+            /** @description Friend requests, new followers, follow requests and their acceptance, space invitations. Default true. */
+            social: boolean;
+        };
+        NotificationPrefsPatch: {
+            chat?: boolean;
+            social?: boolean;
+        };
+        NotificationPrefsResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["NotificationPrefs"];
+            meta: components["schemas"]["Meta"];
+        };
         MuteRequest: {
             /**
              * Format: date-time
@@ -3349,6 +3419,33 @@ export interface components {
             success: true;
             data: components["schemas"]["SpaceEntryDeleted"];
             meta: components["schemas"]["Meta"];
+        };
+        DeletionRequest: {
+            /** @description The member's own username, typed to confirm; compared without case and without a leading @. */
+            confirmUsername: string;
+        };
+        DeletionState: {
+            /** @description True while the account is scheduled for deletion. */
+            pending: boolean;
+            /** Format: date-time */
+            scheduledAt: string | null;
+            /**
+             * Format: date-time
+             * @description End of the 30 day grace period; the account is purged on the first hourly run after it.
+             */
+            dueAt: string | null;
+            /** @description True while pending and before dueAt. */
+            canCancel: boolean;
+        };
+        DeletionStateResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["DeletionState"];
+            meta: components["schemas"]["Meta"];
+        };
+        /** @description The member's data: exportVersion, generatedAt, note, account, settings, interests, posts, comments, reactions, saves, stories, connections {following, followers, friends}, blocks, mutes, restrictions, sessions, devices, notifications, visits {made, ownProfileVisitors}, location {sharing, updatedAt}, spaces {memberships, owned, entries}, reports (own words only), media (links valid 24 hours), chat (conversation ids, peers and counts; message content is end-to-end encrypted and not included), truncated (names of lists cut at 10,000 rows or 32 MiB), complete. */
+        ExportDocument: {
+            [key: string]: unknown;
         };
     };
     responses: never;
@@ -10355,6 +10452,230 @@ export interface operations {
             };
         };
     };
+    getNotificationPrefs_v1_me_notifications: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationPrefsResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    patchNotificationPrefs_v1_me_notifications: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotificationPrefsPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationPrefsResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     postMuteState_v1_users_userId_mute: {
         parameters: {
             query?: never;
@@ -16109,6 +16430,389 @@ export interface operations {
             };
             /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getDeletionState_v1_me_deletion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postDeletionState_v1_me_deletion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeletionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403 REAUTH_REQUIRED: the sign-in is older than 5 minutes (development authentication is exempt); sign in again and retry. ONBOARDING_REQUIRED does not apply. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422 VALIDATION: confirmUsername is missing, extra keys were sent, or it is not your username. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: the per-account graph limit; retry after the Retry-After header. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteDeletionState_v1_me_deletion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404 NOT_FOUND: no deletion is scheduled. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409 DELETION_WINDOW_CLOSED: the 30 days have passed; the purge may already be running. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getExportDocument_v1_me_export: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The document */
+            200: {
+                headers: {
+                    /** @description attachment; filename="hiyall-data-YYYY-MM-DD.json" */
+                    "Content-Disposition"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportDocument"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED (also for an account scheduled for deletion). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403 ONBOARDING_REQUIRED. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: already exported in the last 24 hours; Retry-After is the seconds until the next one. */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
