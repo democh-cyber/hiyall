@@ -22,7 +22,7 @@
   - Each one-time key signs `hiyall-otk-v1\n{user}\n{device}\n{keyId}\n{key}`.
   - The server and the clients both verify these signatures. The clients don't rely on the server's check.
 - **Device pinning:** device keys are pinned on first use. A known device id presenting different keys stops sending with `KEY_CHANGED`. A new device on a known account adds a notice in the conversation. Safety-number comparison isn't built yet.
-- **Message payload:** each payload is JSON `{v, kind, text, messageId, conversationId, senderId, sentAt}`. The receiver rejects it unless these fields match the relay metadata, so the server can't replay ciphertext into another conversation or as another sender.
+- **Message payload:** each payload is JSON `{v, kind, text, messageId, conversationId, senderId, sentAt}`. The receiver rejects it unless these fields match the relay metadata, so the server can't replay ciphertext into another conversation or as another sender. The kinds are `text`, `image` ([attachments](14-encrypted-chat-attachments.md)) and `reaction` (see [Reactions and replies](#reactions-and-replies)); a text or image payload may also carry a quote, `re`. A kind this app does not know, sent by a newer app, is ignored: no bubble, no notice, no error.
 - **Delivery:** each message carries one envelope per active device of the peer, plus the sender's other devices. The server rejects any other set with `DEVICES_CHANGED`, so devices can't be silently skipped or injected.
 - **Ordering:** ratchet and account state are saved before ciphertext leaves the device and before a delivery is acknowledged. All Olm calls are serialized. This follows vodozemac's guidance against message-key reuse.
 - **Server retention:** the server deletes ciphertext once a device acknowledges it. Blocking closes the conversation and deletes undelivered ciphertext in both directions. Revoking a device deletes its keys and pending ciphertext.
@@ -43,6 +43,7 @@
   - exact device sets, idempotent sends, message ids that can't be reused
   - per-device routing, inbox ownership, ciphertext deleted on ack
   - revocation, blocks, input validation, rate limits
+- **Reactions and replies:** Go (`internal/httpapi/chat_aux_test.go`, 11 tests and 6 subtests): reactions do not change unread, the sort key, `last_message_at` or the push, still pass the block, age-band, `messagesFrom` and exact-device-set gates, the 60-per-conversation boundary and `Retry-After`, the shared send limiter, the 2 KiB cap (and that ordinary messages keep their 16 KiB), field validation, idempotent and quiet replays, old clients without `aux`, evidence that ignores a reaction, and the contract generator naming the field. Dart: `test/chat_reactions_engine_test.dart` (36 tests, 10 of them over two real Olm devices and an in-memory relay: round trips, the `aux` hint on the wire for reactions only, replacement, removal, rollback, retry with one id, a reaction that overtakes its message, a reaction from your own other device, replies, quotes that do not nest) and `test/chat_reactions_ui_test.dart` (41 widget tests).
 - **Live:** `test/chat_live_test.dart` runs three real clients against the API: Anjali's phone and laptop, and Niko. It covers both directions, a 10-message burst, a restart from stored state, and pickles that don't expose keys. **Every request and response is captured, and none of the message text appears.**
 - **Android emulator:** Anjali on the real app and Niko on the command-line peer exchanged messages in both directions. A full `pg_dump` of the dev database has no message text, and every delivered envelope's ciphertext is deleted.
 
@@ -59,6 +60,54 @@
 - **Devices.** Profile → Chat devices lists the account's devices, with last activity shown only to the owner. Any device other than the current phone can be removed.
 - **Expiry.** An hourly sweep deletes delivered envelope rows after 7 days and undelivered ciphertext after 30 days, in batches of 5,000.
 
+## Reactions and replies
+
+Both live entirely inside the encrypted payload. The relay learns one new thing, a one-word hint on reactions (below), and never a target, an emoji or a quote. Engine: `core/chat/chat_engine.dart` (`parseIncoming`, `send(replyTo:)`, `react`), `chat_reactions.dart` (the allow-list, last-writer-wins state, the quote), `chat_history.dart` (storage and the waiting map). Server: `messages.aux` (migration `0032`), [API](../api/24-chat-reactions-and-replies.md).
+
+### Wire format
+
+A reaction (plaintext, before Olm). `to` is the reacted message's id, `op` is `add` or `remove` (a removal names the emoji being removed), `messageId` is this reaction's own id, which is also the relay's idempotency key:
+
+```json
+{"v":1,"kind":"reaction","text":"","to":"6d6d0000-0000-4000-8000-000000000002",
+ "emoji":"\u2764\uFE0F","op":"add","messageId":"…","conversationId":"…","senderId":"…",
+ "sentAt":"2026-10-13T10:00:00.000Z"}
+```
+
+A reply is an ordinary `text` or `image` payload with one more field. `snip` is the quoted message's own text (an image's caption, or empty) as one plain line, at most 120 code points; `k` is `text` or `image`; `by` is the quoted message's sender:
+
+```json
+{"v":1,"kind":"text","text":"see you there","messageId":"…","conversationId":"…","senderId":"…",
+ "sentAt":"…","re":{"id":"6d6d0000-0000-4000-8000-000000000002","by":"<user id>",
+ "snip":"8ish, cups are covered","k":"text"}}
+```
+
+The send request for a reaction adds `"aux":"reaction"` beside `messageId`, `senderDeviceId` and `envelopes`; no other message sets it.
+
+### Validation on receive
+
+- **Reaction:** the relay-metadata binding (`v`, `conversationId`, `senderId`, `messageId`, `text` is a string) is checked first and a mismatch is rejected like any other message. After that a reaction is **ignored, never rendered, never an error** unless `to` is a canonical lowercase UUID, `emoji` is exactly one of the six strings `❤️ 😂 👍 😮 😢 🔥` (byte for byte: `❤` without its variation selector, skin-toned or doubled emoji and everything else fail), `op` is `add` or `remove`, `sentAt` parses and is no more than ten minutes after the relay's own `createdAt` (so nobody can pin their own reaction in the future), and `messageId` is a UUID.
+- **Quote:** `re` is read only if `id` and `by` are canonical lowercase UUIDs, `by` is one of the two members (when this device has only seen its own other device so far and does not know the peer yet, only the shape is checked), `snip` is plain text of at most 120 code points with no control, line-break or bidirectional-override characters, and `k` is `text` or `image`. Otherwise **the quote is dropped silently and the message shows without it.** Extra keys are ignored. A quote on a reaction is not read.
+- **No nesting:** the sender's snippet is built from the quoted message's own text, never from its quote.
+- **The quote is attributed text, not proof.** The receiver cannot check it against the original, and a sender can put any words in what they send, attributed to anyone in the chat; that is all a sender can already do by writing a message. When the original is in this device's history the **local** author, text and kind are shown instead of what the sender wrote (`resolveReply`, applied when the message arrives and again when it is drawn, so an original that arrives later still wins).
+- **Unknown kinds and old apps.** A reaction is ignored by this app if it is invalid and by design never becomes an "unsupported" bubble. An older app that does not know the kind reads it as an empty text message (the payload keeps `text` as a string, as the binding requires): the relay's `aux` flag means it is not unread and not pushed, but such an app would draw an empty bubble. Nothing has shipped yet, so this is accepted.
+
+### Ordering and storage
+
+- **Last writer wins per sender per message**, by `(sentAt, then messageId)` of the reaction message. Each member's latest event is stored with the message, including a removal (a tombstone), so a late `add` cannot resurrect a removed reaction and two devices converge whatever order the envelopes arrive in. One reaction per member per message: a new `add` replaces the previous emoji, `remove` clears it. A reaction by the same account from another of its devices is applied the same way.
+- **Waiting for the target.** The history is per conversation, so a reaction can only apply to a message of its own conversation. If the target is not in local history yet (the peer's and your other device's envelopes can arrive in either order) the event waits in a small map keyed by target id (at most 200 targets per conversation, oldest arrival evicted first, each dropped seven days after it arrived) and is applied when the target arrives. The map is stored beside the history, so a restart keeps it.
+- **History JSON** gains two optional keys per message, `rx` (sender id to `{e, at, id}`) and `re` (the quote). History written before them loads unchanged; an entry this app did not write is skipped, not fatal. Reactions share the 500-message cap with their message.
+- **A reaction is not a message:** it adds no row, never counts as unread locally, never changes the chat list preview, and is not offered as report evidence (the history has no row for it, and the server drops one from an evidence list if it is sent).
+- **Sending.** `react` shows the reaction at once, sends it through the same `_deliver` as a message (one envelope per device, the relay's idempotency by message id, `DEVICES_CHANGED` retried once) with the `aux` hint, retries a transient failure twice with the same id (a retry cannot duplicate), and takes the reaction back and throws if it still fails. If a send fails after the relay stored it and every retry also fails, this device shows the old state while the peer sees the new one until the next reaction; there is no better answer without a confirmation round trip.
+
+### The `aux` hint: what the relay learns, and why that is acceptable
+
+The relay cannot read a message's kind, so it needs a hint to keep reactions out of unread counts, pushes and chat-list order. The hint is set by the sender, so it is a **metadata leak by design**: the relay (and anyone who can read its database or logs) can tell which messages are reactions, how many a pair exchanges and when. It cannot tell which message was reacted to, with what, or whether it was added or removed, and the envelope sizes of reactions and short texts overlap. Alternatives that avoid the leak (a reaction indistinguishable from a message) would make every reaction a push, an unread and a list reorder, which is worse for the people involved and for abuse (a reaction flood would be a notification flood).
+
+- **A sender who lies can only silence themselves for the peer.** `aux` on an ordinary message makes it not count as unread and not push; it still reaches the peer's devices and the peer reads it when they open the chat. It cannot reach anything beyond what a quiet message already could, so it is a harmless abuse. `aux` also never helps an attacker send more: see the server rules below.
+- **Server rules for `aux` messages** (`SendMessage`): every existing gate applies unchanged (blocks, age band, `messagesFrom`, exact device set, idempotency: a replay of a stored message id is answered from the stored row, quietly if it was a reaction). Then, only for `aux`: no unread increment for the peer, no `last_message_at` or member `sort_at` update (a reaction never reorders the list), the sender's read pointer is left alone, no push, but the realtime `inbox` signal is sent so the peer fetches it at once. Each envelope is at most 2048 bytes decoded (`413 TOO_LARGE`), and at most 60 reactions per sender per conversation per ten minutes (a token bucket in the shared `ratelimit` package, burst 60, one token back every ten seconds, `429 RATE_LIMITED` with `Retry-After`; with `RATE_LIMIT_BACKEND=postgres` it is shared by every node). A reaction also spends a token of the ordinary per-account send limiter, so it can never be a way round it. There is no per-day message quota; reactions are counted by the same limiter as messages. A reaction by the peer is not "the peer replied": it does not unlock photos or `messagesFrom` for the other side, and it is not counted when the app decides whether a conversation has ever held a message.
+- **Retention.** A reaction's envelopes expire exactly like a message's (delivered rows after 7 days, undelivered after 30, deleted on block or device revocation). The `messages` row keeps `aux = true`, so unread recounts, the "has the peer written" gates and report evidence can tell it from a conversation turn.
+
 ## Not done yet (before launch)
 
 - Independent review of this integration: key storage, device lists, envelope handling, gateway.
@@ -66,5 +115,5 @@
 - A Redis or NATS bus and a presence registry before running more than one cell.
 - Multi-device history sync for new devices.
 - Messages sent by a device that is revoked before the recipient fetches them can't be verified and show as undecryptable. Keeping revoked devices' public keys verifiable would fix this.
-- Attachments: the server side is built ([storage, quotas, retention and evidence hold](../api/21-chat-attachments.md), migration `0023`); the Rust crypto core, the app (payload, outbox, cache, bubble, viewer, report evidence) are written ([attachments](14-encrypted-chat-attachments.md)) but have not been run on a device or against real storage. Reactions, edits, message requests from non-allowed senders, and group chat (Megolm or MLS).
+- Attachments: the server side is built ([storage, quotas, retention and evidence hold](../api/21-chat-attachments.md), migration `0023`); the Rust crypto core, the app (payload, outbox, cache, bubble, viewer, report evidence) are written ([attachments](14-encrypted-chat-attachments.md)) but have not been run on a device or against real storage. Edits, unsend and deleting a message for the peer, message requests from non-allowed senders, and group chat (Megolm or MLS). Reactions and replies are built (see above) and tested against the real Olm core with an in-memory relay; they have not been run on a device.
 - iOS build and test (needs macOS). Proxy-certificate rejection tests and release artifact scans.

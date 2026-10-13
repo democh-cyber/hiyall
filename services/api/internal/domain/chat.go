@@ -144,12 +144,25 @@ type SendMessage struct {
 	// BlobIDs are the encrypted attachments this message claims: uploaded, unclaimed blobs of the
 	// sender in this conversation. The ids are not secret; the descriptor naming them is in the ciphertext.
 	BlobIDs []string `json:"blobIds,omitempty"`
+	// Aux is an optional hint the relay can read: "reaction" marks a message that is a small
+	// auxiliary event (today only an emoji reaction) rather than a conversation turn. The relay cannot
+	// see message kinds, so the sender says so. An auxiliary message is delivered like any other but
+	// never counts as unread, never pushes and never reorders the chat list (see Store.SendMessage). A
+	// sender who lies can only make their own message quieter for the peer. Empty means a normal message.
+	Aux string `json:"aux,omitempty"`
 }
+
+// AuxReaction is the only Aux value; MaxAuxCiphertext caps each envelope of an auxiliary message
+// (decoded bytes), far below the 16 KiB of a normal one: a reaction payload is a few hundred bytes.
+const (
+	AuxReaction      = "reaction"
+	MaxAuxCiphertext = 2048
+)
 
 func ParseSendMessage(body map[string]json.RawMessage) (SendMessage, error) {
 	var m SendMessage
 	for key := range body {
-		if !member(key, "messageId", "senderDeviceId", "envelopes", "blobIds") {
+		if !member(key, "messageId", "senderDeviceId", "envelopes", "blobIds", "aux") {
 			return m, invalid(key, "field is not accepted")
 		}
 	}
@@ -161,6 +174,12 @@ func ParseSendMessage(body map[string]json.RawMessage) (SendMessage, error) {
 	}
 	if !uuidPattern.MatchString(m.MessageID) || !uuidPattern.MatchString(m.SenderDeviceID) {
 		return m, invalid("messageId", "messageId and senderDeviceId must be lowercase UUIDs")
+	}
+	if m.Aux != "" && m.Aux != AuxReaction {
+		return m, invalid("aux", "aux must be \"reaction\" when present")
+	}
+	if m.Aux != "" && len(m.BlobIDs) > 0 {
+		return m, invalid("blobIds", "a reaction cannot carry attachments")
 	}
 	if len(m.BlobIDs) > 0 && !ValidBlobIDs(m.BlobIDs, MaxBlobsPerMessage) {
 		return m, invalid("blobIds", "send at most 4 distinct blob ids")
@@ -180,6 +199,9 @@ func ParseSendMessage(body map[string]json.RawMessage) (SendMessage, error) {
 		decoded, err := base64.RawStdEncoding.Strict().DecodeString(e.Ciphertext)
 		if err != nil || len(decoded) < 4 || len(decoded) > 16384 {
 			return m, invalid("envelopes", "ciphertext must be unpadded base64 of at most 16 KiB")
+		}
+		if m.Aux != "" && len(decoded) > MaxAuxCiphertext {
+			return m, &PolicyError{Status: 413, Code: "TOO_LARGE", Message: "A reaction envelope is at most 2 KiB"}
 		}
 	}
 	return m, nil

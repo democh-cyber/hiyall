@@ -52,6 +52,8 @@ Keep `v: 1`, keep a string `text`, set `kind: "image"` and add `att` (the receiv
   "preview":{"t":"thumbhash","d":"<b64 ~25B>"},"caption":""}}
 ```
 
+An image payload may also carry a quote, `re`, exactly as a text payload does (the snippet is the caption or empty and `k` is `image`); see [reactions and replies](13-encrypted-chat-implementation.md#reactions-and-replies). A reaction to a photo is a separate `reaction` message and touches no blob.
+
 ## Server contract (Go API)
 
 Migration `0023_chat_blobs.sql`: table `chat_blobs(blob_id uuid pk, uploader_id, conversation_id, message_id null, role, size_bytes, ct_sha256 bytea(32), state pending|uploaded|deleted, object_key, held_report_id null, created_at, uploaded_at, expires_at, deleted_at)` with indexes on `(uploader_id, created_at)`, `(expires_at) WHERE state <> 'deleted'` and `(message_id)`.

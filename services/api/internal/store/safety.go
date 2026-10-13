@@ -183,19 +183,20 @@ func (s *Store) CreateReport(ctx context.Context, reporter string, r domain.NewR
 			ids[i] = e.MessageID
 		}
 		// Sender and time come from the relay's records, not the client.
-		rows, err := s.Pool.Query(ctx, `SELECT message_id::text,sender_id::text,created_at FROM messages WHERE conversation_id=$1 AND message_id=ANY($2::uuid[])`, conversation, ids)
+		rows, err := s.Pool.Query(ctx, `SELECT message_id::text,sender_id::text,created_at,aux FROM messages WHERE conversation_id=$1 AND message_id=ANY($2::uuid[])`, conversation, ids)
 		if err != nil {
 			return domain.Report{}, false, err
 		}
 		type meta struct {
 			sender string
 			at     time.Time
+			aux    bool
 		}
 		known := map[string]meta{}
 		for rows.Next() {
 			var id string
 			var m meta
-			if err = rows.Scan(&id, &m.sender, &m.at); err != nil {
+			if err = rows.Scan(&id, &m.sender, &m.at, &m.aux); err != nil {
 				rows.Close()
 				return domain.Report{}, false, err
 			}
@@ -205,12 +206,21 @@ func (s *Store) CreateReport(ctx context.Context, reporter string, r domain.NewR
 		if len(known) != len(ids) {
 			return domain.Report{}, false, &domain.ValidationError{Field: "evidence", Message: "messages must belong to the reported chat"}
 		}
-		for i := range r.Evidence {
-			m := known[r.Evidence[i].MessageID]
-			r.Evidence[i].FromMe, r.Evidence[i].SentAt = m.sender == reporter, m.at
+		// Reactions are not messages anyone reads: if one is selected it is dropped, not an error.
+		kept := r.Evidence[:0]
+		for _, e := range r.Evidence {
+			m := known[e.MessageID]
+			if m.aux {
+				continue
+			}
+			e.FromMe, e.SentAt = m.sender == reporter, m.at
+			kept = append(kept, e)
 		}
-		data, _ := json.Marshal(r.Evidence)
-		evidence = data
+		r.Evidence = kept
+		if len(r.Evidence) > 0 {
+			data, _ := json.Marshal(r.Evidence)
+			evidence = data
+		}
 	}
 	var description any
 	if r.Description != "" {

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -229,6 +230,14 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		if limited(a.messages) {
 			return true
 		}
+		// Reactions have their own, stricter budget per conversation on top of the normal one above.
+		if m.Aux != "" {
+			if d := a.auxMessages.take(p.UserID + ":" + parts[2]); !d.Allowed {
+				w.Header().Set("Retry-After", strconv.FormatInt(max(1, int64(math.Ceil(d.RetryAfter.Seconds()))), 10))
+				a.failure(w, r, 429, "RATE_LIMITED", "You're reacting a lot. Try again in a moment.")
+				return true
+			}
+		}
 		created, peer, quiet, err := a.Store.SendMessage(ctx, p.UserID, parts[2], m, a.entitlementsFor(ctx, p.UserID))
 		if err != nil {
 			a.error(w, r, err)
@@ -236,7 +245,8 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		}
 		// The sender's other devices also hold envelopes, so both users are signalled.
 		a.signal(ctx, "inbox", map[string]string{"conversationId": parts[2]}, peer, p.UserID)
-		// quiet is the cheap early answer; the dispatcher re-checks mutes, blocks, bands and the member's choices.
+		// quiet is the cheap early answer (and always true for a reaction); the dispatcher re-checks mutes,
+		// blocks, bands and the member's choices.
 		if !quiet {
 			a.wake(push.Notice{Kind: "chat", Actor: p.UserID, Recipient: peer, Conversation: parts[2]})
 		}

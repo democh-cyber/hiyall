@@ -2460,6 +2460,11 @@ export interface components {
             envelopes: components["schemas"]["CiphertextEnvelope"][];
             /** @description Encrypted attachments this message claims: uploaded (POST /v1/blobs/{blobId}/complete), unexpired, not yet in a message, uploaded by you in this conversation. Any mismatch, unknown and foreign ids included, rolls the whole message back with 409 BLOB_NOT_READY. Linking starts the 30 day retention. The sender must pass the same images gate as for upload slots (403 ATTACHMENTS_NOT_ALLOWED). A retry of an already stored messageId is answered as before and links nothing. */
             blobIds?: string[];
+            /**
+             * @description Optional. Marks the message as an emoji reaction rather than a conversation turn. The relay then does not count it as unread for the peer, does not push, does not move the conversation in the list and does not advance the sender read pointer; it still signals the realtime inbox event and passes every gate (block, age band, messagesFrom, exact device set, idempotency, the send limiter). Each envelope is at most 2048 bytes decoded (413 TOO_LARGE), at most 60 per sender per conversation per 10 minutes sustained (429 RATE_LIMITED with Retry-After), no blobIds. Omitted for ordinary messages and by older apps. A sender who sets it wrongly only makes their own message quieter for the peer.
+             * @enum {string}
+             */
+            aux?: "reaction";
         };
         MessageAccepted: {
             /** Format: uuid */
@@ -9604,6 +9609,15 @@ export interface operations {
             };
             /** @description Error 412; no internal details disclosed */
             412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 413 TOO_LARGE: a reaction (aux) envelope is over 2048 bytes. */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };

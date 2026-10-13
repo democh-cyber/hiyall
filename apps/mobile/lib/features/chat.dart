@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:go_router/go_router.dart';
@@ -13,6 +14,7 @@ import '../core/avatar_upload.dart';
 import '../core/chat/chat_api.dart';
 import '../core/chat/chat_attachment.dart';
 import '../core/chat/chat_engine.dart';
+import '../core/chat/chat_reactions.dart';
 import '../core/chat/chat_store.dart';
 import '../core/chat_peers.dart';
 import '../core/presence.dart';
@@ -125,6 +127,24 @@ String chatError(Object error) =>
       ChatFailure(:final message) => message,
       _ => 'Something went wrong with encryption on this device.',
     };
+
+/// What the small notice says when a reaction could not be sent.
+String reactionFailureText(Object error) {
+  if (error is ChatFailure) {
+    if (error.code == 'NETWORK') {
+      return 'Couldn’t send your reaction. Check your connection.';
+    }
+    if (error.code == 'RATE_LIMITED') {
+      return 'You’re reacting a lot. Wait a moment, then try again.';
+    }
+    // The engine's own refusals (not delivered yet) carry their own words.
+    if (error.status == null &&
+        (error.code == 'NOT_FOUND' || error.code == 'BAD_REACTION')) {
+      return error.message;
+    }
+  }
+  return 'Couldn’t send your reaction. ${chatError(error)}';
+}
 
 class ChatsScreen extends ConsumerStatefulWidget {
   const ChatsScreen({super.key});
@@ -428,6 +448,22 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   /// The first-time card was dismissed.
   bool introDismissed = false;
 
+  /// The message a reply is being written to; null for none.
+  ChatMessage? replyingTo;
+
+  /// A reaction that could not be sent: the words and how to try again. It
+  /// clears itself after a few seconds.
+  String? reactionNotice;
+  VoidCallback? _retryReaction;
+  Timer? _noticeTimer, _litTimer;
+
+  /// The message a tapped quote brought into view, lit for a moment.
+  String? litId;
+
+  /// A global key per message row built so far, to scroll to a quoted one.
+  final _rowKeys = <String, GlobalKey>{};
+  List<ThreadRow> _rows = const [];
+
   /// What the server says both people list (its audience rules already
   /// applied), and whether the first look at the conversation has come back:
   /// the new-chat card waits for it so its icebreakers do not change under
@@ -468,6 +504,18 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
           if (tries > 1) _stickToBottom(tries - 1);
         }
       });
+
+  /// Keeps the newest message in view for the next [frames] frames, while the
+  /// space under the thread changes size (a bar growing above the composer).
+  void _followBottom(int frames) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !scroll.hasClients) return;
+      final end = scroll.position.maxScrollExtent;
+      if (scroll.position.pixels < end - 1) scroll.jumpTo(end);
+      if (frames > 1) _followBottom(frames - 1);
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
 
   /// The "latest" button: down to the newest message, gently unless motion is
   /// reduced, and the count of what came in meanwhile starts again.
@@ -767,8 +815,9 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     unawaited(sendHaptic());
     setState(() => sending = true);
     try {
-      await engine!.send(widget.id, peerId, text);
+      await engine!.send(widget.id, peerId, text, replyTo: replyingTo);
       input.clear();
+      if (mounted) setState(() => replyingTo = null);
     } catch (e) {
       if (mounted) showMessage(context, chatError(e));
     } finally {
@@ -807,10 +856,143 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     final caption = await showPhotoPreview(context, bytes, peerName);
     if (caption == null || !mounted) return;
     try {
-      await current.sendPhoto(widget.id, peerId, bytes, caption: caption);
+      await current.sendPhoto(
+        widget.id,
+        peerId,
+        bytes,
+        caption: caption,
+        replyTo: replyingTo,
+      );
+      if (mounted) setState(() => replyingTo = null);
     } catch (e) {
       if (mounted) showMessage(context, chatError(e));
     }
+  }
+
+  // ------------------------------------------------ reactions and replies
+
+  /// Sets or clears this account's reaction. The engine shows it at once and
+  /// takes it back if it cannot be sent; the screen only says so.
+  Future<void> reactTo(ChatMessage message, String? emoji) async {
+    final current = engine;
+    if (current == null || peerId.isEmpty) return;
+    try {
+      await current.react(widget.id, peerId, message.messageId, emoji);
+      if (mounted && reactionNotice != null) {
+        setState(() => reactionNotice = null);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      _noticeTimer?.cancel();
+      _noticeTimer = Timer(const Duration(seconds: 6), () {
+        if (mounted) setState(() => reactionNotice = null);
+      });
+      if (atBottom) _followBottom(14);
+      setState(() {
+        reactionNotice = reactionFailureText(e);
+        _retryReaction = isTransientChatFailure(e)
+            ? () {
+                setState(() => reactionNotice = null);
+                reactTo(message, emoji);
+              }
+            : null;
+      });
+    }
+  }
+
+  void startReply(ChatMessage message) {
+    if (!canInteract(message)) return;
+    setState(() => replyingTo = message);
+    focus.requestFocus();
+    // The bar takes room from the thread: stay on the newest message.
+    if (atBottom) _followBottom(14);
+  }
+
+  Future<void> copyMessage(ChatMessage message) async {
+    await Clipboard.setData(ClipboardData(text: message.text));
+    if (mounted) showMessage(context, 'Copied.');
+  }
+
+  /// The original of a quote when it is in this device's history.
+  ChatMessage? _original(String id) {
+    for (final m in messages) {
+      if (m.messageId == id && !m.notice) return m;
+    }
+    return null;
+  }
+
+  /// The quote of [m] as drawn: the local original's author and text win over
+  /// what the sender wrote.
+  QuoteData? quoteFor(ChatMessage m) {
+    final reply = m.reply;
+    if (reply == null) return null;
+    final me = engine?.userId ?? '';
+    final original = _original(reply.id);
+    final shown = original == null ? reply : resolveReply(reply, original, me);
+    return QuoteData(
+      who: shown.by == me ? 'You' : peerName,
+      line: quoteLine(shown),
+      image: shown.isImage,
+      jumpTo: original?.messageId,
+    );
+  }
+
+  /// Scrolls the quoted message into view and lights it for a moment. Rows
+  /// far away are only built once the list is near them, so it walks there a
+  /// viewport at a time; if it cannot get there, nothing happens.
+  void showOriginal(String id, [int attempt = 0]) {
+    final index = _rows.indexWhere(
+      (r) => r is MessageRow && r.message.messageId == id,
+    );
+    if (index < 0 || !scroll.hasClients) return;
+    final context = _rowKeys[id]?.currentContext;
+    if (context != null && context.mounted) {
+      Scrollable.ensureVisible(
+        context,
+        alignment: .35,
+        duration: MediaQuery.disableAnimationsOf(this.context)
+            ? Duration.zero
+            : const Duration(milliseconds: 280),
+        curve: Curves.easeOutCubic,
+      );
+      _light(id);
+      return;
+    }
+    if (attempt >= 14) return;
+    final built = <int>[];
+    for (var i = 0; i < _rows.length; i++) {
+      final r = _rows[i];
+      if (r is MessageRow &&
+          _rowKeys[r.message.messageId]?.currentContext != null) {
+        built.add(i);
+      }
+    }
+    final position = scroll.position;
+    final step = position.viewportDimension * .85;
+    double to;
+    if (built.isEmpty) {
+      to = _rows.length <= 1
+          ? 0
+          : position.maxScrollExtent * index / (_rows.length - 1);
+    } else {
+      to = index < built.first
+          ? position.pixels - step
+          : position.pixels + step;
+    }
+    scroll.jumpTo(to.clamp(position.minScrollExtent, position.maxScrollExtent));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) showOriginal(id, attempt + 1);
+    });
+    // A jump that changes nothing schedules no frame of its own.
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _light(String id) {
+    _litTimer?.cancel();
+    setState(() => litId = id);
+    _litTimer = Timer(const Duration(milliseconds: 1400), () {
+      if (mounted) setState(() => litId = null);
+    });
   }
 
   Future<void> retryPhoto(ChatMessage message) async {
@@ -837,12 +1019,45 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
 
   @override
   void dispose() {
+    _noticeTimer?.cancel();
+    _litTimer?.cancel();
     changes?.cancel();
     scroll.removeListener(_onScroll);
     input.dispose();
     focus.dispose();
     scroll.dispose();
     super.dispose();
+  }
+
+  late final BubbleActions _actions = BubbleActions(
+    onReact: reactTo,
+    onReply: startReply,
+    onQuoteTap: showOriginal,
+    onCopy: copyMessage,
+  );
+
+  /// The bar and the notice above the composer.
+  Widget? _aboveComposer() {
+    final reply = replyingTo, notice = reactionNotice;
+    if (reply == null && notice == null) return null;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (notice != null)
+          ChatInlineNotice(
+            text: notice,
+            onRetry: _retryReaction,
+            onDismiss: () => setState(() => reactionNotice = null),
+          ),
+        if (reply != null)
+          ReplyBar(
+            who: reply.mine ? 'You' : peerName,
+            line: reply.isPhoto ? 'Photo' : snippetOf(reply.text),
+            image: reply.isPhoto,
+            onCancel: () => setState(() => replyingTo = null),
+          ),
+      ],
+    );
   }
 
   bool _seen(ChatMessage m) =>
@@ -881,6 +1096,10 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
           peerAvatarUrl: peerAvatarUrl,
           seen: _seen(m),
           newestMine: m.messageId == newestMine,
+          selfId: engine?.userId ?? '',
+          actions: engine == null || peerId.isEmpty ? null : _actions,
+          quote: quoteFor(m),
+          highlight: litId == m.messageId,
         );
         if (fresh.contains(m.messageId)) {
           bubble = BubbleEntrance(
@@ -891,19 +1110,25 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
             child: bubble,
           );
         }
-        return Column(
-          key: ValueKey(m.messageId),
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            bubble,
-            if (m.mine && m.attachment != null && m.status == SendStatus.failed)
-              FailedPhotoActions(
-                message: m,
-                error: photoFailureText(m.failure) ?? 'This photo wasn’t sent.',
-                onRetry: () => retryPhoto(m),
-                onDelete: () => deletePhoto(m),
-              ),
-          ],
+        return KeyedSubtree(
+          key: _rowKeys.putIfAbsent(m.messageId, GlobalKey.new),
+          child: Column(
+            key: ValueKey(m.messageId),
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              bubble,
+              if (m.mine &&
+                  m.attachment != null &&
+                  m.status == SendStatus.failed)
+                FailedPhotoActions(
+                  message: m,
+                  error:
+                      photoFailureText(m.failure) ?? 'This photo wasn’t sent.',
+                  onRetry: () => retryPhoto(m),
+                  onDelete: () => deletePhoto(m),
+                ),
+            ],
+          ),
         );
     }
   }
@@ -930,6 +1155,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         .map((m) => m.messageId)
         .lastOrNull;
     final rows = buildThread(messages, unreadFrom: unreadFrom, typing: typing);
+    _rows = rows;
     final showJump = loaded && messages.isNotEmpty && !atBottom;
     return ChatAtmosphere(
       child: Column(
@@ -1026,6 +1252,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
             onChanged: typed,
             onSend: send,
             onAttach: attachPhoto,
+            above: _aboveComposer(),
           ),
         ],
       ),

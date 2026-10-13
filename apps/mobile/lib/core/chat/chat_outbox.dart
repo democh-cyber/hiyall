@@ -13,6 +13,7 @@ import 'chat_blob_codec.dart';
 import 'chat_blob_transport.dart';
 import 'chat_engine.dart';
 import 'chat_history.dart';
+import 'chat_reactions.dart';
 import 'chat_store.dart';
 
 /// Sends the message through the end-to-end encrypted path (the engine's
@@ -67,6 +68,9 @@ class OutboxEntry {
   final DateTime sentAt;
   final ChatAttachment attachment;
   final OutboxPart full, thumb;
+
+  /// The message this photo answers, quoted in its payload (null for none).
+  final ChatReply? reply;
   OutboxEntry({
     required this.messageId,
     required this.conversationId,
@@ -75,6 +79,7 @@ class OutboxEntry {
     required this.attachment,
     required this.full,
     required this.thumb,
+    this.reply,
   });
 
   String get text =>
@@ -90,6 +95,7 @@ class OutboxEntry {
     'att': attachment.toLocalJson(),
     'full': full.toJson(),
     'thumb': thumb.toJson(),
+    if (reply != null) 're': reply!.toJson(),
   };
   factory OutboxEntry.fromJson(Map<String, dynamic> j) => OutboxEntry(
     messageId: j['id'] as String,
@@ -99,6 +105,7 @@ class OutboxEntry {
     attachment: ChatAttachment.fromLocal(j['att']),
     full: OutboxPart.fromJson(Map<String, dynamic>.from(j['full'] as Map)),
     thumb: OutboxPart.fromJson(Map<String, dynamic>.from(j['thumb'] as Map)),
+    reply: ChatReply.parse(j['re']),
   );
 }
 
@@ -189,6 +196,7 @@ class PhotoOutbox {
     String peerId,
     Uint8List input, {
     String caption = '',
+    ChatMessage? replyTo,
   }) async {
     await load();
     if (input.length > maxPhotoInput) {
@@ -266,6 +274,7 @@ class PhotoOutbox {
       attachment: attachment,
       full: OutboxPart('$messageId/full.bin'),
       thumb: OutboxPart('$messageId/thumb.bin'),
+      reply: replyTo == null ? null : replyOf(replyTo, userId),
     );
     _entries[messageId] = entry;
     await _save();
@@ -281,6 +290,7 @@ class PhotoOutbox {
       mine: true,
       attachment: attachment,
       status: SendStatus.sending,
+      reply: entry.reply,
     );
     await history.append(conversationId, message);
     _start(entry);
@@ -500,6 +510,7 @@ class PhotoOutbox {
             'senderId': userId,
             'sentAt': entry.sentAt.toIso8601String(),
             'att': att.toJson(),
+            if (entry.reply != null) 're': entry.reply!.toJson(),
           },
           [att.full.blobId!, att.thumb.blobId!],
         );
@@ -538,6 +549,8 @@ class PhotoOutbox {
         serverAt: serverAt,
         mine: true,
         attachment: sent,
+        reply: current?.reply ?? entry.reply,
+        reactionStates: current?.reactionStates ?? const {},
       ),
     );
     // The ciphertext that was just uploaded is already verified: keep it as

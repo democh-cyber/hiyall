@@ -179,7 +179,7 @@ func canMessage(ctx context.Context, q querier, actor, target string) error {
 	}
 	var visible, replied bool
 	err := q.QueryRow(ctx, `SELECT `+memberSQL("$2::uuid")+` AND `+memberSQL("$1::uuid")+` AND NOT `+barredBetween+`,
- EXISTS(SELECT 1 FROM messages m JOIN conversations c USING(conversation_id) WHERE m.sender_id=$2 AND c.user_low_id=least($1::uuid,$2::uuid) AND c.user_high_id=greatest($1::uuid,$2::uuid))`, actor, target).Scan(&visible, &replied)
+ EXISTS(SELECT 1 FROM messages m JOIN conversations c USING(conversation_id) WHERE m.sender_id=$2 AND NOT m.aux AND c.user_low_id=least($1::uuid,$2::uuid) AND c.user_high_id=greatest($1::uuid,$2::uuid))`, actor, target).Scan(&visible, &replied)
 	if err != nil {
 		return err
 	}
@@ -210,7 +210,7 @@ func canMessage(ctx context.Context, q querier, actor, target string) error {
 // direction. It is what makes opening a conversation a "new contact" for the stricter limiter.
 func (s *Store) HaveExchangedMessages(ctx context.Context, a, b string) (bool, error) {
 	var exchanged bool
-	err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM messages m JOIN conversations c USING(conversation_id) WHERE c.user_low_id=least($1::uuid,$2::uuid) AND c.user_high_id=greatest($1::uuid,$2::uuid))`, a, b).Scan(&exchanged)
+	err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM messages m JOIN conversations c USING(conversation_id) WHERE NOT m.aux AND c.user_low_id=least($1::uuid,$2::uuid) AND c.user_high_id=greatest($1::uuid,$2::uuid))`, a, b).Scan(&exchanged)
 	return exchanged, err
 }
 
@@ -438,11 +438,14 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 			return domain.ErrConversationClosed
 		}
 		var sender string
-		err := tx.QueryRow(ctx, `SELECT sender_id::text FROM messages WHERE message_id=$1`, m.MessageID).Scan(&sender)
+		var storedAux bool
+		err := tx.QueryRow(ctx, `SELECT sender_id::text,aux FROM messages WHERE message_id=$1`, m.MessageID).Scan(&sender, &storedAux)
 		if err == nil {
 			if sender != user {
 				return &domain.ValidationError{Field: "messageId", Message: "already used"}
 			}
+			// A replay is answered from the stored row; a reaction stays quiet (no push) on every retry.
+			quiet = storedAux
 			return tx.QueryRow(ctx, `SELECT created_at FROM messages WHERE message_id=$1`, m.MessageID).Scan(&created)
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -485,7 +488,7 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 				return domain.ErrDevicesChanged
 			}
 		}
-		if err = tx.QueryRow(ctx, `INSERT INTO messages(message_id,conversation_id,sender_id,sender_device_id) VALUES($1,$2,$3,$4) RETURNING created_at`, m.MessageID, conversationID, user, m.SenderDeviceID).Scan(&created); err != nil {
+		if err = tx.QueryRow(ctx, `INSERT INTO messages(message_id,conversation_id,sender_id,sender_device_id,aux) VALUES($1,$2,$3,$4,$5) RETURNING created_at`, m.MessageID, conversationID, user, m.SenderDeviceID, m.Aux != "").Scan(&created); err != nil {
 			return err
 		}
 		// Claim the attachments in this transaction: any mismatch rolls the whole message back.
@@ -500,6 +503,13 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 		}
 		if err = tx.SendBatch(ctx, batch).Close(); err != nil {
 			return err
+		}
+		if m.Aux != "" {
+			// An auxiliary message (a reaction) is delivered but is not a conversation turn: it does not
+			// reorder the list (last_message_at, sort_at), is never unread for the peer, and the sender's
+			// read pointer stays where it is. It never pushes either, so the caller is told to stay quiet.
+			quiet = true
+			return nil
 		}
 		if _, err = tx.Exec(ctx, `UPDATE conversations SET last_message_at=$2 WHERE conversation_id=$1`, conversationID, created); err != nil {
 			return err
@@ -535,7 +545,7 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 // recounts what remains unread. It reports the peer and whether anything changed.
 func (s *Store) MarkRead(ctx context.Context, user, conversationID string, upTo time.Time) (peer string, readAt time.Time, changed bool, err error) {
 	err = s.Pool.QueryRow(ctx, `UPDATE conversation_members m SET read_at=least($3::timestamptz,now()),
- unread_count=(SELECT count(*) FROM (SELECT 1 FROM messages x WHERE x.conversation_id=m.conversation_id AND x.sender_id<>m.user_id AND x.created_at>least($3::timestamptz,now()) LIMIT 999) q)
+ unread_count=(SELECT count(*) FROM (SELECT 1 FROM messages x WHERE x.conversation_id=m.conversation_id AND x.sender_id<>m.user_id AND NOT x.aux AND x.created_at>least($3::timestamptz,now()) LIMIT 999) q)
  WHERE m.user_id=$1 AND m.conversation_id=$2 AND (m.read_at IS NULL OR m.read_at<least($3::timestamptz,now()))
  RETURNING m.peer_id::text,m.read_at`, user, conversationID, upTo).Scan(&peer, &readAt)
 	if err == nil {

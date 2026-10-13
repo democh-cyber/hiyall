@@ -21,6 +21,7 @@ import 'package:hiyall/core/chat/chat_blob_codec.dart';
 import 'package:hiyall/core/chat/chat_engine.dart';
 import 'package:hiyall/core/chat/chat_media.dart';
 import 'package:hiyall/core/chat/chat_outbox.dart';
+import 'package:hiyall/core/chat/chat_reactions.dart';
 import 'package:hiyall/core/chat/chat_store.dart';
 import 'package:hiyall/core/location_service.dart';
 import 'package:hiyall/core/state.dart';
@@ -36,7 +37,7 @@ import 'chat_photo_helpers.dart';
 import 'widget_test.dart' show FakeApi, SignedIn;
 
 /// Renders the chat screens with realistic fake data and writes PNGs to
-/// `.runtime/chat-previews-v4/` and, for presence (online dots and last seen), `chat-previews-v5/` (git-ignored). Skipped unless run with
+/// `.runtime/chat-previews-v4/`, for presence (online dots and last seen) `chat-previews-v5/` and for reactions and replies `chat-previews-v6/` (git-ignored). Skipped unless run with
 /// `--dart-define=CAPTURE_CHAT=true`.
 const capturing = bool.fromEnvironment('CAPTURE_CHAT');
 
@@ -420,6 +421,15 @@ Future<void> main() async {
     await (FontLoader(
       'MaterialIcons',
     )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
+    // The test runner ships no emoji font; the Mac's own colour font makes the
+    // reaction previews readable. Without it (another machine) emoji are boxes.
+    final apple = File('/System/Library/Fonts/Apple Color Emoji.ttc');
+    if (apple.existsSync()) {
+      await (FontLoader('Apple Color Emoji')..addFont(
+            Future.value(ByteData.view(apple.readAsBytesSync().buffer)),
+          ))
+          .load();
+    }
   });
 
   /// Runs a capture scene on a fake Android phone, with decoding ready.
@@ -1570,6 +1580,308 @@ Future<void> main() async {
     }
     await unmount(tester);
   });
+
+  // ------------------------------------------------- reactions and replies
+  const v6 = 'chat-previews-v6';
+  String rid(int n) =>
+      '6d6d0000-0000-4000-8000-${n.toRadixString(16).padLeft(12, '0')}';
+  ReactionState rx(String? emoji, int n) => ReactionState(
+    emoji: emoji,
+    at: DateTime.utc(2026, 10, 13, 9, n),
+    id: rid(900 + n),
+  );
+  ChatReply quoted(int n, String by, String snippet, {bool image = false}) =>
+      ChatReply(
+        id: rid(n),
+        by: by,
+        snippet: snippet,
+        kind: image ? 'image' : 'text',
+      );
+
+  ChatMessage rmsg(
+    int n,
+    String text,
+    DateTime when, {
+    bool mine = false,
+    ChatReply? reply,
+    Map<String, String?> reactions = const {},
+    ChatAttachment? att,
+  }) => ChatMessage(
+    messageId: rid(n),
+    senderId: mine ? meId : peerId,
+    text: att != null ? photoFallbackText : text,
+    sentAt: when,
+    serverAt: when.toUtc(),
+    mine: mine,
+    attachment: att,
+    reply: reply,
+    reactionStates: {
+      for (final (i, e) in reactions.entries.indexed) e.key: rx(e.value, i + 1),
+    },
+  );
+
+  List<ChatMessage> reactionThread() => [
+    rmsg(
+      1,
+      'hey! are you coming to the rooftop thing tonight?',
+      at(9, 30),
+      reactions: {meId: '\u{1F44D}'},
+    ),
+    rmsg(2, 'bringing the speaker, and Dev has his projector', at(9, 31)),
+    rmsg(
+      3,
+      'yes!! what time does it start?',
+      at(9, 35),
+      mine: true,
+      reactions: {peerId: '❤️', meId: '❤️'},
+    ),
+    rmsg(
+      4,
+      '8ish, cups are covered',
+      at(9, 38),
+      reply: quoted(3, meId, 'yes!! what time does it start?'),
+      reactions: {meId: '\u{1F525}'},
+    ),
+    rmsg(
+      5,
+      'perfect, see you there',
+      at(9, 40),
+      mine: true,
+      reply: quoted(4, peerId, '8ish, cups are covered'),
+      reactions: {peerId: '\u{1F602}'},
+    ),
+    rmsg(
+      6,
+      '',
+      at(9, 41),
+      att: photoAtt(61, shade: 1, caption: 'the view from up here'),
+      reactions: {meId: '\u{1F62E}'},
+    ),
+    rmsg(
+      7,
+      'that view!! best spot in the city, honestly, I could stay all night',
+      at(9, 43),
+      mine: true,
+      reply: quoted(6, peerId, '', image: true),
+      reactions: {peerId: '\u{1F525}', meId: '\u{1F525}'},
+    ),
+  ];
+
+  /// The preview engine with local reactions and sends, as the real one does.
+  ReactPreview reactEngine(PreviewCloud cloud, List<ChatMessage> messages) =>
+      ReactPreview(cloud, PreviewMedia(cloud, dir))..messages = messages;
+
+  Future<void> reactionScene(
+    WidgetTester tester, {
+    required Size size,
+    required bool dark,
+    double scale = 1,
+    required Future<void> Function(
+      WidgetTester tester,
+      String tag,
+      ReactPreview engine,
+    )
+    shoots,
+    List<ChatMessage>? messages,
+  }) async {
+    final list = messages ?? reactionThread();
+    final engine = reactEngine(cloudFor(messages: list), list);
+    await mount(
+      tester,
+      convRoute('Niko'),
+      engineOf: (_) => engine,
+      size: size,
+      dark: dark,
+      scale: scale,
+      still: true,
+    );
+    final tag =
+        '${dark ? 'dark' : 'light'}-${size.width.toInt()}x${size.height.toInt()}${scale == 1 ? '' : '-text$scale'}';
+    await shoots(tester, tag, engine);
+    await unmount(tester);
+  }
+
+  /// The text of message [n] itself (not a quote of it in a later bubble).
+  Finder inBubble(int n, String text) => find.descendant(
+    of: find.byKey(ValueKey(rid(n))),
+    matching: find.text(text),
+  );
+
+  /// Brings a message of the thread into view (the list builds rows lazily).
+  Future<void> reveal(WidgetTester tester, Finder target) async {
+    final list = find.byType(ListView).last;
+    for (var i = 0; i < 12 && target.evaluate().isEmpty; i++) {
+      await tester.drag(list, const Offset(0, 250));
+      await tester.pumpAndSettle();
+    }
+    await tester.ensureVisible(target.first);
+    await tester.pumpAndSettle();
+  }
+
+  final reactionSpecs = [
+    (true, const Size(390, 844), 1.0),
+    (false, const Size(390, 844), 1.0),
+    (true, const Size(320, 640), 1.0),
+    (false, const Size(320, 640), 1.0),
+    (true, const Size(320, 640), 2.0),
+    (false, const Size(320, 640), 2.0),
+  ];
+
+  for (final (dark, size, scale) in reactionSpecs) {
+    final label =
+        '${dark ? 'dark' : 'light'} ${size.width.toInt()}${scale == 1 ? '' : ' text $scale'}';
+    scene('reactions: chips and quotes, $label', (tester) async {
+      await reactionScene(
+        tester,
+        size: size,
+        dark: dark,
+        scale: scale,
+        shoots: (tester, tag, engine) async {
+          await shoot(tester, 'bubbles-with-chips-$tag', folder: v6);
+          await tester.drag(find.byType(ListView).last, const Offset(0, 700));
+          await tester.pumpAndSettle();
+          await shoot(tester, 'bubbles-with-chips-$tag-top', folder: v6);
+        },
+      );
+    });
+
+    scene('reactions: menu, $label', (tester) async {
+      await reactionScene(
+        tester,
+        size: size,
+        dark: dark,
+        scale: scale,
+        shoots: (tester, tag, engine) async {
+          await reveal(tester, inBubble(4, '8ish, cups are covered'));
+          await tester.longPress(inBubble(4, '8ish, cups are covered'));
+          await tester.pumpAndSettle();
+          await shoot(tester, 'reaction-menu-$tag', folder: v6);
+          // The same menu over one of your own messages that you reacted to.
+          await tester.tapAt(const Offset(10, 300));
+          await tester.pumpAndSettle();
+          await reveal(tester, inBubble(3, 'yes!! what time does it start?'));
+          await tester.longPress(inBubble(3, 'yes!! what time does it start?'));
+          await tester.pumpAndSettle();
+          await shoot(tester, 'reaction-menu-own-$tag', folder: v6);
+        },
+      );
+    });
+
+    scene('reactions: reply bar, $label', (tester) async {
+      await reactionScene(
+        tester,
+        size: size,
+        dark: dark,
+        scale: scale,
+        shoots: (tester, tag, engine) async {
+          await reveal(tester, inBubble(4, '8ish, cups are covered'));
+          await tester.longPress(inBubble(4, '8ish, cups are covered'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.byKey(const Key('menu-reply')));
+          await tester.pumpAndSettle();
+          await shoot(tester, 'reply-bar-$tag', folder: v6);
+          await tester.enterText(
+            find.byKey(const Key('chat-input')),
+            'on my way, bringing snacks',
+          );
+          await tester.pumpAndSettle();
+          await shoot(tester, 'reply-bar-typed-$tag', folder: v6);
+        },
+      );
+    });
+  }
+
+  scene('reactions: reply bar to a photo and failed reaction', (tester) async {
+    await reactionScene(
+      tester,
+      size: const Size(390, 844),
+      dark: true,
+      shoots: (tester, tag, engine) async {
+        final engine =
+            (tester.state(
+                  find.byType(ConversationScreen).last,
+                ) as dynamic).engine
+                as ReactPreview;
+        await tester.longPress(find.byKey(Key('photo-${rid(6)}')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('menu-reply')));
+        await tester.pumpAndSettle();
+        await shoot(tester, 'reply-bar-photo-$tag', folder: v6);
+        engine.fail = const ChatFailure('NETWORK', 'offline');
+        await tester.tap(find.byKey(const Key('reply-cancel')));
+        await tester.pumpAndSettle();
+        await reveal(tester, inBubble(4, '8ish, cups are covered'));
+        await tester.longPress(inBubble(4, '8ish, cups are covered'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(Key('react-${reactionEmojis[2]}')));
+        await tester.pumpAndSettle();
+        await shoot(tester, 'reaction-failed-notice-$tag', folder: v6);
+      },
+    );
+  });
+
+  scene('reactions: swipe to reply in progress', (tester) async {
+    await reactionScene(
+      tester,
+      size: const Size(390, 844),
+      dark: true,
+      shoots: (tester, tag, engine) async {
+        final g = await tester.startGesture(
+          tester.getCenter(find.textContaining('that view!! best spot')),
+        );
+        await g.moveBy(const Offset(30, 0));
+        await g.moveBy(const Offset(40, 0));
+        await tester.pump();
+        await shoot(tester, 'swipe-to-reply-$tag', folder: v6);
+        await g.up();
+        await tester.pumpAndSettle();
+      },
+    );
+  });
+}
+
+/// A preview engine whose reactions and replies take effect locally, as the
+/// real engine's do.
+class ReactPreview extends PreviewEngine {
+  ReactPreview(super.cloud, super.media);
+  Object? fail;
+  int _n = 0;
+  @override
+  Future<void> react(
+    String conversationId,
+    String peerId,
+    String messageId,
+    String? emoji,
+  ) async {
+    final failure = fail;
+    if (failure != null) {
+      fail = null;
+      throw failure;
+    }
+    final i = messages.indexWhere((m) => m.messageId == messageId);
+    final m = messages[i];
+    messages = [...messages]
+      ..[i] = m.copyWith(
+        reactionStates: mergeReaction(
+          m.reactionStates,
+          meId,
+          ReactionState(
+            emoji: emoji,
+            at: DateTime.utc(2026, 10, 14).add(Duration(seconds: ++_n)),
+            id: '6d6d0000-0000-4000-8000-${(5000 + _n).toRadixString(16).padLeft(12, '0')}',
+          ),
+        ),
+      );
+    ctrl.add(conversationId);
+  }
+
+  @override
+  Future<void> send(
+    String conversationId,
+    String peerId,
+    String text, {
+    ChatMessage? replyTo,
+  }) async {}
 }
 
 /// A people search with some members online, for the Discover capture.

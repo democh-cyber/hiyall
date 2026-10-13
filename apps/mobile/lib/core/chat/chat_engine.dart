@@ -16,6 +16,7 @@ import 'chat_blob_transport.dart';
 import 'chat_history.dart';
 import 'chat_media.dart';
 import 'chat_outbox.dart';
+import 'chat_reactions.dart';
 import 'chat_store.dart';
 
 /// Errors worth retrying later: the relay was unreachable, throttled us, the
@@ -64,6 +65,13 @@ class ChatMessage {
 
   /// Why a failed message failed: a stable code, never a message with details.
   final String? failure;
+
+  /// The message this one answers, as quoted inside its encrypted payload.
+  final ChatReply? reply;
+
+  /// Each member's latest reaction event to this message (see
+  /// [ReactionState]); [reactions] is the part that is still on.
+  final Map<String, ReactionState> reactionStates;
   const ChatMessage({
     required this.messageId,
     required this.senderId,
@@ -76,7 +84,15 @@ class ChatMessage {
     this.unsupportedPhoto = false,
     this.status = SendStatus.sent,
     this.failure,
+    this.reply,
+    this.reactionStates = const {},
   });
+
+  /// Sender id to emoji for every reaction that is currently set.
+  Map<String, String> get reactions => {
+    for (final e in reactionStates.entries)
+      if (e.value.emoji != null) e.key: e.value.emoji!,
+  };
 
   bool get isPhoto => attachment != null || unsupportedPhoto;
 
@@ -91,6 +107,8 @@ class ChatMessage {
     SendStatus? status,
     String? failure,
     bool clearFailure = false,
+    ChatReply? reply,
+    Map<String, ReactionState>? reactionStates,
   }) => ChatMessage(
     messageId: messageId,
     senderId: senderId,
@@ -103,6 +121,8 @@ class ChatMessage {
     unsupportedPhoto: unsupportedPhoto,
     status: status ?? this.status,
     failure: clearFailure ? null : failure ?? this.failure,
+    reply: reply ?? this.reply,
+    reactionStates: reactionStates ?? this.reactionStates,
   );
 
   Map<String, dynamic> toJson() => {
@@ -117,6 +137,9 @@ class ChatMessage {
     if (unsupportedPhoto) 'bad': true,
     if (status != SendStatus.sent) 'st': status.name,
     'err': ?failure,
+    if (reply != null) 're': reply!.toJson(),
+    if (reactionStates.isNotEmpty)
+      'rx': {for (final e in reactionStates.entries) e.key: e.value.toJson()},
   };
   factory ChatMessage.fromJson(Map<String, dynamic> j) {
     ChatAttachment? attachment;
@@ -140,7 +163,21 @@ class ChatMessage {
       unsupportedPhoto: unsupported,
       status: SendStatus.values.asNameMap()[j['st']] ?? SendStatus.sent,
       failure: j['err'] as String?,
+      // Both are optional: history written before replies and reactions has
+      // neither, and an entry this app did not write is skipped, not fatal.
+      reply: ChatReply.parse(j['re']),
+      reactionStates: _reactionStatesFrom(j['rx']),
     );
+  }
+
+  static Map<String, ReactionState> _reactionStatesFrom(Object? raw) {
+    if (raw is! Map) return const {};
+    final out = <String, ReactionState>{};
+    for (final e in raw.entries) {
+      final state = ReactionState.fromJson(e.value);
+      if (e.key is String && state != null) out[e.key as String] = state;
+    }
+    return out.isEmpty ? const {} : out;
   }
 }
 
@@ -219,6 +256,7 @@ class ChatEngine {
   final _sessions = <String, OlmSession>{};
   Map<String, Map<String, dynamic>> _trust = {};
   late final ChatHistory _log;
+  final DateTime Function() _clock;
   Timer? _timer;
   bool _started = false;
   Duration _pollEvery = Duration.zero;
@@ -230,6 +268,11 @@ class ChatEngine {
   final ChatBlobTransport? transport;
   final Directory? mediaRoot;
   final int cacheLimit;
+
+  /// Waits between the attempts a reaction makes after a transient failure
+  /// (the message id stays the same, so a retry never duplicates). Tests pass
+  /// zeros.
+  final List<Duration> reactionRetryDelays;
   ChatMedia? _media;
   PhotoOutbox? _outbox;
 
@@ -242,8 +285,13 @@ class ChatEngine {
     this.transport,
     this.mediaRoot,
     this.cacheLimit = 200 * 1024 * 1024,
+    this.reactionRetryDelays = const [
+      Duration(milliseconds: 800),
+      Duration(seconds: 2),
+    ],
+    DateTime Function()? clock,
     ChatMedia? media,
-  }) {
+  }) : _clock = clock ?? DateTime.now {
     final root = mediaRoot;
     final blobCodec = codec ?? const RustChatBlobCodec();
     final blobTransport = transport ?? DioBlobTransport();
@@ -265,6 +313,7 @@ class ChatEngine {
     _log = ChatHistory(
       store,
       (id) => _k('history.$id'),
+      clock: _clock,
       onChange: (id) {
         if (!_changes.isClosed) _changes.add(id);
       },
@@ -495,38 +544,140 @@ class ChatEngine {
   Future<String> open(String peerId) async =>
       (await api.openConversation(peerId))['conversationId'] as String;
 
-  Future<void> send(String conversationId, String peerId, String text) =>
-      _locked(() async {
-        final messageId = newUuid4(_random);
-        final sentAt = DateTime.now().toUtc();
-        final payload = jsonEncode({
-          'v': 1,
-          'kind': 'text',
-          'text': text,
-          'messageId': messageId,
-          'conversationId': conversationId,
-          'senderId': userId,
-          'sentAt': sentAt.toIso8601String(),
-        });
-        final serverAt = await _deliver(
-          conversationId,
-          peerId,
-          messageId,
-          payload,
-          const [],
-        );
-        await _append(
-          conversationId,
-          ChatMessage(
-            messageId: messageId,
-            senderId: userId,
-            text: text,
-            sentAt: sentAt,
-            serverAt: serverAt,
-            mine: true,
-          ),
-        );
-      });
+  /// Sends a text message. [replyTo] quotes a message of this conversation: a
+  /// short plain snippet of that message's own text (never of what it quotes,
+  /// so quotes do not nest) travels inside the encrypted payload.
+  Future<void> send(
+    String conversationId,
+    String peerId,
+    String text, {
+    ChatMessage? replyTo,
+  }) => _locked(() async {
+    final messageId = newUuid4(_random);
+    final sentAt = _clock().toUtc();
+    final reply = replyTo == null ? null : replyOf(replyTo, userId);
+    final payload = jsonEncode({
+      'v': 1,
+      'kind': 'text',
+      'text': text,
+      'messageId': messageId,
+      'conversationId': conversationId,
+      'senderId': userId,
+      'sentAt': sentAt.toIso8601String(),
+      if (reply != null) 're': reply.toJson(),
+    });
+    final serverAt = await _deliver(
+      conversationId,
+      peerId,
+      messageId,
+      payload,
+      const [],
+    );
+    await _append(
+      conversationId,
+      ChatMessage(
+        messageId: messageId,
+        senderId: userId,
+        text: text,
+        sentAt: sentAt,
+        serverAt: serverAt,
+        mine: true,
+        reply: reply,
+      ),
+    );
+  });
+
+  /// Sets (or, with a null [emoji], clears) this account's reaction to
+  /// [messageId], which must be a delivered message of this conversation.
+  ///
+  /// The reaction shows at once; if it cannot be sent it is taken back and the
+  /// failure is thrown for the screen to show. It goes through the same
+  /// delivery as [send] (one envelope per device, the relay's idempotency by
+  /// message id) with the relay-visible `aux` hint, so the peer's unread count,
+  /// push and chat list order are untouched. A transient failure is retried a
+  /// couple of times with the same id.
+  Future<void> react(
+    String conversationId,
+    String peerId,
+    String messageId,
+    String? emoji,
+  ) async {
+    if (emoji != null && !isAllowedReaction(emoji)) {
+      throw const ChatFailure('BAD_REACTION', 'That reaction isn’t available.');
+    }
+    final target = (await history(conversationId))
+        .where((m) => m.messageId == messageId && !m.notice)
+        .firstOrNull;
+    if (target == null || target.status != SendStatus.sent) {
+      throw const ChatFailure(
+        'NOT_FOUND',
+        'You can react once the message has been delivered.',
+      );
+    }
+    final previous = target.reactionStates[userId];
+    final current = previous?.emoji;
+    if (emoji == current) return;
+    // Removal names the emoji being removed (the receiver validates it too).
+    final named = emoji ?? current!;
+    var at = _clock().toUtc();
+    // Two quick taps in one millisecond must still order: later wins.
+    if (previous != null && !at.isAfter(previous.at)) {
+      at = previous.at.add(const Duration(milliseconds: 1));
+    }
+    final id = newUuid4(_random);
+    final state = ReactionState(emoji: emoji, at: at, id: id);
+    final payload = jsonEncode({
+      'v': 1,
+      'kind': 'reaction',
+      'text': '',
+      'to': messageId,
+      'emoji': named,
+      'op': emoji == null ? 'remove' : 'add',
+      'messageId': id,
+      'conversationId': conversationId,
+      'senderId': userId,
+      'sentAt': at.toIso8601String(),
+    });
+    await _log.applyReaction(
+      conversationId,
+      ReactionEvent(target: messageId, sender: userId, state: state),
+    );
+    try {
+      for (var attempt = 0; ; attempt++) {
+        try {
+          await _locked(
+            () => _deliver(
+              conversationId,
+              peerId,
+              id,
+              payload,
+              const [],
+              aux: true,
+            ),
+          );
+          return;
+        } catch (error) {
+          if (attempt >= reactionRetryDelays.length ||
+              !isTransientChatFailure(error) ||
+              (error is ChatFailure &&
+                  (error.retryAfter ?? Duration.zero) >
+                      const Duration(seconds: 3))) {
+            rethrow;
+          }
+          await Future<void>.delayed(reactionRetryDelays[attempt]);
+        }
+      }
+    } catch (_) {
+      await _log.revertReaction(
+        conversationId,
+        messageId,
+        userId,
+        sent: state,
+        previous: previous,
+      );
+      rethrow;
+    }
+  }
 
   /// Seals [payload] for every device of both people and hands it to the
   /// relay. Must run inside [_locked]: it advances the Olm ratchets.
@@ -535,8 +686,9 @@ class ChatEngine {
     String peerId,
     String messageId,
     String payload,
-    List<String> blobIds,
-  ) async {
+    List<String> blobIds, {
+    bool aux = false,
+  }) async {
     for (var attempt = 0; ; attempt++) {
       final targets = [
         for (final d in await _devices(peerId, conversationId: conversationId))
@@ -558,11 +710,16 @@ class ChatEngine {
       }
       await _saveSessions();
       try {
-        return await api.send(conversationId, {
-          'messageId': messageId,
-          'senderDeviceId': deviceId,
-          'envelopes': envelopes,
-        }, blobIds: blobIds);
+        return await api.send(
+          conversationId,
+          {
+            'messageId': messageId,
+            'senderDeviceId': deviceId,
+            'envelopes': envelopes,
+          },
+          blobIds: blobIds,
+          aux: aux,
+        );
       } on ChatFailure catch (failure) {
         if (failure.code != 'DEVICES_CHANGED' || attempt > 0) rethrow;
       }
@@ -588,7 +745,14 @@ class ChatEngine {
     String peerId,
     Uint8List input, {
     String caption = '',
-  }) => _photos.enqueue(conversationId, peerId, input, caption: caption);
+    ChatMessage? replyTo,
+  }) => _photos.enqueue(
+    conversationId,
+    peerId,
+    input,
+    caption: caption,
+    replyTo: replyTo,
+  );
 
   Future<void> retryPhoto(String conversationId, String messageId) =>
       _photos.retry(conversationId, messageId);
@@ -678,15 +842,16 @@ class ChatEngine {
           }
           await _saveSessions();
           final body = jsonDecode(plaintext) as Map<String, dynamic>;
-          await _append(
+          await _ingest(
             conversationId,
-            messageFromBody(
+            parseIncoming(
               body,
               messageId: messageId,
               conversationId: conversationId,
               senderId: senderId,
               serverAt: DateTime.tryParse(item['createdAt'] as String? ?? ''),
               me: userId,
+              members: await _quoteMembers(conversationId, senderId),
             ),
           );
         } catch (_) {
@@ -778,6 +943,49 @@ class ChatEngine {
   Future<void> _append(String conversationId, ChatMessage message) =>
       _log.append(conversationId, message);
 
+  /// Files one decrypted payload: a message joins the history (its quote
+  /// corrected from the local original when there is one), a reaction updates
+  /// the message it is for (or waits for it), and anything else is dropped.
+  Future<void> _ingest(String conversationId, Incoming incoming) async {
+    switch (incoming) {
+      case IncomingMessage(:final message):
+        var reply = message.reply;
+        if (reply != null) {
+          final original = (await history(conversationId))
+              .where((m) => m.messageId == reply!.id && !m.notice)
+              .firstOrNull;
+          if (original != null) reply = resolveReply(reply, original, userId);
+        }
+        await _append(
+          conversationId,
+          reply == message.reply ? message : message.copyWith(reply: reply),
+        );
+      case IncomingReaction(:final event):
+        await _log.applyReaction(conversationId, event);
+      case IncomingIgnored():
+        break;
+    }
+  }
+
+  /// The two accounts a quote may name as its author. The sender and this
+  /// account are always members; the other one is learnt from history. When a
+  /// message from this account's other device arrives before anything from the
+  /// peer is known, `by` is only shape-checked.
+  Future<Set<String>?> _quoteMembers(
+    String conversationId,
+    String senderId,
+  ) async {
+    final members = {userId, senderId};
+    if (senderId != userId) return members;
+    for (final m in await history(conversationId)) {
+      if (!m.mine && !m.notice) {
+        members.add(m.senderId);
+        return members;
+      }
+    }
+    return null;
+  }
+
   /// When the peer last read this conversation, if both share receipts.
   Future<DateTime?> peerReadAt(String conversationId) async =>
       DateTime.tryParse(
@@ -804,17 +1012,77 @@ class ChatEngine {
   ];
 }
 
-/// Turns a decrypted payload into a message, after binding it to the relay's
+/// What a decrypted payload turned out to be.
+sealed class Incoming {
+  const Incoming();
+}
+
+/// A text or photo message, to be added to the history.
+class IncomingMessage extends Incoming {
+  final ChatMessage message;
+  const IncomingMessage(this.message);
+}
+
+/// A reaction to a message, to be applied to it.
+class IncomingReaction extends Incoming {
+  final ReactionEvent event;
+  const IncomingReaction(this.event);
+}
+
+/// A reaction that did not pass validation, or a kind this app does not know
+/// (sent by a newer app): dropped without a bubble, a notice or an error.
+class IncomingIgnored extends Incoming {
+  const IncomingIgnored();
+}
+
+/// A message's quote of itself: the reference a reply to [m] carries. Null for
+/// local notices and anything without a message id the other side could find.
+/// The snippet is of [m]'s own text or caption, never of what [m] quotes.
+ChatReply? replyOf(ChatMessage m, String me) {
+  if (m.notice || !isCanonicalUuid(m.messageId)) return null;
+  final photo = m.isPhoto;
+  return ChatReply(
+    id: m.messageId,
+    by: m.mine ? me : m.senderId,
+    snippet: snippetOf(photo ? (m.attachment?.caption ?? '') : m.text),
+    kind: photo ? 'image' : 'text',
+  );
+}
+
+/// [reply] with the author, text and kind of [original], which is in this
+/// device's history and so is what the person sees, whatever the sender wrote.
+ChatReply resolveReply(ChatReply reply, ChatMessage original, String me) {
+  final quoted = replyOf(original, me);
+  return quoted == null
+      ? reply
+      : reply.resolved(
+          by: quoted.by,
+          snippet: quoted.snippet,
+          kind: quoted.kind,
+        );
+}
+
+/// Turns a decrypted payload into what it is, after binding it to the relay's
 /// metadata so the server cannot replay a ciphertext into another conversation
-/// or as another sender. A photo's descriptor is checked strictly; a bad one
-/// still shows, as a photo this app cannot open.
-ChatMessage messageFromBody(
+/// or as another sender (a mismatch throws, as it always has). Kinds:
+///
+/// * `text` (and a payload with no kind, as the first builds wrote them), and
+///   `image`, whose descriptor is checked strictly (a bad one still shows, as a
+///   photo this app cannot open). Both may carry a quote, `re`, validated by
+///   [ChatReply.parse]; a bad one is dropped and the message shows without it.
+/// * `reaction`: `to` a message id, an `emoji` from the allow-list and `op`
+///   `add` or `remove`. Anything else about it is invalid and it is ignored.
+///   A reaction dated more than ten minutes after the relay stored it is
+///   ignored too, so nobody can pin their own reaction in the future.
+/// * any other kind: ignored.
+Incoming parseIncoming(
   Map<String, dynamic> body, {
   required String messageId,
   required String conversationId,
   required String senderId,
   required String me,
   DateTime? serverAt,
+  Set<String>? members,
 }) {
   if (body['v'] != 1 ||
       body['conversationId'] != conversationId ||
@@ -823,27 +1091,83 @@ ChatMessage messageFromBody(
       body['text'] is! String) {
     throw const ChatFailure('MISMATCH', 'Message metadata did not match.');
   }
+  final sentAt = DateTime.tryParse(body['sentAt'] as String? ?? '');
+  final kind = body['kind'];
+  if (kind == 'reaction') {
+    final to = body['to'], emoji = body['emoji'], op = body['op'];
+    if (to is! String ||
+        !isCanonicalUuid(to) ||
+        !isAllowedReaction(emoji) ||
+        (op != 'add' && op != 'remove') ||
+        sentAt == null ||
+        !isCanonicalUuid(messageId) ||
+        (serverAt != null &&
+            sentAt.isAfter(serverAt.add(const Duration(minutes: 10))))) {
+      return const IncomingIgnored();
+    }
+    return IncomingReaction(
+      ReactionEvent(
+        target: to,
+        sender: senderId,
+        state: ReactionState(
+          emoji: op == 'add' ? emoji as String : null,
+          at: sentAt.toUtc(),
+          id: messageId,
+        ),
+      ),
+    );
+  }
+  if (kind != null && kind != 'text' && kind != 'image') {
+    return const IncomingIgnored();
+  }
   ChatAttachment? attachment;
   var unsupported = false;
-  if (body['kind'] == 'image') {
+  if (kind == 'image') {
     try {
       attachment = ChatAttachment.parse(body['att']);
     } on FormatException {
       unsupported = true;
     }
   }
-  return ChatMessage(
-    messageId: messageId,
-    senderId: senderId,
-    text: body['text'] as String,
-    sentAt:
-        DateTime.tryParse(body['sentAt'] as String? ?? '') ??
-        DateTime.now().toUtc(),
-    serverAt: serverAt,
-    mine: senderId == me,
-    attachment: attachment,
-    unsupportedPhoto: unsupported,
+  return IncomingMessage(
+    ChatMessage(
+      messageId: messageId,
+      senderId: senderId,
+      text: body['text'] as String,
+      sentAt: sentAt ?? DateTime.now().toUtc(),
+      serverAt: serverAt,
+      mine: senderId == me,
+      attachment: attachment,
+      unsupportedPhoto: unsupported,
+      reply: ChatReply.parse(
+        body['re'],
+        members: members ?? (senderId == me ? null : {me, senderId}),
+      ),
+    ),
   );
+}
+
+/// Turns a decrypted payload into a message (see [parseIncoming]); throws for
+/// a mismatch and for a payload that is not a message (a reaction or an
+/// unknown kind), for callers that only ever expect messages.
+ChatMessage messageFromBody(
+  Map<String, dynamic> body, {
+  required String messageId,
+  required String conversationId,
+  required String senderId,
+  required String me,
+  DateTime? serverAt,
+}) {
+  final incoming = parseIncoming(
+    body,
+    messageId: messageId,
+    conversationId: conversationId,
+    senderId: senderId,
+    me: me,
+    serverAt: serverAt,
+  );
+  if (incoming is IncomingMessage) return incoming.message;
+  throw const ChatFailure('NOT_A_MESSAGE', 'That payload is not a message.');
 }
 
 /// Safety number in the style of Signal's: each side hashes its user id and

@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'chat_attachment.dart';
 import 'chat_engine.dart';
+import 'chat_reactions.dart';
 import 'chat_store.dart';
 
 /// The decrypted messages of each conversation, kept as JSON in the secure
@@ -21,7 +22,16 @@ class ChatHistory {
   /// Called with messages that fell off the end of a list, so their cached
   /// photos can go with them.
   final void Function(List<ChatMessage> dropped)? onDropped;
-  ChatHistory(this.store, this.keyOf, {this.onChange, this.onDropped});
+
+  /// "Now", for how long a waiting reaction is kept.
+  final DateTime Function() clock;
+  ChatHistory(
+    this.store,
+    this.keyOf, {
+    this.onChange,
+    this.onDropped,
+    DateTime Function()? clock,
+  }) : clock = clock ?? DateTime.now;
 
   static const limit = 500;
   final _lists = <String, List<ChatMessage>>{};
@@ -77,16 +87,159 @@ class ChatHistory {
     onChange?.call(conversationId);
   }
 
-  /// Adds [message] unless that id is already there.
+  /// Adds [message] unless that id is already there. Reactions that arrived
+  /// before it are applied to it now.
   Future<bool> append(String conversationId, ChatMessage message) =>
       _serial(() async {
         final list = [...await _load(conversationId)];
         if (list.any((m) => m.messageId == message.messageId)) return false;
-        list.add(message);
+        var added = message;
+        if (!message.notice) {
+          final waiting = await _loadPending(conversationId);
+          final states = waiting.remove(message.messageId);
+          if (states != null) {
+            var merged = added.reactionStates;
+            for (final e in states.entries) {
+              merged = mergeReaction(merged, e.key, e.value.state);
+            }
+            added = added.copyWith(reactionStates: merged);
+            await _savePending(conversationId, waiting);
+          }
+        }
+        list.add(added);
         list.sort((a, b) => a.sentAt.compareTo(b.sentAt));
         await _save(conversationId, list);
         return true;
       });
+
+  // ---------------------------------------------------------- reactions
+
+  /// Reactions that arrived before the message they are for (two devices'
+  /// messages can reach this one in any order): per conversation, by target id
+  /// then by sender. At most [pendingReactionCap] targets, each kept for
+  /// [pendingReactionLife] from when it arrived, then forgotten. Kept in the
+  /// store beside the history so a restart does not lose them.
+  final _pending = <String, Map<String, Map<String, _Waiting>>>{};
+
+  String _pendingKey(String conversationId) =>
+      '${keyOf(conversationId)}.reactions';
+
+  Future<Map<String, Map<String, _Waiting>>> _loadPending(
+    String conversationId,
+  ) async {
+    final cached = _pending[conversationId];
+    if (cached != null) return cached;
+    final out = <String, Map<String, _Waiting>>{};
+    final raw = await store.read(_pendingKey(conversationId));
+    if (raw != null) {
+      try {
+        final cutoff = clock().subtract(pendingReactionLife);
+        for (final target in (jsonDecode(raw) as Map).entries) {
+          final senders = <String, _Waiting>{};
+          for (final sender in (target.value as Map).entries) {
+            final w = _Waiting.fromJson(sender.value);
+            if (w != null && w.received.isAfter(cutoff)) {
+              senders[sender.key as String] = w;
+            }
+          }
+          if (senders.isNotEmpty) out[target.key as String] = senders;
+        }
+      } catch (_) {
+        // Unreadable: start empty, they are only a convenience.
+      }
+    }
+    return _pending[conversationId] = out;
+  }
+
+  Future<void> _savePending(
+    String conversationId,
+    Map<String, Map<String, _Waiting>> waiting,
+  ) async {
+    final cutoff = clock().subtract(pendingReactionLife);
+    waiting.removeWhere((_, senders) {
+      senders.removeWhere((_, w) => !w.received.isAfter(cutoff));
+      return senders.isEmpty;
+    });
+    if (waiting.length > pendingReactionCap) {
+      // The oldest arrivals go first.
+      DateTime newest(Map<String, _Waiting> s) => s.values
+          .map((w) => w.received)
+          .reduce((a, b) => a.isAfter(b) ? a : b);
+      final byAge = waiting.keys.toList()
+        ..sort((a, b) => newest(waiting[a]!).compareTo(newest(waiting[b]!)));
+      for (final id in byAge.take(waiting.length - pendingReactionCap)) {
+        waiting.remove(id);
+      }
+    }
+    _pending[conversationId] = waiting;
+    if (waiting.isEmpty) {
+      await store.delete(_pendingKey(conversationId));
+      return;
+    }
+    await store.write(
+      _pendingKey(conversationId),
+      jsonEncode({
+        for (final t in waiting.entries)
+          t.key: {for (final s in t.value.entries) s.key: s.value.toJson()},
+      }),
+    );
+  }
+
+  /// How many messages have a reaction waiting (for tests and diagnostics).
+  Future<int> pendingReactionCount(String conversationId) =>
+      _serial(() async => (await _loadPending(conversationId)).length);
+
+  /// Applies a reaction to its message, last writer wins per sender. If the
+  /// message is not in this conversation's history it waits (see [_pending]);
+  /// the return value is whether it was applied to a message now.
+  Future<bool> applyReaction(
+    String conversationId,
+    ReactionEvent event,
+  ) => _serial(() async {
+    final list = [...await _load(conversationId)];
+    final at = list.indexWhere((m) => m.messageId == event.target && !m.notice);
+    if (at >= 0) {
+      final m = list[at];
+      final merged = mergeReaction(m.reactionStates, event.sender, event.state);
+      if (!identical(merged, m.reactionStates)) {
+        list[at] = m.copyWith(reactionStates: merged);
+        await _save(conversationId, list);
+      }
+      return true;
+    }
+    final waiting = await _loadPending(conversationId);
+    final senders = waiting.putIfAbsent(event.target, () => {});
+    final held = senders[event.sender];
+    if (held == null || event.state.beats(held.state)) {
+      senders[event.sender] = _Waiting(event.state, clock().toUtc());
+    }
+    await _savePending(conversationId, waiting);
+    return false;
+  });
+
+  /// Takes back a reaction that could not be sent: puts [previous] (or nothing)
+  /// back for [sender], unless a newer event has replaced [sent] meanwhile.
+  Future<void> revertReaction(
+    String conversationId,
+    String target,
+    String sender, {
+    required ReactionState sent,
+    required ReactionState? previous,
+  }) => _serial(() async {
+    final list = [...await _load(conversationId)];
+    final at = list.indexWhere((m) => m.messageId == target);
+    if (at < 0) return;
+    final m = list[at];
+    if (m.reactionStates[sender] != sent) return;
+    final states = {...m.reactionStates};
+    if (previous == null) {
+      states.remove(sender);
+    } else {
+      states[sender] = previous;
+    }
+    list[at] = m.copyWith(reactionStates: states);
+    await _save(conversationId, list);
+  });
 
   /// Swaps the message with the same id, if it is still there.
   Future<void> replace(String conversationId, ChatMessage message) =>
@@ -107,4 +260,24 @@ class ChatHistory {
         await _save(conversationId, list);
         return gone;
       });
+}
+
+/// A reaction held for a message that has not arrived, and when it did.
+class _Waiting {
+  final ReactionState state;
+  final DateTime received;
+  const _Waiting(this.state, this.received);
+
+  Map<String, dynamic> toJson() => {
+    ...state.toJson(),
+    'rcv': received.toUtc().toIso8601String(),
+  };
+
+  static _Waiting? fromJson(Object? raw) {
+    final state = ReactionState.fromJson(raw);
+    final rcv = raw is Map && raw['rcv'] is String
+        ? DateTime.tryParse(raw['rcv'] as String)
+        : null;
+    return state == null || rcv == null ? null : _Waiting(state, rcv);
+  }
 }
