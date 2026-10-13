@@ -1,0 +1,495 @@
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/realtime"
+)
+
+// Account deletion (docs/api/22-account-deletion-and-export.md).
+//
+//	active --ScheduleDeletion--> pending_deletion --(30 days)--> deleting --(purge finished)--> deleted
+//	                                   |
+//	                                   +--CancelDeletion--> active
+//
+// A pending member is out of every other member's view at once (every read that wants a live account
+// says status='active'), has no sessions and no live sockets, and may sign in again only to cancel.
+// The purge job (PurgeDeletedAccounts) removes what the member made and what was made about them; what
+// stays, and why, is the retention table in the docs. The users row itself stays as a tombstone with no
+// personal data: the retained reports and held evidence reference it.
+
+// DeletionState is the member's deletion status: DueAt is the end of the grace period, CanCancel
+// whether it is still running.
+type DeletionState struct {
+	Pending     bool       `json:"pending"`
+	ScheduledAt *time.Time `json:"scheduledAt"`
+	DueAt       *time.Time `json:"dueAt"`
+	CanCancel   bool       `json:"canCancel"`
+}
+
+// DeletionStatus reads the status of an active or pending account.
+func (s *Store) DeletionStatus(ctx context.Context, user string) (DeletionState, error) {
+	var d DeletionState
+	var status string
+	err := s.Pool.QueryRow(ctx, `SELECT status,deletion_scheduled_at,deletion_due_at,coalesce(deletion_due_at>now(),false) FROM users WHERE user_id=$1 AND status IN ('active','pending_deletion')`, user).
+		Scan(&status, &d.ScheduledAt, &d.DueAt, &d.CanCancel)
+	if err != nil {
+		return DeletionState{}, mapped(err)
+	}
+	d.Pending = status == "pending_deletion"
+	d.CanCancel = d.Pending && d.CanCancel
+	return d, nil
+}
+
+// Username is the account's current username; the deletion confirmation must match it.
+func (s *Store) Username(ctx context.Context, user string) (string, error) {
+	var name string
+	err := s.Pool.QueryRow(ctx, `SELECT p.username FROM profiles p JOIN users u USING(user_id) WHERE p.user_id=$1 AND u.status IN ('active','pending_deletion')`, user).Scan(&name)
+	return name, mapped(err)
+}
+
+// ScheduleDeletion moves an active account to pending_deletion, due in domain.DeletionGrace. In the same
+// transaction every session is revoked (also the sign-ins this server never saw, through the identity's
+// watermark, so none of them can reopen the account), push tokens are cleared and every API node is told
+// to close the account's live sockets (NOTIFY is transactional, as in suspend). Asking again while pending
+// changes nothing: the first request's due date stands.
+func (s *Store) ScheduleDeletion(ctx context.Context, user string) (DeletionState, error) {
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1 FOR UPDATE`, user).Scan(&status); err != nil {
+			return mapped(err)
+		}
+		if status == "pending_deletion" {
+			return nil
+		}
+		if status != "active" {
+			return domain.ErrNotFound
+		}
+		for _, statement := range []string{
+			`UPDATE users SET status='pending_deletion',deletion_scheduled_at=now(),deletion_due_at=now()+$2::interval WHERE user_id=$1`,
+			`UPDATE sessions SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1`,
+			`UPDATE auth_identities SET sessions_revoked_before=now() WHERE user_id=$1`,
+			`UPDATE devices SET push_provider=NULL,push_token=NULL WHERE user_id=$1`,
+		} {
+			args := []any{user}
+			if strings.Contains(statement, "$2") {
+				args = append(args, domain.DeletionGrace)
+			}
+			if _, err := tx.Exec(ctx, statement, args...); err != nil {
+				return err
+			}
+		}
+		notice, _ := json.Marshal(realtime.DisconnectEvent(user))
+		_, err := tx.Exec(ctx, `SELECT pg_notify($1,$2)`, realtime.Channel, string(notice))
+		return err
+	})
+	if err != nil {
+		return DeletionState{}, err
+	}
+	return s.DeletionStatus(ctx, user)
+}
+
+// CancelDeletion returns a pending account to active while the grace period runs. After DueAt the purge
+// may already have started, so it answers ErrDeletionClosed; an account that is not pending is not found.
+func (s *Store) CancelDeletion(ctx context.Context, user string) (DeletionState, error) {
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var status string
+		var open bool
+		if err := tx.QueryRow(ctx, `SELECT status,coalesce(deletion_due_at>now(),false) FROM users WHERE user_id=$1 FOR UPDATE`, user).Scan(&status, &open); err != nil {
+			return mapped(err)
+		}
+		if status != "pending_deletion" {
+			return domain.ErrNotFound
+		}
+		if !open {
+			return domain.ErrDeletionClosed
+		}
+		_, err := tx.Exec(ctx, `UPDATE users SET status='active',deletion_scheduled_at=NULL,deletion_due_at=NULL WHERE user_id=$1`, user)
+		return err
+	})
+	if err != nil {
+		return DeletionState{}, err
+	}
+	return s.DeletionStatus(ctx, user)
+}
+
+// SessionAuthTime is when the person last signed in interactively on this session: the Firebase auth_time
+// carried in the session id. known is false for sessions that do not have one (development sessions, other
+// identity providers).
+func (s *Store) SessionAuthTime(ctx context.Context, sessionID string) (at time.Time, known bool, err error) {
+	var issuer, sid *string
+	if err = s.Pool.QueryRow(ctx, `SELECT issuer,external_sid FROM sessions WHERE session_id=$1`, sessionID).Scan(&issuer, &sid); err != nil {
+		return at, false, mapped(err)
+	}
+	if issuer == nil || sid == nil {
+		return at, false, nil
+	}
+	// "fb:<subject>:<auth_time>"
+	cut := strings.LastIndex(*sid, ":")
+	if cut < 3 {
+		return at, false, nil
+	}
+	seconds, ok := firebaseAuthTime(*issuer, (*sid)[3:cut], *sid)
+	if !ok {
+		return at, false, nil
+	}
+	return time.Unix(seconds, 0), true, nil
+}
+
+// IdentityDeleter removes the person's account at the identity provider (the Firebase user), so the same
+// sign-in cannot create a new member by accident. DeleteIdentity must succeed when the account is already
+// gone; the purge calls it again after a failure.
+type IdentityDeleter interface {
+	DeleteIdentity(ctx context.Context, issuer, subject string) error
+}
+
+// PurgeDeletedAccounts runs the purge for up to batch accounts that are past their grace period or
+// partway through it, and returns how many it worked on. Each account is handled under its own advisory
+// lock (so two API nodes never purge the same one), in steps that are safe to repeat: a crash, a storage
+// outage or an identity provider error leaves the account in status 'deleting' and the next run carries on.
+// The account's database rows go in one transaction; its objects are removed by the media cleanup and
+// PurgeChatBlobs, which pick up what the purge marked deleted, and the account becomes 'deleted' on the
+// first run that finds nothing of theirs left in object storage bookkeeping. A cancelled or active
+// account is never selected: every step re-reads the status under a row lock.
+func (s *Store) PurgeDeletedAccounts(ctx context.Context, deleter IdentityDeleter, batch int) (int64, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT user_id::text FROM users WHERE (status='pending_deletion' AND deletion_due_at<=now()) OR status='deleting' ORDER BY deletion_due_at,user_id LIMIT $1`, batch)
+	if err != nil {
+		return 0, err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return 0, err
+	}
+	var worked int64
+	var failures []error
+	for _, id := range ids {
+		done, err := s.purgeAccount(ctx, id, deleter)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		if done {
+			worked++
+		}
+	}
+	return worked, errors.Join(failures...)
+}
+
+// purgeAccount advances one account. done is false when another node holds it or it is not purgeable.
+func (s *Store) purgeAccount(ctx context.Context, id string, deleter IdentityDeleter) (done bool, err error) {
+	conn, err := s.Pool.Acquire(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer conn.Release()
+	var locked bool
+	if err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended('account-purge:'||$1::text,0))`, id).Scan(&locked); err != nil || !locked {
+		return false, err
+	}
+	defer func() {
+		// Release on a fresh context: a cancelled request must not leave the lock on a pooled connection.
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(hashtextextended('account-purge:'||$1::text,0))`, id)
+	}()
+
+	started := false
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var status string
+		var due bool
+		if err := tx.QueryRow(ctx, `SELECT status,coalesce(deletion_due_at<=now(),false) FROM users WHERE user_id=$1 FOR UPDATE`, id).Scan(&status, &due); err != nil {
+			return mapped(err)
+		}
+		switch {
+		case status == "pending_deletion" && due:
+			if _, err := tx.Exec(ctx, `UPDATE users SET status='deleting' WHERE user_id=$1`, id); err != nil {
+				return err
+			}
+		case status != "deleting":
+			return nil // cancelled, or not due yet
+		}
+		started = true
+		return purgeContent(ctx, tx, id)
+	})
+	if err != nil || !started {
+		return false, err
+	}
+
+	// The identity provider account, then the bookkeeping that proves it.
+	rows, err := s.Pool.Query(ctx, `SELECT issuer,subject FROM auth_identities WHERE user_id=$1 AND provider_deleted_at IS NULL`, id)
+	if err != nil {
+		return false, err
+	}
+	type identity struct{ issuer, subject string }
+	identities, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (identity, error) {
+		var i identity
+		return i, row.Scan(&i.issuer, &i.subject)
+	})
+	if err != nil {
+		return false, err
+	}
+	for _, i := range identities {
+		if deleter != nil {
+			if err = deleter.DeleteIdentity(ctx, i.issuer, i.subject); err != nil {
+				return false, errors.New("identity provider account not deleted; the purge retries it on the next run")
+			}
+		}
+		if _, err = s.Pool.Exec(ctx, `UPDATE auth_identities SET provider_deleted_at=now() WHERE issuer=$1 AND subject=$2 AND user_id=$3`, i.issuer, i.subject, id); err != nil {
+			return false, err
+		}
+	}
+
+	// Finished once no file or file record of theirs is left to remove.
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1 FOR UPDATE`, id).Scan(&status); err != nil || status != "deleting" {
+			return mapped(err)
+		}
+		if err := purgeContent(ctx, tx, id); err != nil {
+			return err
+		}
+		var drained bool
+		if err := tx.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM media_assets WHERE owner_id=$1)
+ AND NOT EXISTS(SELECT 1 FROM chat_blobs b WHERE b.held_report_id IS NULL AND (b.uploader_id=$1 OR b.conversation_id IN (`+memberConversations+`)))
+ AND NOT EXISTS(SELECT 1 FROM auth_identities WHERE user_id=$1 AND provider_deleted_at IS NULL)`, id).Scan(&drained); err != nil || !drained {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE users SET status='deleted' WHERE user_id=$1`, id); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO deleted_users(user_id) VALUES($1) ON CONFLICT DO NOTHING`, id)
+		return err
+	})
+	return err == nil, err
+}
+
+// PurgeDeletedIdentities removes the identity rows of accounts purged more than retain ago (24 hours): until
+// then a token minted before the purge resolves to the deleted account and is refused. At most batch per call.
+func (s *Store) PurgeDeletedIdentities(ctx context.Context, retain time.Duration, batch int) (int64, error) {
+	tag, err := s.Pool.Exec(ctx, `DELETE FROM auth_identities WHERE ctid IN (SELECT a.ctid FROM auth_identities a JOIN deleted_users d ON d.user_id=a.user_id
+ WHERE a.provider_deleted_at IS NOT NULL AND d.deleted_at<now()-$1::interval LIMIT $2)`, retain, batch)
+	return tag.RowsAffected(), err
+}
+
+// memberConversations selects the conversations account $1 is in.
+const memberConversations = `SELECT conversation_id FROM conversations WHERE $1::uuid IN (user_low_id,user_high_id)`
+
+// retainedReport is true for report row r when the purge must keep it whole: it is still open, or it holds
+// encrypted evidence (chat_blobs.held_report_id), which stays for as long as the hold does.
+const retainedReport = `(r.status='open' OR EXISTS(SELECT 1 FROM chat_blobs hb WHERE hb.held_report_id=r.report_id))`
+
+// purgeContent deletes what an account in status 'deleting' made and what exists about them. Every
+// statement is safe to run again, so the purge repeats it until the file records have drained. Order
+// follows the foreign keys. What it leaves, all without personal data once the rest is gone (see the
+// retention table in the docs): the users row, reports and their evidence while retained, the chat
+// rows those hold, and the media and attachment rows still waiting for their objects to be removed.
+func purgeContent(ctx context.Context, tx pgx.Tx, id string) error {
+	run := func(statements ...string) error {
+		for _, statement := range statements {
+			if _, err := tx.Exec(ctx, statement, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	// Sign-in state. The identity row stays for now (see PurgeDeletedIdentities).
+	if err := run(
+		`DELETE FROM sessions WHERE user_id=$1`,
+		`DELETE FROM key_claims WHERE claimer_id=$1 OR device_id IN (SELECT device_id FROM devices WHERE user_id=$1)`,
+		`DELETE FROM notification_prefs WHERE user_id=$1`,
+		`UPDATE devices SET push_provider=NULL,push_token=NULL WHERE user_id=$1`,
+	); err != nil {
+		return err
+	}
+
+	// Pulse. Reactions and comments on other people's posts leave the counters with them.
+	if err := run(
+		`INSERT INTO post_counters(post_id,slot,reactions,comments) SELECT r.post_id,0,-count(*),0 FROM post_reactions r JOIN posts p ON p.post_id=r.post_id
+ WHERE r.user_id=$1 AND p.author_id<>$1 GROUP BY r.post_id ON CONFLICT (post_id,slot) DO UPDATE SET reactions=post_counters.reactions+excluded.reactions`,
+		`INSERT INTO post_counters(post_id,slot,reactions,comments) SELECT c.post_id,0,0,-count(*) FROM comments c JOIN posts p ON p.post_id=c.post_id
+ WHERE c.author_id=$1 AND p.author_id<>$1 AND NOT c.hidden AND c.deleted_at IS NULL GROUP BY c.post_id ON CONFLICT (post_id,slot) DO UPDATE SET comments=post_counters.comments+excluded.comments`,
+		`DELETE FROM post_reactions WHERE user_id=$1`,
+	); err != nil {
+		return err
+	}
+	// Their comments go, leaf first; one that others replied to stays as an empty, deleted placeholder so
+	// the thread keeps its shape.
+	for range 100 {
+		tag, err := tx.Exec(ctx, `DELETE FROM comments c WHERE c.author_id=$1 AND NOT EXISTS(SELECT 1 FROM comments k WHERE k.parent_id=c.comment_id)`, id)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			break
+		}
+	}
+	if err := run(
+		`UPDATE comments SET body='',deleted_at=coalesce(deleted_at,now()) WHERE author_id=$1 AND (body<>'' OR deleted_at IS NULL)`,
+		`DELETE FROM comments WHERE post_id IN (SELECT post_id FROM posts WHERE author_id=$1)`,
+		`DELETE FROM post_reactions WHERE post_id IN (SELECT post_id FROM posts WHERE author_id=$1)`,
+		`DELETE FROM saved_posts WHERE post_id IN (SELECT post_id FROM posts WHERE author_id=$1) OR user_id=$1`,
+		`DELETE FROM post_counters WHERE post_id IN (SELECT post_id FROM posts WHERE author_id=$1)`,
+		`DELETE FROM post_media WHERE post_id IN (SELECT post_id FROM posts WHERE author_id=$1)`,
+		`DELETE FROM posts WHERE author_id=$1`,
+		`DELETE FROM story_views WHERE viewer_id=$1`,
+		`DELETE FROM stories WHERE author_id=$1`, // their viewers' rows go with them
+		// Photos: whatever is not deleted yet is released for the media cleanup (MediaGarbage), which removes
+		// the objects and clears the keys; the row itself goes on the first pass after that.
+		`UPDATE media_assets SET attached=false,expires_at=now()-interval '1 second' WHERE owner_id=$1 AND status<>'deleted'`,
+		`DELETE FROM media_assets WHERE owner_id=$1 AND status='deleted' AND variants IS NULL`,
+	); err != nil {
+		return err
+	}
+
+	// Relationships and activity, in both directions.
+	if err := run(
+		`DELETE FROM notifications WHERE recipient_id=$1 OR actor_id=$1`,
+		`DELETE FROM follows WHERE follower_id=$1 OR followee_id=$1`,
+		`DELETE FROM friendships WHERE user_low_id=$1 OR user_high_id=$1`,
+		`DELETE FROM blocks WHERE blocker_id=$1 OR blocked_id=$1`,
+		`DELETE FROM user_controls WHERE actor_id=$1 OR target_id=$1`,
+		`DELETE FROM profile_visits WHERE profile_id=$1 OR visitor_id=$1`,
+		`DELETE FROM profile_visit_counts WHERE profile_id=$1`,
+		`DELETE FROM user_locations WHERE user_id=$1`,
+	); err != nil {
+		return err
+	}
+
+	if err := purgeSpaces(ctx, tx, id); err != nil {
+		return err
+	}
+
+	// Reports. Open reports and reports that hold evidence stay whole; a resolved report that led to a
+	// moderation action against someone else stays without the reporter's text; the rest goes.
+	if err := run(
+		`DELETE FROM moderation_actions ma WHERE ma.subject_id=$1 AND NOT EXISTS(SELECT 1 FROM reports r WHERE r.report_id=ma.report_id AND `+retainedReport+`)`,
+		`DELETE FROM reports r WHERE (r.reporter_id=$1 OR r.subject_id=$1) AND NOT `+retainedReport+`
+ AND NOT EXISTS(SELECT 1 FROM moderation_actions ma WHERE ma.report_id=r.report_id AND ma.subject_id<>$1)`,
+		`UPDATE reports r SET description=NULL,evidence=NULL,disclosure_consent=false WHERE r.reporter_id=$1 AND NOT `+retainedReport+` AND (description IS NOT NULL OR evidence IS NOT NULL)`,
+	); err != nil {
+		return err
+	}
+
+	// Chat. The server holds no readable content: this is the ciphertext still in transit, the attachments
+	// (their objects go through PurgeChatBlobs), message metadata and conversation membership. A held
+	// attachment keeps its message and conversation rows, nothing else.
+	if _, err := DeleteUserChatBlobs(ctx, tx, id); err != nil {
+		return err
+	}
+	if err := run(
+		`DELETE FROM message_envelopes WHERE message_id IN (SELECT message_id FROM messages WHERE conversation_id IN (`+memberConversations+`))
+ OR recipient_device_id IN (SELECT device_id FROM devices WHERE user_id=$1)`,
+		// The other member's attachments in these conversations go too; their rows stay until the objects
+		// are gone and the two days they count towards that member's daily quota have passed.
+		`UPDATE chat_blobs SET state='deleted',deleted_at=now() WHERE state<>'deleted' AND held_report_id IS NULL AND conversation_id IN (`+memberConversations+`)`,
+		`DELETE FROM chat_blobs WHERE held_report_id IS NULL AND state='deleted' AND object_key IS NULL
+ AND (uploader_id=$1 OR (conversation_id IN (`+memberConversations+`) AND created_at<now()-interval '2 days'))`,
+		`DELETE FROM messages m WHERE m.conversation_id IN (`+memberConversations+`) AND NOT EXISTS(SELECT 1 FROM chat_blobs b WHERE b.message_id=m.message_id)`,
+		`DELETE FROM conversation_members WHERE user_id=$1 OR peer_id=$1`,
+		`DELETE FROM conversations c WHERE $1::uuid IN (c.user_low_id,c.user_high_id)
+ AND NOT EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.conversation_id) AND NOT EXISTS(SELECT 1 FROM chat_blobs b WHERE b.conversation_id=c.conversation_id)`,
+		// Key material. A device that signed a retained message keeps only its public keys.
+		`DELETE FROM one_time_keys WHERE device_id IN (SELECT device_id FROM devices WHERE user_id=$1)`,
+		`DELETE FROM fallback_keys WHERE device_id IN (SELECT device_id FROM devices WHERE user_id=$1)`,
+		`DELETE FROM devices d WHERE d.user_id=$1 AND NOT EXISTS(SELECT 1 FROM messages m WHERE m.sender_device_id=d.device_id)`,
+		`UPDATE devices SET display_name='',revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1 AND (display_name<>'' OR revoked_at IS NULL)`,
+	); err != nil {
+		return err
+	}
+
+	// The profile, last: nothing above reads it.
+	return run(
+		`DELETE FROM privacy_settings WHERE user_id=$1`,
+		`DELETE FROM profiles WHERE user_id=$1`,
+		`DELETE FROM onboarding WHERE user_id=$1`,
+		`DELETE FROM member_ages WHERE user_id=$1`,
+		`DELETE FROM discovery_eligibility WHERE user_id=$1`,
+		`DELETE FROM outbox_events WHERE aggregate_id=$1`,
+	)
+}
+
+// purgeSpaces removes the member from every space. A space they own passes to its longest-standing active
+// member (admins and moderators first) so a community does not vanish with its founder; one with nobody
+// else in it is deleted with its entries, and its child spaces become top-level.
+func purgeSpaces(ctx context.Context, tx pgx.Tx, id string) error {
+	rows, err := tx.Query(ctx, `SELECT space_id::text FROM spaces WHERE owner_id=$1`, id)
+	if err != nil {
+		return err
+	}
+	owned, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for _, space := range owned {
+		var successor string
+		err := tx.QueryRow(ctx, `SELECT m.user_id::text FROM space_members m JOIN users u ON u.user_id=m.user_id AND u.status='active'
+ WHERE m.space_id=$1 AND m.user_id<>$2 AND m.state='active' ORDER BY (m.role='admin') DESC,(m.role='moderator') DESC,m.created_at,m.user_id LIMIT 1`, space, id).Scan(&successor)
+		if err == nil {
+			if _, err = tx.Exec(ctx, `UPDATE space_members SET role='owner' WHERE space_id=$1 AND user_id=$2`, space, successor); err != nil {
+				return err
+			}
+			if _, err = tx.Exec(ctx, `UPDATE spaces SET owner_id=$2 WHERE space_id=$1`, space, successor); err != nil {
+				return err
+			}
+			continue
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		for _, statement := range []string{
+			`DELETE FROM notifications WHERE target_id=$1`,
+			`DELETE FROM space_entries WHERE space_id=$1`,
+			`DELETE FROM space_members WHERE space_id=$1`,
+			`UPDATE spaces SET parent_id=NULL WHERE parent_id=$1`,
+			`DELETE FROM spaces WHERE space_id=$1`,
+		} {
+			if _, err = tx.Exec(ctx, statement, space); err != nil {
+				return err
+			}
+		}
+	}
+	for _, statement := range []string{
+		`DELETE FROM space_entries WHERE author_id=$1`,
+		`UPDATE spaces s SET member_count=greatest(s.member_count-1,1) FROM space_members m WHERE m.space_id=s.space_id AND m.user_id=$1 AND m.state='active'`,
+		`DELETE FROM space_members WHERE user_id=$1`,
+	} {
+		if _, err = tx.Exec(ctx, statement, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ClaimExport records that the member is downloading their data now, if the last export was more than
+// domain.ExportInterval ago, and returns the previous time so a failed export can hand the claim back
+// (ReleaseExport). Otherwise it answers 429 RATE_LIMITED with the wait.
+func (s *Store) ClaimExport(ctx context.Context, user string) (previous *time.Time, err error) {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var wait float64
+		var last *time.Time
+		if err := tx.QueryRow(ctx, `SELECT last_export_at,coalesce(extract(epoch FROM last_export_at+$2::interval-now()),0) FROM users WHERE user_id=$1 AND status='active' FOR UPDATE`, user, domain.ExportInterval).Scan(&last, &wait); err != nil {
+			return mapped(err)
+		}
+		if wait > 0 {
+			return domain.RetryAfter(domain.ErrExportLimited, time.Duration(wait*float64(time.Second)))
+		}
+		previous = last
+		_, err := tx.Exec(ctx, `UPDATE users SET last_export_at=now() WHERE user_id=$1`, user)
+		return err
+	})
+	return previous, err
+}
+
+// ReleaseExport gives back the claim of an export that did not finish.
+func (s *Store) ReleaseExport(ctx context.Context, user string, previous *time.Time) {
+	if _, err := s.Pool.Exec(context.WithoutCancel(ctx), `UPDATE users SET last_export_at=$2 WHERE user_id=$1`, user, previous); err != nil {
+		slog.Warn("export claim not released", "reason", strconv.Quote(err.Error()))
+	}
+}
