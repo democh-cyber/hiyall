@@ -1,4 +1,5 @@
 import 'chat_attachment.dart' show isCanonicalUuid;
+import 'chat_text.dart';
 
 /// The six quick reactions, as exact strings. A received reaction is accepted
 /// only if it equals one of these byte for byte (so `❤` without its variation
@@ -147,7 +148,12 @@ class ChatReply {
     if (members != null && !members.contains(by)) return null;
     if (snip is! String || !isPlainSnippet(snip)) return null;
     if (k is! String || !kinds.contains(k)) return null;
-    return ChatReply(id: id, by: by, snippet: snip, kind: k);
+    return ChatReply(
+      id: id,
+      by: by,
+      snippet: sanitizeText(snip, multiline: false),
+      kind: k,
+    );
   }
 }
 
@@ -168,8 +174,7 @@ bool isPlainSnippet(String text) =>
 /// single spaces, unsafe characters removed, then cut to [maxReplySnippet]
 /// code points with an ellipsis.
 String snippetOf(String text) {
-  final plain = text
-      .replaceAll(_unsafeSnippet, ' ')
+  final plain = sanitizeText(text.replaceAll(_unsafeSnippet, ' '))
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
   final runes = plain.runes.toList();

@@ -5,6 +5,7 @@
 
 import 'api/blob.dart';
 import 'api/e2ee.dart';
+import 'api/seal.dart';
 
 import 'dart:async';
 import 'dart:convert';
@@ -68,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 1674410531;
+  int get rustContentHash => 1261171776;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -93,6 +94,8 @@ abstract class RustLibApi extends BaseApi {
     required String identityKey,
     required String oneTimeKey,
   });
+
+  bool crateApiE2EeOlmAccountForgetOldFallbackKey({required OlmAccount that});
 
   PublicKeyEntry? crateApiE2EeOlmAccountGenerateFallbackKey({
     required OlmAccount that,
@@ -123,6 +126,10 @@ abstract class RustLibApi extends BaseApi {
   });
 
   String crateApiE2EeOlmAccountSigningKey({required OlmAccount that});
+
+  PublicKeyEntry? crateApiE2EeOlmAccountUnpublishedFallbackKey({
+    required OlmAccount that,
+  });
 
   String crateApiE2EeOlmSessionDecrypt({
     required OlmSession that,
@@ -176,13 +183,27 @@ abstract class RustLibApi extends BaseApi {
 
   Uint8List crateApiBlobGenerateBlobKey();
 
+  Uint8List crateApiSealGenerateSealKey();
+
   bool crateApiE2EeIsContributoryKey({required String key});
+
+  Future<Uint8List> crateApiSealOpenState({
+    required List<int> key,
+    required List<int> aad,
+    required List<int> sealed,
+  });
 
   Future<PreparedImage> crateApiBlobPrepareChatImage({
     required List<int> input,
   });
 
   Future<RgbaPreview> crateApiBlobPreviewToRgba({required List<int> preview});
+
+  Future<Uint8List> crateApiSealSealState({
+    required List<int> key,
+    required List<int> aad,
+    required List<int> plaintext,
+  });
 
   bool crateApiE2EeVerifySignature({
     required String signingKey,
@@ -311,6 +332,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  bool crateApiE2EeOlmAccountForgetOldFallbackKey({required OlmAccount that}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccount(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 4)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiE2EeOlmAccountForgetOldFallbackKeyConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiE2EeOlmAccountForgetOldFallbackKeyConstMeta =>
+      const TaskConstMeta(
+        debugName: "OlmAccount_forget_old_fallback_key",
+        argNames: ["that"],
+      );
+
+  @override
   PublicKeyEntry? crateApiE2EeOlmAccountGenerateFallbackKey({
     required OlmAccount that,
   }) {
@@ -322,7 +372,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 4)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 5)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_public_key_entry,
@@ -355,7 +405,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_u_32(count, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 5)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_list_public_key_entry,
@@ -384,7 +434,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 6)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 7)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -413,7 +463,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 7)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 8)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_unit,
@@ -446,7 +496,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_list_prim_u_8_loose(pickleKey, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 8)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 9)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -476,7 +526,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(pickle, serializer);
           sse_encode_list_prim_u_8_loose(pickleKey, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 9)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 10)!;
         },
         codec: SseCodec(
           decodeSuccessData:
@@ -510,7 +560,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(message, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 10)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 11)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -538,7 +588,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 11)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -558,6 +608,37 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  PublicKeyEntry? crateApiE2EeOlmAccountUnpublishedFallbackKey({
+    required OlmAccount that,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOlmAccount(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_opt_box_autoadd_public_key_entry,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiE2EeOlmAccountUnpublishedFallbackKeyConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiE2EeOlmAccountUnpublishedFallbackKeyConstMeta =>
+      const TaskConstMeta(
+        debugName: "OlmAccount_unpublished_fallback_key",
+        argNames: ["that"],
+      );
+
+  @override
   String crateApiE2EeOlmSessionDecrypt({
     required OlmSession that,
     required int messageType,
@@ -573,7 +654,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
           sse_encode_u_8(messageType, serializer);
           sse_encode_String(ciphertext, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 12)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -606,7 +687,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(plaintext, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 13)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 15)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_encrypted_message,
@@ -639,7 +720,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(ciphertext, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 14)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 16)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -672,7 +753,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_list_prim_u_8_loose(pickleKey, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 15)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 17)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -702,7 +783,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(pickle, serializer);
           sse_encode_list_prim_u_8_loose(pickleKey, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 16)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 18)!;
         },
         codec: SseCodec(
           decodeSuccessData:
@@ -732,7 +813,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 17)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 19)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -779,7 +860,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 20,
             port: port_,
           );
         },
@@ -843,7 +924,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 21,
             port: port_,
           );
         },
@@ -885,7 +966,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 20)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 22)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_list_prim_u_8_strict,
@@ -902,13 +983,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "generate_blob_key", argNames: []);
 
   @override
+  Uint8List crateApiSealGenerateSealKey() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 23)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSealGenerateSealKeyConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSealGenerateSealKeyConstMeta =>
+      const TaskConstMeta(debugName: "generate_seal_key", argNames: []);
+
+  @override
   bool crateApiE2EeIsContributoryKey({required String key}) {
     return handler.executeSync(
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(key, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 21)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 24)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -925,6 +1028,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "is_contributory_key", argNames: ["key"]);
 
   @override
+  Future<Uint8List> crateApiSealOpenState({
+    required List<int> key,
+    required List<int> aad,
+    required List<int> sealed,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(key, serializer);
+          sse_encode_list_prim_u_8_loose(aad, serializer);
+          sse_encode_list_prim_u_8_loose(sealed, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 25,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiSealOpenStateConstMeta,
+        argValues: [key, aad, sealed],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSealOpenStateConstMeta => const TaskConstMeta(
+    debugName: "open_state",
+    argNames: ["key", "aad", "sealed"],
+  );
+
+  @override
   Future<PreparedImage> crateApiBlobPrepareChatImage({
     required List<int> input,
   }) {
@@ -936,7 +1075,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 26,
             port: port_,
           );
         },
@@ -964,7 +1103,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 27,
             port: port_,
           );
         },
@@ -983,6 +1122,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "preview_to_rgba", argNames: ["preview"]);
 
   @override
+  Future<Uint8List> crateApiSealSealState({
+    required List<int> key,
+    required List<int> aad,
+    required List<int> plaintext,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_list_prim_u_8_loose(key, serializer);
+          sse_encode_list_prim_u_8_loose(aad, serializer);
+          sse_encode_list_prim_u_8_loose(plaintext, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 28,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_prim_u_8_strict,
+          decodeErrorData: sse_decode_String,
+        ),
+        constMeta: kCrateApiSealSealStateConstMeta,
+        argValues: [key, aad, plaintext],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSealSealStateConstMeta => const TaskConstMeta(
+    debugName: "seal_state",
+    argNames: ["key", "aad", "plaintext"],
+  );
+
+  @override
   bool crateApiE2EeVerifySignature({
     required String signingKey,
     required String message,
@@ -995,7 +1170,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_String(signingKey, serializer);
           sse_encode_String(message, serializer);
           sse_encode_String(signature, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 24)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 29)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -1823,6 +1998,13 @@ class OlmAccountImpl extends RustOpaque implements OlmAccount {
     oneTimeKey: oneTimeKey,
   );
 
+  /// Forgets the previous fallback key (the one the last [`generate_fallback_key`]
+  /// replaced); true if there was one. Call it once enough time has passed that no
+  /// pre-key message made for the old key can still be in flight. The account must
+  /// be pickled afterwards.
+  bool forgetOldFallbackKey() => RustLib.instance.api
+      .crateApiE2EeOlmAccountForgetOldFallbackKey(that: this);
+
   /// Rotates the fallback key and returns the unpublished one.
   PublicKeyEntry? generateFallbackKey() => RustLib.instance.api
       .crateApiE2EeOlmAccountGenerateFallbackKey(that: this);
@@ -1847,6 +2029,10 @@ class OlmAccountImpl extends RustOpaque implements OlmAccount {
 
   String signingKey() =>
       RustLib.instance.api.crateApiE2EeOlmAccountSigningKey(that: this);
+
+  /// The fallback key that was generated but not yet marked as published, if any.
+  PublicKeyEntry? unpublishedFallbackKey() => RustLib.instance.api
+      .crateApiE2EeOlmAccountUnpublishedFallbackKey(that: this);
 }
 
 @sealed

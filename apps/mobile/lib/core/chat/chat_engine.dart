@@ -16,6 +16,7 @@ import 'chat_blob_transport.dart';
 import 'chat_history.dart';
 import 'chat_local_data.dart';
 import 'chat_media.dart';
+import 'chat_padding.dart';
 import 'chat_outbox.dart';
 import 'chat_reactions.dart';
 import 'chat_store.dart';
@@ -367,7 +368,23 @@ class ChatEngine {
   final DateTime Function() _clock;
   Timer? _timer;
   bool _started = false;
+
+  /// The app is in the background: the inbox timer is stopped (see [pause]).
+  bool _paused = false;
   Duration _pollEvery = Duration.zero;
+
+  /// Fallback key rotation (audit F11). The fallback key is what a peer uses
+  /// when every one-time key is claimed. It is replaced every
+  /// [fallbackRotateEvery]; the key it replaced is forgotten [fallbackGrace]
+  /// after the new one was published, once the inbox has been read to the end
+  /// (so a pre-key message made for the old key that is still waiting on the
+  /// relay is opened first). Both times are kept with the account.
+  static const fallbackRotateEvery = Duration(days: 7);
+  static const fallbackGrace = Duration(hours: 24);
+  DateTime? _fbRotated, _fbForgetAt;
+
+  /// Set when a poll left a message on the relay for the next poll.
+  bool _leftBehind = false;
 
   /// Photos: the codec and transport behind the native core and object
   /// storage, and the app's private folder for the outbox and the ciphertext
@@ -512,7 +529,7 @@ class ChatEngine {
         await _afterStart();
         if (poll > Duration.zero) {
           _pollEvery = poll;
-          _timer = Timer.periodic(poll, (_) => pollNow().catchError((_) {}));
+          _startTimer();
         }
       });
 
@@ -562,6 +579,7 @@ class ChatEngine {
       await store.write(_k('pickleKey'), base64Encode(_pickleKey));
     }
     _sessions.clear();
+    _fbRotated = _fbForgetAt = null;
     final combined = await store.read(_k('state'));
     var legacy = false;
     Object? sessionData;
@@ -572,6 +590,11 @@ class ChatEngine {
         pickleKey: _pickleKey,
       );
       sessionData = j['sessions'];
+      final fb = j['fb'];
+      if (fb is Map) {
+        _fbRotated = DateTime.tryParse('${fb['rot']}');
+        _fbForgetAt = DateTime.tryParse('${fb['forget']}');
+      }
     } else {
       final savedAccount = await store.read(_k('account'));
       _account = savedAccount == null
@@ -642,6 +665,7 @@ class ChatEngine {
       await store.delete(_k(name));
     }
     _sessions.clear();
+    _fbRotated = _fbForgetAt = null;
     _unwedged.clear();
     _trust.remove(userId);
     await store.write(_k('trust'), jsonEncode(_trust));
@@ -661,6 +685,11 @@ class ChatEngine {
         for (final e in _sessions.entries)
           e.key: [for (final s in e.value) s.pickle(pickleKey: _pickleKey)],
       },
+      if (_fbRotated != null || _fbForgetAt != null)
+        'fb': {
+          'rot': ?_fbRotated?.toUtc().toIso8601String(),
+          'forget': ?_fbForgetAt?.toUtc().toIso8601String(),
+        },
     }),
   );
 
@@ -712,7 +741,8 @@ class ChatEngine {
     }
   }
 
-  Future<void> _saveNotes() async {
+  /// The three note entries as one commit.
+  Future<void> _saveNotes() => store.batch(() async {
     await store.write(
       _k('unwedge'),
       jsonEncode({
@@ -734,12 +764,31 @@ class ChatEngine {
       _k('verified'),
       jsonEncode({'ok': _verified, 'changed': _verifyChanged.toList()}),
     );
+  });
+
+  bool _noKeys = false;
+
+  bool get _fallbackDue {
+    if (_noKeys) return false;
+    final rotated = _fbRotated;
+    return rotated == null ||
+        _clock().toUtc().difference(rotated) >= fallbackRotateEvery;
   }
 
+  /// Tops up one-time keys when the relay holds fewer than 20, and replaces
+  /// the fallback key when it is due. The new keys are saved before they
+  /// become claimable, and the rotation is only recorded once the relay has the
+  /// new fallback key (the old one keeps working until then).
   Future<void> _replenishKeys() async {
-    if (await api.keyCount(deviceId) >= 20) return;
-    final keys = _account.generateOneTimeKeys(count: 40);
-    final fallback = _account.generateFallbackKey();
+    final count = await api.keyCount(deviceId);
+    final rotate = _fallbackDue;
+    if (count >= 20 && !rotate) return;
+    final keys = _account.generateOneTimeKeys(count: count >= 20 ? 0 : 40);
+    // A fallback key made by an attempt that did not reach the relay is
+    // offered again; making another would push the published one out.
+    final fallback = rotate
+        ? _account.unpublishedFallbackKey() ?? _account.generateFallbackKey()
+        : null;
     Map<String, String> signed(PublicKeyEntry k) => {
       'keyId': k.keyId,
       'publicKey': k.publicKey,
@@ -755,7 +804,29 @@ class ChatEngine {
       fallback == null ? null : signed(fallback),
     );
     _account.markKeysAsPublished();
+    if (fallback != null) {
+      final now = _clock().toUtc();
+      _fbRotated = now;
+      _fbForgetAt = now.add(fallbackGrace);
+    }
     await _saveState();
+  }
+
+  /// Rotates the fallback key if it is due and forgets the previous one once
+  /// its grace period is over. Called after the inbox was read to the end;
+  /// never throws.
+  Future<void> _maintainFallback() async {
+    try {
+      if (_fallbackDue) await _replenishKeys();
+      final forgetAt = _fbForgetAt;
+      if (forgetAt != null && !_clock().toUtc().isBefore(forgetAt)) {
+        _account.forgetOldFallbackKey();
+        _fbForgetAt = null;
+        await _saveState();
+      }
+    } catch (_) {
+      // Tried again after the next poll.
+    }
   }
 
   /// A stable summary of a person's device keys, to notice that they changed.
@@ -811,6 +882,7 @@ class ChatEngine {
   /// in every conversation with them, shown when it is next opened (and in
   /// [conversationId] at once).
   Future<List<_Device>> _devices(String user, {String? conversationId}) async {
+    final wasKnown = _trust.containsKey(user);
     final known = _trust[user] ?? {};
     final firstContact = known.isEmpty;
     final fetched = await _fetchDevices(user);
@@ -836,7 +908,10 @@ class ChatEngine {
       }
     }
     _trust[user] = known;
-    await store.write(_k('trust'), jsonEncode(_trust));
+    // Nothing new to pin is the usual case: do not rewrite the store for it.
+    if (!wasKnown || fetched.unpinned.isNotEmpty) {
+      await store.write(_k('trust'), jsonEncode(_trust));
+    }
     await _checkVerified(user, fetched.list, saveNotes: notes);
     return fetched.list;
   }
@@ -1073,6 +1148,14 @@ class ChatEngine {
     String text, {
     ChatMessage? replyTo,
   }) async {
+    // The same rules the API applies to every free-text field, and NFC.
+    final clean = sanitizeText(text);
+    if (clean.trim().isEmpty) {
+      throw const ChatFailure(
+        'INVALID_TEXT',
+        'That message has nothing this app can send.',
+      );
+    }
     final messageId = newUuid4(_random);
     final sentAt = _clock().toUtc();
     final reply = replyTo == null ? null : replyOf(replyTo, userId);
@@ -1081,7 +1164,7 @@ class ChatEngine {
       ChatMessage(
         messageId: messageId,
         senderId: userId,
-        text: text,
+        text: clean,
         sentAt: sentAt,
         mine: true,
         status: SendStatus.sending,
@@ -1135,8 +1218,10 @@ class ChatEngine {
         .where((m) => m.messageId == messageId)
         .firstOrNull;
     if (m == null) return;
-    // The same payload on every attempt: the receiver binds it to the id.
-    final payload = jsonEncode({
+    // The same content on every attempt: the receiver binds it to the id. It
+    // is padded to a size bucket so the relay cannot read the length off the
+    // envelope (the filler differs between attempts; nothing reads it).
+    final payload = encodePadded({
       'v': 1,
       'kind': 'text',
       'text': m.text,
@@ -1145,7 +1230,7 @@ class ChatEngine {
       'senderId': userId,
       'sentAt': m.sentAt.toUtc().toIso8601String(),
       if (m.reply != null) 're': m.reply!.toJson(),
-    });
+    }, _random);
     try {
       final serverAt = await _locked(
         () => _deliver(conversationId, peerId, messageId, payload, const []),
@@ -1413,21 +1498,27 @@ class ChatEngine {
   /// Fetches, verifies and decrypts pending envelopes, then acknowledges them.
   Future<void> pollNow() => _locked(() async {
     if (!_started) return;
+    _leftBehind = false;
+    var drained = false;
     // Drain a backlog page by page, bounded so one call never runs unchecked.
     for (var page = 0; page < 10; page++) {
-      if (await _pollPage() < 100) break;
+      if (await _pollPage() < 100) {
+        drained = true;
+        break;
+      }
     }
+    // Only with nothing left waiting: a message made for the old fallback key
+    // must be opened before that key is forgotten.
+    if (drained && !_leftBehind) await _maintainFallback();
   });
 
   /// One page of the inbox. For each message the order is: decrypt (in memory),
-  /// write the history, save the account and sessions in one write, and only
-  /// then acknowledge. A crash or a failed write before the acknowledgement
-  /// leaves the message on the relay and the saved ratchet where it was, so it
-  /// is delivered and decrypted again; a history that already has it ignores
-  /// the repeat. What cannot be undone is a write that fails after the history
-  /// took the message: the ratchet is rolled back in memory and the message is
-  /// not acknowledged, so the next poll opens it again (see the not-done list
-  /// in docs/security/13).
+  /// then write the history (and any waiting reactions) and the account and
+  /// sessions as ONE commit of the encrypted snapshot (see [ChatHistory.transaction]
+  /// and docs/security/13), and only then acknowledge. A crash or a failed
+  /// commit before the acknowledgement leaves the message on the relay and
+  /// the saved ratchet and history where they were, so it is delivered and
+  /// decrypted again. The ratchet is rolled back in memory on a failure.
   Future<int> _pollPage() async {
     final List<Map<String, dynamic>> items;
     try {
@@ -1520,6 +1611,7 @@ class ChatEngine {
             members = await _quoteMembers(conversationId, senderId);
           } catch (_) {
             opened.undo();
+            _leftBehind = true;
             continue; // history unreadable: left on the relay
           }
           incoming = parseIncoming(
@@ -1534,22 +1626,24 @@ class ChatEngine {
         } catch (_) {
           // Decrypted, but not a message this app understands. The ratchet has
           // moved on, so keep it and say so.
-          await _saveState();
-          await undecryptable();
+          await _log.transaction(() async {
+            await _saveState();
+            await undecryptable();
+          });
           delivered.add(messageId);
           continue;
         }
         try {
-          await _ingest(conversationId, incoming);
+          // The message (or reaction) and the ratchet that opened it land
+          // together or not at all.
+          await _log.transaction(() async {
+            await _ingest(conversationId, incoming);
+            await _saveState();
+          });
         } catch (_) {
           opened.undo();
+          _leftBehind = true;
           continue; // not acknowledged: delivered again
-        }
-        try {
-          await _saveState();
-        } catch (_) {
-          opened.undo();
-          continue;
         }
         _processed.add(messageId);
         if (_processed.length > 400) _processed.remove(_processed.first);
@@ -1579,6 +1673,7 @@ class ChatEngine {
   /// so the command-line peer keeps running under plain `dart run`.)
   void debugStartWithoutKeys(String device) {
     deviceId = device;
+    _noKeys = true;
     _started = true;
   }
 
@@ -1588,8 +1683,36 @@ class ChatEngine {
     if (!_started || _pollEvery == every) return;
     _pollEvery = every;
     _timer?.cancel();
-    _timer = Timer.periodic(every, (_) => pollNow().catchError((_) {}));
+    _timer = null;
+    _startTimer();
   }
+
+  void _startTimer() {
+    if (_paused || _pollEvery <= Duration.zero) return;
+    _timer?.cancel();
+    _timer = Timer.periodic(_pollEvery, (_) => pollNow().catchError((_) {}));
+  }
+
+  /// The app went to the background: stop checking the inbox on a timer (a
+  /// push or the next [resume] brings new mail). Safe to repeat.
+  void pause() {
+    _paused = true;
+    _timer?.cancel();
+    _timer = null;
+  }
+
+  /// The app is back in the foreground: start the timer again and look at
+  /// the inbox at once.
+  void resume() {
+    if (!_paused) return;
+    _paused = false;
+    if (!_started) return;
+    _startTimer();
+    pollNow().catchError((_) {});
+  }
+
+  /// Whether the inbox timer is running (tests).
+  bool get polling => _timer != null;
 
   final _markedRead = <String, DateTime>{};
 
@@ -1815,7 +1938,8 @@ Incoming parseIncoming(
       body['conversationId'] != conversationId ||
       body['senderId'] != senderId ||
       body['messageId'] != messageId ||
-      body['text'] is! String) {
+      body['text'] is! String ||
+      !isValidPad(body['pad'])) {
     throw const ChatFailure('MISMATCH', 'Message metadata did not match.');
   }
   final sentAt = DateTime.tryParse(body['sentAt'] as String? ?? '');
@@ -1860,7 +1984,7 @@ Incoming parseIncoming(
     ChatMessage(
       messageId: messageId,
       senderId: senderId,
-      text: displayText(body['text'] as String),
+      text: sanitizeText(body['text'] as String),
       sentAt: sentAt ?? DateTime.now().toUtc(),
       serverAt: serverAt,
       mine: senderId == me,

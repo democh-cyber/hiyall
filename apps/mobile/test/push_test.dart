@@ -12,7 +12,7 @@ import 'package:hiyall/core/push/push_controller.dart';
 import 'package:hiyall/core/push/push_prefs.dart';
 import 'package:hiyall/core/push/push_service.dart';
 import 'package:hiyall/core/state.dart';
-import 'package:hiyall/features/chat.dart' show chatEngineProvider;
+import 'package:hiyall/core/app_bindings.dart';
 import 'package:hiyall/features/notification_settings.dart';
 
 import 'widget_test.dart' show SignedIn;
@@ -114,7 +114,7 @@ class Rig {
         pushPrefsStoreProvider.overrideWithValue(this.store),
         pushClockProvider.overrideWithValue(() => clock),
         pushOpenerProvider.overrideWithValue(opened.add),
-        chatEngineProvider.overrideWith((ref) => null),
+        chatEngineSourceProvider.overrideWith((ref) async => null),
         if (api != null) apiProvider.overrideWithValue(api!),
         sessionProvider.overrideWith(signedIn ? SignedIn.new : Switchable.new),
       ],
@@ -404,7 +404,7 @@ void main() {
     test('without a platform service every call is a no-op', () async {
       final container = ProviderContainer(
         overrides: [
-          chatEngineProvider.overrideWith((ref) => null),
+          chatEngineSourceProvider.overrideWith((ref) async => null),
           sessionProvider.overrideWith(SignedIn.new),
         ],
       );
@@ -444,7 +444,7 @@ void main() {
     ) async {
       final container = ProviderContainer(
         overrides: [
-          chatEngineProvider.overrideWith((ref) => null),
+          chatEngineSourceProvider.overrideWith((ref) async => null),
           sessionProvider.overrideWith(SignedIn.new),
         ],
       );

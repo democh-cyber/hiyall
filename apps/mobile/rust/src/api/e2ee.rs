@@ -125,6 +125,25 @@ impl OlmAccount {
             .map(|(id, key)| PublicKeyEntry { key_id: id.to_base64(), public_key: key.to_base64() })
     }
 
+    /// The fallback key that was generated but not yet marked as published, if any.
+    #[frb(sync)]
+    pub fn unpublished_fallback_key(&self) -> Option<PublicKeyEntry> {
+        self.account
+            .fallback_key()
+            .into_iter()
+            .next()
+            .map(|(id, key)| PublicKeyEntry { key_id: id.to_base64(), public_key: key.to_base64() })
+    }
+
+    /// Forgets the previous fallback key (the one the last [`generate_fallback_key`]
+    /// replaced); true if there was one. Call it once enough time has passed that no
+    /// pre-key message made for the old key can still be in flight. The account must
+    /// be pickled afterwards.
+    #[frb(sync)]
+    pub fn forget_old_fallback_key(&mut self) -> bool {
+        self.account.forget_fallback_key()
+    }
+
     #[frb(sync)]
     pub fn mark_keys_as_published(&mut self) {
         self.account.mark_keys_as_published();
@@ -303,5 +322,34 @@ mod tests {
         bob.mark_keys_as_published();
         assert_eq!(bob.generate_one_time_keys(0).len(), 0);
         assert!(bob.generate_fallback_key().is_some());
+    }
+
+    #[test]
+    fn forgotten_fallback_key_cannot_start_a_session() {
+        let alice = OlmAccount::create();
+        let mut bob = OlmAccount::create();
+        let old = bob.generate_fallback_key().unwrap();
+        bob.mark_keys_as_published();
+        // Nothing older to forget yet.
+        assert!(!bob.forget_old_fallback_key());
+        let new = bob.generate_fallback_key().unwrap();
+        assert_ne!(old.key_id, new.key_id);
+        assert_eq!(bob.unpublished_fallback_key().unwrap().key_id, new.key_id);
+        bob.mark_keys_as_published();
+        assert!(bob.unpublished_fallback_key().is_none());
+        // Both fallback keys still work during the grace period.
+        let mut to_old = alice.create_outbound(bob.identity_key(), old.public_key.clone()).unwrap();
+        let first = to_old.encrypt("late".into()).unwrap();
+        let pickled = bob.pickle(KEY.to_vec()).unwrap();
+        assert!(bob.create_inbound(alice.identity_key(), first.ciphertext.clone()).is_ok());
+        // After the grace period the old one is forgotten: the same kind of message fails.
+        let mut bob = OlmAccount::restore(pickled, KEY.to_vec()).unwrap();
+        assert!(bob.forget_old_fallback_key());
+        assert!(bob.create_inbound(alice.identity_key(), first.ciphertext).is_err());
+        let mut to_new = alice.create_outbound(bob.identity_key(), new.public_key).unwrap();
+        let ok = to_new.encrypt("fresh".into()).unwrap();
+        assert!(bob.create_inbound(alice.identity_key(), ok.ciphertext).is_ok());
+        // Forgetting is idempotent.
+        assert!(!bob.forget_old_fallback_key());
     }
 }

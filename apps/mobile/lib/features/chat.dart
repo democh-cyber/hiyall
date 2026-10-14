@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Directory;
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -10,12 +11,14 @@ import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../core/api.dart';
+import '../core/app_info.dart';
 import '../core/avatar_upload.dart';
 import '../core/chat/chat_api.dart';
 import '../core/chat/chat_attachment.dart';
 import '../core/chat/chat_engine.dart';
 import '../core/chat/chat_local_data.dart';
 import '../core/chat/chat_reactions.dart';
+import '../core/chat/chat_snapshot.dart';
 import '../core/chat/chat_store.dart';
 import '../core/chat_peers.dart';
 import '../core/presence.dart';
@@ -53,6 +56,8 @@ class SecureChatStore implements ChatStore {
   Future<void> delete(String key) => _storage.delete(key: key);
   @override
   Future<List<String>> keys() async => (await _storage.readAll()).keys.toList();
+  @override
+  Future<T> batch<T>(Future<T> Function() work) => work();
 }
 
 /// Encrypted chat runs only where keys can be held by the platform keystore.
@@ -80,6 +85,9 @@ final chatApiProvider = Provider<ChatApi?>((ref) {
     tokenOf: () => session.token,
     tokenRefresher: () async => rest.tokenRefresher?.call(),
     onUnauthorized: () => rest.onUnauthorized?.call(),
+    clientVersion: AppInfo.version,
+    clientPlatform: clientPlatform,
+    onUpgradeRequired: () => rest.onUpgradeRequired?.call(),
   );
 });
 
@@ -96,25 +104,37 @@ final chatEngineProvider = FutureProvider<ChatEngine?>((ref) async {
   final sessionState = ref.watch(sessionProvider);
   final session = sessionState.asData?.value;
   if (!chatSupported) return null;
-  final store = SecureChatStore();
+  final secure = SecureChatStore();
   var previous = _mediaOwner;
   // Signed out for certain (not still starting up): whatever this device
   // holds, even from a run before this one, goes.
   final signedOut = sessionState is AsyncData<Session?> && session == null;
   if (session == null && previous == null) {
     if (!signedOut) return null;
-    previous = await store.read(ChatLocalData.ownerKey);
+    previous = await secure.read(ChatLocalData.ownerKey);
     if (previous == null) return null;
   }
   final root = await getApplicationSupportDirectory();
   if (previous != null && previous != session?.userId) {
     _mediaOwner = null;
-    await ChatLocalData.wipeAccount(root: root, store: store, userId: previous);
+    await ChatLocalData.wipeAccount(
+      root: root,
+      store: secure,
+      userId: previous,
+    );
   }
   if (session == null) return null;
   _mediaOwner = session.userId;
-  await ChatLocalData.eraseAfterReinstall(root: root, store: store);
+  await ChatLocalData.eraseAfterReinstall(root: root, store: secure);
   await (_rust ??= RustLib.init());
+  // Everything the engine keeps lives in one encrypted file per account,
+  // committed atomically (see SnapshotChatStore); entries an earlier build
+  // wrote one by one into the keystore are moved into it here.
+  final store = await SnapshotChatStore.open(
+    secure: secure,
+    userId: session.userId,
+    files: DirectorySnapshotFiles(Directory('${root.path}/chat_state')),
+  );
   // The same refresh-then-expire handling as every other API call.
   final rest = ref.read(apiProvider);
   final engine = ChatEngine(
@@ -125,6 +145,9 @@ final chatEngineProvider = FutureProvider<ChatEngine?>((ref) async {
       tokenOf: () => session.token,
       tokenRefresher: () async => rest.tokenRefresher?.call(),
       onUnauthorized: () => rest.onUnauthorized?.call(),
+      clientVersion: AppInfo.version,
+      clientPlatform: clientPlatform,
+      onUpgradeRequired: () => rest.onUpgradeRequired?.call(),
     ),
     store: store,
     platform: defaultTargetPlatform == TargetPlatform.iOS ? 'ios' : 'android',
@@ -143,11 +166,21 @@ final chatEngineProvider = FutureProvider<ChatEngine?>((ref) async {
   }
 
   notifier.signOutHooks.add(removeDevice);
+  // The inbox timer runs only in the foreground, like the rest of LiveSync's
+  // timers; a push or the next resume brings what arrived meanwhile.
+  final lifecycle = AppLifecycleListener(
+    onPause: engine.pause,
+    onResume: engine.resume,
+  );
   ref.onDispose(() {
     notifier.signOutHooks.remove(removeDevice);
+    lifecycle.dispose();
     engine.dispose();
   });
   await engine.start();
+  if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused) {
+    engine.pause();
+  }
   return engine;
 });
 
@@ -336,99 +369,103 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
         builder: (context, box) {
           final side = math.max(0.0, (box.maxWidth - chatListMaxWidth) / 2);
           final empty = all != null && all.isEmpty;
-          return ListView(
+          // Only what is on screen is built: the header and notices are a
+          // few widgets, the rows are built lazily.
+          final leading = <Widget>[
+            ChatsHeading(subtitle: chatsSubtitle(all), showTitle: !wide),
+            if (engine != null) NewDeviceBanner(engine: engine!),
+            if (hasChats) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: ChatMetrics.pagePadding,
+                ),
+                child: ChatSearchField(controller: search, onChanged: onSearch),
+              ),
+              ChatFilterChips(
+                filter: filter,
+                unread: unreadChatCount(all),
+                onChanged: (f) => setState(() => filter = f),
+              ),
+              if (!narrowed)
+                MeetSomeoneCard(onTap: () => context.go('/discover'))
+              else
+                const SizedBox(height: 6),
+            ],
+            if (error != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: ChatMessageCard(
+                  icon: Icons.cloud_off_rounded,
+                  title: 'Couldn’t load your chats',
+                  body: chatError(error!),
+                  primaryLabel: 'Try again',
+                  onPrimary: load,
+                ),
+              ),
+            if (all == null && error == null) const ChatListSkeleton(),
+            if (empty)
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  minHeight: math.max(420, box.maxHeight - 120),
+                ),
+                child: ChatMessageCard(
+                  key: const Key('chats-empty'),
+                  art: const HelloArt(height: 150),
+                  title: 'No conversations yet',
+                  body: 'Someone interesting is one hello away.',
+                  primaryLabel: 'Meet someone new',
+                  onPrimary: () => context.go('/discover'),
+                  secondaryLabel: 'Say hi to your followers',
+                  onSecondary: () => context.go('/profile/followers'),
+                ),
+              ),
+            if (shown != null && shown.isEmpty && !empty)
+              query.trim().isEmpty
+                  ? ChatMessageCard(
+                      key: const Key('chats-no-unread'),
+                      icon: Icons.done_all_rounded,
+                      title: 'No unread conversations',
+                      body: 'You’re all caught up.',
+                      primaryLabel: 'Show all chats',
+                      onPrimary: () => setState(() => filter = ChatFilter.all),
+                    )
+                  : ChatMessageCard(
+                      key: const Key('chats-no-match'),
+                      icon: Icons.search_off_rounded,
+                      title: 'No conversations found',
+                      body:
+                          'Nothing matches “${query.trim()}”. Try a name, a @username or something they said.',
+                      primaryLabel: 'Clear search',
+                      onPrimary: clearSearch,
+                      secondaryLabel: 'Meet someone new',
+                      onSecondary: () => context.go('/discover'),
+                    ),
+          ];
+          final rows = shown ?? const <ChatConversation>[];
+          final hasFooter = rows.isNotEmpty;
+          return ListView.builder(
             physics: const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.fromLTRB(side, wide ? 0 : 6, side, 32),
-            children: [
-              ChatsHeading(subtitle: chatsSubtitle(all), showTitle: !wide),
-              if (engine != null) NewDeviceBanner(engine: engine!),
-              if (hasChats) ...[
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: ChatMetrics.pagePadding,
-                  ),
-                  child: ChatSearchField(
-                    controller: search,
-                    onChanged: onSearch,
-                  ),
-                ),
-                ChatFilterChips(
-                  filter: filter,
-                  unread: unreadChatCount(all),
-                  onChanged: (f) => setState(() => filter = f),
-                ),
-                if (!narrowed)
-                  MeetSomeoneCard(onTap: () => context.go('/discover'))
-                else
-                  const SizedBox(height: 6),
-              ],
-              if (error != null)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  child: ChatMessageCard(
-                    icon: Icons.cloud_off_rounded,
-                    title: 'Couldn’t load your chats',
-                    body: chatError(error!),
-                    primaryLabel: 'Try again',
-                    onPrimary: load,
-                  ),
-                ),
-              if (all == null && error == null) const ChatListSkeleton(),
-              if (empty)
-                ConstrainedBox(
-                  constraints: BoxConstraints(
-                    minHeight: math.max(420, box.maxHeight - 120),
-                  ),
-                  child: ChatMessageCard(
-                    key: const Key('chats-empty'),
-                    art: const HelloArt(height: 150),
-                    title: 'No conversations yet',
-                    body: 'Someone interesting is one hello away.',
-                    primaryLabel: 'Meet someone new',
-                    onPrimary: () => context.go('/discover'),
-                    secondaryLabel: 'Say hi to your followers',
-                    onSecondary: () => context.go('/profile/followers'),
-                  ),
-                ),
-              if (shown != null && shown.isEmpty && !empty)
-                query.trim().isEmpty
-                    ? ChatMessageCard(
-                        key: const Key('chats-no-unread'),
-                        icon: Icons.done_all_rounded,
-                        title: 'No unread conversations',
-                        body: 'You’re all caught up.',
-                        primaryLabel: 'Show all chats',
-                        onPrimary: () =>
-                            setState(() => filter = ChatFilter.all),
-                      )
-                    : ChatMessageCard(
-                        key: const Key('chats-no-match'),
-                        icon: Icons.search_off_rounded,
-                        title: 'No conversations found',
-                        body:
-                            'Nothing matches “${query.trim()}”. Try a name, a @username or something they said.',
-                        primaryLabel: 'Clear search',
-                        onPrimary: clearSearch,
-                        secondaryLabel: 'Meet someone new',
-                        onSecondary: () => context.go('/discover'),
-                      ),
-              if (shown != null)
-                for (var i = 0; i < shown.length; i++)
-                  ChatRow(
-                    key: ValueKey(shown[i].id),
-                    chat: shown[i],
-                    now: now,
-                    typing:
-                        typing[shown[i].id]?.isAfter(DateTime.now()) ?? false,
-                    showDivider: i < shown.length - 1,
-                    onTap: () => open(shown[i]),
-                  ),
-              if (shown != null && shown.isNotEmpty)
-                const Padding(
+            itemCount: leading.length + rows.length + (hasFooter ? 1 : 0),
+            itemBuilder: (context, index) {
+              if (index < leading.length) return leading[index];
+              final row = index - leading.length;
+              if (row >= rows.length) {
+                return const Padding(
                   padding: EdgeInsets.only(top: 18),
                   child: Center(child: EncryptedChip()),
-                ),
-            ],
+                );
+              }
+              final chat = rows[row];
+              return ChatRow(
+                key: ValueKey(chat.id),
+                chat: chat,
+                now: now,
+                typing: typing[chat.id]?.isAfter(DateTime.now()) ?? false,
+                showDivider: row < rows.length - 1,
+                onTap: () => open(chat),
+              );
+            },
           );
         },
       ),

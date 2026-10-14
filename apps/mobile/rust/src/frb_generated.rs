@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1674410531;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1261171776;
 
 // Section: executor
 
@@ -139,6 +139,41 @@ fn wire__crate__api__e2ee__OlmAccount_create_outbound_impl(
                 }
                 let api_that_guard = api_that_guard.unwrap();
                 let output_ok = crate::api::e2ee::OlmAccount::create_outbound(&*api_that_guard, api_identity_key, api_one_time_key)?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
+fn wire__crate__api__e2ee__OlmAccount_forget_old_fallback_key_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "OlmAccount_forget_old_fallback_key",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let mut api_that_guard = None;
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, true),
+                ]);
+                for i in decode_indices_ {
+                    match i {
+                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref_mut()),
+                        _ => unreachable!(),
+                    }
+                }
+                let mut api_that_guard = api_that_guard.unwrap();
+                let output_ok = Ok::<_, ()>(crate::api::e2ee::OlmAccount::forget_old_fallback_key(&mut *api_that_guard))?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -413,6 +448,41 @@ fn wire__crate__api__e2ee__OlmAccount_signing_key_impl(
                 }
                 let api_that_guard = api_that_guard.unwrap();
                 let output_ok = Ok::<_, ()>(crate::api::e2ee::OlmAccount::signing_key(&*api_that_guard))?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
+fn wire__crate__api__e2ee__OlmAccount_unpublished_fallback_key_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "OlmAccount_unpublished_fallback_key",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that =
+                <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmAccount>>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let mut api_that_guard = None;
+                let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                    flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false),
+                ]);
+                for i in decode_indices_ {
+                    match i {
+                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                        _ => unreachable!(),
+                    }
+                }
+                let api_that_guard = api_that_guard.unwrap();
+                let output_ok = Ok::<_, ()>(crate::api::e2ee::OlmAccount::unpublished_fallback_key(&*api_that_guard))?;
                 std::result::Result::Ok(output_ok)
             })())
         },
@@ -728,6 +798,28 @@ fn wire__crate__api__blob__generate_blob_key_impl(
         },
     )
 }
+fn wire__crate__api__seal__generate_seal_key_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "generate_seal_key",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let output_ok = Ok::<_, ()>(crate::api::seal::generate_seal_key())?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
 fn wire__crate__api__e2ee__is_contributory_key_impl(
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -748,6 +840,34 @@ fn wire__crate__api__e2ee__is_contributory_key_impl(
                 let output_ok = Ok::<_, ()>(crate::api::e2ee::is_contributory_key(api_key))?;
                 std::result::Result::Ok(output_ok)
             })())
+        },
+    )
+}
+fn wire__crate__api__seal__open_state_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "open_state",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_key = <Vec<u8>>::sse_decode(&mut deserializer);
+            let api_aad = <Vec<u8>>::sse_decode(&mut deserializer);
+            let api_sealed = <Vec<u8>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::api::seal::open_state(api_key, api_aad, api_sealed)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
         },
     )
 }
@@ -797,6 +917,34 @@ fn wire__crate__api__blob__preview_to_rgba_impl(
             move |context| {
                 transform_result_sse::<_, String>((move || {
                     let output_ok = crate::api::blob::preview_to_rgba(api_preview)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__seal__seal_state_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "seal_state",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_key = <Vec<u8>>::sse_decode(&mut deserializer);
+            let api_aad = <Vec<u8>>::sse_decode(&mut deserializer);
+            let api_plaintext = <Vec<u8>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::api::seal::seal_state(api_key, api_aad, api_plaintext)?;
                     std::result::Result::Ok(output_ok)
                 })())
             }
@@ -1035,10 +1183,12 @@ fn pde_ffi_dispatcher_primary_impl(
 ) {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
-        18 => wire__crate__api__blob__decrypt_blob_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__blob__encrypt_blob_impl(port, ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__blob__prepare_chat_image_impl(port, ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__blob__preview_to_rgba_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__blob__decrypt_blob_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__blob__encrypt_blob_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__seal__open_state_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__blob__prepare_chat_image_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__blob__preview_to_rgba_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__seal__seal_state_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1054,23 +1204,26 @@ fn pde_ffi_dispatcher_sync_impl(
         1 => wire__crate__api__e2ee__OlmAccount_create_impl(ptr, rust_vec_len, data_len),
         2 => wire__crate__api__e2ee__OlmAccount_create_inbound_impl(ptr, rust_vec_len, data_len),
         3 => wire__crate__api__e2ee__OlmAccount_create_outbound_impl(ptr, rust_vec_len, data_len),
-        4 => wire__crate__api__e2ee__OlmAccount_generate_fallback_key_impl(ptr, rust_vec_len, data_len),
-        5 => wire__crate__api__e2ee__OlmAccount_generate_one_time_keys_impl(ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__e2ee__OlmAccount_identity_key_impl(ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__e2ee__OlmAccount_mark_keys_as_published_impl(ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__e2ee__OlmAccount_pickle_impl(ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__e2ee__OlmAccount_restore_impl(ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__e2ee__OlmAccount_sign_impl(ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__e2ee__OlmAccount_signing_key_impl(ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__e2ee__OlmSession_decrypt_impl(ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__e2ee__OlmSession_encrypt_impl(ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__e2ee__OlmSession_matches_pre_key_impl(ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__e2ee__OlmSession_pickle_impl(ptr, rust_vec_len, data_len),
-        16 => wire__crate__api__e2ee__OlmSession_restore_impl(ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__e2ee__OlmSession_session_id_impl(ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__blob__generate_blob_key_impl(ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__e2ee__is_contributory_key_impl(ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__e2ee__verify_signature_impl(ptr, rust_vec_len, data_len),
+        4 => wire__crate__api__e2ee__OlmAccount_forget_old_fallback_key_impl(ptr, rust_vec_len, data_len),
+        5 => wire__crate__api__e2ee__OlmAccount_generate_fallback_key_impl(ptr, rust_vec_len, data_len),
+        6 => wire__crate__api__e2ee__OlmAccount_generate_one_time_keys_impl(ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__e2ee__OlmAccount_identity_key_impl(ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__e2ee__OlmAccount_mark_keys_as_published_impl(ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__e2ee__OlmAccount_pickle_impl(ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__e2ee__OlmAccount_restore_impl(ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__e2ee__OlmAccount_sign_impl(ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__e2ee__OlmAccount_signing_key_impl(ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__e2ee__OlmAccount_unpublished_fallback_key_impl(ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__e2ee__OlmSession_decrypt_impl(ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__e2ee__OlmSession_encrypt_impl(ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__e2ee__OlmSession_matches_pre_key_impl(ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__e2ee__OlmSession_pickle_impl(ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__e2ee__OlmSession_restore_impl(ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__e2ee__OlmSession_session_id_impl(ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__blob__generate_blob_key_impl(ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__seal__generate_seal_key_impl(ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__e2ee__is_contributory_key_impl(ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__e2ee__verify_signature_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }

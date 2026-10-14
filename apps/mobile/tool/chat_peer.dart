@@ -40,6 +40,9 @@ class FileChatStore implements ChatStore {
   }
 
   @override
+  Future<T> batch<T>(Future<T> Function() work) => work();
+
+  @override
   Future<void> delete(String key) async {
     values.remove(key);
     _flush();
@@ -58,8 +61,17 @@ Future<void> main(List<String> args) async {
   final me = option(args, 'as') ?? 'niko';
   final base = option(args, 'api') ?? 'http://127.0.0.1:8080';
   final userId = accounts[me]!;
-  await RustLib.init(externalLibrary: ExternalLibrary.open('rust/target/release/libhiyall_e2ee.${Platform.isMacOS ? 'dylib' : 'so'}'));
-  final token = (await Dio().post('$base/dev/session', data: {'userId': userId})).data['data']['accessToken'] as String;
+  await RustLib.init(
+    externalLibrary: ExternalLibrary.open(
+      'rust/target/release/libhiyall_e2ee.${Platform.isMacOS ? 'dylib' : 'so'}',
+    ),
+  );
+  final token =
+      (await Dio().post(
+            '$base/dev/session',
+            data: {'userId': userId},
+          )).data['data']['accessToken']
+          as String;
   final engine = ChatEngine(
     userId: userId,
     api: ChatApi(base, token),
@@ -68,13 +80,17 @@ Future<void> main(List<String> args) async {
     platform: 'unknown',
   );
   await engine.start(poll: Duration.zero);
-  String name(String id) => accounts.entries.firstWhere((e) => e.value == id, orElse: () => MapEntry(id, id)).key;
+  String name(String id) => accounts.entries
+      .firstWhere((e) => e.value == id, orElse: () => MapEntry(id, id))
+      .key;
   final printed = <String>{};
   Future<void> show() async {
     for (final c in await engine.conversations()) {
       for (final m in await engine.history(c.id)) {
         if (printed.add(m.messageId)) {
-          stdout.writeln('[${m.sentAt.toLocal().toIso8601String().substring(11, 19)}] ${m.notice ? '*' : name(m.senderId)}: ${m.text}');
+          stdout.writeln(
+            '[${m.sentAt.toLocal().toIso8601String().substring(11, 19)}] ${m.notice ? '*' : name(m.senderId)}: ${m.text}',
+          );
         }
       }
     }
