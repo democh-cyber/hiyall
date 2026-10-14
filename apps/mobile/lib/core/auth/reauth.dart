@@ -17,6 +17,11 @@ abstract class Reauthenticator {
   /// `auth_time` is new. [password] is only used for [AuthMethod.password].
   /// Throws [AuthFailure]; a closed sign-in sheet is a cancelled one.
   Future<void> reauthenticate({String? password});
+
+  /// The one-time Sign in with Apple authorization code from the last [reauthenticate], once, or null
+  /// (other providers, or already taken). The server exchanges it and revokes Apple's token when the
+  /// account is deleted (App Store guideline 5.1.1(v)).
+  String? takeAppleAuthorizationCode() => null;
 }
 
 /// Used when there is no identity provider; the server then needs no re-sign-in.
@@ -33,6 +38,15 @@ class FirebaseReauthenticator extends Reauthenticator {
   final fb.FirebaseAuth _auth;
   FirebaseReauthenticator({fb.FirebaseAuth? auth})
     : _auth = auth ?? fb.FirebaseAuth.instance;
+
+  String? _appleCode;
+
+  @override
+  String? takeAppleAuthorizationCode() {
+    final code = _appleCode;
+    _appleCode = null;
+    return code;
+  }
 
   @override
   AuthMethod? get method {
@@ -74,7 +88,10 @@ class FirebaseReauthenticator extends Reauthenticator {
         case AuthMethod.facebook:
           await _provider(user, fb.FacebookAuthProvider()..addScope('email'));
         case AuthMethod.apple:
-          await _provider(user, fb.AppleAuthProvider()..addScope('email'));
+          _appleCode = await _provider(
+            user,
+            fb.AppleAuthProvider()..addScope('email'),
+          );
         case AuthMethod.other || null:
           throw const AuthFailure(
             'Sign out and sign in again, then try once more.',
@@ -88,12 +105,12 @@ class FirebaseReauthenticator extends Reauthenticator {
     }
   }
 
-  Future<void> _provider(fb.User user, fb.AuthProvider provider) async {
-    if (kIsWeb) {
-      await user.reauthenticateWithPopup(provider);
-    } else {
-      await user.reauthenticateWithProvider(provider);
-    }
+  /// Returns Apple's authorization code when the provider is Apple (null otherwise).
+  Future<String?> _provider(fb.User user, fb.AuthProvider provider) async {
+    final result = kIsWeb
+        ? await user.reauthenticateWithPopup(provider)
+        : await user.reauthenticateWithProvider(provider);
+    return result.additionalUserInfo?.authorizationCode;
   }
 
   /// Firebase error codes to copy that is safe to show.

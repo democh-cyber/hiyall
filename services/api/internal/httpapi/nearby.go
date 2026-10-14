@@ -27,10 +27,14 @@ func (a *API) presence(userID string) bool { return a.RT != nil && a.RT.Connecte
 // nearbyRoute serves the location and Nearby endpoints. They wait for onboarding
 // like every route outside the exemption list.
 //
+//	GET    /v1/me/nearby                    -> {visible, sharing, updatedAt|null}
+//	PUT    /v1/me/nearby                    "Show me in Nearby": visible:true (no body); stores no location
+//	DELETE /v1/me/nearby                    switch off: visible:false and the stored point is deleted
 //	GET    /v1/me/location                  -> {sharing, updatedAt|null}
-//	PUT    /v1/me/location                  {latitude, longitude} -> {sharing:true, updatedAt}
+//	PUT    /v1/me/location                  {latitude, longitude} -> {sharing:true, updatedAt}; 409 NEARBY_OFF unless visible
 //	DELETE /v1/me/location                  -> {sharing:false}
-//	POST   /v1/discover/nearby              {radiusKm?, interests?, languages?, country?, vibe?, cursor?} -> {items, nextCursor}
+//	POST   /v1/discover/nearby              {radiusKm?, interests?, languages?, country?, vibe?, cursor?} -> {items, nextCursor};
+//	                                        radiusKm is one of 5, 10, 15, 25, 50, 100; only visible members may ask
 func (a *API) nearbyRoute(w http.ResponseWriter, r *http.Request, p store.Principal, parts []string) bool {
 	if len(parts) != 3 || parts[0] != "v1" {
 		return false
@@ -38,6 +42,8 @@ func (a *API) nearbyRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 	switch {
 	case parts[1] == "me" && parts[2] == "location":
 		a.location(w, r, p)
+	case parts[1] == "me" && parts[2] == "nearby":
+		a.nearbySwitch(w, r, p)
 	case parts[1] == "discover" && parts[2] == "nearby" && r.Method == "POST":
 		a.nearby(w, r, p)
 	default:
@@ -73,7 +79,7 @@ func (a *API) location(w http.ResponseWriter, r *http.Request, p store.Principal
 			a.failure(w, r, 429, "RATE_LIMITED", "You can update your location again in a couple of minutes")
 			return
 		}
-		updated, err := a.Store.SetLocation(ctx, p.UserID, loc)
+		updated, err := a.Store.SetLocation(ctx, p.UserID, loc, a.entitlementsFor(ctx, p.UserID))
 		if err != nil {
 			a.error(w, r, err)
 			return
@@ -88,6 +94,37 @@ func (a *API) location(w http.ResponseWriter, r *http.Request, p store.Principal
 	default:
 		a.failure(w, r, 405, "METHOD_NOT_ALLOWED", "Method unavailable")
 	}
+}
+
+// nearbySwitch is the "Show me in Nearby" setting. Switching it on stores nothing about where the member is;
+// switching it off deletes the stored point at once.
+func (a *API) nearbySwitch(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx := r.Context()
+	switch r.Method {
+	case "GET":
+	case "PUT", "DELETE":
+		if !a.locations.allow(p.UserID) {
+			w.Header().Set("Retry-After", "120")
+			a.failure(w, r, 429, "RATE_LIMITED", "Try again in a couple of minutes")
+			return
+		}
+		if err := a.Store.SetNearbyVisible(ctx, p.UserID, r.Method == "PUT"); err != nil {
+			a.error(w, r, err)
+			return
+		}
+	default:
+		a.failure(w, r, 405, "METHOD_NOT_ALLOWED", "Method unavailable")
+		return
+	}
+	st, err := a.Store.GetNearby(ctx, p.UserID)
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	body := locationBody(st.Sharing, st.UpdatedAt)
+	body["visible"] = st.Visible
+	body["minor"] = st.Minor
+	a.ok(w, r, body)
 }
 
 // locationBody never carries coordinates. updatedAt is null unless sharing.
@@ -120,12 +157,7 @@ func (a *API) nearbySeal(c nearbyCursor) string {
 	return base64.RawURLEncoding.EncodeToString(data) + "." + base64.RawURLEncoding.EncodeToString(a.nearbyMAC(data))
 }
 
-func (a *API) nearbyMAC(data []byte) []byte {
-	mac := hmac.New(sha256.New, a.cursorKey[:])
-	mac.Write([]byte("nearby\x00"))
-	mac.Write(data)
-	return mac.Sum(nil)
-}
+func (a *API) nearbyMAC(data []byte) []byte { return a.cursorMAC("nearby\x00", data) }
 
 // nearbyCentreTag is a keyed hash of the caller's stored point. It reveals nothing
 // about the point and changes when the caller shares a different one.
@@ -153,7 +185,7 @@ func (a *API) nearbyOpen(raw string, principal string, radius int, query, centre
 	}
 	data, e1 := base64.RawURLEncoding.DecodeString(parts[0])
 	sig, e2 := base64.RawURLEncoding.DecodeString(parts[1])
-	if e1 != nil || e2 != nil || !hmac.Equal(sig, a.nearbyMAC(data)) || json.Unmarshal(data, &c) != nil {
+	if e1 != nil || e2 != nil || !a.cursorSigValid(sig, "nearby\x00", data) || json.Unmarshal(data, &c) != nil {
 		return c, false
 	}
 	_, e3 := uuid.Parse(c.After)
@@ -177,6 +209,12 @@ func (a *API) nearby(w http.ResponseWriter, r *http.Request, p store.Principal) 
 	}
 	centre, minor, err := a.Store.OwnLocation(r.Context(), p.UserID)
 	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	// A minor's radius is widened to the next of their own buckets, so what they ask and what is searched agree.
+	req.RadiusKm = domain.NearbyRadiusFor(minor, req.RadiusKm)
+	if err = a.Store.BumpDaily(r.Context(), p.UserID, domain.DailyNearbyQueries, a.entitlementsFor(r.Context(), p.UserID).NearbyQueriesPerDay); err != nil {
 		a.error(w, r, err)
 		return
 	}
@@ -205,4 +243,18 @@ func (a *API) nearby(w http.ResponseWriter, r *http.Request, p store.Principal) 
 		}
 	}
 	a.ok(w, r, map[string]any{"items": items, "nextCursor": next})
+}
+
+// profileViewAllowed counts one profile view of another member's profile against the viewer's day
+// (Entitlements.ProfileViewsPerDay) and answers 429 DAILY_LIMIT when it is used up, so a script cannot read
+// the member base profile by profile. Opening one's own profile is free.
+func (a *API) profileViewAllowed(w http.ResponseWriter, r *http.Request, p store.Principal, target string) bool {
+	if target == p.UserID {
+		return true
+	}
+	if err := a.Store.BumpDaily(r.Context(), p.UserID, domain.DailyProfileViews, a.entitlementsFor(r.Context(), p.UserID).ProfileViewsPerDay); err != nil {
+		a.error(w, r, err)
+		return false
+	}
+	return true
 }

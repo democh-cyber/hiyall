@@ -158,7 +158,7 @@ func TestAPIIntegration(t *testing.T) {
 	expect(status, 404)
 	status, _ = call("DELETE", "/v1/auth/sessions/"+sidB, tokenA, "", "")
 	expect(status, 404)
-	// Competing writes must commit once, with exactly one outbox event.
+	// Competing writes must commit once. Nothing writes outbox_events any more (audit D5).
 	var before, after int
 	_ = db.Pool.QueryRow(ctx, "SELECT count(*) FROM outbox_events").Scan(&before)
 	var wg sync.WaitGroup
@@ -186,8 +186,8 @@ func TestAPIIntegration(t *testing.T) {
 		t.Fatalf("race outcomes %d/%d", wins, conflicts)
 	}
 	_ = db.Pool.QueryRow(ctx, "SELECT count(*) FROM outbox_events").Scan(&after)
-	if after-before != 1 {
-		t.Fatal("outbox not atomic")
+	if after != before {
+		t.Fatalf("profile edits wrote %d outbox events; nothing consumes them and the table is only purged", after-before)
 	}
 	status, _ = call("POST", "/v1/auth/logout", tokenB, "", "")
 	expect(status, 200)
@@ -208,10 +208,6 @@ func TestAPIIntegration(t *testing.T) {
 	}
 	if _, err = db.ResolveOIDC(ctx, "https://identity.example", "test-subject", "test-device", time.Now().Add(time.Minute)); !errors.Is(err, domain.ErrUnauthorized) {
 		t.Fatalf("revoked OIDC sid resurrected: %v", err)
-	}
-	var duplicateClocks int
-	if err = db.Pool.QueryRow(ctx, `SELECT count(*) FROM (SELECT aggregate_id,aggregate_version FROM outbox_events GROUP BY aggregate_id,aggregate_version HAVING count(*)>1) d`).Scan(&duplicateClocks); err != nil || duplicateClocks != 0 {
-		t.Fatalf("outbox order: %d %v", duplicateClocks, err)
 	}
 	// Issue enough sessions for a cursor, then verify it cannot cross account boundaries.
 	_, _ = db.CreateDevSession(ctx, alice, "extra-token", "")

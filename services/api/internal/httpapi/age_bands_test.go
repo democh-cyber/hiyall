@@ -61,6 +61,8 @@ func (h *socialHarness) reach(a, b string) map[string]bool {
 	h.api.search.reset(a)
 	search := h.send(a, "POST", "/v1/discovery/search", map[string]any{})
 	got["people search"] = slicesContain(userIDs(items(search.data)), b)
+	h.visible(a)
+	h.visible(b)
 	h.exec(`INSERT INTO user_locations(user_id,latitude,longitude) VALUES($1,12.97,77.59),($2,12.97,77.59) ON CONFLICT(user_id) DO UPDATE SET updated_at=now()`, a, b)
 	h.api.search.reset(a)
 	nearby := h.send(a, "POST", "/v1/discover/nearby", map[string]any{})
@@ -459,17 +461,14 @@ func TestAgeFilterAcrossBandsDependsOnIsolation(t *testing.T) {
 		h.north(cara, 0.01)
 		h.north(dev, 0.01)
 		h.setAge(bob, 0) // Niko has a stored age of his own; an unknown age never matches an age filter
-		s, n := h.both(alice, map[string]any{"ageMin": 25, "ageMax": 34})
-		want := []string(nil)
-		if !on {
-			want = []string{cara}
-		}
-		if fmt.Sprint(s) != fmt.Sprint(want) || fmt.Sprint(n) != fmt.Sprint(want) {
-			t.Fatalf("isolation %v: a minor filtering for 25-34 found %v %v, want %v", on, s, n, want)
-		}
+		// A minor has no age or gender filters at all, whatever the isolation setting.
+		h.api.search.reset(alice)
+		h.expect(h.send(alice, "POST", "/v1/discovery/search", map[string]any{"ageMin": 25, "ageMax": 34}), 422, "FILTER_NOT_AVAILABLE")
+		got, _, _ := h.nearbyList(alice, map[string]any{"radiusKm": 100, "ageMin": 25, "ageMax": 34})
+		h.expect(got, 422, "FILTER_NOT_AVAILABLE")
 		h.place(cara, bengaluru.Latitude, bengaluru.Longitude)
-		s, n = h.both(cara, map[string]any{"ageMin": 13, "ageMax": 17})
-		want = nil
+		s, n := h.both(cara, map[string]any{"ageMin": 13, "ageMax": 17})
+		var want []string
 		if !on {
 			want = sorted(alice, dev)
 			if search := s; !slicesContain(search, store.KaiID) {

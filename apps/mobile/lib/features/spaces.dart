@@ -15,12 +15,18 @@ import '../shared/segmented.dart';
 import '../shared/widgets.dart';
 import 'safety.dart';
 import 'settings.dart' show timeAgo;
+import '../core/app_info.dart';
+import '../core/user_error.dart';
 
 const _kinds = {
   'community': 'Communities',
   'event': 'Events',
   'moment': 'Moments',
 };
+
+/// The kinds offered in browse lists: just communities unless Events are on.
+Map<String, String> get _visibleKinds =>
+    FeatureFlags.events ? _kinds : {'community': _kinds['community']!};
 const _kindNames = {
   'community': 'Community',
   'moment': 'Moment',
@@ -143,7 +149,7 @@ Future<SocialSpace?> joinSpace(
     }
     return next;
   } catch (e) {
-    if (context.mounted) showMessage(context, e.toString());
+    if (context.mounted) showFailure(context, e);
     return null;
   }
 }
@@ -378,7 +384,10 @@ class _JoinButton extends StatelessWidget {
         onPressed: null,
         child: Text('Requested'),
       );
-    } else if (s.status != 'open' || spaceTiming(s) == 'Ended') {
+    } else if (s.status != 'open' ||
+        spaceTiming(s) == 'Ended' ||
+        (!FeatureFlags.events && s.kind != 'community')) {
+      // Events and Moments are read-only while they are switched off.
       button = const SizedBox.shrink(key: ValueKey('closed'));
     } else {
       final label = s.myState == 'invited'
@@ -585,8 +594,12 @@ class _SpacesState extends ConsumerState<SpacesScreen> {
   @override
   void initState() {
     super.initState();
-    if (_kinds.containsKey(widget.initialKind)) kind = widget.initialKind!;
-    if (widget.parentId != null && kind == 'community') kind = 'event';
+    if (_visibleKinds.containsKey(widget.initialKind)) {
+      kind = widget.initialKind!;
+    }
+    if (widget.parentId != null && kind == 'community' && FeatureFlags.events) {
+      kind = 'event';
+    }
     Future.microtask(load);
   }
 
@@ -627,7 +640,9 @@ class _SpacesState extends ConsumerState<SpacesScreen> {
         cursor = page.nextCursor;
       });
     } catch (e) {
-      if (mounted && run == generation) setState(() => error = e.toString());
+      if (mounted && run == generation) {
+        setState(() => error = friendlyError(e));
+      }
     } finally {
       if (mounted && run == generation) setState(() => loading = false);
     }
@@ -679,104 +694,139 @@ class _SpacesState extends ConsumerState<SpacesScreen> {
                 alignment: Alignment.topCenter,
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 720),
-                  child: ListView(
-                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 32),
-                    children: [
-                      Text(
-                        nested
-                            ? 'Plans inside\nthis community.'
-                            : 'Small circles.\nReal conversations.',
-                        style: Theme.of(context).textTheme.headlineLarge
-                            ?.copyWith(
-                              fontSize: 34,
-                              height: 1.06,
-                              letterSpacing: -1.2,
-                            ),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        nested ? 'Timed get-togethers hosted by this circle.' : 'Find communities around things you actually care about.',
-                        style: TextStyle(
-                          fontSize: 14,
-                          height: 1.55,
-                          color: scheme.onSurfaceVariant,
-                        ),
-                      ),
-                      const SizedBox(height: 22),
-                      VibeSegmented<String>(
-                        segments: [
-                          for (final k in _kinds.entries)
-                            if (!nested || k.key != 'community')
-                              (k.key, k.value),
-                        ],
-                        selected: kind,
-                        onChanged: (k) {
-                          kind = k;
-                          load();
-                        },
-                      ),
-                      const SizedBox(height: 22),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              '${mine ? 'Your' : 'All'} $plural',
-                              style: Theme.of(context).textTheme.titleMedium,
-                            ),
-                          ),
-                          FilterChip(
-                            label: const Text('Joined'),
-                            selected: mine,
-                            onSelected: (v) {
-                              mine = v;
-                              load();
-                            },
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      if (error != null)
-                        FailureCard(error: error!, retry: load)
-                      else if (loading && items.isEmpty)
-                        const VibeLoading()
-                      else if (items.isEmpty)
-                        EmptyCard(
-                          icon: _kindStyle(kind).$1,
-                          title: mine
-                              ? 'Nothing joined yet'
-                              : 'A quiet corner for now',
-                          description: mine
-                              ? 'Spaces you join or host show up here.'
-                              : 'No $plural here yet. Start something worth joining.',
-                          action: canCreate
-                              ? FilledButton.icon(
-                                  onPressed: create,
-                                  icon: const Icon(Icons.add),
-                                  label: Text(
-                                    'Start a ${_kindNames[kind]!.toLowerCase()}',
+                  child: CustomScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    slivers: [
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(20, 4, 20, 32),
+                        sliver: SliverMainAxisGroup(
+                          slivers: [
+                            SliverToBoxAdapter(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  Text(
+                                    nested
+                                        ? 'Plans inside\nthis community.'
+                                        : 'Small circles.\nReal conversations.',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .headlineLarge
+                                        ?.copyWith(
+                                          fontSize: 34,
+                                          height: 1.06,
+                                          letterSpacing: -1.2,
+                                        ),
                                   ),
-                                )
-                              : null,
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    nested
+                                        ? 'Timed get-togethers hosted by this circle.'
+                                        : 'Find communities around things you actually care about.',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      height: 1.55,
+                                      color: scheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 22),
+                                  if (_visibleKinds.length > 1)
+                                    VibeSegmented<String>(
+                                      segments: [
+                                        for (final k in _visibleKinds.entries)
+                                          if (!nested || k.key != 'community')
+                                            (k.key, k.value),
+                                      ],
+                                      selected: kind,
+                                      onChanged: (k) {
+                                        kind = k;
+                                        load();
+                                      },
+                                    ),
+                                  const SizedBox(height: 22),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          '${mine ? 'Your' : 'All'} $plural',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .titleMedium,
+                                        ),
+                                      ),
+                                      FilterChip(
+                                        label: const Text('Joined'),
+                                        selected: mine,
+                                        onSelected: (v) {
+                                          mine = v;
+                                          load();
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  if (error != null)
+                                    FailureCard(error: error!, retry: load)
+                                  else if (loading && items.isEmpty)
+                                    const VibeLoading()
+                                  else if (items.isEmpty)
+                                    EmptyCard(
+                                      icon: _kindStyle(kind).$1,
+                                      title: mine
+                                          ? 'Nothing joined yet'
+                                          : 'A quiet corner for now',
+                                      description: mine
+                                          ? 'Spaces you join or host show up here.'
+                                          : 'No $plural here yet. Start something worth joining.',
+                                      action: canCreate
+                                          ? FilledButton.icon(
+                                              onPressed: create,
+                                              icon: const Icon(Icons.add),
+                                              label: Text(
+                                                'Start a ${_kindNames[kind]!.toLowerCase()}',
+                                              ),
+                                            )
+                                          : null,
+                                    ),
+                                ],
+                              ),
+                            ),
+                            // Cards are built lazily as they scroll into view.
+                            SliverList.builder(
+                              itemCount: items.length,
+                              itemBuilder: (context, i) {
+                                final s = items[i];
+                                return EntranceFade(
+                                  key: ValueKey(s.spaceId),
+                                  delayMs: math.min(i, 5) * 40,
+                                  child: SpaceCard(
+                                    s,
+                                    onOpen: () async {
+                                      await context.push(
+                                        '/spaces/${s.spaceId}',
+                                      );
+                                      if (mounted) load();
+                                    },
+                                  ),
+                                );
+                              },
+                            ),
+                            if (cursor != null)
+                              SliverToBoxAdapter(
+                                child: Center(
+                                  child: TextButton(
+                                    onPressed: loading
+                                        ? null
+                                        : () => load(more: true),
+                                    child: Text(
+                                      loading ? 'Loading…' : 'Load more',
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
                         ),
-                      for (final (i, s) in items.indexed)
-                        EntranceFade(
-                          key: ValueKey(s.spaceId),
-                          delayMs: math.min(i, 5) * 40,
-                          child: SpaceCard(
-                            s,
-                            onOpen: () async {
-                              await context.push('/spaces/${s.spaceId}');
-                              if (mounted) load();
-                            },
-                          ),
-                        ),
-                      if (cursor != null)
-                        Center(
-                          child: TextButton(
-                            onPressed: loading ? null : () => load(more: true),
-                            child: Text(loading ? 'Loading…' : 'Load more'),
-                          ),
-                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -908,7 +958,7 @@ class _CreateSpaceState extends ConsumerState<CreateSpaceScreen> {
         }
       }
     } catch (e) {
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -1243,7 +1293,7 @@ class _SpaceState extends ConsumerState<SpaceScreen>
       // A blip while the space is already on screen leaves it in place.
       if (status == 403 || status == 404 || space == null) {
         setState(() {
-          error = e.toString();
+          error = friendlyError(e);
           space = null;
           entries = [];
           cursor = null;
@@ -1251,7 +1301,7 @@ class _SpaceState extends ConsumerState<SpaceScreen>
           plans = members = null;
         });
       } else if (!background) {
-        showMessage(context, e.toString());
+        showFailure(context, e);
       }
     } finally {
       if (mounted && run == generation) setState(() => loading = false);
@@ -1298,7 +1348,7 @@ class _SpaceState extends ConsumerState<SpaceScreen>
         }
       }
     } catch (e) {
-      if (latest() && tab == which) setState(() => tabError = e.toString());
+      if (latest() && tab == which) setState(() => tabError = friendlyError(e));
     } finally {
       if (latest()) setState(() => _tabRequests.remove(which));
     }
@@ -1331,7 +1381,7 @@ class _SpaceState extends ConsumerState<SpaceScreen>
       await work(ref.read(apiProvider), session);
       if (mounted) await load();
     } catch (e) {
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -2032,7 +2082,8 @@ class _SpaceState extends ConsumerState<SpaceScreen>
         ? const <(String, String)>[]
         : [
             ('discussion', 'Discussion'),
-            if (x.kind == 'community') ('events', 'Events'),
+            if (x.kind == 'community' && FeatureFlags.events)
+              ('events', 'Events'),
             ('members', 'Members'),
           ];
     return Scaffold(
@@ -2392,7 +2443,7 @@ class _MembersState extends ConsumerState<SpaceMembersScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          error = e.toString();
+          error = friendlyError(e);
           members = [];
           space = null;
         });
@@ -2420,7 +2471,7 @@ class _MembersState extends ConsumerState<SpaceMembersScreen> {
         await load();
       }
     } catch (e) {
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     } finally {
       if (mounted) setState(() => busy = false);
     }

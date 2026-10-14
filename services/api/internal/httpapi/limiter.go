@@ -43,7 +43,7 @@ func (k *keyedLimiter) take(key string) ratelimit.Decision {
 	if err != nil {
 		rateLimitErrors.Inc(k.name)
 		if last, now := k.lastWarn.Load(), time.Now().Unix(); now >= last+30 && k.lastWarn.CompareAndSwap(last, now) {
-			slog.Warn("rate limiter backend failed; letting requests through", "limiter", k.name, "reason", err.Error())
+			slog.Warn("rate limiter backend failed; letting requests through", "limiter", k.name, "reason", scrubURLs(err.Error()))
 		}
 		return ratelimit.Decision{Allowed: true}
 	}
@@ -70,6 +70,8 @@ func (a *API) limiters() map[string]*keyedLimiter {
 		"clients": a.clients, "search": a.search, "graph": a.graph, "messages": a.messages, "aux_messages": a.auxMessages, "reports": a.reports,
 		"uploads": a.uploads, "blob_slots": a.blobSlots, "blob_urls": a.blobURLs, "content": a.content,
 		"lists": a.lists, "locations": a.locations, "first_chats": a.firstChats,
+		"profile_edits": a.profileEdits, "media_complete": a.mediaComplete,
+		"chat_devices": a.chatDevices, "chat_keys": a.chatKeys, "chat_inbox": a.chatInbox, "visit_writes": a.visitWrites,
 	}
 }
 
@@ -86,7 +88,7 @@ func (a *API) nameLimiters() {
 // which would cost a database write for every request (the busiest path in the API) to defend the
 // database; behind N nodes it is N times the limit, which is still a bound, and the proxy in front is
 // where a real per-address limit belongs.
-var memoryOnlyLimiters = map[string]bool{"clients": true}
+var memoryOnlyLimiters = map[string]bool{"clients": true, "visit_writes": true}
 
 // UseSharedRateLimits moves the per-account limiters (everything but memoryOnlyLimiters) to the
 // database, so that N nodes enforce one limit. db is normally the Store's pool. Call it before serving

@@ -8,6 +8,7 @@ import '../core/chat/chat_engine.dart';
 import '../core/state.dart';
 import '../shared/person_avatar.dart';
 import '../shared/widgets.dart';
+import '../core/user_error.dart';
 
 /// Reasons offered when reporting, in the order people look for them. Keys
 /// match the server's reason codes.
@@ -146,7 +147,7 @@ Future<void> showPersonOptions(
       container.invalidate(otherProfileProvider(profile.userId));
       if (context.mounted) showMessage(context, done);
     } catch (e) {
-      if (context.mounted) showMessage(context, e.toString());
+      if (context.mounted) showFailure(context, e);
     }
   }
 
@@ -632,7 +633,7 @@ class _ControlsScreenState extends ConsumerState<ControlsScreen> {
         if (!now.any(sameUser)) now.insert(at.clamp(0, now.length), item);
         lists[which] = now;
       });
-      showMessage(context, e.toString());
+      showFailure(context, e);
     }
   }
 

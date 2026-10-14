@@ -69,7 +69,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Update your settings atomically */
+        /** Update your settings atomically; limited per account (burst 30, then one every 3 seconds) ; changing the username starts a 30 day cooldown (the first real name over the generated one is free) */
         patch: operations["patchSelfProfile_v1_me_profile"];
         trace?: never;
     };
@@ -87,7 +87,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Update your settings atomically */
+        /** Update your settings atomically; limited per account (burst 30, then one every 3 seconds) */
         patch: operations["patchPrivacySettings_v1_me_privacy"];
         trace?: never;
     };
@@ -160,6 +160,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/me/onboarding/age": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Check a declared birth date before onboarding completes; allowed before onboarding. A date under 13 is refused and the refusal is recorded against the sign-in identity (issuer and subject, no date) for 7 days: every further age check or completion from that identity answers 403 AGE_GATE_COOLDOWN, whatever date is sent. Nothing is stored for an accepted date */
+        post: operations["postAgeAllowed_v1_me_onboarding_age"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/usernames/{username}/availability": {
         parameters: {
             query?: never;
@@ -194,6 +211,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/me/nearby": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Your "Show me in Nearby" switch and whether a fresh point is stored; never returns coordinates */
+        get: operations["getNearbyState_v1_me_nearby"];
+        /** Turn on "Show me in Nearby" (no body). Stores no location; send one with PUT /v1/me/location. Off by default for everyone, including every member under 18 */
+        put: operations["putNearbyState_v1_me_nearby"];
+        post?: never;
+        /** Turn "Show me in Nearby" off and delete the stored point in the same transaction; idempotent; you leave everyone's results and Nearby closes for you */
+        delete: operations["deleteNearbyState_v1_me_nearby"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/me/location": {
         parameters: {
             query?: never;
@@ -203,7 +239,7 @@ export interface paths {
         };
         /** Whether you are sharing a location now (a stored point younger than 24 hours); never returns coordinates */
         get: operations["getLocationState_v1_me_location"];
-        /** Share your location: the server rounds both coordinates before storing, to 2 decimal places (about 1.1 km) for adults and 1 decimal place (about 11 km) for minors, decided by your age band when you write, so a precise position is never kept, logged or echoed. Replaces any earlier point; it counts as shared for 24 hours and is deleted after 7 days */
+        /** Share your location: the server rounds both coordinates before storing, to 2 decimal places (about 1.1 km) for adults and 1 decimal place (about 11 km) for minors, decided by your age band when you write, so a precise position is never kept, logged or echoed. Before rounding the point is moved by the member's secret daily random offset (up to 2 km, 5 km for minors; rotated each UTC day, stored). Replaces any earlier point; it counts as shared for 24 hours and is deleted after 7 days. Needs "Show me in Nearby" to be on */
         put: operations["putLocationState_v1_me_location"];
         post?: never;
         /** Stop sharing: deletes the stored point; idempotent; you leave everyone's Nearby results immediately */
@@ -665,7 +701,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Register this device's public identity; idempotent; 409 DEVICE_CONFLICT or TOO_MANY_DEVICES */
+        /** Register this device's public identity; idempotent; 409 DEVICE_CONFLICT (revoked or keys belong to another device: the client makes a new identity) or TOO_MANY_DEVICES; a new device is signalled to the account's other devices (realtime event device); the device is linked to the registering auth session and revoked with it; devices unseen for 90 days are revoked; 429 RATE_LIMITED (per account, shared with the device list, revoke, key and inbox routes) */
         post: operations["postDevice_v1_devices"];
         delete?: never;
         options?: never;
@@ -803,7 +839,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId */
+        /** Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId; 403 AWAITING_REPLY once you have sent 3 messages (not reactions) in a conversation and the peer has sent none */
         post: operations["postMessageAccepted_v1_conversations_conversationId_messages"];
         delete?: never;
         options?: never;
@@ -1459,7 +1495,7 @@ export interface paths {
         /** Browse communities, Moments or events hosted by members of your own age band (others behave as blocked); private spaces preview metadata only */
         get: operations["getSharedSpacePage_v1_spaces"];
         put?: never;
-        /** Create a shared space; scheduled spaces retain UTC plus an IANA host zone */
+        /** Create a shared space; scheduled spaces retain UTC plus an IANA host zone. Event and moment kinds answer 403 FEATURE_DISABLED unless SPACES_EVENTS_ENABLED is set (off for V1) */
         post: operations["postSharedSpace_v1_spaces"];
         delete?: never;
         options?: never;
@@ -2124,10 +2160,10 @@ export interface components {
              */
             lastSeenAt?: string;
             /**
-             * @description A bucket: the smallest of 1, 2, 3, 5, 10, 15, 25, 50, 100 that is at least the distance between the two stored (grid-rounded) points. A viewer who is a minor sees only 10, 25, 50 and 100. Never a coordinate, grid cell or finer distance.
+             * @description A bucket: the smallest of 5, 10, 15, 25, 50, 100 that is at least the distance between the two stored (grid-rounded) points. A viewer who is a minor sees only 10, 25, 50 and 100. Never a coordinate, grid cell or finer distance.
              * @enum {integer}
              */
-            distanceKm: 1 | 2 | 3 | 5 | 10 | 15 | 25 | 50 | 100;
+            distanceKm: 5 | 10 | 15 | 25 | 50 | 100;
         };
         NearbyPage: {
             items: components["schemas"]["NearbyPerson"][];
@@ -2135,10 +2171,11 @@ export interface components {
         };
         NearbySearch: {
             /**
-             * @description Whole kilometres, a plain JSON integer. Send it unchanged with a cursor.
+             * @description Whole kilometres, a plain JSON integer, one of the distance buckets (anything else is 422, so the circle cannot be narrowed below 5 km). A viewer who is a minor is searched at the smallest of 10, 25, 50, 100 that covers it. Send it unchanged with a cursor.
              * @default 25
+             * @enum {integer}
              */
-            radiusKm: number;
+            radiusKm: 5 | 10 | 15 | 25 | 50 | 100;
             interests?: string[];
             languages?: string[];
             country?: string;
@@ -2173,6 +2210,27 @@ export interface components {
         LocationStopped: {
             /** @constant */
             sharing: false;
+        };
+        NearbyState: {
+            /** @description The "Show me in Nearby" switch. Off for every new member and for every member under 18 until they turn it on; only visible members are listed in Nearby, and only visible members can search it. */
+            visible: boolean;
+            /** @description True while a stored location is younger than 24 hours. */
+            sharing: boolean;
+            /** @description Whether the server treats you as under 18 (stronger explainer, coarser area, other minors only). */
+            minor: boolean;
+            /** Format: date-time */
+            updatedAt: string | null;
+        };
+        AgeCheck: {
+            /**
+             * Format: date
+             * @description The declared birth date, sent as soon as it is chosen. Not stored by this call.
+             */
+            birthDate: string;
+        };
+        AgeAllowed: {
+            /** @constant */
+            allowed: true;
         };
         DevelopmentLogin: {
             /**
@@ -2242,7 +2300,10 @@ export interface components {
             updated: number;
         };
         UnreadCount: {
+            /** @description Unread activity, counted up to 99. */
             unreadCount: number;
+            /** @description True when more than 99 are unread: show "99+". Absent in answers from older servers, which never exceeded the real count. */
+            unreadMore: boolean;
         };
         Connection: {
             user: components["schemas"]["UserSummary"];
@@ -2311,7 +2372,10 @@ export interface components {
             items: components["schemas"]["Notification"][];
             nextCursor: string | null;
             hasMore: boolean;
+            /** @description Unread activity, counted up to 99. */
             unreadCount: number;
+            /** @description True when more than 99 are unread: show "99+". */
+            unreadMore: boolean;
         };
         VisitorPage: {
             items: components["schemas"]["Visitor"][];
@@ -2567,6 +2631,12 @@ export interface components {
             data: components["schemas"]["OnboardingState"];
             meta: components["schemas"]["Meta"];
         };
+        AgeAllowedResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["AgeAllowed"];
+            meta: components["schemas"]["Meta"];
+        };
         UsernameAvailabilityResponse: {
             /** @constant */
             success: true;
@@ -2577,6 +2647,12 @@ export interface components {
             /** @constant */
             success: true;
             data: components["schemas"]["PeoplePage"];
+            meta: components["schemas"]["Meta"];
+        };
+        NearbyStateResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["NearbyState"];
             meta: components["schemas"]["Meta"];
         };
         LocationStateResponse: {
@@ -3110,8 +3186,10 @@ export interface components {
             /** Format: date-time */
             expiresAt: string;
             seen: boolean;
-            /** @description Only on your own stories. */
+            /** @description Only on your own stories. Counted up to 99. */
             viewCount?: number;
+            /** @description Only on your own stories, and only when true: more than 99 members saw it, show "99+". */
+            viewCountMore?: boolean;
         };
         StoryGroup: {
             author: components["schemas"]["UserSummary"];
@@ -3428,6 +3506,8 @@ export interface components {
         DeletionRequest: {
             /** @description The member's own username, typed to confirm; compared without case and without a leading @. */
             confirmUsername: string;
+            /** @description Members who sign in with Apple only: the one-time authorization code from signing in with Apple again during deletion. The server exchanges it for a refresh token and revokes it at Apple (App Store guideline 5.1.1(v)) before the deletion is scheduled; 503 APPLE_REVOKE_FAILED when Apple cannot be reached or the code is stale, in which case nothing changed and the member signs in with Apple again to retry. Ignored with a warning when Apple revocation is not configured on the server. */
+            appleAuthorizationCode?: string;
         };
         DeletionState: {
             /** @description True while the account is scheduled for deletion. */
@@ -3526,6 +3606,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3636,6 +3725,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3757,6 +3855,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -3860,6 +3967,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3984,6 +4100,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -3993,7 +4118,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 429; no internal details disclosed */
+            /** @description Error 429. RATE_LIMITED: too many edits (Retry-After). USERNAME_COOLDOWN: the username was changed in the last 30 days (Retry-After is the time left). */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -4087,6 +4212,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4211,6 +4345,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -4220,7 +4363,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 429; no internal details disclosed */
+            /** @description Error 429. RATE_LIMITED: too many edits (Retry-After). */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -4316,6 +4459,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4435,6 +4587,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -4547,6 +4708,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -4650,6 +4820,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4771,6 +4950,138 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postAgeAllowed_v1_me_onboarding_age: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgeCheck"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgeAllowedResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403 AGE_REQUIREMENT_NOT_MET: "Hiyall is for people 13 and over." AGE_GATE_COOLDOWN: this sign-in declared an age under 13 in the last 7 days. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422 VALIDATION: birthDate is not a strict past ISO date from 1900 on, or another field was sent. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -4876,6 +5187,15 @@ export interface operations {
             };
             /** @description Error 422 VALIDATION: the name does not match the username grammar. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4997,6 +5317,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -5006,7 +5335,364 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 429 RATE_LIMITED: shared per-account search limit; retry after the Retry-After header. */
+            /** @description Error 429 RATE_LIMITED: shared per-account search limit; retry after the Retry-After header. DAILY_LIMIT: more than 300 search pages in a UTC day (Entitlements.SearchPagesPerDay). 422 FILTER_NOT_AVAILABLE: age and gender filters are refused for a viewer under 18, and never narrow candidates who are minors. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getNearbyState_v1_me_nearby: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NearbyStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putNearbyState_v1_me_nearby: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NearbyStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: shares the location limiter; retry after the Retry-After header. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteNearbyState_v1_me_nearby: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NearbyStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -5107,6 +5793,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -5194,7 +5889,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 409; no internal details disclosed */
+            /** @description Error 409 NEARBY_OFF: "Turn on Show me in Nearby first." */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -5212,8 +5907,17 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 422 VALIDATION: the body is not exactly {latitude, longitude} as finite numbers in range. */
+            /** @description Error 422 VALIDATION: the body is not exactly {latitude, longitude} as finite numbers in range. LOCATION_IMPLAUSIBLE: the point is more than 1000 km/h (plus 30 km) from the last stored one. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5230,7 +5934,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 429 RATE_LIMITED: a burst of 3 changes per account, then one every 2 minutes; retry after the Retry-After header (120 seconds). */
+            /** @description Error 429 RATE_LIMITED: a burst of 3 changes per account, then one every 2 minutes; retry after the Retry-After header (120 seconds). DAILY_LIMIT: more than 5 changes to a different cell in a UTC day (Entitlements.LocationChangesPerDay); a write to the same cell only refreshes the time. */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -5331,6 +6035,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -5418,7 +6131,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 409 LOCATION_NOT_SHARED: "Share your location to see people nearby." You have no stored location younger than 24 hours. */
+            /** @description Error 409 NEARBY_OFF: "Turn on Show me in Nearby first." You must be visible to search Nearby. LOCATION_NOT_SHARED: "Share your location to see people nearby." You have no stored location younger than 24 hours. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -5436,8 +6149,17 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 422. VALIDATION: radiusKm is not an integer from 1 to 100, a filter is malformed (ageMin/ageMax must be integers from 13 to 99 with ageMin not above ageMax, gender one of woman, man, nonbinary or empty) or an unknown key was sent (a position is never accepted). INVALID_CURSOR: the cursor is tampered, expired, from another account, or was issued for another radius, other filters or before you moved. */
+            /** @description Error 422. VALIDATION: radiusKm is not one of 5, 10, 15, 25, 50, 100, a filter is malformed (ageMin/ageMax must be integers from 13 to 99 with ageMin not above ageMax, gender one of woman, man, nonbinary or empty) or an unknown key was sent (a position is never accepted). INVALID_CURSOR: the cursor is tampered, expired, from another account, or was issued for another radius, other filters or before you moved. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5454,7 +6176,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 429 RATE_LIMITED: shares the per-account search limit; retry after the Retry-After header. */
+            /** @description Error 429 RATE_LIMITED: shares the per-account search limit; retry after the Retry-After header. DAILY_LIMIT: more than 200 Nearby queries (pages included) in a UTC day (Entitlements.NearbyQueriesPerDay). 422 FILTER_NOT_AVAILABLE: age and gender filters are refused for a viewer under 18 (and never narrow candidates who are minors). */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -5548,6 +6270,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5668,6 +6399,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -5773,6 +6513,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5892,6 +6641,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -6004,6 +6762,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -6109,6 +6876,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6230,6 +7006,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -6342,6 +7127,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -6447,6 +7241,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6568,6 +7371,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -6673,6 +7485,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6795,6 +7616,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -6900,6 +7730,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7019,6 +7858,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -7124,6 +7972,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7243,6 +8100,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -7350,6 +8216,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7473,6 +8348,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -7580,6 +8464,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7703,6 +8596,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -7810,6 +8712,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7933,6 +8844,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -8041,6 +8961,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8158,6 +9087,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -8261,6 +9199,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8373,6 +9320,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8494,6 +9450,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -8597,6 +9562,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8716,6 +9690,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -8821,6 +9804,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8944,6 +9936,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -9049,6 +10050,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9162,6 +10172,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9283,6 +10302,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -9397,6 +10425,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -9502,6 +10539,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9634,6 +10680,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -9741,6 +10796,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9864,6 +10928,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -9974,6 +11047,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -10077,6 +11159,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10200,6 +11291,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -10309,6 +11409,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10428,6 +11537,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -10531,6 +11649,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10645,6 +11772,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10768,6 +11904,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -10873,6 +12018,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10992,6 +12146,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -11097,6 +12260,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11220,6 +12392,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -11325,6 +12506,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11446,6 +12636,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -11560,6 +12759,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -11667,6 +12875,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11797,6 +13014,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -11904,6 +13130,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12043,6 +13278,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -12155,8 +13399,17 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 422; no internal details disclosed */
+            /** @description Error 422 UPLOAD_REJECTED: the photo can't be used. Whatever the reason (the upload scanner is not told to the member), the photo is never shown, the response does not say why, and the account may be restricted pending review. Not retryable with the same photo. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12191,7 +13444,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            /** @description Error 503 SCAN_UNAVAILABLE: the upload scanner could not answer. The upload stays pending and unseen; retry in a moment. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -12272,6 +13525,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12393,6 +13655,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -12505,6 +13776,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -12610,6 +13890,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12733,6 +14022,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -12838,6 +14136,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12957,6 +14264,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -13062,6 +14378,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13185,6 +14510,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -13301,6 +14635,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -13406,6 +14749,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13529,6 +14881,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -13636,6 +14997,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13757,6 +15127,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -13860,6 +15239,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13974,6 +15362,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14097,6 +15494,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -14202,6 +15608,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14321,6 +15736,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -14430,6 +15854,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14562,6 +15995,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -14676,6 +16118,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14805,6 +16256,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -14910,6 +16370,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15034,6 +16503,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -15148,6 +16626,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -15253,6 +16740,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15376,6 +16872,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -15492,6 +16997,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -15597,6 +17111,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15720,6 +17243,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -15829,6 +17361,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -15953,6 +17494,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -16063,6 +17613,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16186,6 +17745,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -16295,6 +17863,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16415,6 +17992,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -16518,6 +18104,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -16639,6 +18234,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Error 428; no internal details disclosed */
             428: {
                 headers: {
@@ -16666,7 +18270,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out. */
+            /** @description Error 503 APPLE_REVOKE_FAILED: appleAuthorizationCode was sent but Apple could not be told (unreachable, or the code is stale). Nothing changed; sign in with Apple again and retry. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -16742,6 +18346,15 @@ export interface operations {
             };
             /** @description Error 422; no internal details disclosed */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
                 headers: {
                     [name: string]: unknown;
                 };

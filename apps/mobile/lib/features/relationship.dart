@@ -6,6 +6,7 @@ import '../core/api.dart';
 import '../core/state.dart';
 import '../shared/person_avatar.dart';
 import '../shared/widgets.dart';
+import '../core/user_error.dart';
 
 /// Follow and friend controls for another account. Every action goes to the
 /// server, then the profile is reloaded so visibility follows the new state.
@@ -54,7 +55,7 @@ class _RelationshipBarState extends ConsumerState<RelationshipBar> {
       ref.invalidate(activityProvider);
       if (mounted && done.isNotEmpty) showMessage(context, done);
     } catch (e) {
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     } finally {
       if (mounted) setState(() => busy = false);
     }

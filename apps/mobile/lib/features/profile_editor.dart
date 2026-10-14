@@ -10,6 +10,7 @@ import '../core/theme.dart';
 import '../shared/avatar_sheet.dart';
 import '../shared/person_avatar.dart';
 import '../shared/widgets.dart';
+import '../core/user_error.dart';
 
 class ProfileForm extends ConsumerStatefulWidget {
   final Profile profile;
@@ -139,7 +140,7 @@ class _ProfileFormState extends ConsumerState<ProfileForm> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          error = e.toString();
+          error = friendlyError(e);
           conflict = e is ApiFailure && e.status == 412;
         });
       }

@@ -1,6 +1,6 @@
 # Admin console (staff moderation access)
 
-**Status:** implemented 13 October 2026 in `services/api/cmd/admin`, `services/api/internal/admin`, `services/api/internal/store/moderation.go`, migration `0031_admin_operators.sql` and `apps/admin`. Not independently reviewed or penetration tested. This is the day-to-day tool for trust and safety; `cmd/moderate` remains as the break-glass command line and runs the same store methods.
+**Status:** implemented 13 October 2026 in `services/api/cmd/admin`, `services/api/internal/admin`, `services/api/internal/store/moderation.go`, migration `0031_admin_operators.sql` and `apps/admin`. Extended 14 October 2026 with the content preview, quarantine cases and least-privilege database roles (`internal/admin/content.go`, `internal/store/admincontent.go`, migration `0036_moderation.sql`, `database/roles/roles.sql`; runbook: [16](16-csam-and-illegal-content.md)). Not independently reviewed or penetration tested. This is the day-to-day tool for trust and safety; `cmd/moderate` remains as the break-glass command line and runs the same store methods.
 
 Hiyall has members from age 13 and open Discover, so staff access to reports is treated as a high-risk surface: it is a separate process with its own authentication, sees as little as the job needs, and records everything it shows or changes.
 
@@ -12,13 +12,13 @@ Hiyall has members from age 13 and open Discover, so staff access to reports is 
 | Stolen or guessed staff password | argon2id hashes, mandatory TOTP with no bypass, 5 failures per 15 minutes per account and per address (in the database), generic errors. |
 | Phished password plus code | Codes are single use (replay protected); sessions are short and tied to a cookie scripts cannot read; every action is audited with a reason; roles limit what one account can do. |
 | Browser based attack on a signed-in operator (CSRF, XSS, clickjacking, DNS rebinding) | `SameSite=Strict` HttpOnly cookie, CSRF header on every mutating request, same-origin check, no CORS, CSP `default-src 'self'` with no inline script or style, `frame-ancestors 'none'`, Host allow-list. All case text is rendered as text by React. |
-| Insider browsing member data | Staff see reports, not accounts: no message content beyond what a reporter chose to share, no location, no visitors, no birth dates, no email. Every case and user view is audited before data is returned. |
-| Insider tampering with the trail | `operator_audit` refuses UPDATE, DELETE and TRUNCATE through a trigger, even for the table owner. The console's DB role should additionally hold INSERT and SELECT only on it (see deployment). |
+| Insider browsing member data | Staff see reports, not accounts: no message content beyond what a reporter chose to share, no location, no visitors, no birth dates, no email. The **text and photos of a reported public item** are shown only to moderators and up, after typing a reason; quarantined uploads only to administrators, blurred until an explicit reveal. Every case, user, content and photo view is audited before data is returned. |
+| Insider tampering with the trail | The console's database role (`hiyall_admin`, see Database roles) holds **INSERT and SELECT only** on `operator_audit`: no UPDATE, DELETE or TRUNCATE, and it does not own the table, so it cannot drop or disable the trigger either. The trigger from migration 0031 is the second line: it refuses UPDATE, DELETE and TRUNCATE for any role that has the privilege, including a superuser, **but the table owner (`hiyall_migrate`) or a superuser can still disable or drop it**. So the owner credential is used only by the release step, never by a running service, and the public API role has no access to the operator tables at all (a test proves both). |
 | Hasty or wrongful sanction | Mandatory written reason (10 to 1000 characters) on every action, a confirmation step for suspend, restore for any suspension, an administrator cannot disable themselves, and the last active administrator cannot be disabled or demoted. |
 | Database copy | Password hashes are argon2id; TOTP secrets are AES-256-GCM sealed under `ADMIN_DATA_KEY`, which is not in the database; login-attempt keys are HMACs, not addresses. |
 | Console exposed to the internet | Refuses to start on a non-loopback address unless `ADMIN_ALLOW_REMOTE=true` and TLS is in front; see deployment. |
 
-Out of scope today: SSO, hardware security keys (WebAuthn), per-case access scopes and expiry, image review, dual control for sanctions. See the end of this page.
+Out of scope today: SSO, hardware security keys (WebAuthn), per-case access scopes and expiry, dual control for sanctions. See the end of this page.
 
 ## Authentication
 
@@ -37,8 +37,8 @@ Out of scope today: SSO, hardware security keys (WebAuthn), per-case access scop
 | Role | Can |
 |---|---|
 | `viewer` | read the queue, cases, and a member's moderation view |
-| `moderator` | everything a viewer can, plus resolve reports (dismiss, warn, suspend) and restore suspended members |
-| `admin` | everything a moderator can, plus manage operators (list, disable, enable, change role), read the audit log, and look up a member's sign-in identity |
+| `moderator` | everything a viewer can, plus resolve reports (dismiss, warn, suspend), restore suspended members, read the **text and photos of a reported public item** (with a reason) and list and read quarantine cases (evidence record only, no image) |
+| `admin` | everything a moderator can, plus manage operators (list, disable, enable, change role), read the audit log, look up a member's sign-in identity, and **load, reveal and decide quarantined uploads** |
 
 Every route checks its role on the server before running (`Server.handle`); the test suite walks all registered routes against all roles. The last active administrator cannot be disabled or demoted, and nobody can disable their own account over HTTP. `admin operator-disable` on the server can disable any operator, including the last administrator, because a stolen administrator device must be closable.
 
@@ -58,6 +58,13 @@ JSON under `/admin/v1`, same envelope as the public API: `{"success":true,"data"
 | `GET /users/{id}` | viewer | moderation view (below). Audited as `user_view` |
 | `GET /users/{id}?identity=true` | admin | adds the sign-in identity (provider and opaque subject). Audited as `user_identity_view` |
 | `POST /users/{id}/restore` | moderator | `{reason}`; `409 NOT_SUSPENDED` if the account is not suspended |
+| `POST /reports/{id}/content` | moderator | `{reason}` (10 to 1000 characters). Returns the reported post, comment, story, space, space entry or member avatar: `{content:{text,authorUsername,deleted,...},media:[{mediaId,width,height,url}],mediaAvailable}`. `url` is a console path (`/admin/v1/media/{mediaId}?t=...`) valid two minutes, bound to the operator and photo. `422 NO_PREVIEW` for chats. Audited as `report_content_view` with the reason, before the read |
+| `GET /media/{mediaId}?t=` | moderator (administrator for a quarantine link) | streams the photo (`image/jpeg`, `no-store`) from storage with the console's read-only token. `422` for a missing, expired, tampered or foreign token, `503 MEDIA_UNAVAILABLE` without `ADMIN_MEDIA_*`. Audited as `content_media_fetch` / `quarantine_media_fetch` before a byte is fetched |
+| `GET /content-cases?status=&limit=&cursor=` | moderator | quarantine cases newest first, status `open`, `confirmed`, `reported`, `cleared`; no imagery |
+| `GET /content-cases/{id}` | moderator | the evidence record (uploader, age band, scanner signals, SHA-256, size, hold dates, status); never an object key. Audited as `content_case_view` |
+| `POST /content-cases/{id}/view` | admin | `{reason}`; returns a link to the **blurred** image. Audited as `quarantine_media_view` |
+| `POST /content-cases/{id}/reveal` | admin | `{reason}`; records the explicit unblur (the page then removes the blur). Audited as `quarantine_media_reveal` |
+| `POST /content-cases/{id}/resolve` | admin | `{action: confirm\|clear\|reported, reason, reportReference?, legalHold?}`; `reported` needs the reference of the report made outside the console; `409 CASE_STATE` for a step the case does not allow. Confirm and reported set the legal hold. Audited in the same transaction
 | `GET /audit?operator=&action=&target=&limit=&cursor=` | admin | newest first; the first page of a visit is itself audited (`audit_view`) |
 | `GET /operators` | admin | never includes credentials |
 | `POST /operators/{id}/disable`, `/enable`, `/role` | admin | `{reason}` (and `{role}`); `409 LAST_ADMIN`, `SELF_DISABLE`, `NO_CHANGE` |
@@ -68,13 +75,21 @@ Resolve and restore call the same store methods as `cmd/moderate` (`ResolveRepor
 
 **A case shows:** the report (reason, severity, status, description, target type and id); the reported member and the reporter in summary (display name, username, **age band** `minor` or `adult`, account status, how often they were reported and how often they reported); whether a minor is involved; the messages the reporter chose to share with the sender side and time taken from the relay's records; the held encrypted images as **blob id, role, size and SHA-256 only**; the subject's other reports and earlier moderation actions.
 
-**Never shown, by construction:** message content or ciphertext the reporter did not share (the console never reads `messages` or `message_envelopes`); the decryption descriptor or key of a shared image (dropped before the case is built); object keys (images are not fetched, decrypted or viewable); birth dates or exact ages; location; profile visitors; member email addresses (the platform does not store them; the identity provider holds them); the content of reported posts, comments and stories (preview tooling comes later, see below).
+**Never shown, by construction:** message content or ciphertext the reporter did not share (the console never reads `messages` or `message_envelopes`); the decryption descriptor or key of a shared image (dropped before the case is built); object keys (images are not fetched, decrypted or viewable); birth dates or exact ages; location; profile visitors; member email addresses (the platform does not store them; the identity provider holds them); the content of reported posts, comments, stories, spaces and entries **unless a moderator asks for it with a reason** (see Content preview below), and anything from a private chat.
 
 **The user view** adds only account status, age band, live session count, reports against and by the member, and moderation actions.
 
+## Content preview and quarantine cases
+
+A report about a public item (`post`, `comment`, `story`, `space`, `space_entry`) or a member (`user`, which shows the avatar) has a **View reported content** button for moderators and administrators. It asks for a reason, then `POST /reports/{id}/content` writes the audit entry and returns the text and the photos. Chats (`conversation`, `message`) have no preview, ever: the case still shows only what the reporter shared.
+
+Photos are **proxied, not linked**. The console fetches the object from storage with its own read-only token (`ADMIN_MEDIA_ENDPOINT`, `ADMIN_MEDIA_ACCESS_KEY`, `ADMIN_MEDIA_SECRET_KEY`, bucket `ADMIN_MEDIA_BUCKET`; never the API's write token) and streams it from `/admin/v1/media/{id}` behind a token that is an HMAC of the operator, the photo, the report or case, and a two minute expiry (key derived from `ADMIN_DATA_KEY`). The browser never receives a storage URL or object key, the page's CSP (`img-src 'self'`) would block one anyway, and each photo fetch is its own audit row. Without `ADMIN_MEDIA_*` the console shows text only and says so.
+
+**Quarantined uploads** (the upload scanner's flags and matches, [16](16-csam-and-illegal-content.md)) are listed under *Quarantine* for moderators and up, as an evidence record. Only administrators can load the image: a reason first (`quarantine_media_view`), shown **blurred by default**, and an explicit **Reveal image** click (`quarantine_media_reveal`, an audit row of its own). The console never deletes a held object and never sends anything to an authority; an administrator records the reference of a report made elsewhere.
+
 ## Audit log
 
-`operator_audit` records, for every read of a case or user view and every action: operator id and email, action, target, reason, truncated client address, time, and a small detail object (for example the subject id or a role change from and to). Sign-in, sign-out, password changes and operator management are recorded too; command line changes are recorded with `cli:<os user>` as the actor. Actions write their audit entry in the same transaction as the change; reads write it before returning any data and fail if it cannot be written.
+`operator_audit` records, for every read of a case or user view and every action: operator id and email, action, target, reason, truncated client address, time, and a small detail object (for example the subject id or a role change from and to). Content actions are recorded as `report_content_view`, `content_media_fetch`, `content_case_view`, `quarantine_media_view`, `quarantine_media_fetch`, `quarantine_media_reveal` and `content_case_confirm` / `_clear` / `_reported`. Sign-in, sign-out, password changes and operator management are recorded too; command line changes are recorded with `cli:<os user>` as the actor. Actions write their audit entry in the same transaction as the change; reads write it before returning any data and fail if it cannot be written.
 
 Privacy stance: client addresses are stored **truncated** in the audit log and sessions (IPv4 /24, IPv6 /48), enough to tell the VPN from somewhere else and not to identify a household. Login attempt records hold only keyed hashes of the email and address and are deleted after 2 days. The log holds no message text. Retention follows the "Security/admin audit" row of [08](08-security-and-privacy.md): 180 days online, then archive; the append-only trigger means pruning needs a reviewed migration, not an ad hoc DELETE.
 
@@ -84,9 +99,21 @@ Not audited per row: the queue listing and the operator list (they show summarie
 
 1. **Never expose the console to the internet.** Run it where only staff can reach it: a VPN or SSO-aware reverse proxy (identity-aware proxy, mTLS or equivalent) in front, TLS terminated there.
 2. Default is `ADMIN_ADDR=127.0.0.1:8081`. A non-loopback address (including `:8081`) is refused at startup unless `ADMIN_ALLOW_REMOTE=true` **and** TLS is in front: native (`ADMIN_TLS_CERT` and `ADMIN_TLS_KEY`) or `ADMIN_TRUST_PROXY=true`. Behind a proxy, set `ADMIN_ALLOWED_HOSTS=admin.example.internal` (required for non-loopback listeners, recommended always) and have the proxy pass `Host`, set `X-Forwarded-Proto: https` and append the real client address to `X-Forwarded-For`. With `ADMIN_TRUST_PROXY=true` the console rejects any request without `X-Forwarded-Proto: https`, takes the client address from the last `X-Forwarded-For` entry, and marks cookies `Secure`. Do not set it unless a proxy you control is the only way in.
-3. Environment: `APP_ENV`, `DATABASE_URL` (production requires `sslmode=verify-full`), `ADMIN_DATA_KEY` or `ADMIN_DATA_KEY_FILE` (32 random bytes, base64: `openssl rand -base64 32`, held in a secret store, never in the database or repository), `ADMIN_STATIC_DIR` (built console, default `apps/admin/dist` relative to the working directory).
-4. Use a **separate database role** for the console with INSERT and SELECT on `operator_audit` only (no UPDATE, DELETE, TRUNCATE; the trigger is the second line) and no access to tables it does not read. Run migrations with a different role.
-5. Build the console: `npm run admin:install && npm run admin:build` (or `scripts/dev-admin.sh` in development).
+3. Environment: `APP_ENV`, `ADMIN_DATABASE_URL` (the `hiyall_admin` role, production requires `sslmode=verify-full`; it falls back to `DATABASE_URL` in development), `ADMIN_DATA_KEY` or `ADMIN_DATA_KEY_FILE` (32 random bytes, base64: `openssl rand -base64 32`, held in a secret store, never in the database or repository), `ADMIN_STATIC_DIR` (built console, default `apps/admin/dist` relative to the working directory; `/console` in the image), and optionally `ADMIN_MEDIA_*` (a read-only token for the media bucket, for the content preview).
+4. Use a **separate database role** for the console (see Database roles). Production **refuses to start on the API's `DATABASE_URL`** unless `ADMIN_ALLOW_SHARED_DB=true`. Run migrations with a third role.
+5. Build the console: `npm run admin:install && npm run admin:build` (or `scripts/dev-admin.sh` in development), or build the image: `docker build -f services/api/Dockerfile.admin -t hiyall-admin .` (CI does this on every change). Deploy steps: [deploy guide, section 11](../deployment/10-deploy-guide.md#11-admin-console-database-roles-and-upload-scanning).
+
+## Database roles
+
+`database/roles/roles.sql` defines three roles, least privilege, re-runnable (run it after every `migrate`):
+
+| Role | Used by | Can | Cannot |
+|---|---|---|---|
+| `hiyall_migrate` | the release step (`/migrate`) only | owns the schema; creates and alters tables, triggers and grants | nothing is run with it besides migrations |
+| `hiyall_api` | the public API (`DATABASE_URL`) | read and write member data; `INSERT` into `content_cases` (the scanner opens a case); read `schema_migrations` | any access to `operators`, `operator_sessions`, `operator_login_attempts`, `operator_audit` or their sequence; read or change a case; DDL; TRUNCATE |
+| `hiyall_admin` | the console (`ADMIN_DATABASE_URL`) | read what cases and member views show; update `users`, `reports`, `sessions`, `content_cases` for moderation; insert `moderation_actions`; run the operator tables; **INSERT and SELECT on `operator_audit`** | UPDATE, DELETE, TRUNCATE or DDL on `operator_audit`; any access to messages, envelopes, locations, visitors, devices or keys; write to the media bucket |
+
+Two trigger functions that moderation writes fire (`users_status_counters`, `revoke_session_devices`) are `SECURITY DEFINER` since migration 0036 so the console role needs no grant on the tables they touch. `TestDatabaseRolesHaveLeastPrivilege` and `TestConsoleWorksEndToEndOnTheRestrictedAdminRole` check the grants and run the whole console on the restricted role; CI fails if they skip. Roles are created `NOLOGIN` (many managed databases do not let the migration role create roles, so this is a script, not a migration): give each a password or certificate once with `ALTER ROLE ... LOGIN PASSWORD`, outside the repository.
 
 Losing `ADMIN_DATA_KEY` means no operator can sign in; re-enrol each with `admin operator-reset`. Rotating it is the same procedure.
 
@@ -108,6 +135,7 @@ Losing `ADMIN_DATA_KEY` means no operator can sign in; re-enrol each with `admin
 
 * Single sign-on and WebAuthn security keys (today: password and TOTP).
 * Case-scoped access with purpose and expiry; a second approver for sanctions; appeals tooling.
-* Reviewing the content of reported public items (posts, comments, stories, spaces): the case names the target id only. Held encrypted images are listed but not viewable; a reviewed, audited viewing flow is future work and must keep the "no key in the console" rule or replace it explicitly.
+* Held **encrypted chat** images are listed but not viewable (the console has no key, by design). Public items and quarantined uploads are viewable as described above.
+* Releasing an evidence hold from the console, case assignment, and a second approver for quarantine decisions ([16](16-csam-and-illegal-content.md#9-not-built-yet)).
 * Alerts on unusual operator access volume; the audit log is read by an admin, not monitored.
-* The console's integration tests need a database named `hiyall_test_admin` and skip elsewhere, so `scripts/check.sh` (which uses `hiyall_test`) skips them until a second test database is added.
+* The console's integration tests use their own database, `hiyall_test_admin` (`ADMIN_TEST_DATABASE_URL`, or `TEST_DATABASE_URL` with the name swapped), so they never share one with the API tests that truncate tables. CI creates it and fails the job if any of them skips. Locally they skip when that database does not exist: `createdb hiyall_test_admin` and run `go run ./cmd/migrate` against it (`scripts/check.sh` does not create it).

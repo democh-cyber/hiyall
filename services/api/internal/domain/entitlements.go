@@ -13,7 +13,7 @@ const PlanFree Plan = "free"
 
 // Entitlements are the per-member limits that may differ by plan. Store and handler code takes one
 // as a parameter, as it takes a Signer. Limits that protect the protocol or every member alike
-// (text length caps, the 15 MB upload cap, the 40 MP decode cap, chat crypto sizes, the in-memory
+// (text length caps, the 15 MB upload cap, the 20 MP decode cap, chat crypto sizes, the in-memory
 // rate limiters) are not here: they are listed as candidate knobs in the design note.
 type Entitlements struct {
 	// Pulse photos: upload slots and declared bytes per rolling 24 hours (all purposes), counted at
@@ -41,6 +41,20 @@ type Entitlements struct {
 	// NewConversationsPerDay caps the conversations a member may START (be the first opener of) per
 	// rolling 24 hours, counted by creation time and never refunded. Reopening one does not count.
 	NewConversationsPerDay int
+	// Daily caps on social actions and on reading the member base (docs/architecture/11-plans-and-entitlements.md#daily-caps).
+	// Each counts actions per UTC calendar day in member_daily_counts, behind the member's quota lock, in the
+	// transaction that creates the thing; nothing is refunded by undoing it (an unfollow, a cancelled
+	// request or a deleted comment still counts). Search pages, profile views and Nearby queries count
+	// every request that reaches the database.
+	FollowsPerDay         int
+	FriendRequestsPerDay  int
+	CommentsPerDay        int
+	SpacesPerDay          int
+	SpaceEntriesPerDay    int
+	SearchPagesPerDay     int
+	ProfileViewsPerDay    int
+	NearbyQueriesPerDay   int
+	LocationChangesPerDay int
 }
 
 // EntitlementsFor returns the limits of a plan. An unknown plan gets Free, so a bad value can only
@@ -60,6 +74,15 @@ func EntitlementsFor(plan Plan) Entitlements {
 		PendingBlobs:           10,
 		LinkedBlobRetention:    30 * 24 * time.Hour,
 		NewConversationsPerDay: 40,
+		FollowsPerDay:          200,
+		FriendRequestsPerDay:   50,
+		CommentsPerDay:         300,
+		SpacesPerDay:           3,
+		SpaceEntriesPerDay:     100,
+		SearchPagesPerDay:      300,
+		ProfileViewsPerDay:     500,
+		NearbyQueriesPerDay:    200,
+		LocationChangesPerDay:  5,
 	}
 	switch plan {
 	case PlanFree:

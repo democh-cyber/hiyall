@@ -46,6 +46,14 @@ Free values (today's limits, for every member including minors):
 | `BlobsPerDay` / `BlobBytesPerDay` / `PendingBlobs` | 100 / 300 MiB / 10 |
 | `LinkedBlobRetention` | 30 days |
 | `NewConversationsPerDay` | 40 |
+| `FollowsPerDay` / `FriendRequestsPerDay` / `CommentsPerDay` | 200 / 50 / 300 |
+| `SpacesPerDay` / `SpaceEntriesPerDay` | 3 / 100 |
+| `SearchPagesPerDay` / `ProfileViewsPerDay` / `NearbyQueriesPerDay` | 300 / 500 / 200 |
+| `LocationChangesPerDay` | 5 |
+
+### Daily caps
+
+The last four rows are the daily caps (migration `0034_teen_safety.sql`, table `member_daily_counts`). They count per member, per kind and per UTC calendar day, not over a rolling 24 hours, and the count only goes up: unfollowing, cancelling a friend request, deleting a comment or closing a space gives nothing back, so cancel-and-resend is two requests against the day. Creating actions (follow, friend request, comment, space, space entry) take the member's quota lock (`lockQuota`) and count inside the transaction that creates the thing, so a refused or rolled back request costs nothing and two concurrent requests cannot both pass at limit minus one. Reading actions (search pages, profile views of other members, Nearby queries) count every request that reaches the database. An idempotent repeat (following someone already followed, a request already sent) is not counted. A used-up cap answers `429 DAILY_LIMIT` with `Retry-After` set to the seconds until the next UTC midnight. Rows older than three days are purged by the maintenance job. The 7 day decline cooldown on friend requests is separate and unchanged: a declined request cannot be cancelled, and a new request to the person who declined is `429 REQUEST_COOLDOWN` until 7 days after the decline.
 
 ## Where the resolver lives
 
@@ -75,12 +83,15 @@ Tiered now means the value is already an `Entitlements` field. Candidate later m
 | Chat blobs per day (100), chat bytes per day (300 MiB), pending slots (10) | `Entitlements` | tiered now |
 | Linked chat blob retention (30 days) | `Entitlements.LinkedBlobRetention` | tiered now |
 | New conversations started per day (40) | `Entitlements.NewConversationsPerDay` | tiered now |
+| Follows (200), friend requests (50), comments (300), spaces (3), space entries (100) per UTC day | `Entitlements` (`FollowsPerDay` and so on) | tiered now |
+| Search pages (300), profile views (500), Nearby queries (200) per UTC day | `Entitlements` | tiered now |
+| Nearby location changes per UTC day (5) | `Entitlements.LocationChangesPerDay` | tiered now |
 | Photos per post (10) | `domain.MaxPostMedia` | candidate later |
 | Post, story and comment length (2200, 280, 1000) | `domain` constants | candidate later |
 | One photo upload size (15 MB) | `media.MaxUploadBytes`, app `maxPhotoBytes` | candidate later (the app copy must come from the server first) |
 | Chat photo size (4 MiB full, 256 KiB thumb) and picker size (4096 px) | `domain/chatmedia.go`, app `chat_attachment.dart`, `chat_photo.dart` | candidate later (hardcoded in the app) |
 | Future video length and size | not accepted yet | candidate later |
-| Nearby radius (default 25 km, up to 100 km) and Nearby or discovery filters | `domain/nearby.go`, `domain/discovery.go` | candidate later |
+| Nearby radii (the buckets 5, 10, 15, 25, 50, 100 km, default 25) and Nearby or discovery filters | `domain/nearby.go`, `domain/discovery.go` | candidate later (never below 5 km) |
 | Number of circles or lists | not built | candidate later |
 | Chat history retention | not built (messages are kept) | candidate later |
 | Space capacity (members per space) | `domain/spaces.go` | candidate later |

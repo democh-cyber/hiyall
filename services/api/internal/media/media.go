@@ -29,7 +29,7 @@ var ContentTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image
 const (
 	MaxUploadBytes = 15 << 20
 	// MaxPixels bounds decode memory: a small file can declare a huge canvas.
-	MaxPixels = 40_000_000
+	MaxPixels = 20_000_000
 	FullEdge  = 2048
 	ThumbEdge = 640
 )

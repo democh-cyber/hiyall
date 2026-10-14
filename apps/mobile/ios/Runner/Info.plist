@@ -20,6 +20,8 @@
 	<string>Hiyall uses the camera so you can take a profile picture or a photo for a post. Nothing is shared until you confirm it.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Hiyall uses your approximate location to show people near you. Others only ever see a rounded distance, never where you are.</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<true/>
 	<key>CFBundleName</key>
 	<string>hiyall</string>
 	<key>CFBundlePackageType</key>

@@ -1,12 +1,12 @@
 # Hiyall Flutter mobile architecture
 
-**Status:** Architecture draft; local foundation implementation authorized on 7 October 2026
+**Status, 14 October 2026:** partly a plan. Implemented in `apps/mobile`: Riverpod, go_router, Dio, a WebSocket client, `flutter_secure_storage`, Firebase Auth and Messaging, and the Rust end-to-end-encryption core. **There is no Drift or SQLite database today**: chat history, the outbox and the photo cache are stored through `ChatStore` (secure storage plus app-private files, see `lib/core/chat/chat_store.dart`), and everything else is fetched from the API. The Drift/SQLite, offline-sync and `data/` layer text below is the original design, not what exists.
 
 **Targets:** Android and iOS phones/tablets; future web-compatible domain contracts
 
 **State management:** Riverpod with immutable state models
 
-**Local persistence:** Drift/SQLite
+**Local persistence:** `flutter_secure_storage` and app-private files today (Drift/SQLite is only planned)
 
 **Networking:** generated OpenAPI client over Dio/HTTP; WebSocket event client
 
@@ -491,3 +491,5 @@ Background sockets are best effort. OS background restrictions can defer upload/
 ## Chat screens (app)
 
 The chat list and conversation are split by job: `features/chat.dart` holds the screens' state and the providers (search debounce, filters, scroll-to-latest state), `chat_list.dart` the rows, heading, search, filter chips, Meet card and empty/loading cards, `chat_header.dart` the 56 px header, `chat_thread.dart` the bubbles, typing dots and scroll button, `chat_composer.dart` the unified message dock, `chat_intro.dart` the dismissible new-chat card and skeleton, `chat_menu.dart` the conversation menu, `chat_parts.dart` small shared parts (atmosphere backdrop, icon button, encryption chip), `chat_format.dart` the pure helpers (relative times, grouping, filtering, preview mapping, auto-scroll and bubble-corner decisions) and `chat_photo.dart` the photo bubble, viewer and sheets. Colours come from the `ChatTokens` theme extension (`shared/chat_tokens.dart`), also used by `NavigationDock`; photo-less avatars use `shared/avatar_gradient.dart` through `PersonAvatar`. `AppShell` hides its header and the dock while `/chats/:id` is open. Nothing in `core/chat/` changed. `chatClockProvider` supplies "now" for relative times so tests are deterministic. Behaviour and look are described in [chat experience](../ux/14-chat-experience.md).
+
+See also [release builds and reliability](16-release-and-reliability.md) for error reporting, the version gate, deep links and the release script.

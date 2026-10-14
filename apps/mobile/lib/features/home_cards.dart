@@ -14,8 +14,8 @@ import '../shared/person_avatar.dart';
 import '../shared/person_link.dart';
 import '../shared/press_scale.dart';
 import '../shared/story_canvas.dart';
-import '../shared/widgets.dart';
 import 'live_sync.dart';
+import '../core/user_error.dart';
 
 /// A short, unfiltered first page of Discover: the same opted-in members the
 /// Discover tab would show, so Home never widens who can be found. Kept for the
@@ -306,7 +306,7 @@ class _RequestCard extends ConsumerWidget {
       try {
         await ref.read(activityProvider.notifier).respond(item, accept);
       } catch (e) {
-        if (context.mounted) showMessage(context, e.toString());
+        if (context.mounted) showFailure(context, e);
       }
     }
 
@@ -787,7 +787,7 @@ class _FollowButtonState extends ConsumerState<_FollowButton> {
       ref.invalidate(profileProvider);
       if (mounted) setState(() => state = result);
     } catch (e) {
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     } finally {
       if (mounted) setState(() => busy = false);
     }

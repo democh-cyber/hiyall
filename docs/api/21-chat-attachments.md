@@ -132,3 +132,7 @@ The API never creates or probes the chat bucket (the token cannot create buckets
 ## Errors added
 
 `ATTACHMENTS_NOT_ALLOWED` (403), `BLOB_NOT_READY` (409), `BLOB_SIZE_MISMATCH` (409), `BLOB_EXPIRED` (410), `TOO_LARGE` (413), `QUOTA` (429), `CHAT_MEDIA_UNAVAILABLE` (503). `RATE_LIMITED` (429) is used for the pending cap and the limiters.
+
+## Device lifecycle and limits (13 October 2026)
+
+Chat device routes (`POST /v1/devices`, `GET /v1/me/devices`, `DELETE /v1/devices/{id}`, keys, inbox and ack) have per-account limiters in addition to the per-address one (`chat_devices`, `chat_keys`, `chat_inbox`; see the implementation record). Migration `0035` links a device to the auth session that registered it: revoking the session revokes the device. A device unseen for 90 days is revoked by the hourly maintenance job. Photo descriptors are capped on receive and cached by conversation, blob id and hash: see [attachments](../security/14-encrypted-chat-attachments.md#receive-caps-and-cache-keys-13-october-2026-hardening). An unanswered sender gets `403 AWAITING_REPLY` after 3 messages, which also covers photo messages.

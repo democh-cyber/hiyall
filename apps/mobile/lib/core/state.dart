@@ -8,6 +8,7 @@ import 'auth/auth_gateway.dart';
 import 'auth/firebase_config.dart';
 import 'auth/firebase_gateway.dart';
 import 'location_service.dart';
+import 'pending_revoke.dart';
 
 const anjaliId = '019a4000-0000-7000-8000-000000000001';
 const nikoId = '019a4000-0000-7000-8000-000000000002';
@@ -27,8 +28,22 @@ final authGatewayProvider = Provider<AuthGateway>((ref) {
 final apiProvider = Provider<ApiClient>(
   (ref) => ApiClient()
     ..onUnauthorized = (() => ref.read(sessionProvider.notifier).expire())
+    ..onUpgradeRequired = (() =>
+        ref.read(upgradeRequiredProvider.notifier).set())
     ..tokenRefresher = (() => ref.read(authGatewayProvider).refreshToken()),
 );
+
+/// True once the server refused this app version (426 UPGRADE_REQUIRED).
+/// The router then shows only the "Update Hiyall" screen.
+final upgradeRequiredProvider = NotifierProvider<UpgradeRequired, bool>(
+  UpgradeRequired.new,
+);
+
+class UpgradeRequired extends Notifier<bool> {
+  @override
+  bool build() => false;
+  void set() => state = true;
+}
 
 /// The device's location. Replaced by a fake in tests.
 final locationServiceProvider = Provider<LocationService>(
@@ -97,6 +112,13 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
 
   @override
   AsyncValue<Session?> build() {
+    // A sign-out that couldn't reach the server last time is sent now.
+    unawaited(
+      ref
+          .read(revokeQueueProvider)
+          .flush(ref.read(apiProvider))
+          .catchError((_) {}),
+    );
     final gateway = ref.watch(authGatewayProvider);
     if (!gateway.configured) return const AsyncData(null);
     booting = true;
@@ -251,9 +273,11 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
     state = const AsyncData(null);
   }
 
+  /// Signs out. Always finishes on this device, even offline: if the server
+  /// could not be told, the revoke is queued ([RevokeQueue]) and sent on the
+  /// next launch.
   Future<void> logout() async {
     final session = state.asData?.value;
-    // Keep the credential until the server acknowledges revocation; failures are visible.
     if (session != null) {
       // No new position goes out from here on; one already sent lands first
       // so the removal below is the last word.
@@ -269,16 +293,29 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
       } catch (_) {}
       // This device stops getting the account's pushes while the credential still works.
       for (final hook in signOutHooks.toList()) {
-        await hook();
+        try {
+          await hook();
+        } catch (_) {
+          // A hook that needs the server must not keep the person signed in.
+        }
       }
       try {
         await ref.read(apiProvider).logout(session);
       } on ApiFailure catch (error) {
-        if (error.status != 401) rethrow;
+        // 401: the server already ended it. Anything else: try again later.
+        if (error.status != 401) {
+          await ref.read(revokeQueueProvider).add(session.token);
+        }
+      } catch (_) {
+        await ref.read(revokeQueueProvider).add(session.token);
       }
     }
     _devSession = false;
-    await ref.read(authGatewayProvider).signOut();
+    try {
+      await ref.read(authGatewayProvider).signOut();
+    } catch (_) {
+      // The provider's local sign-out failing must not leave the app signed in.
+    }
     ref.read(sessionExpiredProvider.notifier).set(false);
     ref.read(awaitingVerificationProvider.notifier).set(null);
     state = const AsyncData(null);

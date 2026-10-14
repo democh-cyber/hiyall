@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/time/rate"
+	"hiyall/services/api/internal/clientip"
 	"hiyall/services/api/internal/domain"
 	"hiyall/services/api/internal/media"
 	"hiyall/services/api/internal/push"
@@ -36,6 +37,14 @@ type API struct {
 	DevAuth   bool
 	Origin    string
 	cursorKey [32]byte
+	// cursorKeyPrevious are older cursor keys still accepted for verification (CURSOR_KEY_PREVIOUS), so a
+	// key rotation does not invalidate cursors already handed out. Signing always uses cursorKey.
+	cursorKeyPrevious [][32]byte
+	// ClientIP decides which address a request is limited under, trusting forwarded headers only from the
+	// configured proxies (clientip). Nil: the direct peer.
+	ClientIP *clientip.Resolver
+	// minClient is the oldest app version served per platform (android, ios, web); see upgrade.go.
+	minClient map[string][3]int
 	budget    *rate.Limiter
 	clients   *keyedLimiter
 	search    *keyedLimiter
@@ -45,8 +54,12 @@ type API struct {
 	// refilling one every 10 seconds (60 per 10 minutes sustained). A reaction also takes a token from
 	// messages, so it can never be a way around the normal send limit.
 	auxMessages *keyedLimiter
-	reports     *keyedLimiter
-	uploads     *keyedLimiter
+	// profileEdits bounds profile and privacy PATCHes per account (the username cooldown does the rest);
+	// mediaComplete bounds POST /v1/media/{id}/complete, the CPU-heavy image decode, per account.
+	profileEdits  *keyedLimiter
+	mediaComplete *keyedLimiter
+	reports       *keyedLimiter
+	uploads       *keyedLimiter
 	// blobSlots bounds encrypted-attachment upload slots, completions and deletes per account;
 	// blobURLs bounds download URLs (opening a chat with many photos asks for many).
 	blobSlots *keyedLimiter
@@ -62,10 +75,23 @@ type API struct {
 	// exchanged a message with: a burst of 10, then one a minute. Messaging is open to everyone
 	// who is not blocked or in the other age band, so this is what limits unsolicited contact.
 	firstChats *keyedLimiter
+	// chatDevices bounds device registration, the device list and revoking; chatKeys bounds key
+	// uploads and counts; chatInbox bounds inbox reads and acks. All are per account (every device
+	// of the account shares them), generous for a phone polling every few seconds.
+	chatDevices, chatKeys, chatInbox *keyedLimiter
+	// visitWrites lets a viewer's visit to one profile reach the database once an hour (key: viewer and
+	// profile). It is per node, in memory (memoryOnlyLimiters): a database write to avoid a database write
+	// would defeat it.
+	visitWrites *keyedLimiter
 	// mediaSlots bounds concurrent photo processing on this node.
 	mediaSlots chan struct{}
 	// Media is optional; without it photo uploads answer 503.
 	Media media.Store
+	// Scanner inspects every non-encrypted upload before it can be shown (docs/security/16-csam-and-illegal-content.md).
+	// Nil is the same as media.None: nothing is flagged. cmd/api sets it from the SCAN_* configuration.
+	Scanner media.Scanner
+	// Apple revokes Sign in with Apple tokens when an account is deleted. Nil (unconfigured) is a no-op with a warning.
+	Apple AppleRevoker
 	// ChatMedia is the separate bucket for end-to-end encrypted chat attachments; without it the
 	// attachment routes answer 503 CHAT_MEDIA_UNAVAILABLE. It only ever holds ciphertext.
 	ChatMedia media.Store
@@ -79,6 +105,9 @@ type API struct {
 	heartbeat time.Duration
 	// Reporter receives panics and unexpected 500s (ops.go); the default does nothing.
 	Reporter ErrorReporter
+	// SpacesEvents allows creating event and moment spaces (SPACES_EVENTS_ENABLED). Off for V1: only
+	// communities can be created; existing events and moments stay readable.
+	SpacesEvents bool
 	// Migrations are the migration files this release needs applied; /readyz refuses while the
 	// database is behind. Empty disables the check.
 	Migrations []string
@@ -90,30 +119,90 @@ func New(s *store.Store, verify Verify, dev bool, origin string) *API {
 	a := &API{Store: s, Verify: verify, DevAuth: dev, Origin: origin,
 		// The instance budget is a backstop; each client address gets its own bucket.
 		budget:      rate.NewLimiter(2000, 4000),
-		clients:     newKeyedLimiter(50, 100, 16384),
-		search:      newKeyedLimiter(rate.Every(2*time.Second), 10, 4096),
-		graph:       newKeyedLimiter(rate.Every(2*time.Second), 20, 4096),
-		messages:    newKeyedLimiter(5, 40, 4096),
-		auxMessages: newKeyedLimiter(rate.Every(10*time.Second), 60, 4096),
-		reports:     newKeyedLimiter(rate.Every(time.Minute), 10, 4096),
-		uploads:     newKeyedLimiter(rate.Every(2*time.Second), 30, 4096),
-		blobSlots:   newKeyedLimiter(rate.Every(500*time.Millisecond), 60, 4096),
-		blobURLs:    newKeyedLimiter(10, 60, 4096),
-		content:     newKeyedLimiter(1, 30, 4096),
-		lists:       newKeyedLimiter(2, 30, 4096),
-		locations:   newKeyedLimiter(rate.Every(2*time.Minute), 3, 4096),
-		firstChats:  newKeyedLimiter(rate.Every(time.Minute), 10, 4096),
-		mediaSlots:  make(chan struct{}, 4),
-		heartbeat:   pingEvery,
+		clients:     newKeyedLimiter(50, 100, addressLimiterKeys),
+		search:      newKeyedLimiter(rate.Every(2*time.Second), 10, accountLimiterKeys),
+		graph:       newKeyedLimiter(rate.Every(2*time.Second), 20, accountLimiterKeys),
+		messages:    newKeyedLimiter(5, 40, accountLimiterKeys),
+		auxMessages: newKeyedLimiter(rate.Every(10*time.Second), 60, accountLimiterKeys),
+		// A burst of 30 edits, then one every 3 seconds (20 a minute).
+		profileEdits: newKeyedLimiter(rate.Every(3*time.Second), 30, accountLimiterKeys),
+		// A burst of 30 photo completions, then one every 2 seconds, like upload slots.
+		mediaComplete: newKeyedLimiter(rate.Every(2*time.Second), 30, accountLimiterKeys),
+		reports:       newKeyedLimiter(rate.Every(time.Minute), 10, accountLimiterKeys),
+		uploads:       newKeyedLimiter(rate.Every(2*time.Second), 30, accountLimiterKeys),
+		blobSlots:     newKeyedLimiter(rate.Every(500*time.Millisecond), 60, accountLimiterKeys),
+		blobURLs:      newKeyedLimiter(10, 60, accountLimiterKeys),
+		content:       newKeyedLimiter(1, 30, accountLimiterKeys),
+		lists:         newKeyedLimiter(2, 30, accountLimiterKeys),
+		locations:     newKeyedLimiter(rate.Every(2*time.Minute), 3, accountLimiterKeys),
+		firstChats:    newKeyedLimiter(rate.Every(time.Minute), 10, accountLimiterKeys),
+		chatDevices:   newKeyedLimiter(rate.Every(2*time.Second), 20, 4096),
+		chatKeys:      newKeyedLimiter(2, 30, 4096),
+		chatInbox:     newKeyedLimiter(5, 60, 4096),
+		visitWrites:   newKeyedLimiter(rate.Every(time.Hour), 1, 65536),
+		mediaSlots:    make(chan struct{}, 4),
+		heartbeat:     pingEvery,
 	}
 	if _, err := rand.Read(a.cursorKey[:]); err != nil {
 		panic(err)
 	}
 	a.Reporter = NoopReporter{}
+	a.minClient = map[string][3]int{}
 	a.nameLimiters()
 	a.registerMetrics()
 	return a
 }
+
+// SetCursorKeys installs the keys that sign and verify list cursors (CURSOR_KEY, CURSOR_KEY_PREVIOUS):
+// every node with the same keys accepts the others' cursors, across restarts too. Without it New's random
+// per-process key is used, which is right for development and tests only.
+func (a *API) SetCursorKeys(current []byte, previous ...[]byte) {
+	if len(current) == 32 {
+		copy(a.cursorKey[:], current)
+	}
+	a.cursorKeyPrevious = nil
+	for _, key := range previous {
+		if len(key) == 32 {
+			var k [32]byte
+			copy(k[:], key)
+			a.cursorKeyPrevious = append(a.cursorKeyPrevious, k)
+		}
+	}
+}
+
+// cursorMAC signs data with the current cursor key. prefix separates uses of the key (it may be empty).
+func (a *API) cursorMAC(prefix string, data []byte) []byte {
+	return macWith(a.cursorKey[:], prefix, data)
+}
+
+// cursorSigValid verifies a signature against the current key, then the previous ones.
+func (a *API) cursorSigValid(sig []byte, prefix string, data []byte) bool {
+	if hmac.Equal(sig, a.cursorMAC(prefix, data)) {
+		return true
+	}
+	for i := range a.cursorKeyPrevious {
+		if hmac.Equal(sig, macWith(a.cursorKeyPrevious[i][:], prefix, data)) {
+			return true
+		}
+	}
+	return false
+}
+
+func macWith(key []byte, prefix string, data []byte) []byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(prefix))
+	mac.Write(data)
+	return mac.Sum(nil)
+}
+
+// Per-limiter key caps. User-keyed limiters evict the longest idle key past the cap, which resets that
+// key's bucket, so the cap must exceed the accounts active within a bucket's refill time: production shares
+// these through Postgres (RATE_LIMIT_BACKEND=postgres, required there) and these only bound development
+// and tests. The address limiter always stays in memory.
+const (
+	accountLimiterKeys = 32768
+	addressLimiterKeys = 65536
+)
 
 type requestIDKey struct{}
 type responseStatus struct {
@@ -184,8 +273,12 @@ func (a *API) Handler() http.Handler {
 			a.realtimeGateway(w, r)
 			return
 		}
-		deadline, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		deadline, cancel := context.WithTimeout(r.Context(), requestDeadline(r))
 		defer cancel()
+		if requestDeadline(r) > serverWriteTimeout {
+			// The server's write timeout would cut the answer to a slow request off; this route outlives it.
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(requestDeadline(r) + 5*time.Second))
+		}
 		r = r.WithContext(deadline)
 		origin := r.Header.Get("Origin")
 		if origin != "" {
@@ -196,7 +289,7 @@ func (a *API) Handler() http.Handler {
 			}
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, If-Match, X-Client-Platform")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, If-Match, X-Client-Platform, X-Client-Version")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, PATCH, POST, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Expose-Headers", "ETag, X-Request-Id")
 			if r.Method == "OPTIONS" {
@@ -209,9 +302,13 @@ func (a *API) Handler() http.Handler {
 		if a.health(w, r) {
 			return
 		}
-		if !a.budget.Allow() || !a.clients.allow(clientAddress(r)) {
+		if !a.budget.Allow() || !a.clients.allow(a.clientAddress(r)) {
 			w.Header().Set("Retry-After", "1")
 			a.failure(w, r, 429, "RATE_LIMITED", "Try again shortly")
+			return
+		}
+		if a.upgradeRequired(r) {
+			a.failure(w, r, 426, "UPGRADE_REQUIRED", "Update Hiyall to keep using it")
 			return
 		}
 		if a.DevAuth && r.URL.Path == "/dev/session" && r.Method == "POST" {
@@ -232,14 +329,36 @@ func (a *API) Handler() http.Handler {
 	})
 }
 
-// clientAddress is the direct peer. Behind a proxy, configure the proxy to limit
-// per real client; forwarded headers are not trusted here.
-func clientAddress(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+// clientAddress is the address a request is limited under: the direct peer, unless that peer is one of
+// the configured trusted proxies (TRUSTED_PROXY_CIDRS), in which case the proxy's own header or the
+// rightmost untrusted X-Forwarded-For hop (see clientip). A request from anyone else is keyed by its peer
+// whatever headers it sends.
+func (a *API) clientAddress(r *http.Request) string { return a.ClientIP.ClientIP(r) }
+
+// serverWriteTimeout is http.Server.WriteTimeout in cmd/api: a handler that outlives it must extend its
+// own write deadline.
+const serverWriteTimeout = 15 * time.Second
+
+// requestDeadline is how long a request may run: 10 seconds, except finishing a photo upload, which
+// downloads, decodes and re-encodes an image and is allowed 30 (audit S11).
+func requestDeadline(r *http.Request) time.Duration {
+	if isMediaComplete(r.Method, r.URL.Path) {
+		return 30 * time.Second
 	}
-	return host
+	return 10 * time.Second
+}
+
+// isMediaComplete is POST /v1/media/{id}/complete.
+func isMediaComplete(method, path string) bool {
+	if method != http.MethodPost {
+		return false
+	}
+	rest, ok := strings.CutPrefix(path, "/v1/media/")
+	if !ok {
+		return false
+	}
+	id, tail, found := strings.Cut(rest, "/")
+	return found && tail == "complete" && isID(id)
 }
 
 func (a *API) ok(w http.ResponseWriter, r *http.Request, data any) {
@@ -284,7 +403,7 @@ func (a *API) error(w http.ResponseWriter, r *http.Request, err error) {
 	default:
 		// The cause is logged for diagnosis: database and Go errors name the failing operation,
 		// never a request body, credential, birth date or position.
-		slog.Error("request failed", "requestId", r.Context().Value(requestIDKey{}), "method", r.Method, "path", r.URL.Path, "reason", scrubURLs(err.Error()))
+		slog.Error("request failed", "requestId", r.Context().Value(requestIDKey{}), "method", r.Method, "route", routePattern(r.URL.Path), "reason", scrubURLs(err.Error()))
 		id, _ := r.Context().Value(requestIDKey{}).(string)
 		a.report(r.Context(), ErrorReport{RequestID: id, Method: r.Method, Route: routePattern(r.URL.Path), Err: err})
 		a.failure(w, r, 500, "INTERNAL", "Something went wrong")
@@ -394,6 +513,11 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 		a.failOnboarding(w, r)
 		return
 	}
+	if isMediaComplete(r.Method, path) && !a.mediaComplete.allow(p.UserID) {
+		w.Header().Set("Retry-After", "2")
+		a.failure(w, r, 429, "RATE_LIMITED", "Slow down a little and try again")
+		return
+	}
 	if path == "/v1/discovery/search" && r.Method == "POST" {
 		a.searchPeople(w, r, p)
 		return
@@ -420,6 +544,13 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 			return
 		}
 		if r.Method == "PATCH" {
+			// Edits are limited per account: with the username cooldown this closes the rename loop.
+			// Checked before the body is read.
+			if !a.profileEdits.allow(p.UserID) {
+				w.Header().Set("Retry-After", "3")
+				a.failure(w, r, 429, "RATE_LIMITED", "Slow down a little and try again")
+				return
+			}
 			v, ok := version(w, r)
 			if !ok {
 				a.failure(w, r, 428, "PRECONDITION_REQUIRED", "A quoted If-Match version is required")
@@ -480,6 +611,9 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 			return
 		}
 		if parts[3] == "profile" && r.Method == "GET" {
+			if !a.profileViewAllowed(w, r, p, parts[2]) {
+				return
+			}
 			value, err := a.Store.VisibleProfile(ctx, p.UserID, parts[2], a.presence, a.signer(ctx))
 			if err != nil {
 				a.error(w, r, err)
@@ -488,7 +622,9 @@ func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
 			// The profile opened, so this is a visit (a locked card counts; one's own profile, and a request
 			// refused above as blocked, in the other age band or not found, do not). A first visit shows up in
 			// this response's count too. Failing to record it never fails the request.
-			if first, err := a.Store.RecordProfileVisit(ctx, p.UserID, parts[2]); err != nil {
+			if !a.visitWrites.allow(p.UserID + ">" + parts[2]) {
+				// This viewer's visit to this profile was already written within the hour.
+			} else if first, err := a.Store.RecordProfileVisit(ctx, p.UserID, parts[2]); err != nil {
 				slog.Warn("profile visit not recorded", "requestId", ctx.Value(requestIDKey{}))
 			} else if first {
 				if stats, ok := value["socialStats"].(domain.SocialStats); ok {
@@ -537,9 +673,7 @@ type cursor struct {
 
 func (a *API) sign(c cursor) string {
 	bytes, _ := json.Marshal(c)
-	mac := hmac.New(sha256.New, a.cursorKey[:])
-	mac.Write(bytes)
-	return base64.RawURLEncoding.EncodeToString(bytes) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return base64.RawURLEncoding.EncodeToString(bytes) + "." + base64.RawURLEncoding.EncodeToString(a.cursorMAC("", bytes))
 }
 func (a *API) sessions(w http.ResponseWriter, r *http.Request, p store.Principal) {
 	limit := 20
@@ -560,9 +694,7 @@ func (a *API) sessions(w http.ResponseWriter, r *http.Request, p store.Principal
 		if valid {
 			bytes, e := base64.RawURLEncoding.DecodeString(parts[0])
 			sig, e2 := base64.RawURLEncoding.DecodeString(parts[1])
-			mac := hmac.New(sha256.New, a.cursorKey[:])
-			mac.Write(bytes)
-			valid = e == nil && e2 == nil && hmac.Equal(sig, mac.Sum(nil)) && json.Unmarshal(bytes, &c) == nil && c.UserID == p.UserID && c.Exp > time.Now().Unix()
+			valid = e == nil && e2 == nil && a.cursorSigValid(sig, "", bytes) && json.Unmarshal(bytes, &c) == nil && c.UserID == p.UserID && c.Exp > time.Now().Unix()
 			valid = valid && isID(c.ID)
 		}
 		if !valid {

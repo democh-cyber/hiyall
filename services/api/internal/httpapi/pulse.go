@@ -64,6 +64,18 @@ func (a *API) completeUpload(ctx context.Context, owner, id string) (map[string]
 		_ = a.Media.Delete(ctx, upload.Key)
 		return nil, &domain.PolicyError{Status: 415, Code: "UNSUPPORTED_MEDIA", Message: "That photo couldn’t be read. Try a JPEG, PNG or WebP."}
 	}
+	// Scan before anything is stored for display. A scanner that cannot answer leaves the upload pending
+	// (fail closed); a flag or a match quarantines it and never reaches the variants below.
+	if a.Scanner != nil {
+		res, scanErr := a.Scanner.Scan(ctx, media.ScanInput{Original: data, Full: out.Full})
+		if scanErr != nil {
+			slog.Error("upload scan failed; the photo stays unavailable", "mediaId", id, "reason", scanErr.Error())
+			return nil, &domain.PolicyError{Status: 503, Code: "SCAN_UNAVAILABLE", Message: "We couldn’t check that photo right now. Try again in a moment."}
+		}
+		if res.Verdict != media.Clean {
+			return nil, a.quarantineUpload(ctx, owner, id, upload, data, out, res)
+		}
+	}
 	full, thumb := "media/"+id+"/full.jpg", "media/"+id+"/thumb.jpg"
 	if err = a.Media.Put(ctx, full, out.Full, "image/jpeg"); err == nil {
 		err = a.Media.Put(ctx, thumb, out.Thumb, "image/jpeg")
@@ -73,7 +85,7 @@ func (a *API) completeUpload(ctx context.Context, owner, id string) (map[string]
 	}
 	// The original may carry location metadata; only the re-encoded copies stay.
 	if err = a.Media.Delete(ctx, upload.Key); err != nil {
-		slog.Warn("original upload not deleted", "mediaId", id, "reason", err.Error())
+		slog.Warn("original upload not deleted", "mediaId", id, "reason", scrubURLs(err.Error()))
 	}
 	if err = a.Store.MediaReady(ctx, owner, id, out.Width, out.Height, full, thumb, int64(len(out.Full)+len(out.Thumb))); err != nil {
 		return nil, err
@@ -259,7 +271,7 @@ func (a *API) pulseRoute(w http.ResponseWriter, r *http.Request, p store.Princip
 			a.error(w, r, err)
 			return true
 		}
-		comment, author, hidden, err := a.Store.AddComment(ctx, p.UserID, parts[2], in, sign)
+		comment, author, hidden, err := a.Store.AddComment(ctx, p.UserID, parts[2], in, sign, a.entitlementsFor(ctx, p.UserID))
 		if err != nil {
 			a.error(w, r, err)
 			return true
@@ -340,4 +352,33 @@ func strictDecode(raw []byte, v any) error {
 		return errors.New("trailing data")
 	}
 	return nil
+}
+
+// quarantineUpload keeps a flagged or matched upload for review: the exact bytes and the processed copy are
+// written under the hold prefix (never deleted by the cleanup, never signed for members), the store marks
+// the media quarantined, opens the operator case and, for a match, suspends the uploader. Nothing is sent
+// anywhere. The member gets a plain refusal that does not say what was found.
+func (a *API) quarantineUpload(ctx context.Context, owner, id string, upload store.PendingUpload, original []byte, out media.Processed, res media.ScanResult) error {
+	originalKey, fullKey := media.HoldKeys(id)
+	if err := a.Media.Put(ctx, originalKey, original, upload.ContentType); err != nil {
+		return err
+	}
+	if err := a.Media.Put(ctx, fullKey, out.Full, "image/jpeg"); err != nil {
+		return err
+	}
+	caseID, err := a.Store.QuarantineMedia(ctx, store.Quarantine{
+		MediaID: id, Owner: owner, Purpose: upload.Purpose, Result: string(res.Verdict), Scanner: res.Scanner, Signals: res.Signals,
+		OriginalSHA256: media.SHA256Hex(original), OriginalBytes: int64(len(original)), ContentType: upload.ContentType, OriginalKey: originalKey, FullKey: fullKey,
+	})
+	if err != nil {
+		return err
+	}
+	slog.Warn("upload quarantined", "caseId", caseID, "mediaId", id, "result", string(res.Verdict), "scanner", res.Scanner)
+	if err = a.Media.Delete(ctx, upload.Key); err != nil {
+		slog.Warn("quarantined upload not removed from the upload prefix", "mediaId", id, "reason", err.Error())
+	}
+	if res.Verdict == media.Match {
+		a.endSessions(ctx, owner, "", "")
+	}
+	return &domain.PolicyError{Status: 422, Code: "UPLOAD_REJECTED", Message: "That photo can’t be used."}
 }

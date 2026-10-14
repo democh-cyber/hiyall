@@ -109,6 +109,25 @@ class DiscoverApi extends FakeApi {
     return LocationStatus(true, DateTime.now());
   }
 
+  NearbyStatus status = const NearbyStatus();
+
+  /// Keep answering with [nearbyFailure] after the switch is turned on.
+  bool keepFailure = false;
+  @override
+  Future<NearbyStatus> nearbyStatus(Session s) async => status;
+  @override
+  Future<NearbyStatus> showMeInNearby(Session s) async {
+    log.add('show');
+    if (!keepFailure) nearbyFailure = null;
+    return status = NearbyStatus(visible: true, minor: status.minor);
+  }
+
+  @override
+  Future<NearbyStatus> hideFromNearby(Session s) async {
+    log.add('hide');
+    return status = NearbyStatus(minor: status.minor);
+  }
+
   @override
   Future<void> stopSharingLocation(Session s) async => log.add('stop');
   @override
@@ -517,6 +536,8 @@ void main() {
       await tester.ensureVisible(find.byKey(const Key('chip-nearby')));
       await tester.tap(find.byKey(const Key('chip-nearby')));
       await tester.pumpAndSettle();
+      // Already visible, so the stored area expiring is read once, without asking.
+      expect(location.reads, 1);
       expect(find.byKey(const Key('needs-location')), findsOneWidget);
       expect(find.byKey(const Key('location-settings')), findsNothing);
       // The position becomes available and the list loads.
@@ -542,14 +563,14 @@ void main() {
       final location = FakeLocation()
         ..failure = const LocationFailure(LocationProblem.deniedForever);
       final container = await openDiscover(tester, api, location);
-      // The automatic read at start-up already failed.
+      expect(location.reads, 0, reason: 'nothing is read on start-up');
+      await tester.ensureVisible(find.byKey(const Key('chip-nearby')));
+      await tester.tap(find.byKey(const Key('chip-nearby')));
+      await tester.pumpAndSettle();
       expect(
         container.read(locationProblemProvider),
         LocationProblem.deniedForever,
       );
-      await tester.ensureVisible(find.byKey(const Key('chip-nearby')));
-      await tester.tap(find.byKey(const Key('chip-nearby')));
-      await tester.pumpAndSettle();
       expect(find.textContaining('device settings'), findsOneWidget);
       await tester.tap(find.byKey(const Key('location-settings')));
       await tester.pump();
@@ -557,52 +578,18 @@ void main() {
     });
   });
 
-  group('automatic location', () {
-    testWidgets('Opening the app reads the position once and shares it', (
-      tester,
-    ) async {
-      final api = DiscoverApi();
-      final location = FakeLocation();
-      await openDiscover(tester, api, location);
-      expect(location.reads, 1);
-      expect(api.shared, (lat: 12.9716, lon: 77.5946));
-      expect(api.log.where((e) => e == 'share'), hasLength(1));
-    });
-
-    testWidgets('Coming back soon after does not read it again', (
-      tester,
-    ) async {
+  group('no automatic location', () {
+    testWidgets('Opening the app reads and shares nothing', (tester) async {
       final api = DiscoverApi();
       final location = FakeLocation();
       await openDiscover(tester, api, location);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pumpAndSettle();
-      expect(location.reads, 1);
+      expect(location.reads, 0);
+      expect(api.log.where((e) => e == 'share'), isEmpty);
     });
 
-    testWidgets('Returning after the interval reads it again', (tester) async {
-      final api = DiscoverApi();
-      final location = FakeLocation();
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            apiProvider.overrideWithValue(api),
-            sessionProvider.overrideWith(SignedIn.new),
-            locationServiceProvider.overrideWithValue(location),
-          ],
-          child: const MaterialApp(
-            home: LocationSync(interval: Duration.zero, child: SizedBox()),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(location.reads, 1);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      await tester.pumpAndSettle();
-      expect(location.reads, 2);
-    });
-
-    testWidgets('Nothing is read before onboarding is finished', (
+    testWidgets('The wrapper reads nothing for a signed-in member', (
       tester,
     ) async {
       final api = DiscoverApi();
@@ -611,7 +598,7 @@ void main() {
         ProviderScope(
           overrides: [
             apiProvider.overrideWithValue(api),
-            sessionProvider.overrideWith(NotOnboarded.new),
+            sessionProvider.overrideWith(SignedIn.new),
             locationServiceProvider.overrideWithValue(location),
           ],
           child: const MaterialApp(home: LocationSync(child: SizedBox())),
@@ -622,54 +609,20 @@ void main() {
       expect(api.log, isEmpty);
     });
 
-    testWidgets(
-      'A refused permission is remembered and a later success clears it',
-      (tester) async {
-        final api = DiscoverApi();
-        final location = FakeLocation()
-          ..failure = const LocationFailure(LocationProblem.denied);
-        late ProviderContainer container;
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              apiProvider.overrideWithValue(api),
-              sessionProvider.overrideWith(SignedIn.new),
-              locationServiceProvider.overrideWithValue(location),
-            ],
-            child: Consumer(
-              builder: (context, ref, _) {
-                container = ProviderScope.containerOf(context);
-                return const MaterialApp(
-                  home: LocationSync(
-                    interval: Duration.zero,
-                    child: SizedBox(),
-                  ),
-                );
-              },
-            ),
-          ),
-        );
-        await tester.pumpAndSettle();
-        expect(container.read(locationProblemProvider), LocationProblem.denied);
-        expect(api.log, isEmpty, reason: 'no position, nothing sent');
-        location.failure = null;
-        tester.binding.handleAppLifecycleStateChanged(
-          AppLifecycleState.resumed,
-        );
-        await tester.pumpAndSettle();
-        expect(container.read(locationProblemProvider), isNull);
-        expect(api.log, ['share']);
-      },
-    );
-
-    testWidgets('A position read before signing out is never sent', (
+    testWidgets('A position read before signing out is never sent after', (
       tester,
     ) async {
       final api = DiscoverApi();
-      final location = SlowLocation()..gate = Completer();
-      final container = await syncing(tester, api, location);
-      await container.read(sessionProvider.notifier).logout();
-      location.gate!.complete();
+      final container = await syncing(tester, api, FakeLocation());
+      final account = container.read(sessionProvider.notifier);
+      final epoch = account.accountEpoch;
+      final session = container.read(sessionProvider).asData!.value!;
+      await account.logout();
+      // The position arrives after the sign-out: the write is skipped.
+      await account.shareLocation(
+        epoch,
+        () => api.shareLocation(session, 1, 2),
+      );
       await tester.pumpAndSettle();
       expect(api.log, ['stop', 'logout']);
     });
@@ -679,12 +632,19 @@ void main() {
     ) async {
       final api = SlowShareApi()..gate = Completer();
       final container = await syncing(tester, api, FakeLocation());
+      final account = container.read(sessionProvider.notifier);
+      final session = container.read(sessionProvider).asData!.value!;
+      final write = account.shareLocation(
+        account.accountEpoch,
+        () => api.shareLocation(session, 1, 2),
+      );
       await tester.pump();
       expect(api.log, ['share sent']);
-      final out = container.read(sessionProvider.notifier).logout();
+      final out = account.logout();
       await tester.pump();
       expect(api.log, ['share sent'], reason: 'the removal waits');
       api.gate!.complete();
+      await write;
       await out;
       await tester.pumpAndSettle();
       expect(api.log, ['share sent', 'share', 'stop', 'logout']);
@@ -706,16 +666,7 @@ void main() {
   });
 }
 
-/// A position read and an upload that each wait on their own gate.
-class SlowLocation extends FakeLocation {
-  Completer<void>? gate;
-  @override
-  Future<LocationFix> current() async {
-    await gate?.future;
-    return super.current();
-  }
-}
-
+/// An upload that waits on its own gate.
 class SlowShareApi extends DiscoverApi {
   Completer<void>? gate;
   @override
@@ -753,10 +704,4 @@ Future<ProviderContainer> syncing(
   );
   await tester.pump();
   return container;
-}
-
-class NotOnboarded extends SessionController {
-  @override
-  AsyncValue<Session?> build() =>
-      const AsyncData(Session('t', anjaliId, onboarded: false));
 }

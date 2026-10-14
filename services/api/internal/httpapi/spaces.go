@@ -77,7 +77,11 @@ func (a *API) spacesRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 				a.error(w, r, e)
 				return true
 			}
-			s, e := a.Store.CreateSpace(ctx, p.UserID, in, a.signer(ctx))
+			if in.Kind != "community" && !a.SpacesEvents {
+				a.failure(w, r, 403, "FEATURE_DISABLED", "Events and Moments aren’t available yet.")
+				return true
+			}
+			s, e := a.Store.CreateSpace(ctx, p.UserID, in, a.signer(ctx), a.entitlementsFor(ctx, p.UserID))
 			if e != nil {
 				a.error(w, r, e)
 			} else {
@@ -203,7 +207,7 @@ func (a *API) spacesRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 		if !body(&in) {
 			return true
 		}
-		entry, e := a.Store.CreateSpaceEntry(ctx, p.UserID, id, in.Body)
+		entry, e := a.Store.CreateSpaceEntry(ctx, p.UserID, id, in.Body, a.entitlementsFor(ctx, p.UserID))
 		if e != nil {
 			a.error(w, r, e)
 		} else {

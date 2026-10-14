@@ -127,7 +127,8 @@ class AuthApi extends FakeApi {
   bool onboarded = false;
   bool usernameFree = true;
   bool failProfileRead = false;
-  ApiFailure? completeFailure, updateFailure;
+  ApiFailure? completeFailure, updateFailure, ageFailure;
+  final ageChecks = <String>[];
   Object? uploadFailure;
   ApiFailure? attachFailure;
   Map<String, dynamic>? profilePatch, privacyPatch;
@@ -215,6 +216,12 @@ class AuthApi extends FakeApi {
   }
 
   @override
+  Future<void> checkBirthDate(Session s, String birthDate) async {
+    ageChecks.add(birthDate);
+    if (ageFailure != null) throw ageFailure!;
+  }
+
+  @override
   Future<OnboardingStatus> completeOnboarding(
     Session s, {
     required String birthDate,
@@ -282,8 +289,20 @@ Future<void> type(WidgetTester tester, String label, String text) async {
   await tester.pump();
 }
 
-Future<void> chooseBirthDate(WidgetTester tester) async {
+/// The picker opens on today in the year list, with no suggested age. This picks 2000.
+Future<void> chooseBirthDate(
+  WidgetTester tester, {
+  String year = '2000',
+}) async {
   await tester.tap(find.byKey(const Key('onb-dob')));
+  await tester.pumpAndSettle();
+  for (var i = 0; i < 40 && find.text(year).evaluate().isEmpty; i++) {
+    await tester.drag(find.byType(YearPicker), const Offset(0, 200));
+    await tester.pumpAndSettle();
+  }
+  await tester.ensureVisible(find.text(year));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(year));
   await tester.pumpAndSettle();
   await tester.tap(find.text('OK'));
   await tester.pumpAndSettle();
@@ -522,7 +541,8 @@ void main() {
       await tester.ensureVisible(find.byKey(const Key('log-in')));
       await tester.tap(find.byKey(const Key('log-in')));
       await tester.pumpAndSettle();
-      expect(location(container), '/login');
+      // Welcome pushes Log in and Sign up so Back returns to it.
+      expect(container.read(routerProvider).state.uri.path, '/login');
       expect(find.text('Welcome back'), findsOneWidget);
       expect(find.byKey(const Key('google-button')), findsOneWidget);
       // Facebook sign-in is switched off until a Meta app is connected.
@@ -530,7 +550,7 @@ void main() {
       await tester.ensureVisible(find.text('Create account'));
       await tester.tap(find.text('Create account'));
       await tester.pumpAndSettle();
-      expect(location(container), '/signup');
+      expect(container.read(routerProvider).state.uri.path, '/signup');
       expect(find.text('Create your account'), findsOneWidget);
     });
 
@@ -993,11 +1013,9 @@ void main() {
         });
         // There are no privacy choices in onboarding any more.
         expect(api.privacyPatch, isNull);
-        final now = DateTime.now();
-        expect(api.completed, {
-          'birthDate': isoDate(DateTime(now.year - 25, 6, 15)),
-          'termsVersion': '2026-10-01',
-        });
+        expect(api.completed!['birthDate'], startsWith('2000-'));
+        expect(api.completed!['termsVersion'], '2026-10-01');
+        expect(api.ageChecks, [api.completed!['birthDate']]);
         expect(
           container.read(sessionProvider).asData!.value!.onboarded,
           isTrue,
@@ -1177,6 +1195,76 @@ void main() {
         expect(location(container), '/onboarding');
       },
     );
+
+    testWidgets('The date picker opens neutral, with no suggested age', (
+      tester,
+    ) async {
+      await start(tester, AuthApi());
+      await tester.tap(find.byKey(const Key('onb-dob')));
+      await tester.pumpAndSettle();
+      final year = DateTime.now().year.toString();
+      // It opens in the year list on the current year, not on an adult default.
+      expect(find.text(year), findsWidgets);
+      expect(find.text('${DateTime.now().year - 25}'), findsNothing);
+    });
+
+    testWidgets('The birth date goes to the server when Continue is tapped', (
+      tester,
+    ) async {
+      final api = AuthApi();
+      await start(tester, api);
+      await chooseBirthDate(tester);
+      await tester.tap(find.byKey(const Key('onb-terms')));
+      await tester.pump();
+      await next(tester);
+      expect(api.ageChecks, hasLength(1));
+      expect(api.ageChecks.single, startsWith('2000-'));
+      expect(find.text('Make it yours'), findsOneWidget);
+    });
+
+    testWidgets(
+      'A date under 13 is not blocked on the device: the server refuses',
+      (tester) async {
+        final api = AuthApi()
+          ..ageFailure = const ApiFailure(
+            'Hiyall is for people 13 and over.',
+            403,
+            'AGE_REQUIREMENT_NOT_MET',
+          );
+        await start(tester, api);
+        await chooseBirthDate(tester, year: '${DateTime.now().year - 10}');
+        await tester.tap(find.byKey(const Key('onb-terms')));
+        await tester.pump();
+        expect(
+          tester
+              .widget<FilledButton>(find.byKey(const Key('onb-next')))
+              .onPressed,
+          isNotNull,
+        );
+        await next(tester);
+        expect(api.ageChecks, hasLength(1));
+        expect(find.byKey(const Key('onb-underage')), findsOneWidget);
+        expect(find.textContaining('try again in a few days'), findsNothing);
+      },
+    );
+
+    testWidgets('A repeat after a refusal shows the calm cooldown message', (
+      tester,
+    ) async {
+      final api = AuthApi()
+        ..ageFailure = const ApiFailure(
+          'You can’t finish signing up right now.',
+          403,
+          'AGE_GATE_COOLDOWN',
+        );
+      await start(tester, api);
+      await chooseBirthDate(tester);
+      await tester.tap(find.byKey(const Key('onb-terms')));
+      await tester.pump();
+      await next(tester);
+      expect(find.byKey(const Key('onb-underage')), findsOneWidget);
+      expect(find.textContaining('try again in a few days'), findsOneWidget);
+    });
 
     testWidgets('A username taken at the last moment returns to that step', (
       tester,

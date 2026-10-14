@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/app.dart';
 import 'package:hiyall/core/api.dart';
+import 'package:hiyall/core/app_info.dart';
 import 'package:hiyall/core/state.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
@@ -76,6 +77,9 @@ class SimpleDiscoverApi extends FakeApi {
 }
 
 void main() {
+  // These tests exercise Events and Moments, which are off in V1 builds.
+  setUp(() => FeatureFlags.eventsOverride = true);
+  tearDown(() => FeatureFlags.eventsOverride = null);
   setUpAll(() async {
     for (final family in ['SpaceGrotesk', 'Manrope']) {
       await (FontLoader(

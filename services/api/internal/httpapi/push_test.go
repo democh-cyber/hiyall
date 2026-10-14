@@ -236,6 +236,8 @@ func TestMessagesAreNotPushedWhenSilenced(t *testing.T) {
 	log, _ := pushing(t, h, nil)
 	path, phone, bobPhone := friendsWithChat(h)
 	h.token(bobPhone, "bob-phone-token")
+	// Bob has written once, so Alice is past the first-contact cap.
+	h.expect(h.send(bob, "POST", path+"/messages", message(bobPhone, phone)), 200, "")
 	send := func() { h.expect(h.send(alice, "POST", path+"/messages", message(phone, bobPhone)), 200, "") }
 	for _, rule := range []struct {
 		name    string
@@ -266,6 +268,8 @@ func TestChatPushesCoalesceAndAreCapped(t *testing.T) {
 	log, _ := pushing(t, h, func(c *push.Config) { c.Now = clock; c.DailyCap = 3 })
 	path, phone, bobPhone := friendsWithChat(h)
 	h.token(bobPhone, "bob-phone-token")
+	// Bob has written once, so Alice is past the first-contact cap and can send freely.
+	h.expect(h.send(bob, "POST", path+"/messages", message(bobPhone, phone)), 200, "")
 	send := func() { h.expect(h.send(alice, "POST", path+"/messages", message(phone, bobPhone)), 200, "") }
 
 	send()

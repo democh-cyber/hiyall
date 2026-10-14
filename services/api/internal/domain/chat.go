@@ -22,6 +22,9 @@ var (
 	ErrDevicesChanged     = &PolicyError{409, "DEVICES_CHANGED", "Devices changed. Refresh them and encrypt again."}
 	ErrTooManyDevices     = &PolicyError{409, "TOO_MANY_DEVICES", "Remove a device before adding another"}
 	ErrDeviceConflict     = &PolicyError{409, "DEVICE_CONFLICT", "This device id is already registered with different keys"}
+	// ErrAwaitingReply is the first-contact cap: until the other person has sent a message of their
+	// own, a sender may send FirstContactMessages messages in a conversation.
+	ErrAwaitingReply      = &PolicyError{403, "AWAITING_REPLY", "You can send more once they reply. Give them a little time."}
 	ErrConversationClosed = &PolicyError{403, "CONVERSATION_CLOSED", "This conversation is closed"}
 	// ErrNewChatsQuota is the daily cap on starting conversations (Entitlements.NewConversationsPerDay);
 	// the caller adds a Retry-After.
@@ -73,6 +76,9 @@ type Device struct {
 	CreatedAt   time.Time `json:"createdAt"`
 	// LastSeenAt is shown only to the device's owner, never to peers.
 	LastSeenAt *time.Time `json:"lastSeenAt,omitempty"`
+	// SessionID is the auth session that registered the device (never serialised). Revoking that
+	// session revokes the device (migration 0035).
+	SessionID string `json:"-"`
 }
 
 func ParseDevice(userID string, body map[string]json.RawMessage) (Device, error) {

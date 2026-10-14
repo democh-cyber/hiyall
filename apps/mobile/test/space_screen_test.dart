@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:hiyall/core/api.dart';
+import 'package:hiyall/core/app_info.dart';
 import 'package:hiyall/core/state.dart';
 import 'package:hiyall/features/spaces.dart';
 
@@ -80,6 +81,9 @@ Future<void> resume(WidgetTester t) async {
 }
 
 void main() {
+  // These tests exercise Events and Moments, which are off in V1 builds.
+  setUp(() => FeatureFlags.eventsOverride = true);
+  tearDown(() => FeatureFlags.eventsOverride = null);
   testWidgets('A failed background reload keeps the space on screen', (
     t,
   ) async {

@@ -17,6 +17,8 @@ import 'discover_header.dart';
 import 'discover_menu.dart';
 import 'discover_person.dart';
 import 'discover_states.dart';
+import 'nearby_optin.dart';
+import 'nearby_setting.dart';
 import 'people_filters.dart';
 import 'safety.dart';
 import 'say_hi.dart';
@@ -67,6 +69,14 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
   /// "My surroundings" was chosen but the server has no position for the
   /// member yet (permission refused, or the first read hasn't finished).
   bool needsLocation = false;
+
+  /// Nearby is chosen but "Show me in Nearby" is off: nothing is read or
+  /// shown until the person agrees in the explainer.
+  bool nearbyOff = false;
+
+  /// The position was already read once for this search, so a second
+  /// LOCATION_NOT_SHARED shows the explanation instead of looping.
+  bool locationTried = false;
   int generation = 0;
   Future<void>? _inFlight;
 
@@ -103,11 +113,12 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
     final session = ref.read(sessionProvider).asData?.value;
     if (session == null) return;
     final run = ++generation;
-    var restart = false;
+    var restart = false, readLocation = false;
     setState(() {
       loading = true;
       error = null;
       needsLocation = false;
+      nearbyOff = false;
       searched = true;
       if (!more) {
         people = [];
@@ -150,6 +161,7 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
           ...page.where((p) => !existing.contains(p.userId)),
         ];
         cursor = next;
+        locationTried = false;
         if (!entranceDone) {
           entranceDone = true;
           entrance = {for (final p in page.take(8)) p.userId};
@@ -158,8 +170,16 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
     } on ApiFailure catch (failure) {
       if (mounted && run == generation) {
         setState(() {
-          if (failure.code == 'LOCATION_NOT_SHARED') {
-            needsLocation = true;
+          if (failure.code == 'NEARBY_OFF') {
+            nearbyOff = true;
+          } else if (failure.code == 'LOCATION_NOT_SHARED') {
+            // Already opted in (the stored area expired): read it again once.
+            if (locationTried) {
+              needsLocation = true;
+            } else {
+              locationTried = true;
+              readLocation = true;
+            }
           } else if (more && failure.code == 'INVALID_CURSOR') {
             // The page marker expired; start over rather than resend it.
             cursor = null;
@@ -180,13 +200,30 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
       if (mounted && run == generation) setState(() => loading = false);
     }
     if (restart && mounted && run == generation) await search();
+    if (readLocation && mounted && run == generation) await retryLocation();
+  }
+
+  /// "Show me in Nearby": explainer first, then the switch and one position.
+  Future<void> enableNearby() async {
+    await turnOnNearby(context, ref);
+    ref.invalidate(nearbyStatusProvider);
+    if (mounted) {
+      locationTried = true;
+      search();
+    }
   }
 
   Future<void> editFilters() async {
+    var minor = false;
+    try {
+      minor = (await ref.read(nearbyStatusProvider.future)).minor;
+    } catch (_) {}
+    if (!mounted) return;
     final selected = await showPeopleFilters(
       context,
       initial: filters,
       ownProfile: ref.read(profileProvider).asData?.value,
+      hideAgeGender: minor,
     );
     if (!mounted || selected == null) return;
     applyVisibleFilters(selected);
@@ -434,6 +471,7 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
         !loading &&
         error == null &&
         !needsLocation &&
+        !nearbyOff &&
         people.isEmpty;
     return SayHiEffects(
       child: Material(
@@ -482,6 +520,10 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
                               ),
                           ]),
                         ),
+                        if (nearbyOff)
+                          SliverToBoxAdapter(
+                            child: NearbyOptInCard(onEnable: enableNearby),
+                          ),
                         if (needsLocation)
                           SliverToBoxAdapter(
                             child: _NeedsLocation(

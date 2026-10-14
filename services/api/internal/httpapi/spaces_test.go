@@ -9,6 +9,7 @@ import (
 
 func makeSpace(h *socialHarness, user, kind, visibility string, capacity int, parent *string) string {
 	h.t.Helper()
+	h.api.SpacesEvents = true // most tests exercise events; TestSpacesEventsFlag covers the default
 	in := map[string]any{"kind": kind, "title": "A little circle", "description": "Talk about books", "rules": "Be kind", "visibility": visibility, "capacity": capacity, "timezone": "Asia/Kolkata"}
 	if parent != nil {
 		in["parentId"] = *parent
@@ -338,4 +339,21 @@ func TestSpaceModerationNeedsAMembership(t *testing.T) {
 	if got := userIDs(items(h.ok(cara, "GET", "/v1/spaces/"+space+"/members?state=invited"))); len(got) != 0 || before["memberCount"] != float64(2) {
 		t.Fatalf("invited past a block: %v %v", got, before)
 	}
+}
+
+func TestSpacesEventsFlag(t *testing.T) {
+	h := newSocialHarness(t)
+	if h.api.SpacesEvents {
+		t.Fatal("events must be off unless SPACES_EVENTS_ENABLED is set")
+	}
+	event := func(kind string) map[string]any {
+		return map[string]any{"kind": kind, "title": "Meetup", "visibility": "public", "capacity": 10, "timezone": "Asia/Kolkata",
+			"startsAt": time.Now().Add(time.Hour), "endsAt": time.Now().Add(2 * time.Hour), "location": "https://example.org/meet"}
+	}
+	for _, kind := range []string{"event", "moment"} {
+		h.expect(h.send(alice, "POST", "/v1/spaces", event(kind)), 403, "FEATURE_DISABLED")
+	}
+	h.expect(h.send(alice, "POST", "/v1/spaces", map[string]any{"kind": "community", "title": "Book club", "visibility": "public", "capacity": 10}), 201, "")
+	h.api.SpacesEvents = true
+	h.expect(h.send(alice, "POST", "/v1/spaces", event("event")), 201, "")
 }

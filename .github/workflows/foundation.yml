@@ -1,10 +1,18 @@
 name: Foundation checks
-on: [push, pull_request]
+on:
+  # Pull requests run the checks; pushes only on main, so a branch with an open PR is not checked twice.
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: foundation-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
   api:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16.15
@@ -19,6 +27,9 @@ jobs:
     env:
       DATABASE_URL: postgresql://hiyall:ci-only-disposable@localhost:5432/hiyall_test?sslmode=disable
       TEST_DATABASE_URL: postgresql://hiyall:ci-only-disposable@localhost:5432/hiyall_test?sslmode=disable
+      # The admin console's integration tests own a second database: they create operators and disable
+      # administrators, and the API's tests truncate tables, so the two must not share one.
+      ADMIN_TEST_DATABASE_URL: postgresql://hiyall:ci-only-disposable@localhost:5432/hiyall_test_admin?sslmode=disable
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -29,14 +40,28 @@ jobs:
           unformatted="$(gofmt -l .)"
           if [ -n "$unformatted" ]; then echo "needs gofmt:"; echo "$unformatted"; exit 1; fi
         working-directory: services/api
-      - run: go build ./...
+      - run: go build -ldflags "-X hiyall/services/api/internal/buildinfo.Commit=${GITHUB_SHA::12} -X hiyall/services/api/internal/buildinfo.Version=ci" ./...
+        working-directory: services/api
+      - name: Second database for the admin console's integration tests
+        run: |
+          psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE hiyall_test_admin'
+          DATABASE_URL="$ADMIN_TEST_DATABASE_URL" go run ./cmd/migrate
         working-directory: services/api
       - run: go run ./cmd/migrate && go vet ./... && go test -race ./...
+        working-directory: services/api
+      - name: Admin console and database role tests ran (a skipped one fails the job)
+        run: |
+          set -o pipefail
+          go test -race -count=1 -v ./internal/admin ./cmd/admin | tee "$RUNNER_TEMP/admin-tests.log"
+          if grep -E -- '--- SKIP' "$RUNNER_TEMP/admin-tests.log"; then echo "::error::admin console tests were skipped"; exit 1; fi
+          grep -q -- '--- PASS: TestDatabaseRolesHaveLeastPrivilege' "$RUNNER_TEMP/admin-tests.log"
+          grep -q -- '--- PASS: TestConsoleWorksEndToEndOnTheRestrictedAdminRole' "$RUNNER_TEMP/admin-tests.log"
         working-directory: services/api
       - run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0 && govulncheck ./...
         working-directory: services/api
   mobile:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
@@ -44,12 +69,22 @@ jobs:
           flutter-version: '3.47.6'
           channel: stable
           cache: true
-      - run: flutter pub get && flutter analyze && flutter test --dart-define=ENABLE_DEV_LOGIN=true --dart-define=API_BASE_URL=http://127.0.0.1:8080
+      - run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
+      # The real-Olm interop tests load the host build of the Rust core (.so on Linux). Building it first
+      # and setting REQUIRE_RUST_CORE makes a missing library fail the run instead of skipping the tests.
+      - run: cargo build --locked
+        working-directory: apps/mobile/rust
+      - run: flutter pub get && dart format --set-exit-if-changed lib test && flutter analyze
         working-directory: apps/mobile
+      - run: flutter test --dart-define=ENABLE_DEV_LOGIN=true --dart-define=API_BASE_URL=http://127.0.0.1:8080
+        working-directory: apps/mobile
+        env:
+          REQUIRE_RUST_CORE: '1'
       - run: flutter build web --release --no-wasm-dry-run
         working-directory: apps/mobile
   contracts:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -58,8 +93,33 @@ jobs:
           cache: npm
       - run: npm ci && npm audit --audit-level=moderate && python3 scripts/validate_architecture.py && npm run contracts:lint && npm run contracts:build
       - run: git diff --exit-code -- docs/api/openapi-foundation.json packages/api-contracts/foundation.d.ts
+  admin:
+    # The moderation console UI (apps/admin): types, unit tests, the production build (which must stay free of
+    # inline script and style for the console's CSP) and the dependency audit.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/admin
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.21.0'
+          cache: npm
+          cache-dependency-path: apps/admin/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx vitest run
+      - run: npm run build
+      - name: The build has no inline script or style
+        run: |
+          if grep -E '<script(>| [^>]*)>[^<]' dist/index.html; then echo "::error::inline script in the build"; exit 1; fi
+          if grep -E '<style|style="' dist/index.html; then echo "::error::inline style in the build"; exit 1; fi
+      - run: npm audit --audit-level=moderate
   rust:
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: apps/mobile/rust
@@ -83,6 +143,7 @@ jobs:
     # Builds the API image exactly as a deploy would (nothing is pushed), then runs the release steps
     # against a throwaway database: /migrate, then the API, and waits for /readyz and the metrics port.
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16.15
@@ -98,9 +159,18 @@ jobs:
       IMAGE_DATABASE_URL: postgresql://hiyall:ci-only-disposable@127.0.0.1:5432/hiyall_image?sslmode=disable
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - run: docker build -f services/api/Dockerfile -t hiyall-api:ci .
+      - run: docker build -f services/api/Dockerfile --build-arg COMMIT="${GITHUB_SHA::12}" --build-arg VERSION=ci -t hiyall-api:ci .
       - name: Image runs as a non-root user
         run: test "$(docker image inspect --format '{{.Config.User}}' hiyall-api:ci)" = "nonroot:nonroot"
+      - name: Scan the image (trivy)
+        # Fails on fixable HIGH/CRITICAL vulnerabilities in the image; the base image is distroless, so
+        # this is mostly the Go binaries' dependencies. Same pinned trivy as the security job.
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz"
+          echo "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a  /tmp/trivy.tgz" | sha256sum -c -
+          mkdir /tmp/trivy && tar -xzf /tmp/trivy.tgz -C /tmp/trivy trivy
+          /tmp/trivy/trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --no-progress hiyall-api:ci
       - name: Migrate (release step)
         run: docker run --rm --network host -e DATABASE_URL="$IMAGE_DATABASE_URL" --entrypoint /migrate hiyall-api:ci
       - name: Start the API
@@ -117,7 +187,49 @@ jobs:
             sleep 1
           done
           curl -fsS http://127.0.0.1:9090/metrics | grep -q '^hiyall_http_requests_total'
+          # The build stamp reaches the binary: the commit this image was built from is in the metrics.
+          curl -fsS http://127.0.0.1:9090/metrics | grep "^hiyall_build_info" | grep -q "commit=\"${GITHUB_SHA::12}\""
           # Metrics are never on the public listener.
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/metrics)" != 200
+      - name: Build the admin console image (API binary and built UI)
+        run: docker build -f services/api/Dockerfile.admin -t hiyall-admin:ci .
+      - name: Admin image runs as a non-root user
+        run: test "$(docker image inspect --format '{{.Config.User}}' hiyall-admin:ci)" = "nonroot:nonroot"
+      - name: Start the admin console and fetch the UI
+        run: |
+          docker run -d --name admin --network host \
+            -e APP_ENV=development -e DATABASE_URL="$IMAGE_DATABASE_URL" -e ADMIN_ADDR=127.0.0.1:8081 \
+            -e ADMIN_DATA_KEY="$(openssl rand -base64 32)" hiyall-admin:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8081/ | grep -q '<div id="root"'; then break; fi
+            if [ "$i" = 30 ]; then docker logs admin; exit 1; fi
+            sleep 1
+          done
+          # The JSON API refuses an anonymous caller and the UI is served with the strict CSP.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/admin/v1/me)" = 401
+          curl -sI http://127.0.0.1:8081/ | grep -qi "^content-security-policy: default-src 'self'"
+      - if: failure()
+        run: docker logs admin || true
       - if: failure()
         run: docker logs api || true
+  supply-chain:
+    # Dependency scans that do not need the app built: Rust advisories and OSV for every lockfile
+    # (pub, npm, go, cargo). govulncheck (api job) and npm audit (contracts job) stay where they are.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-0.22.2
+      - run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
+      - run: test -x ~/.cargo/bin/cargo-audit || cargo install cargo-audit --version '=0.22.2' --locked
+      - run: cargo audit --file apps/mobile/rust/Cargo.lock
+      - name: OSV scan (pub, npm, go, cargo lockfiles)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/osv-scanner "https://github.com/google/osv-scanner/releases/download/v2.6.0/osv-scanner_linux_amd64"
+          echo "ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108  /tmp/osv-scanner" | sha256sum -c -
+          chmod +x /tmp/osv-scanner
+          /tmp/osv-scanner scan source --recursive .

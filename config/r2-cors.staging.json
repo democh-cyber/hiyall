@@ -1,0 +1,9 @@
+[
+  {
+    "AllowedOrigins": ["https://app.staging.<your-domain>"],
+    "AllowedMethods": ["GET", "PUT"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]

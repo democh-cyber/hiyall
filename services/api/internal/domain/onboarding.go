@@ -60,23 +60,21 @@ func ValidateUsername(username string) error {
 	return nil
 }
 
-// ParseOnboardingCompletion checks the completion request and returns the declared
-// birth date for the caller to store privately (member_ages). The birth date is
-// otherwise never returned, echoed, logged or put in an event, and no error message
-// repeats it. A declaration under MinimumAge is ErrAgeRequirement and nothing is stored.
-func ParseOnboardingCompletion(body map[string]json.RawMessage, now time.Time) (time.Time, error) {
+// ParseBirthDate reads the body of POST /v1/me/onboarding/age: only birthDate. A declaration under
+// MinimumAge is ErrAgeRequirement. The date is never echoed and no error message repeats it.
+func ParseBirthDate(body map[string]json.RawMessage, now time.Time) (time.Time, error) {
 	for name := range body {
-		if name != "birthDate" && name != "termsVersion" {
+		if name != "birthDate" {
 			return time.Time{}, invalid(name, "field is not accepted")
 		}
 	}
+	return birthDate(body, now)
+}
+
+func birthDate(body map[string]json.RawMessage, now time.Time) (time.Time, error) {
 	rawDate, ok := body["birthDate"]
 	if !ok {
 		return time.Time{}, invalid("birthDate", "is required")
-	}
-	rawTerms, ok := body["termsVersion"]
-	if !ok {
-		return time.Time{}, invalid("termsVersion", "is required")
 	}
 	value, err := validateString("birthDate", rawDate, 10, 10)
 	if err != nil {
@@ -90,12 +88,37 @@ func ParseOnboardingCompletion(body map[string]json.RawMessage, now time.Time) (
 	if birth.After(time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)) {
 		return time.Time{}, invalid("birthDate", "cannot be in the future")
 	}
+	if AgeAt(birth, now) < MinimumAge {
+		return time.Time{}, ErrAgeRequirement
+	}
+	return birth, nil
+}
+
+// ParseOnboardingCompletion checks the completion request and returns the declared
+// birth date for the caller to store privately (member_ages). The birth date is
+// otherwise never returned, echoed, logged or put in an event, and no error message
+// repeats it. A declaration under MinimumAge is ErrAgeRequirement and nothing is stored
+// (the API records the refusal against the identity: see store.RecordAgeRefusal).
+func ParseOnboardingCompletion(body map[string]json.RawMessage, now time.Time) (time.Time, error) {
+	for name := range body {
+		if name != "birthDate" && name != "termsVersion" {
+			return time.Time{}, invalid(name, "field is not accepted")
+		}
+	}
+	if _, ok := body["birthDate"]; !ok {
+		return time.Time{}, invalid("birthDate", "is required")
+	}
+	rawTerms, ok := body["termsVersion"]
+	if !ok {
+		return time.Time{}, invalid("termsVersion", "is required")
+	}
+	birth, err := birthDate(body, now)
+	if err != nil {
+		return time.Time{}, err
+	}
 	terms, err := validateString("termsVersion", rawTerms, 1, 32)
 	if err != nil || terms != TermsVersion {
 		return time.Time{}, invalid("termsVersion", "accept the current terms and privacy notice")
-	}
-	if AgeAt(birth, now) < MinimumAge {
-		return time.Time{}, ErrAgeRequirement
 	}
 	return birth, nil
 }

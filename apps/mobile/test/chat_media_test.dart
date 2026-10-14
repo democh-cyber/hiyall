@@ -29,6 +29,9 @@ void main() {
   });
   tearDown(() => dir.delete(recursive: true));
 
+  String keyOf(ChatAttachment att, BlobRole role) =>
+      blobCacheKey(conv, att.part(role).blobId!, att.part(role).ctSha256);
+
   /// A photo as a peer sent it: sealed, uploaded, completed.
   Future<ChatAttachment> received() async {
     final key = codec.generateKey(), salt = newUuid4Fixed(codec.keys);
@@ -100,7 +103,7 @@ void main() {
         'download ${att.thumb.blobId}',
       ]);
 
-      final file = File('${cache.root.path}/${att.thumb.blobId}');
+      final file = File('${cache.root.path}/${keyOf(att, BlobRole.thumb)}');
       expect(file.existsSync(), isTrue);
       final onDisk = file.readAsBytesSync();
       expect(onDisk, cloud.objects[att.thumb.blobId]);
@@ -145,7 +148,7 @@ void main() {
           ),
         ),
       );
-      expect(await cache.has(att.thumb.blobId!), isFalse);
+      expect(await cache.has(keyOf(att, BlobRole.thumb)), isFalse);
     });
 
     test('a hash that matches but does not decrypt is damaged, not cached', () async {
@@ -170,7 +173,7 @@ void main() {
           ),
         ),
       );
-      expect(await cache.has(att.thumb.blobId!), isFalse);
+      expect(await cache.has(keyOf(att, BlobRole.thumb)), isFalse);
     });
 
     test(
@@ -286,7 +289,7 @@ void main() {
             ),
           ),
         );
-        expect(await cache.has(att.thumb.blobId!), isFalse);
+        expect(await cache.has(keyOf(att, BlobRole.thumb)), isFalse);
       });
     }
 
@@ -303,7 +306,7 @@ void main() {
     test('a damaged cache file is dropped and fetched again', () async {
       final att = await received();
       await media.plaintext(conv, att, BlobRole.thumb);
-      final file = File('${cache.root.path}/${att.thumb.blobId}');
+      final file = File('${cache.root.path}/${keyOf(att, BlobRole.thumb)}');
       final bytes = file.readAsBytesSync()..[0] ^= 1;
       file.writeAsBytesSync(bytes);
       cloud.calls.clear();
@@ -356,10 +359,62 @@ void main() {
     });
   });
 
+  group('cache keys and what is never deleted', () {
+    test('the same blob id in another conversation is another entry', () async {
+      final att = await received();
+      await media.plaintext(conv, att, BlobRole.thumb);
+      final other = blobCacheKey(
+        '5e5e0000-0000-4000-8000-0000000000ff',
+        att.thumb.blobId!,
+        att.thumb.ctSha256,
+      );
+      expect(other, isNot(keyOf(att, BlobRole.thumb)));
+      expect(await cache.has(other), isFalse);
+      expect(await cache.has(keyOf(att, BlobRole.thumb)), isTrue);
+    });
+
+    test('a different hash under the same blob id is another entry', () async {
+      final att = await received();
+      final spoofed = blobCacheKey(
+        conv,
+        att.thumb.blobId!,
+        List<int>.filled(32, 9),
+      );
+      expect(spoofed, isNot(keyOf(att, BlobRole.thumb)));
+    });
+
+    test('a cached file that verifies is kept even when its descriptor will not decrypt', () async {
+      final att = await received();
+      await media.plaintext(conv, att, BlobRole.thumb);
+      final key = keyOf(att, BlobRole.thumb);
+      final before = await cache.read(key);
+      // A hostile descriptor: right hash and size, a key that does not open it.
+      final wrongKey = ChatAttachment(
+        key: Uint8List.fromList(List.filled(32, 99)),
+        salt: att.salt,
+        mime: att.mime,
+        chunk: att.chunk,
+        full: att.full,
+        thumb: att.thumb,
+        preview: att.preview,
+      );
+      await expectLater(
+        media.plaintext(conv, wrongKey, BlobRole.thumb),
+        throwsA(
+          isA<ChatMediaFailure>().having(
+            (e) => e.problem,
+            'problem',
+            MediaProblem.corrupt,
+          ),
+        ),
+      );
+      expect(await cache.read(key), before);
+    });
+  });
+
   group('ciphertext cache', () {
     late ChatBlobCache small;
-    String id(int n) =>
-        '5b6c0000-0000-4000-8000-${n.toString().padLeft(12, '0')}';
+    String id(int n) => n.toRadixString(16).padLeft(64, '0');
     Uint8List bytes(int n) => Uint8List(n)..fillRange(0, n, 5);
     setUp(
       () =>
@@ -404,8 +459,8 @@ void main() {
       expect(await small.has(id(4)), isTrue);
     });
 
-    test('an id that is not a uuid never becomes a path', () async {
-      for (final bad in ['../x', 'a/b', '', 'abc', id(1).toUpperCase()]) {
+    test('a name that is not a digest never becomes a path', () async {
+      for (final bad in ['../x', 'a/b', '', 'abc', 'A' * 64, '${id(1)}.part']) {
         expect(() => small.put(bad, bytes(1)), throwsArgumentError);
         expect(() => small.read(bad), throwsArgumentError);
       }
@@ -422,7 +477,10 @@ void main() {
       final att = await received();
       await media.plaintext(conv, att, BlobRole.thumb);
       await media.plaintext(conv, att, BlobRole.full);
-      await media.forget([att.thumb.blobId!, att.full.blobId!]);
+      await media.forget([
+        keyOf(att, BlobRole.thumb),
+        keyOf(att, BlobRole.full),
+      ]);
       expect(await cache.size(), 0);
     });
   });

@@ -459,7 +459,7 @@ void main() {
       expect(find.byKey(const Key('list-more')), findsNothing);
       api.followingList = api.followingList.sublist(1);
       await tester.fling(
-        find.byType(ListView).first,
+        find.byType(CustomScrollView).first,
         const Offset(0, 400),
         1000,
       );
@@ -664,7 +664,7 @@ void main() {
       await open(tester, api, '/profile/visitors');
       api.visitorList = api.visitorList.sublist(1);
       await tester.fling(
-        find.byType(ListView).first,
+        find.byType(CustomScrollView).first,
         const Offset(0, 400),
         1000,
       );

@@ -1,6 +1,9 @@
-# The Docker build context is the repository root. Send only what the API image needs.
+# The Docker build context is the repository root. Send only what the API and admin images need.
 *
 !services/api/
 !database/migrations/
+!apps/admin/
 services/api/**/*_test.go
+apps/admin/node_modules/
+apps/admin/dist/
 **/.DS_Store

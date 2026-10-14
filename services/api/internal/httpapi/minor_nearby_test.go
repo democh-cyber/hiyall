@@ -25,7 +25,8 @@ func TestMinorLocationIsRoundedToOneDecimalAtWriteTime(t *testing.T) {
 	h.ageAt(cara, 30)
 	put := func(id string, lat, lon float64) {
 		t.Helper()
-		h.api.locations.reset(id)
+		h.visible(id)
+		h.fresh(id)
 		h.expect(h.send(id, "PUT", "/v1/me/location", putLocation(lat, lon)), 200, "")
 	}
 	put(dev, 12.971634, 77.594566)
@@ -72,7 +73,8 @@ func TestMinorLocationIsRoundedToOneDecimalAtWriteTime(t *testing.T) {
 	// Isolation off does not change how coarse a minor's location is.
 	off2 := newSocialHarnessWith(t, store.WithAgeBandIsolation(false))
 	off2.ageAt(dev, 15)
-	off2.api.locations.reset(dev)
+	off2.visible(dev)
+	off2.fresh(dev)
 	off2.expect(off2.send(dev, "PUT", "/v1/me/location", putLocation(12.971634, 77.594566)), 200, "")
 	if got := off2.storedPoint(dev); got != "13,77.6" {
 		t.Fatalf("with isolation off a minor stored %s", got)
@@ -117,7 +119,7 @@ func TestMinorNearbyShowsOnlyMinorsInCoarseBuckets(t *testing.T) {
 	// The adult viewer is unchanged: the adult buckets, and no minors.
 	users, buckets = h.nearbyOK(alice, radius(100))
 	same(t, users, bob, cara)
-	if fmt.Sprint(buckets) != "[1 1]" {
+	if fmt.Sprint(buckets) != "[5 5]" {
 		t.Fatalf("an adult's buckets %v", buckets)
 	}
 	// A cursor made for one set cannot carry a bucket of the other: 5 is an adult bucket only.

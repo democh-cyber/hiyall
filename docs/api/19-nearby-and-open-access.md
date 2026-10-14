@@ -139,7 +139,7 @@ Applied once, in the transaction that completes onboarding, when the stored date
 | `onlineAudience` | `nobody` | `everyone` |
 | Country (`fieldAudiences.location`) | `friends` | `everyone` |
 | Stored location precision | 1 decimal (about 11 km), chosen by the band at write time | 2 decimals (about 1.1 km) |
-| Nearby distance buckets (viewer is a minor, so everyone listed is a minor) | 10, 25, 50, 100 | 1, 2, 3, 5, 10, 15, 25, 50, 100 |
+| Nearby distance buckets (viewer is a minor, so everyone listed is a minor) | 10, 25, 50, 100 | 5, 10, 15, 25, 50, 100 |
 
 A member keeps the right to change their own settings afterwards, and a repeated completion does not reapply the defaults. The band is read when a location is written: a member who turns 18 stores finer points from their next write, and nothing already stored is rewritten.
 
@@ -211,7 +211,7 @@ Tests: `internal/httpapi/online_filter_test.go` (audience matrix across stranger
 
 ## Nearby
 
-On the server a member is sharing only after the client has sent a location, and only members who share can see Nearby at all. Whether that is a deliberate choice by the member depends on the client: see [client behaviour](#client-behaviour).
+A member is listed only while **Show me in Nearby** is on (`nearby_prefs.visible`, `PUT`/`DELETE /v1/me/nearby`, off by default for everyone, migration `0034_teen_safety.sql`), and only visible members can search (`409 NEARBY_OFF` otherwise), so nobody can watch without being watched. `PUT /v1/me/location` is refused with `409 NEARBY_OFF` while it is off, and `DELETE /v1/me/nearby` deletes the stored point in the same transaction. See [teen safety and abuse limits](../architecture/18-teen-safety.md) for the hardening that follows (radius buckets, daily offset, change and query caps, speed check).
 
 ### Endpoints
 
@@ -250,7 +250,7 @@ The body is a JSON object with `Content-Type: application/json`; **every key is 
  ],"nextCursor":null},"meta":{...}}
 ```
 
-- `radiusKm`: a plain JSON integer from 1 to 100, default 25. A string, a fraction (`5.5`, `5.0`), an exponent, `null`, zero, a negative or anything over 100 is `422 VALIDATION`.
+- `radiusKm`: a plain JSON integer that is one of the buckets 5, 10, 15, 25, 50, 100, default 25. Any other number, a string, a fraction (`5.5`, `5.0`), an exponent or `null` is `422 VALIDATION`. A viewer who is a minor is searched at the smallest of 10, 25, 50, 100 that covers the radius.
 - `interests`, `languages`, `country`, `vibe`, `ageMin`, `ageMax`, `gender`, `online` and `cursor` are parsed and validated by the same code as `POST /v1/discovery/search` (`domain.ParsePeopleFilters`): at most 10 distinct interests and 10 distinct language tags, an uppercase two-letter country, a vibe of at most 80 characters, `ageMin`/`ageMax` plain JSON integers from 13 to 99 with `ageMin` not above `ageMax`, `gender` one of `woman`, `man`, `nonbinary` or empty (any), a cursor of at most 2048 characters, `null` and the wrong type refused. **Unknown keys are `422 VALIDATION`**, which includes any position: the server only ever uses the caller's stored point.
 - Filter semantics are identical to people search, and the SQL predicates are shared: any value within `interests` or `languages` may match (OR), different dimensions combine (AND), comparisons ignore case, and a filter matches a member **only when that member's field audience for it is `everyone`** (`location` for country, `vibe`, `interests`, `languages`, `gender`, and `age` for `ageMin`/`ageMax`). A hidden field can therefore not be inferred by filtering, and a member who hides their languages is simply not matched by a language filter (they are still listed without it).
 - Reads share the per-account `search` limiter (burst 10, one more every 2 seconds): `429 RATE_LIMITED` with `Retry-After: 2`. A caller with no stored point, or one older than 24 hours, gets `409 LOCATION_NOT_SHARED` ("Share your location to see people nearby.").
@@ -262,7 +262,7 @@ People whose stored point is fresh (updated within 24 hours) and lies within `ra
 
 `interests`, `languages`, `currentVibe` and `country` appear only when that member's field audience (`interests`, `languages`, `vibe`, `location`) is `everyone`, exactly as in people search; `online` and `lastSeenAt` follow the presence rule. Nothing else is returned: no coordinates, grid cells or exact distances.
 
-`distanceKm` is a **bucket**: the smallest value in `[1, 2, 3, 5, 10, 15, 25, 50, 100]` that is at least the distance between the two stored points. A viewer who is a minor sees the coarser set `[10, 25, 50, 100]`. It can therefore be larger than the radius asked for (a person 3.9 km away appears as `5` for `radiusKm=4`).
+`distanceKm` is a **bucket**: the smallest value in `[5, 10, 15, 25, 50, 100]` that is at least the distance between the two stored points. A viewer who is a minor sees the coarser set `[10, 25, 50, 100]`. Because the radii are the buckets, a person is inside a radius exactly when their bucket is at most the radius, so a search never reveals anything finer than a bucket.
 
 ### Order and paging
 
@@ -289,7 +289,7 @@ Measured once on a scratch copy of the test database before the age barrier exis
 
 ### Residual risks
 
-- **Trilateration by a member who spoofs locations.** `PUT /v1/me/location` takes the client's word. A member can place their own point anywhere, read Nearby from each, and combine the answers to locate a target to roughly the grid and bucket precision (about 1 to a few km). The radius filter uses the exact distance between the rounded points, so sweeping `radiusKm` from 1 to 100 reveals a target's distance to about 1 km, which is finer than the bucket for the wide buckets (50 and 100). The mitigations above (rounding, buckets, one move per 2 minutes after a burst of 3, one search per 2 seconds, 24 hour expiry, opt-in, blocks, discoverable and public only) slow this down; they do not prevent it. Many accounts multiply the budget because per-account limits do not stop an attacker who creates accounts; the per-client-address request limit is the only guard that spans accounts.
+- **Trilateration by a member who spoofs locations.** `PUT /v1/me/location` takes the client's word. A member can place their own point and read Nearby from each, but the radius is only the bucket list (nothing under 5 km), each member's stored point carries a secret daily offset, a member can change cell at most 5 times a day and not faster than 1000 km/h, and Nearby is capped at 200 queries a day, so the sweep that located a target to about 1 km no longer resolves below the 5 km bucket (see [18 teen safety](../architecture/18-teen-safety.md)). The mitigations above (rounding, buckets, one move per 2 minutes after a burst of 3, one search per 2 seconds, 24 hour expiry, opt-in, blocks, discoverable and public only) slow this down; they do not prevent it. Many accounts multiply the budget because per-account limits do not stop an attacker who creates accounts; the per-client-address request limit is the only guard that spans accounts.
 - **Filters make singling out easier.** Combined with spoofed positions, country, interest, language and vibe filters let a member narrow a small area to people with a rare combination, so a profile that is public and discoverable can be found by where it is and what it shows. Filters only match fields a member already shows to everyone, so they reveal no hidden attribute, but they raise the precision of a search.
 - **Stored points are personal data.** They are coarse but still say roughly where someone was, they sit in the database and its backups for up to 7 days, and they are visible to anyone with database access.
 - **A shared point goes stale silently.** For up to 24 hours after the member moves away the previous point is still used until they stop sharing or re-share.
@@ -304,7 +304,7 @@ The server is unchanged by that: it rounds (to the member's band precision), exp
 
 ## Operations
 
-- Migrations `0016` to `0019` must be applied before the new API version starts; `scripts/dev-api.sh` runs migrations first. Set `AGE_BAND_ISOLATION=false` only to turn the age barrier off deliberately.
+- Migrations `0016` to `0019` must be applied before the new API version starts; `scripts/dev-api.sh` runs migrations first. `AGE_BAND_ISOLATION=false` turns the age barrier off and is refused when `APP_ENV=production`; it exists for development only.
 - `maintain` in `cmd/api/main.go` runs the location purge with the other hourly jobs.
 - Tests run against `hiyall_test`: `go test -race ./...` from `services/api` with `TEST_DATABASE_URL` set. The Nearby and location tests are in `internal/httpapi/nearby_test.go` and `nearby_filters_test.go`; the defaults, eligibility and migration tests are in `open_access_test.go`; the age band tests are `age_bands_test.go` (barrier, SQL functions, existing relationships), `age_onboarding_test.go` (stored once, minor defaults, nothing leaks, fixtures), `minor_nearby_test.go` (location precision and buckets) and `age_gender_filters_test.go` (gender and the age and gender filters).
 - Local data: `./scripts/seed-demo-people.sh` then `./scripts/seed-demo-nearby.sh [LAT LON]` (default 12.9716 77.5946) place Anjali, Niko, Kai and the `demo_` people between about 0.5 and 40 km from the centre (minors on the 1-decimal grid). `demo-people.sql` gives the demo people a gender and an adult age (18 to 40) and adds two demo minors, `demo_minor_mika` (15) and `demo_minor_noor` (16); Kai is the minor development account (`/dev/session`, id `019a4000-0000-7000-8000-0000000000a2`). Both scripts refuse any database other than the local `hiyall`.

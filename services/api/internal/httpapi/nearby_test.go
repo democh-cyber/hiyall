@@ -28,7 +28,25 @@ var bengaluru = domain.RoundLocation(12.9716, 77.5946) // stored as 12.97, 77.59
 func (h *socialHarness) place(id string, lat, lon float64) {
 	h.t.Helper()
 	loc := domain.RoundLocation(lat, lon)
+	h.visible(id)
 	h.exec(`INSERT INTO user_locations(user_id,latitude,longitude,updated_at) VALUES($1,$2,$3,now()) ON CONFLICT(user_id) DO UPDATE SET latitude=excluded.latitude,longitude=excluded.longitude,updated_at=now()`, id, loc.Latitude, loc.Longitude)
+}
+
+// visible turns "Show me in Nearby" on for a member directly, as migration 0034 leaves an adult who shared.
+func (h *socialHarness) visible(id string) {
+	h.t.Helper()
+	// Today's offset is fixed at zero so stored points are exactly the rounded ones; TestDailyOffset... covers the offset.
+	h.exec(`INSERT INTO nearby_prefs(user_id,visible,offset_day,offset_north_km,offset_east_km) VALUES($1,true,(now() AT TIME ZONE 'UTC')::date,0,0)
+ ON CONFLICT(user_id) DO UPDATE SET visible=true,offset_day=excluded.offset_day,offset_north_km=0,offset_east_km=0`, id)
+}
+
+// fresh forgets a member's stored point and today's location-change count, so a test can write any sequence
+// of points without meeting the change cap or the speed check (their own tests do).
+func (h *socialHarness) fresh(id string) {
+	h.t.Helper()
+	h.api.locations.reset(id)
+	h.exec(`DELETE FROM user_locations WHERE user_id=$1`, id)
+	h.exec(`DELETE FROM member_daily_counts WHERE user_id=$1 AND kind='location_change'`, id)
 }
 
 // north places a member dLat degrees of latitude north of the centre.
@@ -95,20 +113,20 @@ func TestNearbyOrderingBucketsRadiusAndItemShape(t *testing.T) {
 
 	users, buckets := h.nearbyOK(alice, map[string]any{})
 	same(t, users, bob, cara, dev, eli) // default radius 25 km
-	if fmt.Sprint(buckets) != "[1 3 10 15]" {
+	if fmt.Sprint(buckets) != "[5 5 10 15]" {
 		t.Fatalf("buckets %v", buckets)
 	}
 	users, buckets = h.nearbyOK(alice, radius(100))
 	same(t, users, bob, cara, dev, eli, xan, yui)
-	if fmt.Sprint(buckets) != "[1 3 10 15 50 100]" {
+	if fmt.Sprint(buckets) != "[5 5 10 15 50 100]" {
 		t.Fatalf("buckets %v", buckets)
 	}
 	users, _ = h.nearbyOK(alice, radius(5))
 	same(t, users, bob, cara) // dev is 5.6 km away
-	users, _ = h.nearbyOK(alice, radius(6))
+	users, _ = h.nearbyOK(alice, radius(10))
 	same(t, users, bob, cara, dev)
-	users, _ = h.nearbyOK(alice, radius(1))
-	same(t, users, bob)
+	users, _ = h.nearbyOK(alice, radius(15))
+	same(t, users, bob, cara, dev, eli)
 
 	// The distance shown is the bucket, never smaller than the real distance, and the order follows it
 	// with ties broken by user id. Two members in the same bucket are sorted by id.
@@ -116,7 +134,7 @@ func TestNearbyOrderingBucketsRadiusAndItemShape(t *testing.T) {
 	h.north(dev, 0.00)
 	users, buckets = h.nearbyOK(alice, radius(100))
 	same(t, users, bob, cara, dev, eli, xan, yui)
-	if fmt.Sprint(buckets) != "[1 1 1 15 50 100]" {
+	if fmt.Sprint(buckets) != "[5 5 5 15 50 100]" {
 		t.Fatalf("buckets %v", buckets)
 	}
 	if !slices.IsSorted(users[:3]) {
@@ -125,7 +143,7 @@ func TestNearbyOrderingBucketsRadiusAndItemShape(t *testing.T) {
 
 	// An item has exactly the public search fields the member shows, a bucket, and nothing positional.
 	h.exec(`UPDATE profiles SET data=data||'{"headline":"hi","bio":"about","interests":["Music"],"currentVibe":"Chill","country":"IN","languages":[{"code":"en"}],"city":"secret city"}'::jsonb WHERE user_id=$1`, bob)
-	got, _, _ := h.nearbyList(alice, radius(1))
+	got, _, _ := h.nearbyList(alice, radius(5))
 	item := items(got.data)[0]
 	want := []string{"avatarUrl", "bio", "country", "currentVibe", "displayName", "distanceKm", "headline", "interests", "languages", "sharedInterests", "userId", "username"}
 	keys := make([]string, 0, len(item))
@@ -141,14 +159,14 @@ func TestNearbyOrderingBucketsRadiusAndItemShape(t *testing.T) {
 	}
 	// Field audiences work exactly as in people search.
 	h.exec(`UPDATE privacy_settings SET data=jsonb_set(jsonb_set(jsonb_set(jsonb_set(data,'{fieldAudiences,interests}','"nobody"'),'{fieldAudiences,languages}','"friends"'),'{fieldAudiences,vibe}','"nobody"'),'{fieldAudiences,location}','"nobody"') WHERE user_id=$1`, bob)
-	got, _, _ = h.nearbyList(alice, radius(1))
+	got, _, _ = h.nearbyList(alice, radius(5))
 	item = items(got.data)[0]
 	for _, hidden := range []string{"interests", "languages", "currentVibe", "country", "city", "online"} {
 		if _, ok := item[hidden]; ok {
 			t.Fatalf("%s shown against the member's audience: %v", hidden, item)
 		}
 	}
-	if item["headline"] != "hi" || item["distanceKm"] != float64(1) {
+	if item["headline"] != "hi" || item["distanceKm"] != float64(5) {
 		t.Fatalf("item %v", item)
 	}
 }
@@ -201,18 +219,22 @@ func TestNearbyExcludesWhoIsNotEligible(t *testing.T) {
 	}
 	h.expect(h.call(alice, "DELETE", "/v1/users/"+bob+"/block"), 200, "")
 	h.expect(h.call(cara, "DELETE", "/v1/users/"+alice+"/block"), 200, "")
-	same(t, list(), cara, dev, eli, xan, yui, bob) // bob is now in a farther bucket than the rest
+	same(t, list(), bob, cara, dev, eli, xan, yui) // all in the 5 km bucket, so ordered by id
 
 	// A member who has not finished onboarding, or is not active, is not listed.
 	h.exec(`UPDATE onboarding SET completed_at=NULL WHERE user_id=$1`, yui)
 	h.exec(`UPDATE users SET status='suspended' WHERE user_id=$1`, xan)
-	same(t, list(), cara, dev, eli, bob)
+	same(t, list(), bob, cara, dev, eli)
 }
 
 func TestNearbyRequiresTheCallerToShareAFreshLocation(t *testing.T) {
 	h := newSocialHarness(t)
 	h.north(bob, 0.01)
+	// Not visible: Nearby is closed to the caller, with or without a stored point (reciprocity).
 	got, _, _ := h.nearbyList(alice, map[string]any{})
+	h.expect(got, 409, "NEARBY_OFF")
+	h.visible(alice)
+	got, _, _ = h.nearbyList(alice, map[string]any{})
 	h.expect(got, 409, "LOCATION_NOT_SHARED")
 	status, _, raw := h.full(alice, "POST", "/v1/discover/nearby", "application/json", `{}`)
 	var body struct {
@@ -228,6 +250,7 @@ func TestNearbyRequiresTheCallerToShareAFreshLocation(t *testing.T) {
 	h.expect(h.send(alice, "POST", "/v1/discover/nearby", map[string]any{}), 409, "LOCATION_NOT_SHARED")
 	// An invalid body is refused before the location matters, and a filter is no substitute for sharing; a fresh point works.
 	h.expect(h.send(alice, "POST", "/v1/discover/nearby", radius(0)), 422, "VALIDATION")
+	h.expect(h.send(alice, "POST", "/v1/discover/nearby", radius(4)), 422, "VALIDATION")
 	h.expect(h.send(alice, "POST", "/v1/discover/nearby", map[string]any{"country": "IN"}), 409, "LOCATION_NOT_SHARED")
 	h.place(alice, bengaluru.Latitude, bengaluru.Longitude)
 	users, _ := h.nearbyOK(alice, map[string]any{})
@@ -241,14 +264,15 @@ func TestNearbyRequiresTheCallerToShareAFreshLocation(t *testing.T) {
 func TestNearbyRadiusValidation(t *testing.T) {
 	h := newSocialHarness(t)
 	h.place(alice, bengaluru.Latitude, bengaluru.Longitude)
-	for _, bad := range []string{`0`, `-1`, `101`, `1000`, `"abc"`, `"25"`, `"5km"`, `1.5`, `5.0`, `1e1`, `25e0`, `null`, `true`, `[5]`, `{"km":5}`, `""`, `99999999999999999999`, `-0`, `0.5`} {
+	for _, bad := range []string{`0`, `1`, `2`, `3`, `4`, `6`, `7`, `20`, `24`, `26`, `99`, `-1`, `101`, `1000`, `"abc"`, `"25"`, `"5km"`, `"5"`, `1.5`, `5.0`, `1e1`, `25e0`, `null`, `true`, `[5]`, `{"km":5}`, `""`, `99999999999999999999`, `-0`, `0.5`} {
 		got, _, _ := h.nearbyList(alice, json.RawMessage(`{"radiusKm":`+bad+`}`))
 		h.expect(got, 422, "VALIDATION")
 	}
 	// The radius given twice is a duplicate key.
-	got, _, _ := h.nearbyList(alice, json.RawMessage(`{"radiusKm":5,"radiusKm":6}`))
+	got, _, _ := h.nearbyList(alice, json.RawMessage(`{"radiusKm":5,"radiusKm":10}`))
 	h.expect(got, 422, "VALIDATION")
-	for _, good := range []int{1, 2, 25, 99, 100} {
+	// Only the bucket radii are accepted: nothing narrows the circle below 5 km or between the buckets.
+	for _, good := range []int{5, 10, 15, 25, 50, 100} {
 		got, _, _ := h.nearbyList(alice, radius(good))
 		h.expect(got, 200, "")
 	}
@@ -361,7 +385,7 @@ func TestNearbyPagingCursorBindingAndLimits(t *testing.T) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	if fmt.Sprint(keys) != "[a b e l p q r u]" || fields["b"] != float64(1) || fields["r"] != float64(25) || len(fields["q"].(string)) != 64 {
+	if fmt.Sprint(keys) != "[a b e l p q r u]" || fields["b"] != float64(5) || fields["r"] != float64(25) || len(fields["q"].(string)) != 64 {
 		t.Fatalf("cursor payload %v", fields)
 	}
 	if strings.Contains(string(payload), "12.97") || strings.Contains(string(payload), "77.59") {
@@ -384,7 +408,7 @@ func TestNearbyPagingCursorBindingAndLimits(t *testing.T) {
 	}
 	// Different radius, tampering, truncation, garbage, another member, and an expired or too-deep cursor.
 	bad("other radius", with(cursor, "radiusKm", 10), alice)
-	bad("default radius is not the cursor's", with(cursor, "radiusKm", 7), alice)
+	bad("another bucket radius", with(cursor, "radiusKm", 50), alice)
 	bad("tampered", with(cursor+"x"), alice)
 	bad("flipped payload", with(flipFirstByte(cursor)), alice)
 	bad("signature removed", with(strings.Split(cursor, ".")[0]), alice)
@@ -403,7 +427,7 @@ func TestNearbyPagingCursorBindingAndLimits(t *testing.T) {
 	tag := h.api.nearbyCentreTag(bengaluru)
 	noFilters := nearbyQueryHash(mustFilters(t, `{}`))
 	sealed := func(mutate func(*nearbyCursor)) string {
-		c := nearbyCursor{User: alice, Radius: 25, Query: noFilters, Loc: tag, Bucket: 1, After: bob, Exp: time.Now().Add(time.Minute).Unix(), Page: 1}
+		c := nearbyCursor{User: alice, Radius: 25, Query: noFilters, Loc: tag, Bucket: 5, After: bob, Exp: time.Now().Add(time.Minute).Unix(), Page: 1}
 		mutate(&c)
 		return h.api.nearbySeal(c)
 	}
@@ -474,6 +498,7 @@ func TestNearbyStopsAfterTenPages(t *testing.T) {
 
 func TestLocationEndpoints(t *testing.T) {
 	h := newSocialHarness(t)
+	h.visible(alice)
 	state := func() map[string]any { return h.ok(alice, "GET", "/v1/me/location") }
 	if got := state(); got["sharing"] != false || got["updatedAt"] != nil || len(got) != 2 {
 		t.Fatalf("before sharing %v", got)
@@ -515,6 +540,7 @@ func TestLocationEndpoints(t *testing.T) {
 	// Sharing again replaces the point instead of adding a row.
 	h.api.locations.reset(alice)
 	h.expect(h.send(alice, "PUT", "/v1/me/location", putLocation(1, 2)), 200, "")
+	h.exec(`UPDATE user_locations SET updated_at=now()-interval '30 hours' WHERE user_id=$1`, alice)
 	h.expect(h.send(alice, "PUT", "/v1/me/location", putLocation(3, 4)), 200, "")
 	if err = h.db.Pool.QueryRow(h.ctx, `SELECT count(*) FROM user_locations`).Scan(&rows); err != nil || rows != 1 {
 		t.Fatalf("%d rows (%v)", rows, err)
@@ -523,6 +549,7 @@ func TestLocationEndpoints(t *testing.T) {
 
 func TestLocationValidation(t *testing.T) {
 	h := newSocialHarness(t)
+	h.visible(alice)
 	bad := func(name, contentType, body string) {
 		t.Helper()
 		h.api.locations.reset(alice)
@@ -574,7 +601,7 @@ func TestLocationValidation(t *testing.T) {
 	}
 	// The extremes themselves, and integers and exponents, are fine.
 	for i, body := range []string{`{"latitude":90,"longitude":180}`, `{"latitude":-90,"longitude":-180}`, `{"latitude":0,"longitude":0}`, `{"latitude":1e1,"longitude":-1.5E2}`, `{"latitude":-0.0,"longitude":0.004}`} {
-		h.api.locations.reset(alice)
+		h.fresh(alice)
 		if status, _, raw := h.full(alice, "PUT", "/v1/me/location", appJSON, body); status != 200 {
 			t.Fatalf("case %d %s: %d %s", i, body, status, raw)
 		}
@@ -583,6 +610,8 @@ func TestLocationValidation(t *testing.T) {
 
 func TestLocationWritesAndNearbyReadsAreRateLimited(t *testing.T) {
 	h := newSocialHarness(t)
+	h.visible(alice)
+	h.visible(cara)
 	h.place(bob, bengaluru.Latitude, bengaluru.Longitude)
 	for i := 0; i < 3; i++ {
 		h.expect(h.send(alice, "PUT", "/v1/me/location", putLocation(12.97, 77.59+float64(i)*0.01)), 200, "")
@@ -618,6 +647,7 @@ func TestLocationWritesAndNearbyReadsAreRateLimited(t *testing.T) {
 // Precise coordinates are rounded before the database sees them and appear in no response, table, event or log.
 func TestLocationIsRoundedBeforeStorageAndNeverLeaks(t *testing.T) {
 	h := newSocialHarness(t)
+	h.visible(alice)
 	var logs bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -651,13 +681,13 @@ func TestLocationIsRoundedBeforeStorageAndNeverLeaks(t *testing.T) {
 		{`{"latitude":89.996,"longitude":-179.996}`, "90,-180"},
 		{`{"latitude":0.016,"longitude":0.994}`, "0.02,0.99"},
 	} {
-		h.api.locations.reset(alice)
+		h.fresh(alice)
 		h.expect(h.send(alice, "PUT", "/v1/me/location", json.RawMessage(tc.in)), 200, "")
 		if err := h.db.Pool.QueryRow(h.ctx, `SELECT latitude::text||','||longitude::text FROM user_locations WHERE user_id=$1`, alice).Scan(&text); err != nil || text != tc.want {
 			t.Fatalf("%s stored %q (%v), want %s", tc.in, text, err, tc.want)
 		}
 	}
-	h.api.locations.reset(alice)
+	h.fresh(alice)
 	h.expect(h.send(alice, "PUT", "/v1/me/location", putLocation(12.971634, 77.594566)), 200, "")
 
 	// Reading back and Nearby never return a position.
@@ -799,7 +829,7 @@ func TestNearbyMatchesAReferenceAroundTheAntimeridianAndPoles(t *testing.T) {
 		{"east of the antimeridian", domain.RoundLocation(0.5, 179.99), 100, func() (float64, float64) {
 			return 0.5 + (rng.Float64()-0.5)*2.4, wrapLon(179.99 + (rng.Float64()-0.5)*2.4)
 		}},
-		{"west of the antimeridian", domain.RoundLocation(-16.5, -179.97), 60, func() (float64, float64) {
+		{"west of the antimeridian", domain.RoundLocation(-16.5, -179.97), 50, func() (float64, float64) {
 			return -16.5 + (rng.Float64()-0.5)*1.6, wrapLon(-179.97 + (rng.Float64()-0.5)*1.6)
 		}},
 		{"on the antimeridian at high latitude", domain.RoundLocation(66.0, 180), 100, func() (float64, float64) {
@@ -1092,14 +1122,14 @@ func TestNearbyOnlineFlagFollowsAudienceAndConnection(t *testing.T) {
 }
 
 func TestNearbyRoutesAndLocationWaitForOnboarding(t *testing.T) {
-	for _, route := range [][2]string{{"GET", "/v1/me/location"}, {"PUT", "/v1/me/location"}, {"DELETE", "/v1/me/location"}, {"POST", "/v1/discover/nearby"}, {"GET", "/v1/discover/nearby"}} {
+	for _, route := range [][2]string{{"GET", "/v1/me/location"}, {"PUT", "/v1/me/location"}, {"DELETE", "/v1/me/location"}, {"GET", "/v1/me/nearby"}, {"PUT", "/v1/me/nearby"}, {"DELETE", "/v1/me/nearby"}, {"POST", "/v1/discover/nearby"}, {"GET", "/v1/discover/nearby"}} {
 		if onboardingExempt(route[0], route[1]) {
 			t.Fatalf("%s %s is exempt from onboarding", route[0], route[1])
 		}
 	}
 	h := newOnboardingHarness(t)
 	token := h.login(sam)
-	for _, route := range [][2]string{{"GET", "/v1/me/location"}, {"PUT", "/v1/me/location"}, {"DELETE", "/v1/me/location"}, {"POST", "/v1/discover/nearby"}, {"GET", "/v1/discover/nearby"}} {
+	for _, route := range [][2]string{{"GET", "/v1/me/location"}, {"PUT", "/v1/me/location"}, {"DELETE", "/v1/me/location"}, {"GET", "/v1/me/nearby"}, {"PUT", "/v1/me/nearby"}, {"DELETE", "/v1/me/nearby"}, {"POST", "/v1/discover/nearby"}, {"GET", "/v1/discover/nearby"}} {
 		h.expect(h.call(route[0], route[1], token, `{"latitude":12.97,"longitude":77.59}`), 403, "ONBOARDING_REQUIRED")
 	}
 	var rows int
@@ -1108,11 +1138,14 @@ func TestNearbyRoutesAndLocationWaitForOnboarding(t *testing.T) {
 	}
 	h.finishProfile(token, "sam_k", "Sam")
 	h.expect(h.call("POST", "/v1/me/onboarding/complete", token, completeBody(memberBirthDate(), "2026-10-01")), 200, "")
+	h.expect(h.call("PUT", "/v1/me/location", token, `{"latitude":12.97,"longitude":77.59}`), 409, "NEARBY_OFF")
+	h.expect(h.call("PUT", "/v1/me/nearby", token, ``), 200, "")
 	h.expect(h.call("PUT", "/v1/me/location", token, `{"latitude":12.97,"longitude":77.59}`), 200, "")
 	h.expect(h.call("POST", "/v1/discover/nearby", token, `{}`), 200, "")
 	// A member who has not onboarded is never listed, even if a location row exists.
 	h.mustExec(`UPDATE onboarding SET completed_at=NULL WHERE user_id=$1`, sam)
 	anjali := h.login(alice)
+	h.mustExec(`INSERT INTO nearby_prefs(user_id,visible) VALUES($1,true)`, alice)
 	h.mustExec(`INSERT INTO user_locations(user_id,latitude,longitude) VALUES($1,12.97,77.59)`, alice)
 	got := h.expect(h.call("POST", "/v1/discover/nearby", anjali, `{}`), 200, "").data
 	if len(items(got)) != 0 {

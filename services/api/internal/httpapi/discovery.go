@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -27,9 +26,7 @@ type peopleCursor struct {
 
 func (a *API) peopleSign(c peopleCursor) string {
 	data, _ := json.Marshal(c)
-	mac := hmac.New(sha256.New, a.cursorKey[:])
-	mac.Write(data)
-	return base64.RawURLEncoding.EncodeToString(data) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return base64.RawURLEncoding.EncodeToString(data) + "." + base64.RawURLEncoding.EncodeToString(a.cursorMAC("", data))
 }
 func (a *API) searchPeople(w http.ResponseWriter, r *http.Request, p store.Principal) {
 	if !a.allowSearch(p.UserID) {
@@ -47,6 +44,11 @@ func (a *API) searchPeople(w http.ResponseWriter, r *http.Request, p store.Princ
 		a.error(w, r, err)
 		return
 	}
+	// Every page counts against the day: a script cannot walk the member base with filters and cursors.
+	if err = a.Store.BumpDaily(r.Context(), p.UserID, domain.DailySearchPages, a.entitlementsFor(r.Context(), p.UserID).SearchPagesPerDay); err != nil {
+		a.error(w, r, err)
+		return
+	}
 	raw := f.Cursor
 	f.Cursor = ""
 	data, _ := json.Marshal(f)
@@ -61,9 +63,7 @@ func (a *API) searchPeople(w http.ResponseWriter, r *http.Request, p store.Princ
 		if valid {
 			bytes, e := base64.RawURLEncoding.DecodeString(parts[0])
 			sig, e2 := base64.RawURLEncoding.DecodeString(parts[1])
-			mac := hmac.New(sha256.New, a.cursorKey[:])
-			mac.Write(bytes)
-			valid = e == nil && e2 == nil && hmac.Equal(sig, mac.Sum(nil)) && json.Unmarshal(bytes, &c) == nil && c.User == p.UserID && c.Query == query && c.Exp > time.Now().Unix() && c.Page > 0 && c.Page < 10
+			valid = e == nil && e2 == nil && a.cursorSigValid(sig, "", bytes) && json.Unmarshal(bytes, &c) == nil && c.User == p.UserID && c.Query == query && c.Exp > time.Now().Unix() && c.Page > 0 && c.Page < 10
 			_, e = uuid.Parse(c.After)
 			valid = valid && e == nil
 		}

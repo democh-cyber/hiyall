@@ -127,13 +127,11 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
   final customInterest = TextEditingController();
   int step = 0;
   DateTime? birth;
-  bool agreed = false, busy = false, underage = false;
+  bool agreed = false, busy = false, underage = false, cooldown = false;
   String? usernameError, error, checkedUsername, country, vibe, gender;
   final languages = <String>[];
   final interests = <String>[];
   late final avatar = AvatarUploadController(ref.read(imagePickerProvider));
-
-  bool get minor => birth != null && !meetsMinimumAge(birth!, DateTime.now());
 
   @override
   void initState() {
@@ -189,7 +187,9 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
     final now = DateTime.now();
     final picked = await showDatePicker(
       context: context,
-      initialDate: birth ?? DateTime(now.year - 25, 6, 15),
+      // Neutral: it opens on today in the year list, with no suggested age.
+      initialDate: birth ?? now,
+      initialDatePickerMode: DatePickerMode.year,
       firstDate: DateTime(1900),
       lastDate: now,
       helpText: 'Your date of birth',
@@ -209,8 +209,36 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
       if (!nameForm.currentState!.validate()) return;
       if (!await _usernameFree()) return;
     }
+    if (step == 0 && !await _checkAge()) return;
     if (step == steps - 1) return submit();
     setState(() => step++);
+  }
+
+  /// The date goes to the server now, which refuses a date under 13 and
+  /// remembers it, so choosing another date does not get past the age gate.
+  Future<bool> _checkAge() async {
+    final session = ref.read(sessionProvider).asData?.value;
+    if (session == null || birth == null) return false;
+    setState(() => busy = true);
+    try {
+      await ref.read(apiProvider).checkBirthDate(session, isoDate(birth!));
+      return true;
+    } on ApiFailure catch (failure) {
+      if (mounted) {
+        setState(() {
+          if (failure.code == 'AGE_REQUIREMENT_NOT_MET') {
+            underage = true;
+          } else if (failure.code == 'AGE_GATE_COOLDOWN') {
+            underage = cooldown = true;
+          } else {
+            error = failure.message;
+          }
+        });
+      }
+      return false;
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
   }
 
   Future<bool> _usernameFree() async {
@@ -324,6 +352,8 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
       setState(() {
         if (failure.code == 'AGE_REQUIREMENT_NOT_MET') {
           underage = true;
+        } else if (failure.code == 'AGE_GATE_COOLDOWN') {
+          underage = cooldown = true;
         } else if (failure.status == 409 ||
             failure.code == 'PROFILE_INCOMPLETE') {
           step = 1;
@@ -349,7 +379,7 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
   }
 
   bool get canContinue => switch (step) {
-    0 => birth != null && !minor && agreed,
+    0 => birth != null && agreed,
     1 => true,
     4 => interests.length >= 3,
     _ => true,
@@ -358,7 +388,7 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    if (underage) return _Blocked(onSignOut: signOut);
+    if (underage) return _Blocked(onSignOut: signOut, cooldown: cooldown);
     final titles = [
       'First, the basics',
       'Make it yours',
@@ -513,13 +543,6 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
                 : '${birth!.day} ${_months[birth!.month - 1]} ${birth!.year}',
           ),
         ),
-        if (minor)
-          const Padding(
-            padding: EdgeInsets.only(top: 14),
-            child: AuthNoticeBox(
-              'Hiyall is for people 13 and over, so you can’t create an account yet.',
-            ),
-          ),
         const SizedBox(height: 20),
         CheckboxListTile(
           key: const Key('onb-terms'),
@@ -894,7 +917,10 @@ class AuthNoticeBox extends StatelessWidget {
 /// The account is under the minimum age. There is nothing more to do here.
 class _Blocked extends StatelessWidget {
   final VoidCallback onSignOut;
-  const _Blocked({required this.onSignOut});
+
+  /// The same sign-in already declared an age under 13 within the last week.
+  final bool cooldown;
+  const _Blocked({required this.onSignOut, this.cooldown = false});
   @override
   Widget build(BuildContext context) => Scaffold(
     body: SafeArea(
@@ -917,7 +943,9 @@ class _Blocked extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'We can’t create your account right now. Thanks for understanding.',
+                  cooldown
+                      ? 'We can’t finish setting up your account right now. Please try again in a few days. Thanks for understanding.'
+                      : 'We can’t create your account right now. Thanks for understanding.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     height: 1.6,

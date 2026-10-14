@@ -87,3 +87,5 @@ fanout. Polls, threaded replies, reactions, scheduled reminder delivery, externa
 calendar integration, encrypted group/event chat and ownership transfer are not
 implemented by this slice. Existing private E2EE chat is accessible through each
 participant's profile and its established messaging policy.
+
+**Events and Moments are off for V1.** Unless the server sets `SPACES_EVENTS_ENABLED=true`, `POST /v1/spaces` with `kind` `event` or `moment` answers `403 FEATURE_DISABLED` ("Events and Moments aren’t available yet."); communities are unaffected, and existing events and moments can still be read, edited and left. The app hides creation, the Moments tab and the Events tab of a community unless built with `--dart-define=ENABLE_EVENTS=true`; a linked event or Moment still opens, without a Join button.

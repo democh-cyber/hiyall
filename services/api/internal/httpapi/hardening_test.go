@@ -83,7 +83,7 @@ func TestControlCharactersInTextAreRefused(t *testing.T) {
 }
 
 // Text the database still refuses (SQLSTATE 22021 / 22P05) is the caller's input: 422, not 500.
-// Any other failure is a 500 whose log line carries the cause.
+// Any other failure is a 500 whose log line carries the cause and the route pattern, never the raw path.
 func TestDatabaseTextErrorsAre422AndFailuresAreLogged(t *testing.T) {
 	a := New(nil, nil, false, "")
 	for _, code := range []string{"22021", "22P05"} {
@@ -99,7 +99,7 @@ func TestDatabaseTextErrorsAre422AndFailuresAreLogged(t *testing.T) {
 	defer slog.SetDefault(previous)
 	w := httptest.NewRecorder()
 	a.error(w, httptest.NewRequest("GET", "/v1/feed", nil), &pgconn.PgError{Code: "XX000", Message: "boom in the planner"})
-	if w.Code != 500 || !strings.Contains(logs.String(), "boom in the planner") || !strings.Contains(logs.String(), `"path":"/v1/feed"`) {
+	if w.Code != 500 || !strings.Contains(logs.String(), "boom in the planner") || !strings.Contains(logs.String(), `"route":"/v1/feed"`) {
 		t.Fatalf("500 log %d %s", w.Code, logs.String())
 	}
 }

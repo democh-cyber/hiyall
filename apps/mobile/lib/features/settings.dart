@@ -4,12 +4,16 @@ import 'package:go_router/go_router.dart';
 
 import '../app.dart';
 import '../core/api.dart';
+import '../core/app_info.dart';
+import '../core/user_error.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
 import '../shared/person_avatar.dart';
 import '../shared/widgets.dart';
 import 'account_data.dart' show AccountDataSettingsGroup;
+import 'help_safety.dart' show HelpSettingsGroup;
 import 'legal_screens.dart' show LegalSettingsGroup;
+import 'nearby_setting.dart' show NearbySettingsGroup;
 import 'notification_settings.dart' show NotificationSettingsGroup;
 import 'safety.dart';
 
@@ -119,7 +123,7 @@ class _OnlineTileState extends ConsumerState<_OnlineTile> {
       // dropped connection; re-read them so the next change sends the newest
       // version and the switch shows what's really saved.
       container.invalidate(privacyProvider);
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     } finally {
       if (mounted) {
         setState(() {
@@ -179,7 +183,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       await ref.read(sessionProvider.notifier).logout();
       if (mounted) context.go('/home');
     } catch (e) {
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -225,6 +229,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ),
           ]),
           const _Group('Status', [_OnlineTile()]),
+          const NearbySettingsGroup(),
           const _Group('Safety', [
             _Link(
               Icons.block_rounded,
@@ -277,17 +282,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 'About Hiyall',
                 style: TextStyle(fontWeight: FontWeight.w700),
               ),
-              subtitle: const Text('Version 0.1.0'),
+              subtitle: Text('Version ${AppInfo.display}'),
               onTap: () => showAboutDialog(
                 context: context,
                 applicationName: 'Hiyall',
-                applicationVersion: 'Version 0.1.0',
+                applicationVersion: AppInfo.display,
                 applicationIcon: const BrandMark(),
               ),
             ),
           ]),
           const NotificationSettingsGroup(),
           const AccountDataSettingsGroup(),
+          const HelpSettingsGroup(),
           const LegalSettingsGroup(),
           const SizedBox(height: 24),
           OutlinedButton.icon(
@@ -354,7 +360,7 @@ class _SessionsScreenState extends ConsumerState<SessionsScreen> {
       setState(() => items?.removeWhere((s) => s['sessionId'] == id));
       showMessage(context, 'Signed out of that session.');
     } catch (e) {
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -394,7 +400,7 @@ class _SessionsScreenState extends ConsumerState<SessionsScreen> {
             : 'Signed out of $count sessions.',
       );
     } catch (e) {
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     } finally {
       if (mounted) setState(() => busy = false);
     }

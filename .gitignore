@@ -31,3 +31,5 @@ config/*service-account*.json
 # Filled-in container environment (infrastructure/docker/api.example.env is the template)
 infrastructure/docker/*.env
 !infrastructure/docker/*.example.env
+# Per-environment release build inputs
+config/mobile-release.*.local.env

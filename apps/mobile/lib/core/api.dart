@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
+import 'app_info.dart';
 import 'discovery.dart';
 import 'presence.dart';
 import 'realtime/realtime_client.dart';
@@ -14,6 +15,12 @@ part 'people.dart';
 part 'account.dart';
 
 const apiBaseUrl = String.fromEnvironment('API_BASE_URL');
+
+/// Sent on every API call with [AppInfo.version] (`MAJOR.MINOR.PATCH`).
+const clientVersionHeader = 'X-Client-Version';
+
+/// With HTTP 426, the server's answer to a version it no longer accepts.
+const upgradeRequiredCode = 'UPGRADE_REQUIRED';
 const devLoginEnabled = kDebugMode && bool.fromEnvironment('ENABLE_DEV_LOGIN');
 
 /// Plain http is accepted only by debug builds and only for the machine's own API
@@ -428,6 +435,10 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
               headers: {'X-Client-Platform': clientPlatform},
             ),
           );
+
+  /// Called when the server refuses this app version (426 UPGRADE_REQUIRED);
+  /// the app then shows only the "Update Hiyall" screen.
+  void Function()? onUpgradeRequired;
   @override
   Future<dynamic> _request(
     String method,
@@ -455,6 +466,7 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
         options: Options(
           method: method,
           headers: {
+            clientVersionHeader: AppInfo.version,
             if (token != null) 'Authorization': 'Bearer $token',
             if (version != null) 'If-Match': '"$version"',
           },
@@ -482,6 +494,14 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
         }
       }
       if (status == 401 && token != null) onUnauthorized?.call();
+      if (status == 426 && code == upgradeRequiredCode) {
+        onUpgradeRequired?.call();
+        throw ApiFailure(
+          'This version of Hiyall is no longer supported. Update to keep going.',
+          status,
+          code,
+        );
+      }
       // Policy refusals carry server copy written to be shown as-is.
       if ((_policyCodes.contains(code) ||
               (path == '/v1/me/deletion' && code == 'VALIDATION') ||
@@ -497,20 +517,76 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
           wait == null || wait < 1 ? null : Duration(seconds: wait),
         );
       }
-      final message = switch (status) {
-        401 => 'Your session has expired. Sign in again.',
-        404 =>
-          path.startsWith('/v1/spaces')
-              ? 'This space is unavailable.'
-              : 'This profile is unavailable.',
-        409 => 'That username is already taken.',
-        412 => 'Your settings changed. Reload before saving.',
-        422 => 'Check your entries and try again.',
-        429 => 'Please wait a moment and try again.',
+      throw ApiFailure(
+        failureMessage(error.type, status, code, path),
+        status,
+        code ?? transportCode(error.type, status),
+      );
+    }
+  }
+
+  /// `TIMEOUT` or `OFFLINE` when no answer came back, so callers (and tests)
+  /// can tell those apart from a server failure.
+  static String? transportCode(DioExceptionType type, int? status) {
+    if (status != null) return null;
+    return switch (type) {
+      DioExceptionType.connectionTimeout ||
+      DioExceptionType.sendTimeout ||
+      DioExceptionType.receiveTimeout => 'TIMEOUT',
+      DioExceptionType.connectionError => 'OFFLINE',
+      _ => null,
+    };
+  }
+
+  /// Words for a failure the server did not word itself, chosen by status,
+  /// error code and endpoint. Never the exception's own text.
+  static String failureMessage(
+    DioExceptionType type,
+    int? status,
+    String? code,
+    String path,
+  ) {
+    if (status == null) {
+      return switch (transportCode(type, status)) {
+        'TIMEOUT' => 'Hiyall is taking too long to answer. Try again.',
+        'OFFLINE' => 'You’re offline. Check your connection and try again.',
         _ => 'Could not connect. Check your connection and retry.',
       };
-      throw ApiFailure(message, status, code);
     }
+    if (status >= 500) {
+      return 'Something went wrong on our side. Try again in a moment.';
+    }
+    final p = path.split('?').first;
+    return switch (status) {
+      401 => 'Your session has expired. Sign in again.',
+      403 => 'You can’t do that here.',
+      404 => switch (p) {
+        _ when p.startsWith('/v1/spaces') => 'This space is unavailable.',
+        _ when p.startsWith('/v1/posts') || p.startsWith('/v1/pulse') =>
+          'This post is no longer available.',
+        _ when p.startsWith('/v1/stories') =>
+          'This story is no longer available.',
+        _ when p.startsWith('/v1/users/') && p.endsWith('/profile') =>
+          'This profile is unavailable.',
+        _ when p.startsWith('/v1/auth/sessions') =>
+          'That session has already ended.',
+        _ when p.startsWith('/v1/friend-requests') =>
+          'That request is no longer open.',
+        _ when p.startsWith('/v1/notifications') =>
+          'That notification is gone.',
+        _ when p.startsWith('/v1/users/') => 'This account is unavailable.',
+        _ => 'That’s no longer available.',
+      },
+      409 =>
+        code == 'USERNAME_TAKEN'
+            ? 'That username is already taken.'
+            : 'That changed in the meantime. Refresh and try again.',
+      412 => 'Your settings changed. Reload before saving.',
+      413 => 'That’s too large to send.',
+      422 => 'Check your entries and try again.',
+      429 => 'Please wait a moment and try again.',
+      _ => 'That didn’t work. Try again.',
+    };
   }
 
   Future<Session> signInDevelopment(String userId) async {
@@ -606,6 +682,18 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
     ) as Map<String, dynamic>,
   );
 
+  /// Sends the declared birth date as soon as it is chosen. The server
+  /// refuses a date under 13 (AGE_REQUIREMENT_NOT_MET) and remembers the
+  /// refusal against the sign-in for 7 days (AGE_GATE_COOLDOWN). Nothing is
+  /// stored for an accepted date; it is stored when onboarding completes.
+  Future<void> checkBirthDate(Session s, String birthDate) async =>
+      await _request(
+        'POST',
+        '/v1/me/onboarding/age',
+        token: s.token,
+        body: {'birthDate': birthDate},
+      );
+
   Future<bool> usernameAvailable(Session s, String username) async =>
       (await _request(
             'GET',
@@ -616,6 +704,31 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
 
   Future<void> logout(Session s) async =>
       await _request('POST', '/v1/auth/logout', token: s.token);
+
+  /// Revokes a session left over from an offline sign-out. Bypasses the token
+  /// refresher and the unauthorized hook on purpose: the old token belongs to
+  /// no current session, and a 401 must not end the one signed in now.
+  Future<RevokeOutcome> revokeQueuedSession(String token) async {
+    try {
+      await _dio.post<Object?>(
+        '/v1/auth/logout',
+        options: Options(
+          headers: {
+            clientVersionHeader: AppInfo.version,
+            'Authorization': 'Bearer $token',
+          },
+        ),
+      );
+      return RevokeOutcome.revoked;
+    } on DioException catch (error) {
+      final status = error.response?.statusCode;
+      if (status == null || status >= 500) return RevokeOutcome.unreachable;
+      return RevokeOutcome.gone;
+    } catch (_) {
+      return RevokeOutcome.gone;
+    }
+  }
+
   Future<Map<String, dynamic>> sessions(
     Session s, [
     String? cursor,
@@ -800,6 +913,10 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
     (v) => v,
   );
 }
+
+/// What happened to a queued sign-out: done, already over (401 and other
+/// refusals), or not sent because the server could not be reached.
+enum RevokeOutcome { revoked, gone, unreachable }
 
 class ReportReceipt {
   final bool duplicate, blocked;

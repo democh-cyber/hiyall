@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/core/api.dart';
+import 'package:hiyall/core/app_info.dart';
 import 'package:hiyall/core/state.dart';
 import 'package:hiyall/features/spaces.dart';
 
@@ -138,6 +139,9 @@ Future<void> pump(WidgetTester t, SpacesFake a, Widget child) async {
 }
 
 void main() {
+  // These tests exercise Events and Moments, which are off in V1 builds.
+  setUp(() => FeatureFlags.eventsOverride = true);
+  tearDown(() => FeatureFlags.eventsOverride = null);
   testWidgets('Space browse changes kind and joined filter', (t) async {
     final a = SpacesFake();
     await pump(t, a, const SpacesScreen());

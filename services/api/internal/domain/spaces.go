@@ -56,10 +56,10 @@ func ParseSpace(raw []byte) (NewSpace, error) {
 	if strict(raw, &s) != nil {
 		return s, invalid("body", "send the space details")
 	}
-	s.Title = strings.TrimSpace(s.Title)
-	s.Description = strings.TrimSpace(s.Description)
-	s.Rules = strings.TrimSpace(s.Rules)
-	s.Location = strings.TrimSpace(s.Location)
+	s.Title = Normalize(strings.TrimSpace(s.Title))
+	s.Description = Normalize(strings.TrimSpace(s.Description))
+	s.Rules = Normalize(strings.TrimSpace(s.Rules))
+	s.Location = Normalize(strings.TrimSpace(s.Location))
 	if s.Kind != "community" && s.Kind != "moment" && s.Kind != "event" {
 		return s, invalid("kind", "choose community, moment or event")
 	}

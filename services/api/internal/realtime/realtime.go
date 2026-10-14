@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"hiyall/services/api/internal/logscrub"
 )
 
 // Event is routed to every connection of each listed user.
@@ -137,7 +139,7 @@ func (h *Hub) Publish(ctx context.Context, typ string, data map[string]string, u
 		return
 	}
 	if err := h.bus.Publish(ctx, Event{Users: users, Type: typ, Data: data}); err != nil {
-		slog.Warn("realtime publish failed", "type", typ, "reason", err.Error())
+		slog.Warn("realtime publish failed", "type", typ, "reason", logscrub.Err(err))
 	}
 }
 
@@ -167,7 +169,7 @@ func (h *Hub) Disconnect(ctx context.Context, user, session, except string) {
 	e := Event{Users: []string{user}, Type: disconnectType, Data: data}
 	h.disconnect(e)
 	if err := h.bus.Publish(ctx, e); err != nil {
-		slog.Warn("realtime disconnect publish failed", "reason", err.Error())
+		slog.Warn("realtime disconnect publish failed", "reason", logscrub.Err(err))
 	}
 }
 

@@ -44,6 +44,9 @@ class FileChatStore implements ChatStore {
     values.remove(key);
     _flush();
   }
+
+  @override
+  Future<List<String>> keys() async => values.keys.toList();
 }
 
 String? option(List<String> args, String name) {

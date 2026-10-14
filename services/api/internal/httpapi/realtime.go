@@ -69,7 +69,7 @@ func (a *API) realtimeGateway(w http.ResponseWriter, r *http.Request) {
 		a.failure(w, r, 404, "NOT_FOUND", "Endpoint unavailable")
 		return
 	}
-	if !a.budget.Allow() || !a.clients.allow(clientAddress(r)) {
+	if !a.budget.Allow() || !a.clients.allow(a.clientAddress(r)) {
 		w.Header().Set("Retry-After", "2")
 		a.failure(w, r, 429, "RATE_LIMITED", "Try again shortly")
 		return

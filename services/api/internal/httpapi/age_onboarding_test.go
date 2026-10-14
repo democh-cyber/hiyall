@@ -107,12 +107,14 @@ func TestCompletionStoresTheBirthDateOnceAndAppliesMinorDefaults(t *testing.T) {
 	if birth, band, _ := h.memberAge(sam); birth != first || band != "minor" {
 		t.Fatalf("the stored birth date moved: %q band %s", birth, band)
 	}
-	// The member may change presence afterwards, and a repeat does not take it back.
+	// A minor cannot loosen presence (it stays locked, MINOR_SETTING_LOCKED), but can change other settings, and a
+	// repeat completion does not take them back.
 	version := h.privacy(token)["version"].(string)
-	h.expect(serve(t, h.handler, "PATCH", "/v1/me/privacy", token, map[string]string{"If-Match": `"` + version + `"`}, `{"onlineAudience":"everyone"}`), 200, "")
+	h.expect(serve(t, h.handler, "PATCH", "/v1/me/privacy", token, map[string]string{"If-Match": `"` + version + `"`}, `{"onlineAudience":"everyone"}`), 422, "MINOR_SETTING_LOCKED")
+	h.expect(serve(t, h.handler, "PATCH", "/v1/me/privacy", token, map[string]string{"If-Match": `"` + version + `"`}, `{"messagesFrom":"friends"}`), 200, "")
 	h.expect(h.call("POST", "/v1/me/onboarding/complete", token, completeBody(first, "2026-10-01")), 200, "")
-	if h.privacy(token)["onlineAudience"] != "everyone" {
-		t.Fatal("a repeat completion reset the member's own setting")
+	if h.privacy(token)["messagesFrom"] != "friends" || h.privacy(token)["onlineAudience"] != "nobody" {
+		t.Fatal("a repeat completion reset the member's own setting, or presence was loosened")
 	}
 }
 
@@ -205,6 +207,7 @@ func TestAgeAndBirthDateAppearNowhereElse(t *testing.T) {
 		}
 	}
 	// Search and Nearby results have no age or gender either, with or without the filters.
+	h.mustExec(`INSERT INTO nearby_prefs(user_id,visible) VALUES($1,true),($2,true)`, alice, bob)
 	h.mustExec(`INSERT INTO user_locations(user_id,latitude,longitude) VALUES($1,12.97,77.59),($2,12.97,77.59)`, alice, bob)
 	for _, body := range []string{`{}`, `{"ageMin":20,"ageMax":40}`, `{"gender":"man"}`} {
 		for _, path := range []string{"/v1/discovery/search", "/v1/discover/nearby"} {

@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../core/theme.dart';
+import '../core/user_error.dart';
 
 class ReadingWidth extends StatelessWidget {
   final Widget child;
@@ -386,7 +387,7 @@ class FailureCard extends StatelessWidget {
   Widget build(BuildContext context) => EmptyCard(
     icon: Icons.cloud_off_rounded,
     title: 'Let’s try that again',
-    description: error.toString(),
+    description: friendlyError(error),
     action: OutlinedButton.icon(
       onPressed: retry,
       icon: const Icon(Icons.refresh),

@@ -773,10 +773,11 @@ void main() {
       await RustLib.init(externalLibrary: ExternalLibrary.open(_corePath));
     });
 
+    var clockTick = 0;
     late MemoryRelay relay;
     late ChatEngine alice, bob;
     late RelayApi aliceApi, bobApi;
-  
+
     Future<ChatEngine> device(
       String user,
       MemoryRelay relay,
@@ -788,7 +789,9 @@ void main() {
         store: MemoryChatStore(),
         platform: 'test',
         reactionRetryDelays: const [Duration.zero, Duration.zero],
-        clock: () => DateTime.now(),
+        // Not DateTime.now(): the relay stamps messages with fixed 2026-10-13 times and the engine drops a
+        // reaction dated more than ten minutes after that, so a wall clock made these tests date-dependent.
+        clock: () => DateTime.utc(2026, 10, 13, 12, 0, 0, 0, clockTick++ * 10),
       );
       await e.start(poll: Duration.zero);
       return e;
@@ -1001,10 +1004,20 @@ void main() {
   });
 }
 
-const _corePath = 'rust/target/debug/libhiyall_e2ee.dylib';
-String? _coreMissing() => File(_corePath).existsSync()
-    ? null
-    : 'the debug Rust core is not built (cargo build in apps/mobile/rust)';
+/// The debug Rust core for the host: `.dylib` on macOS, `.so` on Linux (CI).
+final _corePath =
+    'rust/target/debug/libhiyall_e2ee.${Platform.isMacOS ? 'dylib' : 'so'}';
+
+/// Skips the real-Olm group when the core is not built locally. CI builds it
+/// first and sets REQUIRE_RUST_CORE=1, so a missing library fails there
+/// instead of silently skipping.
+String? _coreMissing() {
+  if (File(_corePath).existsSync()) return null;
+  if (Platform.environment['REQUIRE_RUST_CORE'] == '1') {
+    throw StateError('REQUIRE_RUST_CORE=1 but $_corePath is missing');
+  }
+  return 'the debug Rust core is not built (cargo build in apps/mobile/rust)';
+}
 
 /// The relay's ciphertext is unpadded base64; this is its decoded length source.
 List<int> _raw(String text) => base64Decode(base64.normalize(text));

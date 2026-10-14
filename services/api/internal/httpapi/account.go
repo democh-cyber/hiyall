@@ -86,9 +86,9 @@ func (a *API) scheduleDeletion(w http.ResponseWriter, r *http.Request, p store.P
 		return
 	}
 	body, err := decode(w, r)
-	var confirm string
+	var confirm, appleCode string
 	if err == nil {
-		confirm, err = domain.ParseDeletionRequest(body)
+		confirm, appleCode, err = domain.ParseDeletion(body)
 	}
 	if err != nil {
 		a.error(w, r, err)
@@ -111,6 +111,15 @@ func (a *API) scheduleDeletion(w http.ResponseWriter, r *http.Request, p store.P
 	if !recent {
 		a.error(w, r, domain.ErrReauthRequired)
 		return
+	}
+	// Sign in with Apple: the app re-authenticated with Apple and sent the one-time authorization code. It
+	// is exchanged and revoked before the deletion is scheduled, so a failure leaves the account as it was
+	// and the member can try again (App Store guideline 5.1.1(v)).
+	if appleCode != "" {
+		if err = a.revokeApple(ctx, p.UserID, appleCode); err != nil {
+			a.error(w, r, err)
+			return
+		}
 	}
 	state, err := a.Store.ScheduleDeletion(ctx, p.UserID)
 	if err != nil {
@@ -177,5 +186,28 @@ func (a *API) export(w http.ResponseWriter, r *http.Request, p store.Principal) 
 		a.error(w, r, err)
 		return
 	}
-	slog.Error("export incomplete", "requestId", ctx.Value(requestIDKey{}), "reason", err.Error())
+	slog.Error("export incomplete", "requestId", ctx.Value(requestIDKey{}), "reason", scrubURLs(err.Error()))
+}
+
+// AppleRevoker revokes a member's Sign in with Apple authorization at deletion time (identity.AppleRevoker).
+// RevokeAuthorizationCode returns a sealed refresh token to queue when Apple accepted the code but the
+// revoke did not complete.
+type AppleRevoker interface {
+	RevokeAuthorizationCode(ctx context.Context, code string) (queued []byte, err error)
+}
+
+func (a *API) revokeApple(ctx context.Context, user, code string) error {
+	if a.Apple == nil {
+		slog.Warn("Sign in with Apple authorization not revoked: APPLE_* is not configured")
+		return nil
+	}
+	queued, err := a.Apple.RevokeAuthorizationCode(ctx, code)
+	if err != nil {
+		slog.Error("Sign in with Apple authorization not revoked", "reason", err.Error())
+		return &domain.PolicyError{Status: 503, Code: "APPLE_REVOKE_FAILED", Message: "We couldn’t reach Apple to disconnect Sign in with Apple. Try again in a moment."}
+	}
+	if queued != nil {
+		return a.Store.QueueAppleRevocation(ctx, user, queued)
+	}
+	return nil
 }

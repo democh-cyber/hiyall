@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"hiyall/services/api/internal/buildinfo"
+	"hiyall/services/api/internal/logscrub"
 	"hiyall/services/api/internal/metrics"
 )
 
@@ -61,11 +63,9 @@ func (a *API) report(ctx context.Context, rep ErrorReport) {
 	a.Reporter.Report(ctx, rep)
 }
 
-var urlInText = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s"']+`)
-
 // scrubURLs hides URLs inside an error message: Go's network errors quote the full URL they were
 // fetching, and a presigned URL carries its signature in the query.
-func scrubURLs(s string) string { return urlInText.ReplaceAllString(s, "[url]") }
+func scrubURLs(s string) string { return logscrub.URLs(s) }
 
 // panicked answers a recovered handler panic: the standard error envelope with the request id, the
 // stack in the log under that id, and the reporter told. The panic value is logged as text, cut short.
@@ -116,7 +116,7 @@ func (a *API) registerMetrics() {
 		return float64(a.RT.Count())
 	})
 	if bi, ok := debug.ReadBuildInfo(); ok {
-		metrics.NewGauge("hiyall_build_info", "Build information; the value is always 1.", "go_version").Set(1, bi.GoVersion)
+		metrics.NewGauge("hiyall_build_info", "Build information; the value is always 1.", "go_version", "version", "commit").Set(1, bi.GoVersion, buildinfo.Version, buildinfo.Commit)
 	}
 }
 

@@ -1,6 +1,8 @@
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 
+import '../error_reporting.dart';
+
 /// Firebase project keys, supplied per build so no key is committed.
 /// `scripts/firebase-setup.sh` writes them all to `config/firebase.local.json`,
 /// which `scripts/dev-mobile.sh` passes with `--dart-define-from-file`.
@@ -66,8 +68,16 @@ abstract final class FirebaseConfig {
     return specific.isNotEmpty ? specific : null;
   }
 
+  /// Set when [initialize] threw (a malformed key, a missing platform file).
+  /// The app then behaves as if Firebase were not configured: Welcome says
+  /// sign-in isn't available instead of the app failing to open.
+  static bool initFailed = false;
+
   static bool get isConfigured =>
-      apiKey.isNotEmpty && projectId.isNotEmpty && appId.isNotEmpty;
+      !initFailed &&
+      apiKey.isNotEmpty &&
+      projectId.isNotEmpty &&
+      appId.isNotEmpty;
 
   static FirebaseOptions get options => FirebaseOptions(
     apiKey: apiKey,
@@ -79,10 +89,26 @@ abstract final class FirebaseConfig {
     iosBundleId: iosBundleId.isEmpty ? null : iosBundleId,
   );
 
-  /// Starts Firebase when keys were supplied. Safe to call once at startup.
-  static Future<void> initialize() async {
-    if (!isConfigured) return;
-    await Firebase.initializeApp(options: options);
+  /// Starts Firebase when keys were supplied. Safe to call once at startup;
+  /// never throws, so a bad configuration cannot blank the first screen.
+  /// Returns false when Firebase was configured but failed to start.
+  ///
+  /// [start] and [configured] exist for tests.
+  static Future<bool> initialize({
+    Future<Object?> Function(FirebaseOptions options)? start,
+    bool? configured,
+  }) async {
+    if (!(configured ?? isConfigured)) return true;
+    try {
+      await (start ?? (o) => Firebase.initializeApp(options: o))(options)
+          .timeout(const Duration(seconds: 15));
+      return true;
+    } catch (error, stack) {
+      initFailed = true;
+      debugPrint('Firebase failed to start: ${error.runtimeType}');
+      ErrorReporting.capture(error, stack);
+      return false;
+    }
   }
 }
 

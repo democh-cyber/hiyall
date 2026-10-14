@@ -1,0 +1,13 @@
+# Owners are asked to review every change. Replace @OWNER-PLACEHOLDER with the real GitHub user or team
+# (the owner must do this; a CODEOWNERS file naming a user that does not exist is silently ignored).
+# Later matches win, so the sensitive paths below are listed last.
+*                                   @OWNER-PLACEHOLDER
+/.github/                           @OWNER-PLACEHOLDER
+/database/migrations/               @OWNER-PLACEHOLDER
+/services/api/internal/auth/        @OWNER-PLACEHOLDER
+/services/api/internal/admin/       @OWNER-PLACEHOLDER
+/apps/mobile/rust/                  @OWNER-PLACEHOLDER
+/docs/security/                     @OWNER-PLACEHOLDER
+/docs/legal/                        @OWNER-PLACEHOLDER
+/scripts/backup-db.sh               @OWNER-PLACEHOLDER
+/scripts/replay-deletions.sh        @OWNER-PLACEHOLDER

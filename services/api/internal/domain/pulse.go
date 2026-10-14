@@ -120,6 +120,9 @@ type Story struct {
 	Seen       bool       `json:"seen"`
 	// ViewCount is only filled for the author's own stories.
 	ViewCount *int `json:"viewCount,omitempty"`
+	// ViewCountMore is true when more members than ViewCount saw the story: the count stops at 99 and the
+	// app shows "99+".
+	ViewCountMore bool `json:"viewCountMore,omitempty"`
 }
 
 // StoryGroup is one author's active stories in the tray.
@@ -148,7 +151,7 @@ func ParsePost(raw []byte) (NewPost, error) {
 	if strict(raw, &p) != nil {
 		return p, invalid("body", "send body, audience and optional mediaIds")
 	}
-	p.Body = strings.TrimSpace(p.Body)
+	p.Body = Normalize(strings.TrimSpace(p.Body))
 	if !CleanText(p.Body) || utf8.RuneCountInString(p.Body) > MaxPostBody {
 		return p, invalid("body", "keep it under 2200 characters")
 	}
@@ -181,7 +184,7 @@ func ParseComment(raw []byte) (NewComment, error) {
 	if strict(raw, &c) != nil {
 		return c, invalid("body", "send body and optional parentId")
 	}
-	c.Body = strings.TrimSpace(c.Body)
+	c.Body = Normalize(strings.TrimSpace(c.Body))
 	if c.Body == "" || !CleanText(c.Body) || utf8.RuneCountInString(c.Body) > MaxCommentBody {
 		return c, invalid("body", "comments are 1–1000 characters")
 	}
@@ -236,7 +239,7 @@ func ParseStory(raw []byte) (NewStory, error) {
 	if strict(raw, &s) != nil {
 		return s, invalid("body", "send body or mediaId, and audience")
 	}
-	s.Body = strings.TrimSpace(s.Body)
+	s.Body = Normalize(strings.TrimSpace(s.Body))
 	if !CleanText(s.Body) || utf8.RuneCountInString(s.Body) > MaxStoryBody {
 		return s, invalid("body", "keep it under 280 characters")
 	}

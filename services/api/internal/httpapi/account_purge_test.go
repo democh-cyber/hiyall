@@ -186,10 +186,7 @@ func (w *purgeWorld) purgeUntilDone(del *fakeDeleter) int {
 // cleanup is what the media cleanup and chat blob cleanup jobs do.
 func (w *purgeWorld) cleanup() {
 	w.t.Helper()
-	keys, _, err := w.db.MediaGarbage(w.ctx, 5000)
-	if err == nil {
-		err = w.mem.Delete(w.ctx, keys...)
-	}
+	_, err := w.db.PurgeMedia(w.ctx, w.mem, 5000)
 	if err == nil {
 		_, err = w.db.PurgeChatBlobs(w.ctx, w.chat, 5000)
 	}
@@ -206,8 +203,8 @@ var purgedColumns = []string{
 	"notifications.actor_id", "notifications.recipient_id", "conversation_members.user_id", "conversation_members.peer_id",
 	"user_controls.actor_id", "user_controls.target_id", "media_assets.owner_id", "posts.author_id", "post_reactions.user_id", "saved_posts.user_id",
 	"stories.author_id", "story_views.viewer_id", "spaces.owner_id", "space_members.user_id", "space_entries.author_id", "onboarding.user_id",
-	"user_locations.user_id", "member_ages.user_id", "profile_visits.profile_id", "profile_visits.visitor_id", "profile_visit_counts.profile_id",
-	"key_claims.claimer_id", "notification_prefs.user_id",
+	"user_locations.user_id", "nearby_prefs.user_id", "member_daily_counts.user_id", "member_ages.user_id", "profile_visits.profile_id", "profile_visits.visitor_id", "profile_visit_counts.profile_id",
+	"key_claims.claimer_id", "notification_prefs.user_id", "social_counters.user_id",
 }
 
 // retainedColumns maps "table.column" to a SQL condition (over the table's own alias t and $1, the member)
@@ -223,6 +220,9 @@ var retainedColumns = map[string]string{
 	"chat_blobs.uploader_id":        `t.held_report_id IS NOT NULL`,
 	"devices.user_id":               `t.display_name='' AND t.push_token IS NULL AND t.revoked_at IS NOT NULL AND EXISTS(SELECT 1 FROM messages m WHERE m.sender_device_id=t.device_id)`,
 	"comments.author_id":            `t.body='' AND t.deleted_at IS NOT NULL`,
+	// A quarantined upload's evidence record is kept on purpose, together with its held objects, until a person
+	// releases the hold (docs/security/16-csam-and-illegal-content.md). It carries no profile data of the member.
+	"content_cases.user_id": `t.status IN ('open','confirmed','cleared','reported')`,
 	// The provider identity row is kept for 24 hours after the purge (see store.PurgeDeletedIdentities).
 	"auth_identities.user_id": `t.provider_deleted_at IS NOT NULL`,
 }
@@ -505,9 +505,10 @@ func TestPurgeIsIdempotentResumableAndNeverTouchesLiveAccounts(t *testing.T) {
 	}
 }
 
-// A purge that is interrupted after its first statements (the process dies, the connection drops) rolls
-// back as a whole, and the next run does everything again.
-func TestPurgeContentRollsBackAsOne(t *testing.T) {
+// A purge is cut into batches, each its own transaction behind the 'deleting' fence (audit D2): one that
+// fails (the process dies, the connection drops) loses only the batch in flight, the account stays 'deleting'
+// with what was already removed gone, and the next run finishes the rest.
+func TestPurgeBatchFailureResumesOnTheNextRun(t *testing.T) {
 	w := newPurgeWorld(t)
 	h := w.acctHarness
 	h.scheduled(xan, "xan")
@@ -519,9 +520,40 @@ func TestPurgeContentRollsBackAsOne(t *testing.T) {
 	if _, err := h.db.PurgeDeletedAccounts(h.ctx, &fakeDeleter{}, 10); err == nil {
 		t.Fatal("expected the simulated crash")
 	}
-	if h.status(xan) != "pending_deletion" || h.count(`SELECT count(*) FROM posts WHERE author_id=$1`, xan) == 0 || h.count(`SELECT count(*) FROM sessions WHERE user_id=$1`, xan) == 0 {
-		t.Fatal("a failed content purge left a partial result")
+	if h.status(xan) != "deleting" || h.count(`SELECT count(*) FROM posts WHERE author_id=$1`, xan) != 0 || h.count(`SELECT count(*) FROM sessions WHERE user_id=$1`, xan) != 0 {
+		t.Fatal("the batches before the failure should stay committed")
+	}
+	if h.count(`SELECT count(*) FROM member_ages WHERE user_id=$1`, xan) == 0 {
+		t.Fatal("the failed batch must not have deleted its rows")
 	}
 	h.exec(`DROP TRIGGER fail_purge ON member_ages`)
 	w.purgeUntilDone(&fakeDeleter{})
+}
+
+// More rows than one batch (1000) are removed across several transactions, and the other members' counters
+// follow the deleted edges.
+func TestPurgeRemovesMoreThanOneBatch(t *testing.T) {
+	w := newPurgeWorld(t)
+	h := w.acctHarness
+	h.exec(`INSERT INTO users(user_id) SELECT gen_random_uuid() FROM generate_series(1,1200)`)
+	h.exec(`INSERT INTO follows(follower_id,followee_id,state) SELECT u.user_id,$1::uuid,'active' FROM users u WHERE u.user_id<>$1::uuid AND NOT EXISTS(SELECT 1 FROM profiles p WHERE p.user_id=u.user_id)`, xan)
+	if n := h.count(`SELECT count(*) FROM follows WHERE followee_id=$1`, xan); n < 1200 {
+		t.Fatalf("only %d followers set up", n)
+	}
+	if h.count(`SELECT followers FROM social_counters WHERE user_id=$1`, xan) < 1200 {
+		t.Fatal("the counter did not follow the inserts")
+	}
+	h.scheduled(xan, "xan")
+	h.expire(xan)
+	w.purgeUntilDone(&fakeDeleter{})
+	if h.count(`SELECT count(*) FROM follows WHERE followee_id=$1 OR follower_id=$1`, xan) != 0 {
+		t.Fatal("follows left")
+	}
+	if h.count(`SELECT count(*) FROM social_counters WHERE user_id=$1`, xan) != 0 {
+		t.Fatal("the deleted member's counter row is left behind")
+	}
+	// The 1200 followers no longer follow anyone: the triggers took their counters back down.
+	if n := h.count(`SELECT count(*) FROM social_counters c WHERE c.following<>0 AND NOT EXISTS(SELECT 1 FROM profiles p WHERE p.user_id=c.user_id)`); n != 0 {
+		t.Fatalf("%d follower counters were not decremented", n)
+	}
 }

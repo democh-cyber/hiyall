@@ -46,7 +46,7 @@ func TestMinorProtectionsAreNamedInOnePlace(t *testing.T) {
 	if got := NearbyBucketsFor(true); len(got) != 4 || got[0] != 10 || got[3] != 100 {
 		t.Fatalf("minor buckets %v", got)
 	}
-	if got := NearbyBucketsFor(false); len(got) != 9 || got[0] != 1 {
+	if got := NearbyBucketsFor(false); len(got) != 6 || got[0] != MinNearbyRadiusKm {
 		t.Fatalf("adult buckets %v", got)
 	}
 	// A minor's buckets are a subset of the adult ones, so the SQL needs no new boundaries.

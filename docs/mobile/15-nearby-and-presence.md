@@ -24,18 +24,15 @@ Tapping someone in Discover opens `VisitorProfile` (`lib/features/visitor_profil
 - **Tabs:** an icon tab for the **Detailed profile** (age, current location, interests with the ones you share first and counted as "N in common", current vibe, languages with levels, profession, education, website) and one for **Posts**.
 - Messaging uses the end-to-end encrypted chat, which runs in the Android and iOS apps. On the web, Message explains that chats are available in the mobile apps.
 
-## Location is automatic
+## Location is opt-in
 
-`LocationSync` (`lib/core/location_sync.dart`) wraps the signed-in app shell. It reads the device's approximate position:
+Nearby is off for every member until they turn it on, and the app reads the device position only then. `LocationSync` (`lib/core/location_sync.dart`) is now a plain wrapper: it reads and uploads nothing on launch, resume, sign-in or onboarding.
 
-- when the app opens, and when the member signs in or finishes onboarding;
-- when the app returns to the foreground, at most once every 5 minutes.
-
-It requests only a low-accuracy position (Android asks for coarse location, iOS shows the "when in use" text in `Info.plist`, the browser asks on the web and needs HTTPS or localhost) and sends it to `PUT /v1/me/location`, where the server rounds it to about 1 km before storing it. Nothing is read before onboarding is complete. Failures are silent: the previous position stays valid for a day. Signing out calls `DELETE /v1/me/location` so a signed-out member isn't listed.
-
-There is no in-app switch. The operating system's permission prompt is the only control, and the member can change it in the device settings at any time.
-
-If Nearby is chosen but the server has no position (permission refused, or the first read hasn't finished) the list is replaced by a short explanation, **Try again**, and **Open settings** when the system permission is blocked or location services are off.
+- Opening **Nearby** in Discover while "Show me in Nearby" is off shows a card (`NearbyOptInCard`). **Show me in Nearby** opens an explainer sheet (`nearby_optin.dart`) that says what is shared (a rough area, about 1 km for adults and 10 km for members under 18, moved a little each day, never the exact spot), who can see it (only other people who turned Nearby on; under 18s only see other under 18s; distances like "within 5 km", never a map), how long (24 hours, read only when Nearby is opened and the person asks) and how to stop. Members under 18 get a stronger paragraph, and the app shows it whenever it cannot tell. Only **Show me in Nearby** in the sheet calls `PUT /v1/me/nearby` and then reads one low-accuracy position for `PUT /v1/me/location`. **Not now** reads nothing.
+- Settings has a **Show me in Nearby** switch (`features/nearby_setting.dart`, `NearbySettingsGroup`). Switching on shows the same explainer first; switching off calls `DELETE /v1/me/nearby`, which deletes the stored area on the server at once. The switch is read from `GET /v1/me/nearby` and is off by default.
+- When the member is already visible but the stored area has expired (`LOCATION_NOT_SHARED`), opening Nearby reads the position once more without asking again, because they already agreed; if that fails the list is replaced by the explanation with **Try again** and **Open settings** (permission blocked or services off).
+- Members under 18 do not get the age and gender filters in the filter sheet (the server refuses them with `FILTER_NOT_AVAILABLE`).
+- Signing out still calls `DELETE /v1/me/location`.
 
 ## Online dot and last seen
 
@@ -53,4 +50,4 @@ The Privacy screen, the Discover visibility banner, the privacy step in onboardi
 
 ## Tests
 
-`test/discover_redesign_test.dart` covers the redesigned screen (chips, Online filter, Surprise me, Say hi, states, accessibility, contrast); `test/nearby_test.dart` covers the Nearby chip, the filter, distance and presence display, the permission-needed state, the automatic reads (once at start, throttled, not before onboarding, remembered refusal), and sign-out stopping the sharing. The online toggle is covered in `test/widget_test.dart`.
+`test/discover_redesign_test.dart` covers the redesigned screen (chips, Online filter, Surprise me, Say hi, states, accessibility, contrast); `test/nearby_test.dart` covers the Nearby chip, the filter, distance and presence display, the permission-needed state, that nothing is read or shared on start or resume, and sign-out stopping the sharing; `test/nearby_optin_test.dart` covers the opt-in card, the explainer (including the under 18 wording and Not now reading nothing) and the Settings switch. The online toggle is covered in `test/widget_test.dart`.

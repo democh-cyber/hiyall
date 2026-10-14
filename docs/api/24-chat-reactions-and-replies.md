@@ -46,3 +46,7 @@ Migration `0032_message_aux.sql`: `ALTER TABLE messages ADD COLUMN aux boolean N
 ## Errors
 
 `422 VALIDATION` (bad `aux`, `aux` with `blobIds`), `413 TOO_LARGE` (a reaction envelope over 2048 bytes), `429 RATE_LIMITED` (either limiter; the reaction limiter's message is "You're reacting a lot. Try again in a moment."), and everything a message send can already return (`404`, `403 MESSAGES_NOT_ALLOWED`, `403 CONVERSATION_CLOSED`, `409 DEVICES_CHANGED`).
+
+## First-contact cap and `noop` (13 October 2026)
+
+`aux: "reaction"` is also used for the app's quiet `noop` message (an empty payload that starts a fresh Olm session when a peer's messages stopped decrypting; see [the implementation record](../security/13-encrypted-chat-implementation.md#hardening-after-the-13-october-audit)). Both are auxiliary: they never count toward the first-contact cap below. For an ordinary message: until the peer has sent a non-auxiliary message in the conversation, a sender may send 3; the fourth is refused with `403 AWAITING_REPLY` (a replay of a stored message id is still answered from the stored row). The peer can always write back, which lifts the cap for good.

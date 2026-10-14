@@ -13,10 +13,12 @@ active ──POST /v1/me/deletion──▶ pending_deletion ──(30 days, hour
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /v1/me/deletion` | `{pending, scheduledAt, dueAt, canCancel}`. Reachable for a member in the grace period. |
-| `POST /v1/me/deletion` `{confirmUsername}` | Schedules deletion in 30 days. Body is exactly that one key; the value is the member's username (compared without case and without a leading `@`). |
+| `POST /v1/me/deletion` `{confirmUsername, appleAuthorizationCode?}` | Schedules deletion in 30 days. `confirmUsername` is the member's username (compared without case and without a leading `@`). Members who sign in with Apple also send `appleAuthorizationCode`, the one-time code from signing in with Apple again; no other key is accepted. |
 | `DELETE /v1/me/deletion` | Cancels during the grace period. |
 
-Errors: `422 VALIDATION` (missing or wrong `confirmUsername`, extra keys), `403 REAUTH_REQUIRED` (the session's sign-in is older than 5 minutes), `404 NOT_FOUND` (cancel with nothing scheduled), `409 DELETION_WINDOW_CLOSED` (cancel after `dueAt`: the purge may already be running), `429 RATE_LIMITED` (shared per-account graph limit, `Retry-After`), `401 UNAUTHENTICATED` as for any inactive account.
+Errors: `422 VALIDATION` (missing or wrong `confirmUsername`, extra keys, an empty `appleAuthorizationCode`), `503 APPLE_REVOKE_FAILED` (see above), `403 REAUTH_REQUIRED` (the session's sign-in is older than 5 minutes), `404 NOT_FOUND` (cancel with nothing scheduled), `409 DELETION_WINDOW_CLOSED` (cancel after `dueAt`: the purge may already be running), `429 RATE_LIMITED` (shared per-account graph limit, `Retry-After`), `401 UNAUTHENTICATED` as for any inactive account.
+
+**Sign in with Apple (App Store guideline 5.1.1(v)).** Firebase does not give the server Apple's refresh token, so the app signs in with Apple again during deletion (always, for Apple accounts, even when the last sign-in is recent), reads the authorization code from the Firebase `AppleAuthProvider` credential (`additionalUserInfo.authorizationCode`) and sends it as `appleAuthorizationCode`. Before scheduling anything the server signs a client-secret JWT (ES256, the Apple key `.p8`; `APPLE_TEAM_ID`, `APPLE_KEY_ID`, `APPLE_CLIENT_ID`, `APPLE_PRIVATE_KEY_FILE`), exchanges the code at `https://appleid.apple.com/auth/token` for a refresh token and revokes it at `https://appleid.apple.com/auth/revoke`. If Apple cannot be reached or the code is stale: `503 APPLE_REVOKE_FAILED`, nothing changed, the member signs in with Apple again and retries. If the exchange worked but the revoke did not, the refresh token is kept sealed (AES-256-GCM, key derived from the Apple key file) in `apple_revocations`, and the account purge retries the revoke before it deletes the Firebase user (a failure there makes the purge retry, like any identity-provider failure). Not configured: the code is ignored with a warning and deletion proceeds; production with `APPLE_SIGN_IN_ENABLED=true` refuses to start without the four values. Known limits: the server cannot tell an Apple account from another without the code, so an old app that omits it is not revoked; and if the member then cancels within the 30 days, their Apple authorization stays revoked and the next Apple sign-in creates it again.
 
 **Recent sign-in.** The check reads the Firebase `auth_time` that is part of the session id (`fb:<uid>:<auth_time>`). Older than 5 minutes: `REAUTH_REQUIRED`; the app re-authenticates (Google or password), force-refreshes the ID token and retries. A session that carries no `auth_time` (development sessions) is allowed only when `ENABLE_DEV_AUTH` is on; any other session without one is refused.
 
@@ -26,7 +28,7 @@ Errors: `422 VALIDATION` (missing or wrong `confirmUsername`, extra keys), `403 
 
 **The purge job.** `PurgeDeletedAccounts` runs in the hourly `maintain` loop (batch of 50 accounts per run, one advisory lock per account so two nodes never purge the same one). It selects `pending_deletion` accounts past `deletion_due_at` and accounts already `deleting`, re-reading the status under a row lock at every step, so an active or cancelled account is never touched. Each run, per account:
 
-1. In one transaction: status to `deleting`, then delete the content (below). The transaction rolls back as a whole on any error.
+1. In one short transaction: status to `deleting`. Then delete the content (below) in bounded batches: every statement touches at most 1000 rows per transaction and is repeated until it runs dry, and each batch first checks that the account is still `deleting` (the fence), so a large account never holds one long transaction or lock. Counter adjustments (post reactions and comments on other people's posts, space member counts) are made by the same statement that deletes the rows, so a repeated run never subtracts twice. A failure loses only the batch in flight: the account stays `deleting` with the earlier batches committed, and the next run finishes the rest. Follower, following and friend counters of other members fall as the edges go, through the triggers of migration `0033`; the member's own counter row is deleted.
 2. Call the `IdentityDeleter` for each identity not yet marked `provider_deleted_at`. For Firebase this is `POST identitytoolkit.googleapis.com/v1/projects/{project}/accounts:delete` with a service-account token (configured by `FIREBASE_SERVICE_ACCOUNT_FILE` and `FIREBASE_PROJECT_ID`; a user that is already gone counts as deleted). Without the file the step is a logged no-op and the Firebase user remains: signing in with it creates a new, empty member. On failure the account stays `deleting` and the next run retries.
 3. Run the content purge again and, once nothing of the member is left in object storage bookkeeping, set `status = 'deleted'` and insert the `deleted_users` tombstone.
 
@@ -39,7 +41,7 @@ All steps are idempotent: a crash, a storage outage or a provider error leaves t
 | Data | Result | Why and when |
 | --- | --- | --- |
 | Sessions, push tokens, one-time and fallback keys, key-claim records, notification preferences | Deleted | At request (sessions, tokens), at purge (the rest). |
-| Profile, privacy settings, onboarding row, birth date (`member_ages`), discovery row, location, `outbox_events` | Deleted | At purge. |
+| Profile, privacy settings, onboarding row, birth date (`member_ages`), discovery row, location, `outbox_events` (nothing writes this table any more; older rows are also deleted after 7 days) | Deleted | At purge. |
 | Posts with their comments, reactions, saves and counters; stories and their views | Deleted | At purge. Counters of other members' posts lose the member's reactions and comments. |
 | The member's comments on other people's posts | Deleted; a comment others replied to stays as an empty, deleted placeholder (author is the tombstone) so threads keep their shape | At purge. |
 | Photos and avatar (`media_assets`) | Rows and objects deleted | Released at purge, objects removed by the media cleanup, rows by the next purge pass. |
@@ -70,7 +72,7 @@ A test (`TestPurgeCoversEveryTableThatReferencesUsers`) lists every foreign key 
 
 | Setting | Effect |
 | --- | --- |
-| `FIREBASE_SERVICE_ACCOUNT_FILE` | Path to a service-account key with the Firebase Authentication Admin role. Needs `FIREBASE_PROJECT_ID`. Unset: purges log that the identity provider account was not deleted. |
+| `FIREBASE_SERVICE_ACCOUNT_FILE` | Path to a service-account key with the Firebase Authentication Admin role. Needs `FIREBASE_PROJECT_ID`. **Required in production** with Firebase sign-in (the API refuses to start without a readable file, so a purge never leaves the sign-in record behind); in development, unset: purges log that the identity provider account was not deleted. |
 | `FIREBASE_PROJECT_ID` | Already used for sign-in; selects the project whose users are deleted. |
 
 No plan or entitlement is involved: the 30 days, the 24 hour export interval and the caps are the same for every member.
