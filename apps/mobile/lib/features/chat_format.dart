@@ -312,8 +312,8 @@ bool _joins(ChatMessage a, ChatMessage b) =>
     !a.notice &&
     !b.notice &&
     a.mine == b.mine &&
-    _day(a.sentAt.toLocal()) == _day(b.sentAt.toLocal()) &&
-    b.sentAt.difference(a.sentAt).abs() <= groupGap;
+    _day(a.shownAt.toLocal()) == _day(b.shownAt.toLocal()) &&
+    b.shownAt.difference(a.shownAt).abs() <= groupGap;
 
 /// Lays a conversation out as day chips, runs of bubbles, an optional "new
 /// messages" divider before [unreadFrom], and the typing bubble at the end.
@@ -326,8 +326,8 @@ List<ThreadRow> buildThread(
   for (var i = 0; i < messages.length; i++) {
     final m = messages[i];
     final prev = i == 0 ? null : messages[i - 1];
-    final at = m.sentAt.toLocal();
-    if (prev == null || _day(prev.sentAt.toLocal()) != _day(at)) {
+    final at = m.shownAt.toLocal();
+    if (prev == null || _day(prev.shownAt.toLocal()) != _day(at)) {
       rows.add(DayRow(_day(at)));
     }
     if (m.notice) {

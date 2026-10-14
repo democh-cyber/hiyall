@@ -14,10 +14,12 @@ import 'chat_blob_cache.dart';
 import 'chat_blob_codec.dart';
 import 'chat_blob_transport.dart';
 import 'chat_history.dart';
+import 'chat_local_data.dart';
 import 'chat_media.dart';
 import 'chat_outbox.dart';
 import 'chat_reactions.dart';
 import 'chat_store.dart';
+import 'chat_text.dart';
 
 /// Errors worth retrying later: the relay was unreachable, throttled us, the
 /// token needs refreshing or the server failed. Anything else is final.
@@ -47,10 +49,13 @@ String oneTimeKeyStatement(
 class ChatMessage {
   final String messageId, senderId, text;
 
-  /// The sender's clock, for display.
+  /// The sender's clock. It is the sender's claim, so it only decides what
+  /// time is shown (see [shownAt]), never the order.
   final DateTime sentAt;
 
-  /// The relay's clock, for read pointers and receipts. Null for local notices.
+  /// The relay's clock: it orders the conversation, evicts old history and
+  /// drives read pointers and receipts. Null for local notices and for a
+  /// message of this account that the relay has not accepted yet.
   final DateTime? serverAt;
   final bool mine, notice;
 
@@ -96,6 +101,29 @@ class ChatMessage {
 
   bool get isPhoto => attachment != null || unsupportedPhoto;
 
+  /// Where the message sits in the conversation: the relay's time when there is
+  /// one, so a peer's clock cannot move a message around or evict history.
+  DateTime get at => serverAt ?? sentAt;
+
+  /// How far a sender's clock may differ from the relay's before it is not
+  /// believed.
+  static const clockTrust = Duration(minutes: 10);
+
+  /// The time to show: the sender's own, but only within [clockTrust] of the
+  /// relay's; otherwise the relay's. Messages with no relay time show theirs.
+  DateTime get shownAt {
+    final relay = serverAt;
+    if (relay == null) return sentAt;
+    return sentAt.difference(relay).abs() <= clockTrust ? sentAt : relay;
+  }
+
+  /// This message with its text cleaned of bidirectional and zero-width
+  /// controls, for drawing.
+  ChatMessage get display {
+    final clean = displayText(text);
+    return identical(clean, text) ? this : copyWith(text: clean);
+  }
+
   /// One line for the chat list.
   String get preview => attachment != null
       ? (attachment!.caption.isEmpty ? 'Photo' : attachment!.caption)
@@ -104,6 +132,8 @@ class ChatMessage {
       : text;
 
   ChatMessage copyWith({
+    String? text,
+    DateTime? serverAt,
     SendStatus? status,
     String? failure,
     bool clearFailure = false,
@@ -112,10 +142,10 @@ class ChatMessage {
   }) => ChatMessage(
     messageId: messageId,
     senderId: senderId,
-    text: text,
+    text: text ?? this.text,
     sentAt: sentAt,
     mine: mine,
-    serverAt: serverAt,
+    serverAt: serverAt ?? this.serverAt,
     notice: notice,
     attachment: attachment,
     unsupportedPhoto: unsupportedPhoto,
@@ -154,7 +184,7 @@ class ChatMessage {
     return ChatMessage(
       messageId: j['id'] as String,
       senderId: j['from'] as String,
-      text: j['text'] as String,
+      text: displayText(j['text'] as String),
       sentAt: DateTime.parse(j['at'] as String),
       serverAt: DateTime.tryParse(j['srv'] as String? ?? ''),
       mine: j['mine'] as bool,
@@ -179,6 +209,13 @@ class ChatMessage {
     }
     return out.isEmpty ? const {} : out;
   }
+}
+
+/// Conversation order: the relay's time, then the id (so equal times are
+/// stable). Used for the history and its eviction.
+int chatOrder(ChatMessage a, ChatMessage b) {
+  final byTime = a.at.compareTo(b.at);
+  return byTime != 0 ? byTime : a.messageId.compareTo(b.messageId);
 }
 
 /// The server's `sharedInterests` as a list of non-empty strings: a missing,
@@ -240,21 +277,92 @@ class _Device {
   const _Device(this.id, this.identityKey, this.signingKey);
 }
 
+/// A device that was added to an account, noticed by this one.
+class DeviceNotice {
+  final String deviceId;
+  final DateTime at;
+  const DeviceNotice(this.deviceId, this.at);
+  Map<String, dynamic> toJson() => {
+    'id': deviceId,
+    'at': at.toUtc().toIso8601String(),
+  };
+  static DeviceNotice? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    final id = raw['id'], at = DateTime.tryParse('${raw['at']}');
+    return id is String && at != null ? DeviceNotice(id, at) : null;
+  }
+}
+
+/// What the safety-number screen shows. Reading it never pins anything.
+class SafetyInfo {
+  final String number;
+
+  /// The person has compared this exact number (and nothing has changed since).
+  final bool verified;
+
+  /// They had verified before, and the keys changed since: shown first.
+  final bool changedSinceVerified;
+
+  /// Devices the relay lists for the peer that this phone has not pinned yet
+  /// (added since the last message). They are in [number].
+  final int newDevices;
+  final String peerFingerprint, myFingerprint;
+  const SafetyInfo({
+    required this.number,
+    required this.verified,
+    required this.changedSinceVerified,
+    required this.newDevices,
+    required this.peerFingerprint,
+    required this.myFingerprint,
+  });
+
+  bool get changed => changedSinceVerified || newDevices > 0;
+}
+
+/// A decrypted message on its way into the history, with the way back: if the
+/// history cannot be written, the ratchet goes back to where it was and the
+/// message stays on the relay to be delivered again.
+class _Opened {
+  final String plaintext;
+  final void Function() undo;
+  const _Opened(this.plaintext, this.undo);
+}
+
 /// One device's end-to-end encrypted chat client. All Olm operations are
 /// serialized, and ratchet state is persisted before ciphertext leaves the
 /// device or a delivery is acknowledged, so message keys are never reused.
 class ChatEngine {
+  /// Olm sessions kept per peer device, newest first. A peer that starts a
+  /// session while we start one (two people waving at once) leaves two live
+  /// sessions; messages are tried against each, and the one that last worked
+  /// is the one used for sending.
+  static const maxSessionsPerDevice = 5;
+
+  /// At most one fresh session, with its quiet "noop" message, per peer device
+  /// in this long, however many messages fail.
+  static const unwedgeEvery = Duration(hours: 1);
+
   final String userId, platform;
   final ChatApi api;
   final ChatStore store;
   final _random = Random.secure();
   final _changes = StreamController<String>.broadcast();
+  final _ownDeviceChanges = StreamController<void>.broadcast();
   Future<void> _queue = Future.value();
   late List<int> _pickleKey;
   late OlmAccount _account;
   late String deviceId;
-  final _sessions = <String, OlmSession>{};
+  final _sessions = <String, List<OlmSession>>{};
   Map<String, Map<String, dynamic>> _trust = {};
+  final _unwedged = <String, DateTime>{};
+  final _peerNotices = <String, List<DeviceNotice>>{};
+  List<DeviceNotice> _ownNotices = [];
+  final _verified = <String, Map<String, dynamic>>{};
+  final _verifyChanged = <String>{};
+
+  /// Message ids opened in this run, oldest first (a bounded memory of what
+  /// the history and the saved ratchet already have).
+  final _processed = <String>{};
   late final ChatHistory _log;
   final DateTime Function() _clock;
   Timer? _timer;
@@ -317,15 +425,27 @@ class ChatEngine {
       onChange: (id) {
         if (!_changes.isClosed) _changes.add(id);
       },
-      onDropped: (dropped) {
-        final ids = [
-          for (final m in dropped)
-            if (m.attachment != null) ...[
-              ?m.attachment!.full.blobId,
-              ?m.attachment!.thumb.blobId,
-            ],
+      onDropped: (conversationId, dropped, kept) {
+        Iterable<String> keysOf(List<ChatMessage> messages) sync* {
+          for (final m in messages) {
+            final a = m.attachment;
+            if (a == null) continue;
+            for (final part in [a.full, a.thumb]) {
+              final id = part.blobId;
+              if (id != null) {
+                yield blobCacheKey(conversationId, id, part.ctSha256);
+              }
+            }
+          }
+        }
+
+        // A cached file stays while a message that is kept still names it.
+        final stay = keysOf(kept).toSet();
+        final gone = [
+          for (final key in keysOf(dropped))
+            if (!stay.contains(key)) key,
         ];
-        if (ids.isNotEmpty) unawaited(cache?.deleteAll(ids));
+        if (gone.isNotEmpty) unawaited(cache?.deleteAll(gone));
       },
     );
     if (root != null) {
@@ -350,23 +470,15 @@ class ChatEngine {
   ChatMedia? get media => _media;
   ChatBlobCodec get blobCodec => codec ?? const RustChatBlobCodec();
 
-  /// Removes one account's photo cache and unsent uploads without an engine
-  /// (sign-out: the engine for that account no longer exists).
+  /// Removes one account's chat data without an engine (sign-out: the engine
+  /// for that account no longer exists): every `hiyall.chat.<userId>.*` entry,
+  /// the photo cache and unsent uploads. See [ChatLocalData.wipeAccount] for
+  /// the server-side removal of the device.
   static Future<void> wipeLocalMedia({
     required Directory root,
     required ChatStore store,
     required String userId,
-  }) async {
-    await store.delete('hiyall.chat.$userId.outbox');
-    for (final name in ['chat_blobs', 'chat_outbox']) {
-      try {
-        final dir = Directory('${root.path}/$name');
-        if (await dir.exists()) await dir.delete(recursive: true);
-      } on FileSystemException {
-        // Best effort.
-      }
-    }
-  }
+  }) => ChatLocalData.wipeAccount(root: root, store: store, userId: userId);
 
   /// Emits a conversation id whenever its messages change.
   Stream<String> get changes => _changes.stream;
@@ -382,73 +494,247 @@ class ChatEngine {
   Future<void> start({Duration poll = const Duration(seconds: 2)}) =>
       _locked(() async {
         if (_started) return;
-        final savedKey = await store.read(_k('pickleKey'));
-        _pickleKey = savedKey == null
-            ? List<int>.generate(32, (_) => _random.nextInt(256))
-            : base64Decode(savedKey);
-        if (savedKey == null) {
-          await store.write(_k('pickleKey'), base64Encode(_pickleKey));
+        await _loadIdentity();
+        await _loadNotes();
+        try {
+          await _register();
+        } on ChatFailure catch (failure) {
+          // The relay says this device id or key belongs to something else, or
+          // was revoked (removed from the device list, signed out elsewhere,
+          // unused for 90 days). The old identity is of no use: make a new one.
+          if (failure.code != 'DEVICE_CONFLICT') rethrow;
+          await _resetIdentity();
+          await _loadIdentity();
+          await _register();
         }
-        final savedAccount = await store.read(_k('account'));
-        _account = savedAccount == null
-            ? OlmAccount.create()
-            : OlmAccount.restore(pickle: savedAccount, pickleKey: _pickleKey);
-        deviceId = await store.read(_k('deviceId')) ?? newUuid4(_random);
-        await _saveAccount();
-        await store.write(_k('deviceId'), deviceId);
-        final sessions = await store.read(_k('sessions'));
-        if (sessions != null) {
-          (jsonDecode(sessions) as Map).forEach((device, pickle) {
-            _sessions[device as String] = OlmSession.restore(
-              pickle: pickle as String,
-              pickleKey: _pickleKey,
-            );
-          });
-        }
-        final trust = await store.read(_k('trust'));
-        if (trust != null) {
-          _trust = (jsonDecode(trust) as Map).map(
-            (k, v) =>
-                MapEntry(k as String, Map<String, dynamic>.from(v as Map)),
-          );
-        }
-        await api.registerDevice({
-          'deviceId': deviceId,
-          'identityKey': _account.identityKey(),
-          'signingKey': _account.signingKey(),
-          'platform': platform,
-          'signature': _account.sign(
-            message: deviceStatement(
-              userId,
-              deviceId,
-              _account.identityKey(),
-              _account.signingKey(),
-            ),
-          ),
-        });
-        await _replenishKeys();
         _started = true;
+        await ChatLocalData.markOwner(store, userId);
+        await _afterStart();
         if (poll > Duration.zero) {
           _pollEvery = poll;
           _timer = Timer.periodic(poll, (_) => pollNow().catchError((_) {}));
         }
       });
 
+  /// Housekeeping that must never stop chat from starting.
+  Future<void> _afterStart() async {
+    try {
+      // A removal of an earlier device (sign-out or reinstall offline) that
+      // was waiting for a connection.
+      final pending = await ChatLocalData.pendingRevoke(store, userId);
+      if (pending != null) {
+        if (pending != deviceId) {
+          try {
+            await api.revokeDevice(pending);
+          } on ChatFailure catch (failure) {
+            // Already gone is as good as removed.
+            if (failure.status != 404) rethrow;
+          }
+        }
+        await ChatLocalData.clearPendingRevoke(store, userId);
+      }
+    } catch (_) {
+      // Tried again next launch.
+    }
+    try {
+      // Pin this account's own devices, so a later one is noticed.
+      await _devices(userId);
+    } catch (_) {}
+  }
+
   void dispose() {
     _timer?.cancel();
     _outbox?.dispose();
     _changes.close();
+    _ownDeviceChanges.close();
   }
 
-  Future<void> _saveAccount() =>
-      store.write(_k('account'), _account.pickle(pickleKey: _pickleKey));
-  Future<void> _saveSessions() => store.write(
-    _k('sessions'),
+  /// Opens (or creates) the key, account, sessions and device id from the
+  /// store. Account and sessions live in one entry, written in one call, so a
+  /// crash cannot leave one newer than the other. Entries written by earlier
+  /// builds (`account`, `sessions`) are read once and moved.
+  Future<void> _loadIdentity() async {
+    final savedKey = await store.read(_k('pickleKey'));
+    _pickleKey = savedKey == null
+        ? List<int>.generate(32, (_) => _random.nextInt(256))
+        : base64Decode(savedKey);
+    if (savedKey == null) {
+      await store.write(_k('pickleKey'), base64Encode(_pickleKey));
+    }
+    _sessions.clear();
+    final combined = await store.read(_k('state'));
+    var legacy = false;
+    Object? sessionData;
+    if (combined != null) {
+      final j = jsonDecode(combined) as Map;
+      _account = OlmAccount.restore(
+        pickle: j['account'] as String,
+        pickleKey: _pickleKey,
+      );
+      sessionData = j['sessions'];
+    } else {
+      final savedAccount = await store.read(_k('account'));
+      _account = savedAccount == null
+          ? OlmAccount.create()
+          : OlmAccount.restore(pickle: savedAccount, pickleKey: _pickleKey);
+      final old = await store.read(_k('sessions'));
+      sessionData = old == null ? null : jsonDecode(old);
+      legacy = savedAccount != null || old != null;
+    }
+    if (sessionData is Map) {
+      sessionData.forEach((device, value) {
+        final list = <OlmSession>[];
+        for (final pickle in value is List ? value : [value]) {
+          try {
+            list.add(
+              OlmSession.restore(
+                pickle: pickle as String,
+                pickleKey: _pickleKey,
+              ),
+            );
+          } catch (_) {
+            // A session that cannot be opened is as good as lost; the others
+            // and the unwedging below carry on.
+          }
+        }
+        if (list.isNotEmpty) _sessions[device as String] = list;
+      });
+    }
+    deviceId = await store.read(_k('deviceId')) ?? newUuid4(_random);
+    await _saveState();
+    await store.write(_k('deviceId'), deviceId);
+    if (legacy) {
+      await store.delete(_k('account'));
+      await store.delete(_k('sessions'));
+    }
+  }
+
+  Future<void> _register() async {
+    await api.registerDevice({
+      'deviceId': deviceId,
+      'identityKey': _account.identityKey(),
+      'signingKey': _account.signingKey(),
+      'platform': platform,
+      'signature': _account.sign(
+        message: deviceStatement(
+          userId,
+          deviceId,
+          _account.identityKey(),
+          _account.signingKey(),
+        ),
+      ),
+    });
+    await _replenishKeys();
+  }
+
+  /// Forgets this device's identity (account, sessions, id) so a new one is
+  /// made. History and what is pinned about other people stay; this account's
+  /// own pinned devices and every verification go, because both depend on the
+  /// identity that is being replaced.
+  Future<void> _resetIdentity() async {
+    for (final name in [
+      'pickleKey',
+      'account',
+      'state',
+      'sessions',
+      'deviceId',
+    ]) {
+      await store.delete(_k(name));
+    }
+    _sessions.clear();
+    _unwedged.clear();
+    _trust.remove(userId);
+    await store.write(_k('trust'), jsonEncode(_trust));
+    _ownNotices = [];
+    _verified.clear();
+    _verifyChanged.clear();
+    await _saveNotes();
+  }
+
+  /// Account and every session in one write.
+  Future<void> _saveState() => store.write(
+    _k('state'),
     jsonEncode({
-      for (final e in _sessions.entries)
-        e.key: e.value.pickle(pickleKey: _pickleKey),
+      'v': 2,
+      'account': _account.pickle(pickleKey: _pickleKey),
+      'sessions': {
+        for (final e in _sessions.entries)
+          e.key: [for (final s in e.value) s.pickle(pickleKey: _pickleKey)],
+      },
     }),
   );
+
+  Future<void> _loadNotes() async {
+    final trust = await store.read(_k('trust'));
+    if (trust != null) {
+      _trust = (jsonDecode(trust) as Map).map(
+        (k, v) => MapEntry(k as String, Map<String, dynamic>.from(v as Map)),
+      );
+    }
+    try {
+      final wedge = await store.read(_k('unwedge'));
+      if (wedge != null) {
+        (jsonDecode(wedge) as Map).forEach((k, v) {
+          final at = DateTime.tryParse('$v');
+          if (at != null) _unwedged['$k'] = at;
+        });
+      }
+      final notes = await store.read(_k('devnotes'));
+      if (notes != null) {
+        final j = jsonDecode(notes) as Map;
+        _ownNotices = [
+          for (final n in (j['own'] as List? ?? const []))
+            ?DeviceNotice.fromJson(n),
+        ];
+        _peerNotices.clear();
+        ((j['peers'] as Map?) ?? const {}).forEach((peer, list) {
+          final parsed = [
+            for (final n in list as List) ?DeviceNotice.fromJson(n),
+          ];
+          if (parsed.isNotEmpty) _peerNotices['$peer'] = parsed;
+        });
+      }
+      final marks = await store.read(_k('verified'));
+      if (marks != null) {
+        final j = jsonDecode(marks) as Map;
+        _verified.clear();
+        ((j['ok'] as Map?) ?? const {}).forEach((peer, entry) {
+          if (entry is Map) {
+            _verified['$peer'] = Map<String, dynamic>.from(entry);
+          }
+        });
+        _verifyChanged
+          ..clear()
+          ..addAll([for (final p in (j['changed'] as List? ?? const [])) '$p']);
+      }
+    } catch (_) {
+      // These are conveniences around the keys; unreadable means start empty.
+    }
+  }
+
+  Future<void> _saveNotes() async {
+    await store.write(
+      _k('unwedge'),
+      jsonEncode({
+        for (final e in _unwedged.entries)
+          e.key: e.value.toUtc().toIso8601String(),
+      }),
+    );
+    await store.write(
+      _k('devnotes'),
+      jsonEncode({
+        'own': [for (final n in _ownNotices) n.toJson()],
+        'peers': {
+          for (final e in _peerNotices.entries)
+            e.key: [for (final n in e.value) n.toJson()],
+        },
+      }),
+    );
+    await store.write(
+      _k('verified'),
+      jsonEncode({'ok': _verified, 'changed': _verifyChanged.toList()}),
+    );
+  }
 
   Future<void> _replenishKeys() async {
     if (await api.keyCount(deviceId) >= 20) return;
@@ -462,23 +748,35 @@ class ChatEngine {
       ),
     };
     // Persist the private halves before the public halves become claimable.
-    await _saveAccount();
+    await _saveState();
     await api.uploadKeys(
       deviceId,
       keys.map(signed).toList(),
       fallback == null ? null : signed(fallback),
     );
     _account.markKeysAsPublished();
-    await _saveAccount();
+    await _saveState();
   }
 
-  /// Fetches and verifies a user's devices. Keys are pinned on first use: a known
-  /// device id presenting different keys is refused, and a new device for a known
-  /// user is announced in the conversation.
-  Future<List<_Device>> _devices(String user, {String? conversationId}) async {
+  /// A stable summary of a person's device keys, to notice that they changed.
+  String _fingerprint(String user, List<_Device> devices) {
+    final keys = [for (final d in devices) d.identityKey]..sort();
+    return base64Encode(
+      sha256
+          .convert(utf8.encode('hiyall-devices-v1\n$user\n${keys.join('\n')}'))
+          .bytes,
+    );
+  }
+
+  /// Fetches a user's devices and checks them: signatures, contributory keys,
+  /// and the keys pinned on first use (a known device id with other keys stops
+  /// everything with `KEY_CHANGED`). Pins nothing: the caller decides.
+  Future<({List<_Device> list, Set<String> unpinned})> _fetchDevices(
+    String user,
+  ) async {
     final known = _trust[user] ?? {};
-    final firstContact = known.isEmpty;
-    final result = <_Device>[];
+    final list = <_Device>[];
+    final unpinned = <String>{};
     for (final d in await api.devices(user)) {
       final id = d['deviceId'] as String;
       final identity = d['identityKey'] as String,
@@ -495,37 +793,177 @@ class ChatEngine {
       if (pinned != null &&
           (pinned['identityKey'] != identity ||
               pinned['signingKey'] != signing)) {
+        await _keysChanged(user);
         throw const ChatFailure(
           'KEY_CHANGED',
           'A device presented changed keys. Messages to it are blocked.',
         );
       }
-      if (pinned == null) {
-        known[id] = {'identityKey': identity, 'signingKey': signing};
-        if (!firstContact && user != userId && conversationId != null) {
-          await _append(
-            conversationId,
-            ChatMessage(
-              messageId: 'notice-$id',
-              senderId: user,
-              text: 'A new device was added to this account.',
-              sentAt: DateTime.now().toUtc(),
-              mine: false,
-              notice: true,
-            ),
-          );
+      if (pinned == null) unpinned.add(id);
+      list.add(_Device(id, identity, signing));
+    }
+    return (list: list, unpinned: unpinned);
+  }
+
+  /// Fetches a user's devices and pins new ones on first use. A new device on
+  /// a known account is recorded: for this account's own devices as a notice
+  /// the owner sees (and a realtime signal told them), for a peer as a notice
+  /// in every conversation with them, shown when it is next opened (and in
+  /// [conversationId] at once).
+  Future<List<_Device>> _devices(String user, {String? conversationId}) async {
+    final known = _trust[user] ?? {};
+    final firstContact = known.isEmpty;
+    final fetched = await _fetchDevices(user);
+    var notes = false;
+    for (final d in fetched.list) {
+      if (!fetched.unpinned.contains(d.id)) continue;
+      known[d.id] = {'identityKey': d.identityKey, 'signingKey': d.signingKey};
+      if (firstContact || d.id == deviceId) continue;
+      final notice = DeviceNotice(d.id, _clock().toUtc());
+      notes = true;
+      if (user == userId) {
+        final all = [..._ownNotices, notice];
+        _ownNotices = all.length > 10 ? all.sublist(all.length - 10) : all;
+        if (!_ownDeviceChanges.isClosed) _ownDeviceChanges.add(null);
+      } else {
+        final kept = [...?_peerNotices[user], notice];
+        _peerNotices[user] = kept.length > 10
+            ? kept.sublist(kept.length - 10)
+            : kept;
+        if (conversationId != null) {
+          await _append(conversationId, _deviceNotice(user, notice));
         }
       }
-      result.add(_Device(id, identity, signing));
     }
     _trust[user] = known;
     await store.write(_k('trust'), jsonEncode(_trust));
-    return result;
+    await _checkVerified(user, fetched.list, saveNotes: notes);
+    return fetched.list;
   }
 
-  Future<OlmSession> _outbound(String user, _Device device) async {
+  ChatMessage _deviceNotice(String user, DeviceNotice notice) => ChatMessage(
+    messageId: 'notice-${notice.deviceId}',
+    senderId: user,
+    text: 'A new device was added to this account.',
+    sentAt: notice.at,
+    mine: false,
+    notice: true,
+  );
+
+  /// Puts the "new device" notices for [peerId] into [conversationId]. Call it
+  /// when a conversation is opened: a device added to the peer's account is
+  /// announced in every conversation with them, not only the one that happened
+  /// to see it first. Safe to repeat (a notice is added once).
+  Future<void> showDeviceNotices(String conversationId, String peerId) async {
+    final cutoff = _clock().toUtc().subtract(const Duration(days: 30));
+    for (final n in [...?_peerNotices[peerId]]) {
+      if (n.at.isAfter(cutoff)) {
+        await _append(conversationId, _deviceNotice(peerId, n));
+      }
+    }
+  }
+
+  /// Devices added to this account that the person has not seen yet.
+  List<DeviceNotice> get ownDeviceNotices => List.unmodifiable(_ownNotices);
+
+  /// Emits when [ownDeviceNotices] changes.
+  Stream<void> get ownDeviceChanges => _ownDeviceChanges.stream;
+
+  /// Looks at this account's devices again (a realtime signal said one was
+  /// added or removed).
+  Future<void> refreshOwnDevices() => _locked(() async {
+    if (!_started) return;
+    await _devices(userId);
+  });
+
+  /// The person saw the "new device" banner.
+  Future<void> dismissOwnDeviceNotices() async {
+    if (_ownNotices.isEmpty) return;
+    _ownNotices = [];
+    await _saveNotes();
+    if (!_ownDeviceChanges.isClosed) _ownDeviceChanges.add(null);
+  }
+
+  Future<void> _keysChanged(String user) async {
+    if (_verified.remove(user) != null) {
+      _verifyChanged.add(user);
+      await _saveNotes();
+    }
+  }
+
+  /// A person's verification holds only while their devices (and this
+  /// account's) are the ones that were compared: a change clears it.
+  Future<void> _checkVerified(
+    String user,
+    List<_Device> devices, {
+    bool saveNotes = false,
+  }) async {
+    final fp = _fingerprint(user, devices);
+    var changed = saveNotes;
+    if (user == userId) {
+      for (final peer in _verified.keys.toList()) {
+        if (_verified[peer]!['myFp'] != fp) {
+          _verified.remove(peer);
+          _verifyChanged.add(peer);
+          changed = true;
+        }
+      }
+    } else {
+      final entry = _verified[user];
+      if (entry != null && entry['peerFp'] != fp) {
+        _verified.remove(user);
+        _verifyChanged.add(user);
+        changed = true;
+      }
+    }
+    if (changed) await _saveNotes();
+  }
+
+  /// Whether the person compared this peer's safety number and nothing has
+  /// changed since.
+  bool isVerified(String peerId) => _verified.containsKey(peerId);
+
+  /// Records that the person compared [info]'s number with [peerId].
+  Future<void> markVerified(String peerId, SafetyInfo info) async {
+    _verified[peerId] = {
+      'number': info.number,
+      'peerFp': info.peerFingerprint,
+      'myFp': info.myFingerprint,
+      'at': _clock().toUtc().toIso8601String(),
+    };
+    _verifyChanged.remove(peerId);
+    await _saveNotes();
+  }
+
+  /// A new session to [device] at the front of its list, newest first; the
+  /// oldest beyond [maxSessionsPerDevice] go.
+  void _addSession(String deviceId, OlmSession session) {
+    final list = _sessions[deviceId] ??= [];
+    list.insert(0, session);
+    if (list.length > maxSessionsPerDevice) {
+      list.removeRange(maxSessionsPerDevice, list.length);
+    }
+  }
+
+  /// Puts the session that just worked first, so sending uses it.
+  void _promote(String deviceId, OlmSession session) {
+    final list = _sessions[deviceId];
+    if (list == null || list.isEmpty || identical(list.first, session)) return;
+    if (list.remove(session)) list.insert(0, session);
+  }
+
+  /// The session used to send to [device]: the one that last worked, else the
+  /// newest. With [fresh] (or no session at all) a new one is started from a
+  /// claimed one-time key.
+  Future<OlmSession> _outbound(
+    String user,
+    _Device device, {
+    bool fresh = false,
+  }) async {
     final existing = _sessions[device.id];
-    if (existing != null) return existing;
+    if (!fresh && existing != null && existing.isNotEmpty) {
+      return existing.first;
+    }
     final claim = await api.claim(user, device.id);
     final key = claim['publicKey'] as String, keyId = claim['keyId'] as String;
     if (!verifySignature(
@@ -535,10 +973,84 @@ class ChatEngine {
     )) {
       throw const ChatFailure('BAD_KEY', 'A device key failed verification.');
     }
-    return _sessions[device.id] = _account.createOutbound(
+    final session = _account.createOutbound(
       identityKey: device.identityKey,
       oneTimeKey: key,
     );
+    _addSession(device.id, session);
+    return session;
+  }
+
+  /// Decrypts [ciphertext] from [device]. A pre-key message goes to the session
+  /// it belongs to; if it belongs to none, a new session is created from it and
+  /// added, and no existing session is replaced. Any other message is tried
+  /// against each session, newest first. The session that worked moves to the
+  /// front.
+  _Opened _open(_Device device, int type, String ciphertext) {
+    final list = _sessions[device.id] ??= [];
+    if (type == 0) {
+      for (final session in list.toList()) {
+        if (!session.matchesPreKey(ciphertext: ciphertext)) continue;
+        final before = session.pickle(pickleKey: _pickleKey);
+        final text = session.decrypt(messageType: 0, ciphertext: ciphertext);
+        final order = list.toList();
+        _promote(device.id, session);
+        return _Opened(
+          text,
+          () => _restoreSession(device.id, session, before, order),
+        );
+      }
+      final accountBefore = _account.pickle(pickleKey: _pickleKey);
+      final (session, text) = _account.createInbound(
+        theirIdentityKey: device.identityKey,
+        ciphertext: ciphertext,
+      );
+      final order = list.toList();
+      _addSession(device.id, session);
+      return _Opened(text, () {
+        list
+          ..clear()
+          ..addAll(order);
+        _account = OlmAccount.restore(
+          pickle: accountBefore,
+          pickleKey: _pickleKey,
+        );
+      });
+    }
+    Object? failure;
+    for (final session in list.toList()) {
+      final before = session.pickle(pickleKey: _pickleKey);
+      try {
+        final text = session.decrypt(messageType: type, ciphertext: ciphertext);
+        final order = list.toList();
+        _promote(device.id, session);
+        return _Opened(
+          text,
+          () => _restoreSession(device.id, session, before, order),
+        );
+      } catch (error) {
+        failure = error;
+        // A failed decrypt must leave the session as it was; make sure.
+        _restoreSession(device.id, session, before, list.toList());
+      }
+    }
+    if (failure != null) throw failure;
+    throw const ChatFailure('NO_SESSION', 'Missing session.');
+  }
+
+  /// Puts [session] back to the state it was pickled in, at its old place.
+  void _restoreSession(
+    String deviceId,
+    OlmSession session,
+    String pickle,
+    List<OlmSession> order,
+  ) {
+    final restored = OlmSession.restore(pickle: pickle, pickleKey: _pickleKey);
+    final list = _sessions[deviceId] ??= [];
+    final next = [for (final s in order) identical(s, session) ? restored : s];
+    list
+      ..clear()
+      ..addAll(next);
   }
 
   Future<String> open(String peerId) async =>
@@ -547,32 +1059,23 @@ class ChatEngine {
   /// Sends a text message. [replyTo] quotes a message of this conversation: a
   /// short plain snippet of that message's own text (never of what it quotes,
   /// so quotes do not nest) travels inside the encrypted payload.
+  ///
+  /// The message is written to the history as "sending" with its final id
+  /// before anything goes over the network, so it survives a crash (it comes
+  /// back as "not sent", ready for [retryText]) and a retry reuses the id, which
+  /// the relay answers idempotently. If it cannot be sent the error is thrown:
+  /// a transient one (offline, throttled, server trouble) leaves the message as
+  /// "not sent" with a retry; a refusal (they do not accept messages, the chat
+  /// is closed, a key changed) removes it, since sending it again cannot help.
   Future<void> send(
     String conversationId,
     String peerId,
     String text, {
     ChatMessage? replyTo,
-  }) => _locked(() async {
+  }) async {
     final messageId = newUuid4(_random);
     final sentAt = _clock().toUtc();
     final reply = replyTo == null ? null : replyOf(replyTo, userId);
-    final payload = jsonEncode({
-      'v': 1,
-      'kind': 'text',
-      'text': text,
-      'messageId': messageId,
-      'conversationId': conversationId,
-      'senderId': userId,
-      'sentAt': sentAt.toIso8601String(),
-      if (reply != null) 're': reply.toJson(),
-    });
-    final serverAt = await _deliver(
-      conversationId,
-      peerId,
-      messageId,
-      payload,
-      const [],
-    );
     await _append(
       conversationId,
       ChatMessage(
@@ -580,12 +1083,97 @@ class ChatEngine {
         senderId: userId,
         text: text,
         sentAt: sentAt,
-        serverAt: serverAt,
         mine: true,
+        status: SendStatus.sending,
         reply: reply,
       ),
     );
-  });
+    await _transmitText(conversationId, peerId, messageId);
+  }
+
+  /// Sends a text message that did not go out ("not sent"), with the same id.
+  Future<void> retryText(
+    String conversationId,
+    String peerId,
+    String messageId,
+  ) async {
+    final m = (await history(conversationId))
+        .where(
+          (m) =>
+              m.messageId == messageId &&
+              m.mine &&
+              !m.notice &&
+              !m.isPhoto &&
+              m.status == SendStatus.failed,
+        )
+        .firstOrNull;
+    if (m == null) {
+      throw const ChatFailure('NOT_FOUND', 'That message can’t be sent again.');
+    }
+    await _log.replace(
+      conversationId,
+      m.copyWith(status: SendStatus.sending, clearFailure: true),
+    );
+    await _transmitText(conversationId, peerId, messageId);
+  }
+
+  /// Deletes a text message that was never sent.
+  Future<void> discardText(String conversationId, String messageId) async {
+    final m = (await history(conversationId))
+        .where((m) => m.messageId == messageId)
+        .firstOrNull;
+    if (m == null || !m.mine || m.status == SendStatus.sent) return;
+    await _log.remove(conversationId, messageId);
+  }
+
+  Future<void> _transmitText(
+    String conversationId,
+    String peerId,
+    String messageId,
+  ) async {
+    final m = (await history(conversationId))
+        .where((m) => m.messageId == messageId)
+        .firstOrNull;
+    if (m == null) return;
+    // The same payload on every attempt: the receiver binds it to the id.
+    final payload = jsonEncode({
+      'v': 1,
+      'kind': 'text',
+      'text': m.text,
+      'messageId': messageId,
+      'conversationId': conversationId,
+      'senderId': userId,
+      'sentAt': m.sentAt.toUtc().toIso8601String(),
+      if (m.reply != null) 're': m.reply!.toJson(),
+    });
+    try {
+      final serverAt = await _locked(
+        () => _deliver(conversationId, peerId, messageId, payload, const []),
+      );
+      await _log.replace(
+        conversationId,
+        m.copyWith(
+          status: SendStatus.sent,
+          serverAt: serverAt ?? _clock().toUtc(),
+          clearFailure: true,
+        ),
+      );
+    } catch (error) {
+      final keep = error is! ChatFailure || isTransientChatFailure(error);
+      if (keep) {
+        await _log.replace(
+          conversationId,
+          m.copyWith(
+            status: SendStatus.failed,
+            failure: error is ChatFailure ? error.code : 'FAILED',
+          ),
+        );
+      } else {
+        await _log.remove(conversationId, messageId);
+      }
+      rethrow;
+    }
+  }
 
   /// Sets (or, with a null [emoji], clears) this account's reaction to
   /// [messageId], which must be a delivered message of this conversation.
@@ -680,7 +1268,8 @@ class ChatEngine {
   }
 
   /// Seals [payload] for every device of both people and hands it to the
-  /// relay. Must run inside [_locked]: it advances the Olm ratchets.
+  /// relay. Must run inside [_locked]: it advances the Olm ratchets. Devices
+  /// named in [fresh] get a brand-new session (see [_unwedge]).
   Future<DateTime?> _deliver(
     String conversationId,
     String peerId,
@@ -688,7 +1277,9 @@ class ChatEngine {
     String payload,
     List<String> blobIds, {
     bool aux = false,
+    Set<String> fresh = const {},
   }) async {
+    final startFresh = {...fresh};
     for (var attempt = 0; ; attempt++) {
       final targets = [
         for (final d in await _devices(peerId, conversationId: conversationId))
@@ -701,6 +1292,7 @@ class ChatEngine {
         final sealed = (await _outbound(
           user,
           device,
+          fresh: startFresh.remove(device.id),
         )).encrypt(plaintext: payload);
         envelopes.add({
           'deviceId': device.id,
@@ -708,7 +1300,7 @@ class ChatEngine {
           'ciphertext': sealed.ciphertext,
         });
       }
-      await _saveSessions();
+      await _saveState();
       try {
         return await api.send(
           conversationId,
@@ -723,6 +1315,50 @@ class ChatEngine {
       } on ChatFailure catch (failure) {
         if (failure.code != 'DEVICES_CHANGED' || attempt > 0) rethrow;
       }
+    }
+  }
+
+  /// A peer device's messages stopped decrypting (its session with us and ours
+  /// with it no longer match). Start a fresh session to that device and send a
+  /// quiet empty message ("noop", flagged as auxiliary so it is not unread and
+  /// not pushed) on it, so the peer builds a matching one. At most once per
+  /// device per [unwedgeEvery]. Runs inside [_locked]; never throws.
+  Future<void> _unwedge(
+    String conversationId,
+    String senderId,
+    _Device device,
+  ) async {
+    final now = _clock().toUtc();
+    final last = _unwedged[device.id];
+    if (last != null && now.difference(last) < unwedgeEvery) return;
+    _unwedged[device.id] = now;
+    try {
+      await _saveNotes();
+      var peer = senderId;
+      if (senderId == userId) {
+        final c = await api.conversation(conversationId);
+        peer = (c['peer'] as Map)['userId'] as String;
+      }
+      final id = newUuid4(_random);
+      await _deliver(
+        conversationId,
+        peer,
+        id,
+        jsonEncode({
+          'v': 1,
+          'kind': 'noop',
+          'text': '',
+          'messageId': id,
+          'conversationId': conversationId,
+          'senderId': userId,
+          'sentAt': now.toIso8601String(),
+        }),
+        const [],
+        aux: true,
+        fresh: {device.id},
+      );
+    } catch (_) {
+      // Quiet by design; the next failure after the interval tries again.
     }
   }
 
@@ -783,8 +1419,30 @@ class ChatEngine {
     }
   });
 
+  /// One page of the inbox. For each message the order is: decrypt (in memory),
+  /// write the history, save the account and sessions in one write, and only
+  /// then acknowledge. A crash or a failed write before the acknowledgement
+  /// leaves the message on the relay and the saved ratchet where it was, so it
+  /// is delivered and decrypted again; a history that already has it ignores
+  /// the repeat. What cannot be undone is a write that fails after the history
+  /// took the message: the ratchet is rolled back in memory and the message is
+  /// not acknowledged, so the next poll opens it again (see the not-done list
+  /// in docs/security/13).
   Future<int> _pollPage() async {
-    final items = await api.inbox(deviceId);
+    final List<Map<String, dynamic>> items;
+    try {
+      items = await api.inbox(deviceId);
+    } on ChatFailure catch (failure) {
+      // This device was removed on the relay (revoked, unused for 90 days):
+      // start over with a new identity.
+      if (failure.status == 404 && failure.code == 'NOT_FOUND') {
+        await _resetIdentity();
+        await _loadIdentity();
+        await _register();
+        return 0;
+      }
+      rethrow;
+    }
     final delivered = <String>[];
     // Each sender's devices are fetched once per page. A failure here is kept
     // per sender so it never turns into a decryption error for every message.
@@ -805,9 +1463,29 @@ class ChatEngine {
           // relay for the next poll instead of discarding it as unreadable.
           if (isTransientChatFailure(error)) rethrow;
         }
+        // Already handled (the acknowledgement was lost after the history and
+        // the ratchet were saved): do not open it again, just acknowledge.
+        if (_processed.contains(messageId) ||
+            (await history(conversationId))
+                .any((m) => m.messageId == messageId)) {
+          delivered.add(messageId);
+          continue;
+        }
+        Future<void> undecryptable() => _append(
+          conversationId,
+          ChatMessage(
+            messageId: messageId,
+            senderId: senderId,
+            text: 'This message couldn’t be decrypted on this device.',
+            sentAt: DateTime.now().toUtc(),
+            mine: senderId == userId,
+            notice: true,
+          ),
+        );
+        _Device? device;
         try {
           final senderDevice = item['senderDeviceId'] as String;
-          var device = (await devices)
+          device = (await devices)
               .where((d) => d.id == senderDevice)
               .firstOrNull;
           if (device == null ||
@@ -817,61 +1495,69 @@ class ChatEngine {
               'Sent from an unverified device.',
             );
           }
-          final type = item['type'] as int,
-              ciphertext = item['ciphertext'] as String;
-          final existing = _sessions[device.id];
-          String plaintext;
-          if (type == 0 &&
-              (existing == null ||
-                  !existing.matchesPreKey(ciphertext: ciphertext))) {
-            final (session, opened) = _account.createInbound(
-              theirIdentityKey: device.identityKey,
-              ciphertext: ciphertext,
-            );
-            _sessions[device.id] = session;
-            plaintext = opened;
-            await _saveAccount();
-          } else {
-            if (existing == null) {
-              throw const ChatFailure('NO_SESSION', 'Missing session.');
-            }
-            plaintext = existing.decrypt(
-              messageType: type,
-              ciphertext: ciphertext,
-            );
-          }
-          await _saveSessions();
-          final body = jsonDecode(plaintext) as Map<String, dynamic>;
-          await _ingest(
-            conversationId,
-            parseIncoming(
-              body,
-              messageId: messageId,
-              conversationId: conversationId,
-              senderId: senderId,
-              serverAt: DateTime.tryParse(item['createdAt'] as String? ?? ''),
-              me: userId,
-              members: await _quoteMembers(conversationId, senderId),
-            ),
+        } catch (_) {
+          await undecryptable();
+          delivered.add(messageId);
+          continue;
+        }
+        final _Opened opened;
+        try {
+          opened = _open(
+            device,
+            item['type'] as int,
+            item['ciphertext'] as String,
           );
         } catch (_) {
-          await _append(
-            conversationId,
-            ChatMessage(
-              messageId: messageId,
-              senderId: senderId,
-              text: 'This message couldn’t be decrypted on this device.',
-              sentAt: DateTime.now().toUtc(),
-              mine: senderId == userId,
-              notice: true,
-            ),
-          );
+          await undecryptable();
+          delivered.add(messageId);
+          await _unwedge(conversationId, senderId, device);
+          continue;
         }
+        Incoming incoming;
+        try {
+          final Set<String>? members;
+          try {
+            members = await _quoteMembers(conversationId, senderId);
+          } catch (_) {
+            opened.undo();
+            continue; // history unreadable: left on the relay
+          }
+          incoming = parseIncoming(
+            jsonDecode(opened.plaintext) as Map<String, dynamic>,
+            messageId: messageId,
+            conversationId: conversationId,
+            senderId: senderId,
+            serverAt: DateTime.tryParse(item['createdAt'] as String? ?? ''),
+            me: userId,
+            members: members,
+          );
+        } catch (_) {
+          // Decrypted, but not a message this app understands. The ratchet has
+          // moved on, so keep it and say so.
+          await _saveState();
+          await undecryptable();
+          delivered.add(messageId);
+          continue;
+        }
+        try {
+          await _ingest(conversationId, incoming);
+        } catch (_) {
+          opened.undo();
+          continue; // not acknowledged: delivered again
+        }
+        try {
+          await _saveState();
+        } catch (_) {
+          opened.undo();
+          continue;
+        }
+        _processed.add(messageId);
+        if (_processed.length > 400) _processed.remove(_processed.first);
         delivered.add(messageId);
       }
     } finally {
       // Whatever was handled is acknowledged even when the page stops early,
-      // since its ratchet state has already moved on.
+      // since its ratchet state has already been saved.
       if (delivered.isNotEmpty) {
         await api.ack(deviceId, delivered);
         await _replenishKeys();
@@ -879,6 +1565,14 @@ class ChatEngine {
     }
     return items.length;
   }
+
+  /// Tests only: how many Olm sessions are held for a peer device.
+  int debugSessionCount(String deviceId) => _sessions[deviceId]?.length ?? 0;
+
+  /// Tests only: the session ids held for a peer device, in sending order.
+  List<String> debugSessionIds(String deviceId) => [
+    for (final s in _sessions[deviceId] ?? const <OlmSession>[]) s.sessionId(),
+  ];
 
   /// Tests only: lets [pollNow] run without the native encryption core. Only
   /// paths that never reach Olm may be exercised this way. (No Flutter import,
@@ -913,18 +1607,43 @@ class ChatEngine {
   }
 
   /// A 60-digit number both people can compare in person. It covers every
-  /// device on both accounts as the server lists them now, each checked
+  /// device on both accounts as the relay lists them now, each checked
   /// against the keys pinned on first contact, so a substituted or added
-  /// device changes it.
-  Future<String> safetyNumber(String peerId) async {
+  /// device changes it. Reading it pins nothing: see [safetyInfo].
+  Future<String> safetyNumber(String peerId) async =>
+      (await safetyInfo(peerId)).number;
+
+  /// The safety number with what the person should see first: whether the
+  /// keys changed since they verified, and whether the peer has devices this
+  /// phone has not pinned yet. It never pins anything (a device is pinned, with
+  /// a notice in the chat, when a message is next sent); a device that
+  /// presents other keys than the ones pinned stops it with `KEY_CHANGED`.
+  Future<SafetyInfo> safetyInfo(String peerId) => _locked(() async {
+    final mineNow = await _fetchDevices(userId);
+    final theirsNow = await _fetchDevices(peerId);
     final mine = [
       _account.identityKey(),
-      for (final d in await _devices(userId))
+      for (final d in mineNow.list)
         if (d.id != deviceId) d.identityKey,
     ];
-    final theirs = [for (final d in await _devices(peerId)) d.identityKey];
-    return computeSafetyNumber(userId, mine, peerId, theirs);
-  }
+    final theirs = [for (final d in theirsNow.list) d.identityKey];
+    final number = computeSafetyNumber(userId, mine, peerId, theirs);
+    final myFp = _fingerprint(userId, mineNow.list);
+    final peerFp = _fingerprint(peerId, theirsNow.list);
+    // Seeing a change clears the mark, whichever screen sees it first.
+    await _checkVerified(userId, mineNow.list);
+    await _checkVerified(peerId, theirsNow.list);
+    final entry = _verified[peerId];
+    final verified = entry != null && entry['number'] == number;
+    return SafetyInfo(
+      number: number,
+      verified: verified,
+      changedSinceVerified: !verified && _verifyChanged.contains(peerId),
+      newDevices: theirsNow.unpinned.length,
+      peerFingerprint: peerFp,
+      myFingerprint: myFp,
+    );
+  });
 
   /// This account's devices as the server lists them, newest first.
   Future<List<Map<String, dynamic>>> myDevices() async =>
@@ -935,6 +1654,13 @@ class ChatEngine {
       throw const ChatFailure('THIS_DEVICE', 'Sign out to remove this phone.');
     }
     await api.revokeDevice(id);
+  }
+
+  /// Removes this phone's chat device on the server (sign-out). The local
+  /// copy of the id goes too, so nothing retries it.
+  Future<void> revokeThisDevice() async {
+    await api.revokeDevice(deviceId);
+    await store.delete(_k('deviceId'));
   }
 
   Future<List<ChatMessage>> history(String conversationId) =>
@@ -1074,7 +1800,8 @@ ChatReply resolveReply(ChatReply reply, ChatMessage original, String me) {
 ///   `add` or `remove`. Anything else about it is invalid and it is ignored.
 ///   A reaction dated more than ten minutes after the relay stored it is
 ///   ignored too, so nobody can pin their own reaction in the future.
-/// * any other kind: ignored.
+/// * `noop` (the quiet message that sets up a fresh session) and any other
+///   kind: ignored.
 Incoming parseIncoming(
   Map<String, dynamic> body, {
   required String messageId,
@@ -1133,7 +1860,7 @@ Incoming parseIncoming(
     ChatMessage(
       messageId: messageId,
       senderId: senderId,
-      text: body['text'] as String,
+      text: displayText(body['text'] as String),
       sentAt: sentAt ?? DateTime.now().toUtc(),
       serverAt: serverAt,
       mine: senderId == me,

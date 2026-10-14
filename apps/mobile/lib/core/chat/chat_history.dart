@@ -19,9 +19,15 @@ class ChatHistory {
   /// Called after every change.
   final void Function(String conversationId)? onChange;
 
-  /// Called with messages that fell off the end of a list, so their cached
-  /// photos can go with them.
-  final void Function(List<ChatMessage> dropped)? onDropped;
+  /// Called with messages that fell off the start of a list (the oldest by the
+  /// relay's clock), and with the messages that stay, so their cached photos
+  /// can go with them unless a message that stays still needs them.
+  final void Function(
+    String conversationId,
+    List<ChatMessage> dropped,
+    List<ChatMessage> kept,
+  )?
+  onDropped;
 
   /// "Now", for how long a waiting reaction is kept.
   final DateTime Function() clock;
@@ -49,10 +55,21 @@ class ChatHistory {
     final raw = await store.read(keyOf(conversationId));
     final list = <ChatMessage>[];
     if (raw != null) {
-      for (final m in jsonDecode(raw) as List) {
-        final message = ChatMessage.fromJson(
-          Map<String, dynamic>.from(m as Map),
-        );
+      // One entry this app cannot read (written by another version, damaged)
+      // is skipped; it never stops the rest of the conversation from loading.
+      Object? decoded;
+      try {
+        decoded = jsonDecode(raw);
+      } catch (_) {
+        decoded = null;
+      }
+      for (final m in decoded is List ? decoded : const []) {
+        final ChatMessage message;
+        try {
+          message = ChatMessage.fromJson(Map<String, dynamic>.from(m as Map));
+        } catch (_) {
+          continue;
+        }
         // Nothing sends in the background after a restart: what was mid-upload
         // now waits for the person to retry it.
         list.add(
@@ -64,6 +81,7 @@ class ChatHistory {
               : message,
         );
       }
+      list.sort(chatOrder);
     }
     return _lists[conversationId] = list;
   }
@@ -78,12 +96,14 @@ class ChatHistory {
       dropped.addAll(kept.sublist(0, kept.length - limit));
       kept = kept.sublist(kept.length - limit);
     }
-    _lists[conversationId] = kept;
+    // Written first: if the store refuses, the list in memory stays as it was,
+    // so what the screen shows is what a restart would show.
     await store.write(
       keyOf(conversationId),
       jsonEncode([for (final m in kept) m.toJson()]),
     );
-    if (dropped.isNotEmpty) onDropped?.call(dropped);
+    _lists[conversationId] = kept;
+    if (dropped.isNotEmpty) onDropped?.call(conversationId, dropped, kept);
     onChange?.call(conversationId);
   }
 
@@ -107,7 +127,7 @@ class ChatHistory {
           }
         }
         list.add(added);
-        list.sort((a, b) => a.sentAt.compareTo(b.sentAt));
+        list.sort(chatOrder);
         await _save(conversationId, list);
         return true;
       });
@@ -248,6 +268,8 @@ class ChatHistory {
         final at = list.indexWhere((m) => m.messageId == message.messageId);
         if (at < 0) return;
         list[at] = message;
+        // The relay's time may have arrived with this version.
+        list.sort(chatOrder);
         await _save(conversationId, list);
       });
 

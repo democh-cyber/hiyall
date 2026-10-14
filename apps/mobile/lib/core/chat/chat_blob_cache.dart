@@ -1,9 +1,28 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'chat_attachment.dart';
+import 'package:crypto/crypto.dart';
 
-/// Verified ciphertext of chat photos, one file per blob id, kept in the app's
+/// The name a cached blob is stored under: a digest of the conversation, the
+/// blob id and the ciphertext hash the descriptor promises. A peer can write
+/// any blob id into a descriptor, but cannot make one collide with a photo of
+/// another conversation, nor with different bytes under the same id.
+String blobCacheKey(
+  String conversationId,
+  String blobId,
+  List<int> ctSha256,
+) => sha256
+    .convert(
+      utf8.encode(
+        'hiyall-blob-cache-v1\n$conversationId\n$blobId\n${base64Encode(ctSha256)}',
+      ),
+    )
+    .toString();
+
+final _keyShape = RegExp(r'^[0-9a-f]{64}$');
+
+/// Verified ciphertext of chat photos, one file per [blobCacheKey], kept in the app's
 /// private storage. Plaintext is never written: a file here is useless without
 /// the key that only the message holds. The least recently used files are
 /// evicted once the folder passes [maxBytes].
@@ -12,16 +31,15 @@ class ChatBlobCache {
   final int maxBytes;
   ChatBlobCache(this.root, {this.maxBytes = 200 * 1024 * 1024});
 
-  File _file(String blobId) {
-    // Ids come from validated descriptors; this is the second check before one
-    // becomes part of a path.
-    if (!isCanonicalUuid(blobId)) throw ArgumentError('not a blob id');
-    return File('${root.path}/$blobId');
+  File _file(String key) {
+    // Keys are digests; this is the check before one becomes part of a path.
+    if (!_keyShape.hasMatch(key)) throw ArgumentError('not a cache key');
+    return File('${root.path}/$key');
   }
 
   /// The cached ciphertext, or null. Reading marks the file as recently used.
-  Future<Uint8List?> read(String blobId) async {
-    final file = _file(blobId);
+  Future<Uint8List?> read(String key) async {
+    final file = _file(key);
     try {
       final bytes = await file.readAsBytes();
       await file.setLastModified(DateTime.now());
@@ -31,12 +49,12 @@ class ChatBlobCache {
     }
   }
 
-  Future<bool> has(String blobId) => _file(blobId).exists();
+  Future<bool> has(String key) => _file(key).exists();
 
   /// Stores ciphertext the caller has already verified.
-  Future<void> put(String blobId, Uint8List bytes) async {
+  Future<void> put(String key, Uint8List bytes) async {
     await root.create(recursive: true);
-    final file = _file(blobId);
+    final file = _file(key);
     final temp = File('${file.path}.part');
     await temp.writeAsBytes(bytes, flush: true);
     await temp.rename(file.path);
@@ -44,9 +62,9 @@ class ChatBlobCache {
   }
 
   /// Takes over a file already on disk (an upload's ciphertext) without copying.
-  Future<void> adopt(String blobId, File source) async {
+  Future<void> adopt(String key, File source) async {
     await root.create(recursive: true);
-    final file = _file(blobId);
+    final file = _file(key);
     try {
       await source.rename(file.path);
     } on FileSystemException {
@@ -56,17 +74,17 @@ class ChatBlobCache {
     await _evict();
   }
 
-  Future<void> delete(String blobId) async {
+  Future<void> delete(String key) async {
     try {
-      await _file(blobId).delete();
+      await _file(key).delete();
     } on FileSystemException {
       // Already gone.
     }
   }
 
-  Future<void> deleteAll(Iterable<String> blobIds) async {
-    for (final id in blobIds) {
-      await delete(id);
+  Future<void> deleteAll(Iterable<String> keys) async {
+    for (final key in keys) {
+      await delete(key);
     }
   }
 

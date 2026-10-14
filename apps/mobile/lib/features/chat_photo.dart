@@ -1022,12 +1022,17 @@ class FailedPhotoActions extends StatelessWidget {
   final ChatMessage message;
   final String error;
   final VoidCallback onRetry, onDelete;
+
+  /// "photo" for photos; "text" when the same card sits under a message that
+  /// was not sent (the keys differ so tests can tell them apart).
+  final String keyPrefix;
   const FailedPhotoActions({
     super.key,
     required this.message,
     required this.error,
     required this.onRetry,
     required this.onDelete,
+    this.keyPrefix = 'photo',
   });
   @override
   Widget build(BuildContext context) {
@@ -1103,7 +1108,7 @@ class FailedPhotoActions extends StatelessWidget {
                     Expanded(
                       child: Text(
                         error,
-                        key: Key('photo-error-${message.messageId}'),
+                        key: Key('$keyPrefix-error-${message.messageId}'),
                         style: TextStyle(
                           fontSize: 13,
                           height: 1.35,
@@ -1119,13 +1124,13 @@ class FailedPhotoActions extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     action(
-                      Key('photo-delete-${message.messageId}'),
+                      Key('$keyPrefix-delete-${message.messageId}'),
                       'Delete',
                       onDelete,
                     ),
                     const SizedBox(width: 8),
                     action(
-                      Key('photo-send-retry-${message.messageId}'),
+                      Key('$keyPrefix-send-retry-${message.messageId}'),
                       'Retry',
                       onRetry,
                       main: true,

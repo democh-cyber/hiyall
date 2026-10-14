@@ -3,15 +3,17 @@ import 'package:flutter/material.dart';
 import '../shared/chat_tokens.dart';
 
 /// What the conversation menu can do, in the order it lists them. Only
-/// actions that exist: mute or unmute, open the profile, report (whose sheet
-/// also offers blocking) and block.
-enum ChatMenuAction { mute, profile, report, block }
+/// actions that exist: mute or unmute, open the profile, the safety number
+/// (with whether it was verified), report (whose sheet also offers blocking)
+/// and block.
+enum ChatMenuAction { mute, profile, safety, report, block }
 
 /// Opens the conversation menu and returns the chosen action, or null.
 Future<ChatMenuAction?> showChatSafetyMenu(
   BuildContext context, {
   required bool muted,
   required String peerName,
+  bool verified = false,
 }) {
   final t = ChatTokens.of(context);
   return showModalBottomSheet<ChatMenuAction>(
@@ -24,7 +26,8 @@ Future<ChatMenuAction?> showChatSafetyMenu(
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
     ),
-    builder: (context) => ChatSafetyMenu(muted: muted, peerName: peerName),
+    builder: (context) =>
+        ChatSafetyMenu(muted: muted, peerName: peerName, verified: verified),
   );
 }
 
@@ -33,10 +36,14 @@ Future<ChatMenuAction?> showChatSafetyMenu(
 class ChatSafetyMenu extends StatelessWidget {
   final bool muted;
   final String peerName;
+
+  /// The person compared the safety number and nothing has changed since.
+  final bool verified;
   const ChatSafetyMenu({
     super.key,
     required this.muted,
     required this.peerName,
+    this.verified = false,
   });
 
   @override
@@ -63,6 +70,17 @@ class ChatSafetyMenu extends StatelessWidget {
               icon: Icons.person_outline_rounded,
               title: 'View $peerName’s profile',
               onTap: () => Navigator.pop(context, ChatMenuAction.profile),
+            ),
+            _Tile(
+              key: const Key('chat-safety'),
+              icon: verified
+                  ? Icons.verified_user_rounded
+                  : Icons.shield_outlined,
+              title: 'Safety number',
+              subtitle: verified
+                  ? 'Verified. It shows again if their keys change.'
+                  : 'Not verified. Compare it with $peerName in person.',
+              onTap: () => Navigator.pop(context, ChatMenuAction.safety),
             ),
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),

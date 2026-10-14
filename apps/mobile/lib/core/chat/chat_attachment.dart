@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'chat_text.dart';
+
 /// What the older apps show for a photo they cannot open; also the `text` of
 /// every photo message that carries no caption.
 const photoFallbackText = 'Sent a photo. Update Hiyall to view it.';
@@ -23,9 +25,15 @@ const maxPhotoInput = 64 << 20;
 const attachmentChunk = 65536;
 const attachmentMime = 'image/jpeg';
 
-/// Decoders refuse more than this many pixels or this many on one side.
-const maxSide = 12000;
-const maxPixels = 40 * 1000 * 1000;
+/// What a received descriptor may claim. The sender's own caps are the same:
+/// the full image is at most 2048 px on its long edge and 4 MP (2048 x 2048 is
+/// exactly 4 Mi pixels), the thumbnail at most 320 px. A descriptor that
+/// promises more is refused, so a hostile peer cannot make this phone decode
+/// something huge.
+const maxFullSide = 2048;
+const maxThumbSide = 320;
+const maxPixels = 4 << 20;
+const maxThumbPixels = maxThumbSide * maxThumbSide;
 
 enum SendStatus { sending, failed, sent }
 
@@ -247,10 +255,17 @@ class ChatAttachment {
       return _id(value, what);
     }
 
-    BlobPart part(Map m, Object? id, String what, int cap) {
-      final w = _int(m['w'], '$what width', 1, maxSide);
-      final h = _int(m['h'], '$what height', 1, maxSide);
-      if (w * h > maxPixels) throw FormatException('$what is too large');
+    BlobPart part(
+      Map m,
+      Object? id,
+      String what,
+      int cap,
+      int side,
+      int pixels,
+    ) {
+      final w = _int(m['w'], '$what width', 1, side);
+      final h = _int(m['h'], '$what height', 1, side);
+      if (w * h > pixels) throw FormatException('$what is too large');
       final plainLen = _int(m['plainLen'], '$what length', 1, cap);
       final ctSize = _int(m['ctSize'], '$what size', 1, cap);
       if (ctSize != ciphertextLength(plainLen, chunk)) {
@@ -271,12 +286,16 @@ class ChatAttachment {
       blobs is Map ? blobs['full'] : null,
       'image',
       maxFullCiphertext,
+      maxFullSide,
+      maxPixels,
     );
     final thumb = part(
       thumbRaw,
       thumbRaw['blob'],
       'thumbnail',
       maxThumbCiphertext,
+      maxThumbSide,
+      maxThumbPixels,
     );
     if (full.blobId != null && full.blobId == thumb.blobId) {
       throw const FormatException('blobs repeat');
@@ -286,7 +305,7 @@ class ChatAttachment {
       throw const FormatException('no preview');
     }
     final caption = raw['caption'] ?? '';
-    if (caption is! String || caption.runes.length > 1000) {
+    if (caption is! String || caption.runes.length > maxCaption) {
       throw const FormatException('bad caption');
     }
     return ChatAttachment(
@@ -297,7 +316,7 @@ class ChatAttachment {
       full: full,
       thumb: thumb,
       preview: _bytes64(preview['d'], 'preview', min: 5, max: 64),
-      caption: caption,
+      caption: displayText(caption),
     );
   }
 }

@@ -14,6 +14,7 @@ import '../core/avatar_upload.dart';
 import '../core/chat/chat_api.dart';
 import '../core/chat/chat_attachment.dart';
 import '../core/chat/chat_engine.dart';
+import '../core/chat/chat_local_data.dart';
 import '../core/chat/chat_reactions.dart';
 import '../core/chat/chat_store.dart';
 import '../core/chat_peers.dart';
@@ -32,9 +33,17 @@ import 'live_sync.dart';
 import 'safety.dart';
 
 /// Keys and ratchet state live in the platform keystore (Android Keystore /
-/// iOS Keychain backed), never in plain app storage.
+/// iOS Keychain backed), never in plain app storage. On iOS the items are
+/// readable after the first unlock and never leave this device (no backup, no
+/// move to a new phone). The Keychain does survive deleting the app, which is
+/// why the first launch after a reinstall erases what it finds (see
+/// [ChatLocalData.eraseAfterReinstall]).
 class SecureChatStore implements ChatStore {
-  static const _storage = FlutterSecureStorage();
+  static const _storage = FlutterSecureStorage(
+    iOptions: IOSOptions(
+      accessibility: KeychainAccessibility.first_unlock_this_device,
+    ),
+  );
   @override
   Future<String?> read(String key) => _storage.read(key: key);
   @override
@@ -42,6 +51,8 @@ class SecureChatStore implements ChatStore {
       _storage.write(key: key, value: value);
   @override
   Future<void> delete(String key) => _storage.delete(key: key);
+  @override
+  Future<List<String>> keys() async => (await _storage.readAll()).keys.toList();
 }
 
 /// Encrypted chat runs only where keys can be held by the platform keystore.
@@ -56,22 +67,53 @@ Future<void>? _rust;
 /// another account) removes the first account's cache and unsent uploads.
 String? _mediaOwner;
 
-final chatEngineProvider = FutureProvider<ChatEngine?>((ref) async {
+/// The chat API for the signed-in account without an engine: the device list
+/// and removing a device work even when the engine could not start (for
+/// example because the account already has ten devices).
+final chatApiProvider = Provider<ChatApi?>((ref) {
   final session = ref.watch(sessionProvider).asData?.value;
+  if (session == null || !chatSupported) return null;
+  final rest = ref.read(apiProvider);
+  return ChatApi(
+    apiBaseUrl,
+    session.token,
+    tokenOf: () => session.token,
+    tokenRefresher: () async => rest.tokenRefresher?.call(),
+    onUnauthorized: () => rest.onUnauthorized?.call(),
+  );
+});
+
+/// This phone's chat device id for the signed-in account, or null.
+final thisChatDeviceProvider = FutureProvider<String?>((ref) async {
+  final session = ref.watch(sessionProvider).asData?.value;
+  if (session == null || !chatSupported) return null;
+  return SecureChatStore().read(
+    '${ChatLocalData.prefix(session.userId)}deviceId',
+  );
+});
+
+final chatEngineProvider = FutureProvider<ChatEngine?>((ref) async {
+  final sessionState = ref.watch(sessionProvider);
+  final session = sessionState.asData?.value;
   if (!chatSupported) return null;
-  final previous = _mediaOwner;
-  if (session == null && previous == null) return null;
+  final store = SecureChatStore();
+  var previous = _mediaOwner;
+  // Signed out for certain (not still starting up): whatever this device
+  // holds, even from a run before this one, goes.
+  final signedOut = sessionState is AsyncData<Session?> && session == null;
+  if (session == null && previous == null) {
+    if (!signedOut) return null;
+    previous = await store.read(ChatLocalData.ownerKey);
+    if (previous == null) return null;
+  }
   final root = await getApplicationSupportDirectory();
   if (previous != null && previous != session?.userId) {
     _mediaOwner = null;
-    await ChatEngine.wipeLocalMedia(
-      root: root,
-      store: SecureChatStore(),
-      userId: previous,
-    );
+    await ChatLocalData.wipeAccount(root: root, store: store, userId: previous);
   }
   if (session == null) return null;
   _mediaOwner = session.userId;
+  await ChatLocalData.eraseAfterReinstall(root: root, store: store);
   await (_rust ??= RustLib.init());
   // The same refresh-then-expire handling as every other API call.
   final rest = ref.read(apiProvider);
@@ -84,11 +126,27 @@ final chatEngineProvider = FutureProvider<ChatEngine?>((ref) async {
       tokenRefresher: () async => rest.tokenRefresher?.call(),
       onUnauthorized: () => rest.onUnauthorized?.call(),
     ),
-    store: SecureChatStore(),
+    store: store,
     platform: defaultTargetPlatform == TargetPlatform.iOS ? 'ios' : 'android',
     mediaRoot: root,
   );
-  ref.onDispose(engine.dispose);
+  // Signing out removes this phone's chat device on the server while the
+  // credential still works; if that fails the id is remembered and removed on a
+  // later launch. The server also drops the device when the session ends.
+  final notifier = ref.read(sessionProvider.notifier);
+  Future<void> removeDevice() async {
+    try {
+      await engine.revokeThisDevice().timeout(const Duration(seconds: 4));
+    } catch (_) {
+      // Remembered by the wipe that follows.
+    }
+  }
+
+  notifier.signOutHooks.add(removeDevice);
+  ref.onDispose(() {
+    notifier.signOutHooks.remove(removeDevice);
+    engine.dispose();
+  });
   await engine.start();
   return engine;
 });
@@ -122,6 +180,9 @@ String chatError(Object error) =>
         'This conversation isn’t available.',
       ChatFailure(code: 'KEY_CHANGED') =>
         'Their security keys changed unexpectedly, so sending is paused.',
+      ChatFailure(code: 'AWAITING_REPLY') =>
+        'You can send more once they reply. Give them a little time.',
+      ChatFailure(code: 'TOO_MANY_DEVICES') => 'This account has too many chat devices. Remove one in Profile, Chat devices.',
       ChatFailure(code: 'RATE_LIMITED') =>
         'You’re sending a lot. Wait a moment.',
       ChatFailure(:final message) => message,
@@ -280,6 +341,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
             padding: EdgeInsets.fromLTRB(side, wide ? 0 : 6, side, 32),
             children: [
               ChatsHeading(subtitle: chatsSubtitle(all), showTitle: !wide),
+              if (engine != null) NewDeviceBanner(engine: engine!),
               if (hasChats) ...[
                 Padding(
                   padding: const EdgeInsets.symmetric(
@@ -395,6 +457,121 @@ class _ChatNotice extends StatelessWidget {
   );
 }
 
+/// Tells the person that a device was added to their account, with a way to
+/// look at the devices. Nothing else about chat is hidden because of it: it is
+/// a heads-up, since a device that is not yours can read new messages.
+class NewDeviceBanner extends StatefulWidget {
+  final ChatEngine engine;
+  const NewDeviceBanner({super.key, required this.engine});
+  @override
+  State<NewDeviceBanner> createState() => _NewDeviceBannerState();
+}
+
+class _NewDeviceBannerState extends State<NewDeviceBanner> {
+  StreamSubscription<void>? _sub;
+
+  @override
+  void initState() {
+    super.initState();
+    _sub = widget.engine.ownDeviceChanges.listen((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void didUpdateWidget(NewDeviceBanner old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.engine, widget.engine)) {
+      _sub?.cancel();
+      _sub = widget.engine.ownDeviceChanges.listen((_) {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.engine.ownDeviceNotices.isEmpty) return const SizedBox.shrink();
+    final t = ChatTokens.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        ChatMetrics.pagePadding,
+        4,
+        ChatMetrics.pagePadding,
+        8,
+      ),
+      child: Semantics(
+        container: true,
+        liveRegion: true,
+        child: Container(
+          key: const Key('new-device-banner'),
+          padding: const EdgeInsets.fromLTRB(14, 12, 8, 8),
+          decoration: BoxDecoration(
+            color: t.surface,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: t.error.withValues(alpha: .55)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.devices_other_rounded, size: 20, color: t.error),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'A new device was added to your account',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: t.text,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(30, 4, 8, 0),
+                child: Text(
+                  'It can read your new chats. If it wasn’t you, remove it and sign in again.',
+                  style: TextStyle(
+                    fontSize: 13,
+                    height: 1.35,
+                    color: t.textSecondary,
+                  ),
+                ),
+              ),
+              Wrap(
+                alignment: WrapAlignment.end,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  TextButton(
+                    key: const Key('new-device-dismiss'),
+                    onPressed: () => widget.engine.dismissOwnDeviceNotices(),
+                    child: const Text('Dismiss'),
+                  ),
+                  FilledButton(
+                    key: const Key('new-device-manage'),
+                    onPressed: () => context.go('/profile/devices'),
+                    child: const Text('Manage devices'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class ConversationScreen extends ConsumerStatefulWidget {
   final String id, peerId, peerName;
   const ConversationScreen({
@@ -414,7 +591,11 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   List<ChatMessage> messages = [];
   StreamSubscription<String>? changes;
   ChatEngine? engine;
-  bool sending = false, attaching = false;
+  bool attaching = false;
+
+  /// The relay refused a send with AWAITING_REPLY (the first-contact cap), which
+  /// this phone could not know from its own history (after a reinstall).
+  bool serverAwaiting = false;
   DateTime? peerReadAt;
   DateTime? mutedUntil;
 
@@ -564,7 +745,9 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         }
       }
       loaded = true;
-      messages = list;
+      messages = [for (final m in list) m.display];
+      // A reply from them lifts the first-contact cap.
+      if (messages.any((m) => !m.mine && !m.notice)) serverAwaiting = false;
       // Reading older messages: keep the place and count what came in.
       if (!stick && arrived > 0) newWhileAway += arrived;
       _resolveUnread();
@@ -645,6 +828,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
           peerId = peer['userId'] as String;
           peerName = display.isEmpty ? '@${peer['username']}' : display;
         });
+        engine?.showDeviceNotices(widget.id, peerId).catchError((_) {});
       }
       if (at != peerReadAt || muted != mutedUntil) {
         setState(() {
@@ -660,11 +844,25 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
 
   bool get muted => mutedUntil?.isAfter(DateTime.now()) ?? false;
 
+  /// How many messages a person may send before the other has written back.
+  /// The relay enforces it; this only keeps the composer honest.
+  static const firstContactMessages = 3;
+
+  /// Waiting for the peer: they have not written, and the cap is used up.
+  bool get awaitingReply {
+    if (messages.any((m) => !m.mine && !m.notice)) return false;
+    final mine = messages.where(
+      (m) => m.mine && !m.notice && m.status != SendStatus.failed,
+    );
+    return serverAwaiting || mine.length >= firstContactMessages;
+  }
+
   Future<void> options() async {
     final choice = await showChatSafetyMenu(
       context,
       muted: muted,
       peerName: peerName,
+      verified: engine?.isVerified(peerId) ?? false,
     );
     if (!mounted || choice == null || engine == null) return;
     switch (choice) {
@@ -691,6 +889,8 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         }
       case ChatMenuAction.profile:
         openPerson(context, peerId);
+      case ChatMenuAction.safety:
+        await showSafetyNumber();
       case ChatMenuAction.report:
         await reportPeer();
       case ChatMenuAction.block:
@@ -744,54 +944,101 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   Future<void> showSafetyNumber() async {
     final current = engine;
     if (current == null) return;
-    String? number;
+    SafetyInfo? info;
     Object? failure;
     try {
-      number = await current.safetyNumber(peerId);
+      info = await current.safetyInfo(peerId);
     } catch (e) {
       failure = e;
     }
     if (!mounted) return;
+    var verified = info?.verified ?? false;
     await showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Verify safety number'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (number != null) ...[
-              Text(
-                'Messages and photos in this chat are end-to-end encrypted: only you and $peerName can read them.',
+      builder: (context) => StatefulBuilder(
+        builder: (context, setInner) => AlertDialog(
+          title: const Text('Verify safety number'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (info != null) ...[
+                  // A change comes first, before the number it changed.
+                  if (info.changedSinceVerified)
+                    Padding(
+                      key: const Key('safety-changed'),
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Text(
+                        '$peerName’s safety number changed since you verified it. That happens when they add, remove or reset a device. Compare it again before you trust it.',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ),
+                  if (info.newDevices > 0)
+                    Padding(
+                      key: const Key('safety-new-device'),
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Text(
+                        '$peerName has a device that was added since your last message. Their number below already includes it, and it can read new messages you send them.',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ),
+                  Text(
+                    'Messages and photos in this chat are end-to-end encrypted: only you and $peerName can read them.',
+                  ),
+                  const SizedBox(height: 12),
+                  SelectableText(
+                    [
+                      for (var i = 0; i < info.number.length; i += 5)
+                        info.number.substring(i, i + 5),
+                    ].join('  '),
+                    key: const Key('safety-number'),
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 18,
+                      height: 1.8,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Compare these numbers with $peerName in person or on a call. If they match, nobody is intercepting your chat. They change when either of you adds or removes a device.',
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    verified
+                        ? 'Verified. This mark goes away if either of you changes devices.'
+                        : 'Not verified yet.',
+                    key: const Key('safety-verified'),
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ] else
+                  Text(chatError(failure!)),
+              ],
+            ),
+          ),
+          actions: [
+            if (info != null && !verified)
+              TextButton(
+                key: const Key('safety-mark'),
+                onPressed: () async {
+                  await current.markVerified(peerId, info!);
+                  setInner(() => verified = true);
+                },
+                child: const Text('They match'),
               ),
-              const SizedBox(height: 12),
-              SelectableText(
-                [
-                  for (var i = 0; i < number.length; i += 5)
-                    number.substring(i, i + 5),
-                ].join('  '),
-                key: const Key('safety-number'),
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 18,
-                  height: 1.8,
-                  letterSpacing: 1,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                'Compare these numbers with $peerName in person or on a call. If they match, nobody is intercepting your chat. They change when either of you adds or removes a device.',
-              ),
-            ] else
-              Text(chatError(failure!)),
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Done'),
+            ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Done'),
-          ),
-        ],
       ),
     );
   }
@@ -806,22 +1053,62 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     // chat marks everything read.
     loadReceipt();
     reload();
+    // A device added to the peer's account is announced in every chat with
+    // them, not only the one that happened to see it first.
+    if (peerId.isNotEmpty) {
+      next.showDeviceNotices(widget.id, peerId).catchError((_) {});
+    }
     next.pollNow().catchError((_) {});
   }
 
+  /// The message is written to the thread as "sending" at once and goes out in
+  /// the background. Offline or throttled, it stays as "Not sent" with a retry;
+  /// a refusal puts the text back in the composer and says why.
   Future<void> send() async {
     final text = input.text.trim();
-    if (text.isEmpty || sending || engine == null || peerId.isEmpty) return;
+    if (text.isEmpty || engine == null || peerId.isEmpty || awaitingReply) {
+      return;
+    }
     unawaited(sendHaptic());
-    setState(() => sending = true);
+    final reply = replyingTo;
+    input.clear();
+    setState(() => replyingTo = null);
     try {
-      await engine!.send(widget.id, peerId, text, replyTo: replyingTo);
-      input.clear();
-      if (mounted) setState(() => replyingTo = null);
+      await engine!.send(widget.id, peerId, text, replyTo: reply);
+    } catch (e) {
+      if (!mounted) return;
+      if (e is ChatFailure && e.code == 'AWAITING_REPLY') {
+        setState(() => serverAwaiting = true);
+      }
+      if (!isTransientChatFailure(e)) {
+        if (input.text.isEmpty) {
+          input.value = TextEditingValue(
+            text: text,
+            selection: TextSelection.collapsed(offset: text.length),
+          );
+        }
+        showMessage(context, chatError(e));
+      }
+    }
+  }
+
+  Future<void> retryText(ChatMessage message) async {
+    try {
+      await engine?.retryText(widget.id, peerId, message.messageId);
+    } catch (e) {
+      if (!mounted) return;
+      if (e is ChatFailure && e.code == 'AWAITING_REPLY') {
+        setState(() => serverAwaiting = true);
+      }
+      if (!isTransientChatFailure(e)) showMessage(context, chatError(e));
+    }
+  }
+
+  Future<void> deleteText(ChatMessage message) async {
+    try {
+      await engine?.discardText(widget.id, message.messageId);
     } catch (e) {
       if (mounted) showMessage(context, chatError(e));
-    } finally {
-      if (mounted) setState(() => sending = false);
     }
   }
 
@@ -1126,6 +1413,19 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
                       photoFailureText(m.failure) ?? 'This photo wasn’t sent.',
                   onRetry: () => retryPhoto(m),
                   onDelete: () => deletePhoto(m),
+                )
+              else if (m.mine &&
+                  !m.isPhoto &&
+                  !m.notice &&
+                  m.status == SendStatus.failed)
+                FailedPhotoActions(
+                  keyPrefix: 'text',
+                  message: m,
+                  error:
+                      photoFailureText(m.failure) ??
+                      'This message wasn’t sent.',
+                  onRetry: () => retryText(m),
+                  onDelete: () => deleteText(m),
                 ),
             ],
           ),
@@ -1245,8 +1545,9 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
           ChatComposer(
             controller: input,
             focus: focus,
-            sending: sending,
-            canSend: !sending && engine != null,
+            sending: false,
+            canSend: engine != null,
+            waitingFor: awaitingReply ? peerName : null,
             canAttach: engine != null && peerId.isNotEmpty && !attaching,
             showAttach: chatSupported,
             onChanged: typed,
@@ -1273,9 +1574,9 @@ class _ChatDevicesState extends ConsumerState<ChatDevicesScreen> {
   Object? error;
   String? busy;
 
-  Future<void> load(ChatEngine engine) async {
+  Future<void> load(ChatApi api) async {
     try {
-      final next = await engine.myDevices();
+      final next = (await api.myDevices()).reversed.toList();
       if (mounted) {
         setState(() {
           devices = next;
@@ -1287,7 +1588,7 @@ class _ChatDevicesState extends ConsumerState<ChatDevicesScreen> {
     }
   }
 
-  Future<void> remove(ChatEngine engine, Map<String, dynamic> d) async {
+  Future<void> remove(ChatApi api, Map<String, dynamic> d) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -1310,8 +1611,8 @@ class _ChatDevicesState extends ConsumerState<ChatDevicesScreen> {
     if (ok != true) return;
     setState(() => busy = d['deviceId'] as String);
     try {
-      await engine.revokeDevice(d['deviceId'] as String);
-      await load(engine);
+      await api.revokeDevice(d['deviceId'] as String);
+      await load(api);
       if (mounted) showMessage(context, 'Device removed.');
     } catch (e) {
       if (mounted) showMessage(context, chatError(e));
@@ -1330,9 +1631,12 @@ class _ChatDevicesState extends ConsumerState<ChatDevicesScreen> {
         body: 'Open Hiyall on Android or iOS to manage the devices that can read your chats.',
       );
     }
-    final engine = ref.watch(chatEngineProvider).asData?.value;
-    if (engine != null && devices == null && error == null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => load(engine));
+    // The list and removal need only the account's credential, not a started
+    // engine: they must work when chat could not set itself up.
+    final api = ref.watch(chatApiProvider);
+    final thisDevice = ref.watch(thisChatDeviceProvider).asData?.value;
+    if (api != null && devices == null && error == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => load(api));
     }
     String label(String platform) => switch (platform) {
       'android' => 'Android phone',
@@ -1392,17 +1696,17 @@ class _ChatDevicesState extends ConsumerState<ChatDevicesScreen> {
                     : Icons.computer_rounded,
               ),
               title: Text(
-                d['deviceId'] == engine?.deviceId
+                d['deviceId'] == thisDevice
                     ? '${label(d['platform'] as String)} · This phone'
                     : label(d['platform'] as String),
               ),
               subtitle: Text(
                 'Added ${date(d['createdAt'] as String?)} · active ${date(d['lastSeenAt'] as String?)}',
               ),
-              trailing: d['deviceId'] == engine?.deviceId || engine == null
+              trailing: d['deviceId'] == thisDevice || api == null
                   ? null
                   : TextButton(
-                      onPressed: busy == null ? () => remove(engine, d) : null,
+                      onPressed: busy == null ? () => remove(api, d) : null,
                       child: Text(
                         busy == d['deviceId'] ? 'Removing…' : 'Remove',
                       ),
