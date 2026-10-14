@@ -190,8 +190,8 @@ class _Sticker extends StatelessWidget {
     decoration: BoxDecoration(
       borderRadius: BorderRadius.circular(VibeRadius.surface),
       gradient: LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
+        begin: AlignmentDirectional.topStart,
+        end: AlignmentDirectional.bottomEnd,
         colors: [Color.lerp(color, Colors.white, .28)!, color],
       ),
     ),
@@ -222,6 +222,10 @@ class HomeForYou extends ConsumerWidget {
     // A request already has its own card; only count what is left over.
     final unreadRequests = requests.where((r) => r['readAt'] == null).length;
     final otherActivity = math.max(0, (activity?.unread ?? 0) - unreadRequests);
+    // Past 99 unread the exact rest is unknown: say "99+".
+    final otherActivityLabel = activity?.unreadMore ?? false
+        ? '99+'
+        : '$otherActivity';
     const shown = 5;
     final cards = <Widget Function()>[
       for (final r in requests.take(shown)) () => _RequestCard(item: r),
@@ -245,12 +249,12 @@ class HomeForYou extends ConsumerWidget {
           cta: 'Open chats',
           onTap: () => context.go('/chats'),
         ),
-      if (otherActivity > 0)
+      if (otherActivity > 0 || (activity?.unreadMore ?? false))
         () => _CountCard(
           key: const Key('home-card-activity'),
           color: VibeColors.peach,
           emoji: '⚡',
-          title: '$otherActivity new activity',
+          title: '$otherActivityLabel new activity',
           cta: 'See what’s up',
           onTap: () => context.go('/notifications'),
         ),
@@ -500,7 +504,7 @@ class HomeProfileNudge extends ConsumerWidget {
                       'Still missing: ${missing.take(3).join(', ')}.',
                   onTap: () => context.go('/profile/edit'),
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(14, 6, 4, 6),
+                    padding: const EdgeInsetsDirectional.fromSTEB(14, 6, 4, 6),
                     child: Row(
                       children: [
                         SizedBox(
@@ -664,23 +668,23 @@ class _PersonCard extends StatelessWidget {
                 child: Stack(
                   clipBehavior: Clip.none,
                   children: [
-                    Positioned(
-                      left: 0,
-                      right: 0,
+                    PositionedDirectional(
+                      start: 0,
+                      end: 0,
                       top: 0,
                       height: 64,
                       child: DecoratedBox(
                         decoration: BoxDecoration(
                           gradient: LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
+                            begin: AlignmentDirectional.topStart,
+                            end: AlignmentDirectional.bottomEnd,
                             colors: band.colors,
                           ),
                         ),
                       ),
                     ),
-                    Positioned(
-                      left: 14,
+                    PositionedDirectional(
+                      start: 14,
                       top: 32,
                       child: Container(
                         decoration: BoxDecoration(

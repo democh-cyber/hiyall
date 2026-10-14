@@ -462,6 +462,40 @@ void main() {
     });
   });
 
+  testWidgets(
+    'Your own story says Seen by 99+ once the server stops counting',
+    (tester) async {
+      final now = DateTime.now();
+      final api = PulseApi()
+        ..stories = [
+          StoryGroup(
+            me,
+            [
+              Story(
+                storyId: 'm1',
+                body: 'mine',
+                background: 'pink',
+                audience: 'followers',
+                createdAt: now,
+                expiresAt: now.add(const Duration(hours: 20)),
+                seen: true,
+                viewCount: 99,
+                viewCountMore: true,
+              ),
+            ],
+            mine: true,
+            allSeen: true,
+          ),
+        ];
+      await start(tester, api, '/home');
+      await tester.tap(find.byKey(const Key('story-mine')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('Seen by 99+'), findsOneWidget);
+      expect(find.text('Seen by 99'), findsNothing);
+    },
+  );
+
   testWidgets('Stories: tray, viewer marks seen, and a text story shares', (
     tester,
   ) async {

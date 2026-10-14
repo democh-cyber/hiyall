@@ -1,0 +1,108 @@
+{
+  "@@locale": "en",
+  "helpBack": "Back",
+  "@helpBack": {
+    "description": "Button at the top of Help & Safety that returns to Settings."
+  },
+  "helpTitle": "Help & Safety",
+  "@helpTitle": {
+    "description": "Title of the Help & Safety screen."
+  },
+  "helpIntro": "A real person reads what you send. Tap an address to write to us, or copy it.",
+  "helpSectionContact": "Contact us",
+  "@helpSectionContact": {
+    "description": "Section heading, shown in capitals."
+  },
+  "helpContactHelp": "Help and feedback",
+  "helpContactSafety": "Safety concerns",
+  "helpContactPrivacy": "Privacy and your data",
+  "helpMailSubjectHelp": "Help",
+  "@helpMailSubjectHelp": {
+    "description": "Subject of the mail draft for the help address; the app adds the version after it."
+  },
+  "helpMailSubjectSafety": "Safety",
+  "helpMailSubjectPrivacy": "Privacy",
+  "helpCopyTooltip": "Copy {address}",
+  "@helpCopyTooltip": {
+    "description": "Tooltip of the copy button beside an email address.",
+    "placeholders": {
+      "address": {
+        "type": "String",
+        "example": "help@example.com"
+      }
+    }
+  },
+  "helpCopied": "Copied {address}",
+  "@helpCopied": {
+    "description": "Message after an address was copied.",
+    "placeholders": {
+      "address": {
+        "type": "String",
+        "example": "help@example.com"
+      }
+    }
+  },
+  "helpNoMailApp": "No mail app here. Copied {address} instead.",
+  "@helpNoMailApp": {
+    "description": "Message when no mail app opened; the address went to the clipboard.",
+    "placeholders": {
+      "address": {
+        "type": "String",
+        "example": "help@example.com"
+      }
+    }
+  },
+  "helpSectionStayingSafe": "Staying safe",
+  "@helpSectionStayingSafe": {
+    "description": "Section heading, shown in capitals."
+  },
+  "helpTipKeepInHiyallTitle": "Keep it in Hiyall at first",
+  "helpTipKeepInHiyallBody": "Don’t share your phone number, address, school or where you hang out with someone you just met.",
+  "helpTipPeopleTitle": "People can pretend",
+  "helpTipPeopleBody": "Someone may not be who they say. If it feels off, trust that feeling.",
+  "helpTipPhotoTitle": "Think before you send a photo",
+  "helpTipPhotoBody": "A photo can be saved or shared by the person who gets it, even in an encrypted chat.",
+  "helpTipMeetingTitle": "Meeting in person",
+  "helpTipMeetingBody": "If you ever do, tell a parent or a friend, pick a busy public place and bring someone along. Under 18, check with a parent or guardian first.",
+  "helpTipStopTitle": "You can always stop",
+  "helpTipStopBody": "Leave a chat, block or report. You never owe anyone a reply.",
+  "helpSectionBlockReport": "Block or report someone",
+  "@helpSectionBlockReport": {
+    "description": "Section heading, shown in capitals."
+  },
+  "helpBlockTitle": "Block",
+  "helpBlockBody": "Open their profile or chat, tap the three dots, then Block. They can’t message you or see you.",
+  "helpReportTitle": "Report",
+  "helpReportBody": "From the same menu, tap Report and pick a reason. They never see who reported them.",
+  "helpYourReportsTitle": "Your reports",
+  "helpYourReportsBody": "See what happened to reports you sent",
+  "helpSectionUrgent": "If you need urgent help",
+  "@helpSectionUrgent": {
+    "description": "Section heading, shown in capitals."
+  },
+  "helpUrgentIntro": "If you or someone else is in danger, contact local emergency services first. Hiyall can’t send help.",
+  "helpCrisisEmergencyPlace": "Emergency services",
+  "@helpCrisisEmergencyPlace": {
+    "description": "Where a helpline works: a country, or a general heading."
+  },
+  "helpCrisisEmergencyLine": "Call your local emergency number (911, 999, 112, 000).",
+  "@helpCrisisEmergencyLine": {
+    "description": "Confirm every number for the countries you launch in before release (docs/mobile/store-listing.md)."
+  },
+  "helpCrisisUSPlace": "United States",
+  "helpCrisisUSLine": "988 Suicide & Crisis Lifeline: call or text 988.",
+  "helpCrisisUKPlace": "United Kingdom",
+  "helpCrisisUKLine": "Samaritans: 116 123. Childline (under 19): 0800 1111.",
+  "helpCrisisCAPlace": "Canada",
+  "helpCrisisCALine": "Talk Suicide Canada: 1-833-456-4566. Kids Help Phone: text 686868.",
+  "helpCrisisAUPlace": "Australia",
+  "helpCrisisAULine": "Lifeline: 13 11 14. Kids Helpline: 1800 55 1800.",
+  "helpCrisisINPlace": "India",
+  "helpCrisisINLine": "Tele-MANAS: 14416.",
+  "helpCrisisElsePlace": "Anywhere else",
+  "helpCrisisElseLine": "Find a helpline for your country at findahelpline.com.",
+  "helpSectionRules": "Our rules",
+  "@helpSectionRules": {
+    "description": "Section heading, shown in capitals."
+  }
+}

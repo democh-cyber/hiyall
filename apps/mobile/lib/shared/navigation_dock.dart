@@ -272,8 +272,8 @@ class _DockDestinationState extends State<DockDestination>
                           ),
                         ),
                         if (widget.unreadCount > 0)
-                          Positioned(
-                            right: 1,
+                          PositionedDirectional(
+                            end: 1,
                             top: -3,
                             child: Container(
                               key: const ValueKey('chat-unread-badge'),
@@ -309,8 +309,8 @@ class _DockDestinationState extends State<DockDestination>
                             ),
                           ),
                         if (widget.activityDot)
-                          Positioned(
-                            right: 10,
+                          PositionedDirectional(
+                            end: 10,
                             top: 2,
                             child: Container(
                               key: const ValueKey('activity-unread-dot'),
@@ -333,7 +333,11 @@ class _DockDestinationState extends State<DockDestination>
                   ),
                   if (widget.showLabel)
                     Padding(
-                      padding: const EdgeInsets.only(top: 2, left: 2, right: 2),
+                      padding: const EdgeInsetsDirectional.only(
+                        top: 2,
+                        start: 2,
+                        end: 2,
+                      ),
                       child: Text(
                         widget.label,
                         textAlign: TextAlign.center,
@@ -395,7 +399,12 @@ class _DockDestinationState extends State<DockDestination>
             child: widget.profilePhoto == null
                 ? fallback
                 : Image(
-                    image: widget.profilePhoto!,
+                    // Decoded at its 26 dp size, not at the photo's own.
+                    image: ResizeImage.resizeIfNeeded(
+                      (26 * MediaQuery.devicePixelRatioOf(context)).round(),
+                      (26 * MediaQuery.devicePixelRatioOf(context)).round(),
+                      widget.profilePhoto!,
+                    ),
                     fit: BoxFit.cover,
                     width: 26,
                     height: 26,

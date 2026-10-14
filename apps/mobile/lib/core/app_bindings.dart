@@ -1,0 +1,21 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'chat/chat_engine.dart' show ChatEngine;
+
+/// Seams that let `core` use things the app shell owns without importing the
+/// shell or the feature screens. `lib/bindings.dart` fills them in for the app;
+/// until then they do nothing, which is what a test that never opens a
+/// screen or a chat wants.
+
+/// The signed-in member's chat engine, or null where there is none.
+///
+/// Bound to the chat feature's own provider in `lib/bindings.dart`. When the
+/// feature's provider moves into core, this one goes away.
+final chatEngineSourceProvider = FutureProvider<ChatEngine?>(
+  (ref) async => null,
+);
+
+/// Opens an in-app location (`/chats`, `/profile`, ...), like a tapped link.
+final routeOpenerProvider = Provider<void Function(String location)>(
+  (ref) => (location) {},
+);

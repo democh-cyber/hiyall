@@ -9,22 +9,33 @@ class ActivityState {
   final List<Map<String, dynamic>> items;
   final String? nextCursor;
   final int unread;
+
+  /// More than 99 are unread: the badge says "99+" and local mark-reads leave
+  /// the count alone until the server's next answer.
+  final bool unreadMore;
   final bool loadingMore;
   const ActivityState(
     this.items, {
     this.nextCursor,
     this.unread = 0,
+    this.unreadMore = false,
     this.loadingMore = false,
   });
+
+  /// The unread count as a badge shows it: "99+" past 99.
+  String get unreadLabel => badgeLabel(unread, more: unreadMore);
+
   ActivityState copyWith({
     List<Map<String, dynamic>>? items,
     String? Function()? nextCursor,
     int? unread,
+    bool? unreadMore,
     bool? loadingMore,
   }) => ActivityState(
     items ?? this.items,
     nextCursor: nextCursor == null ? this.nextCursor : nextCursor(),
     unread: unread ?? this.unread,
+    unreadMore: unreadMore ?? this.unreadMore,
     loadingMore: loadingMore ?? this.loadingMore,
   );
 }
@@ -45,6 +56,12 @@ class ActivityController extends AsyncNotifier<ActivityState> {
   /// fetched for the old list is dropped instead of overwriting the new one.
   int _epoch = 0;
 
+  /// The count after one item is read here. Past 99 the real count is unknown,
+  /// so it stays until the server answers again.
+  int _less(ActivityState s) =>
+      s.unreadMore ? s.unread : (s.unread - 1).clamp(0, 1 << 30);
+  int _more(ActivityState s) => s.unreadMore ? s.unread : s.unread + 1;
+
   /// Applies [change] to the newest state, never to a snapshot taken before
   /// an await, so concurrent refreshes and mutations are kept.
   void _update(ActivityState Function(ActivityState) change) {
@@ -61,7 +78,8 @@ class ActivityController extends AsyncNotifier<ActivityState> {
     return ActivityState(
       page.items,
       nextCursor: page.nextCursor,
-      unread: unread,
+      unread: unread.count,
+      unreadMore: unread.more,
     );
   }
 
@@ -69,7 +87,12 @@ class ActivityController extends AsyncNotifier<ActivityState> {
     final (page, unread) = await _api.notifications(_session);
     _epoch++;
     state = AsyncData(
-      ActivityState(page.items, nextCursor: page.nextCursor, unread: unread),
+      ActivityState(
+        page.items,
+        nextCursor: page.nextCursor,
+        unread: unread.count,
+        unreadMore: unread.more,
+      ),
     );
   }
 
@@ -96,7 +119,12 @@ class ActivityController extends AsyncNotifier<ActivityState> {
           ],
           nextCursor: () => page.nextCursor,
           // A local mark-read in the meantime is newer than this count.
-          unread: latest.unread == current.unread ? unread : latest.unread,
+          unread: latest.unread == current.unread
+              ? unread.count
+              : latest.unread,
+          unreadMore: latest.unread == current.unread
+              ? unread.more
+              : latest.unreadMore,
           loadingMore: false,
         );
       });
@@ -111,7 +139,7 @@ class ActivityController extends AsyncNotifier<ActivityState> {
     final current = state.asData?.value;
     if (current == null) return;
     final unread = await _api.unreadNotifications(_session);
-    if (unread != current.unread) {
+    if (unread.count != current.unread || unread.more != current.unreadMore) {
       // A new count means new or changed items; reload the first page.
       await refresh();
     }
@@ -127,12 +155,7 @@ class ActivityController extends AsyncNotifier<ActivityState> {
       ...items[index],
       'readAt': DateTime.now().toUtc().toIso8601String(),
     };
-    state = AsyncData(
-      current.copyWith(
-        items: items,
-        unread: (current.unread - 1).clamp(0, 1 << 30),
-      ),
-    );
+    state = AsyncData(current.copyWith(items: items, unread: _less(current)));
     try {
       await _api.markNotificationRead(_session, id);
     } catch (_) {
@@ -141,7 +164,7 @@ class ActivityController extends AsyncNotifier<ActivityState> {
         if (at < 0 || latest.items[at]['readAt'] == null) return latest;
         final items = [...latest.items];
         items[at] = {...items[at], 'readAt': null};
-        return latest.copyWith(items: items, unread: latest.unread + 1);
+        return latest.copyWith(items: items, unread: _more(latest));
       });
       rethrow;
     }
@@ -161,6 +184,7 @@ class ActivityController extends AsyncNotifier<ActivityState> {
           for (final i in current.items) {...i, 'readAt': i['readAt'] ?? now},
         ],
         unread: 0,
+        unreadMore: false,
       ),
     );
     try {
@@ -174,7 +198,10 @@ class ActivityController extends AsyncNotifier<ActivityState> {
                   ? {...i, 'readAt': null}
                   : i,
           ],
-          unread: latest.unread + current.unread,
+          unread: latest.unreadMore || current.unreadMore
+              ? 99
+              : latest.unread + current.unread,
+          unreadMore: latest.unreadMore || current.unreadMore,
         ),
       );
       rethrow;
@@ -195,9 +222,7 @@ class ActivityController extends AsyncNotifier<ActivityState> {
           for (final i in current.items)
             if (i['notificationId'] != id) i,
         ],
-        unread: item['readAt'] == null
-            ? (current.unread - 1).clamp(0, 1 << 30)
-            : current.unread,
+        unread: item['readAt'] == null ? _less(current) : current.unread,
       ),
     );
     try {
@@ -221,7 +246,7 @@ class ActivityController extends AsyncNotifier<ActivityState> {
         items.insert(index < 0 ? 0 : index.clamp(0, items.length), item);
         return latest.copyWith(
           items: items,
-          unread: item['readAt'] == null ? latest.unread + 1 : latest.unread,
+          unread: item['readAt'] == null ? _more(latest) : latest.unread,
         );
       });
       rethrow;

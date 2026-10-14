@@ -65,18 +65,20 @@ class FakeApi extends ApiClient {
   ], null);
 
   List<Map<String, dynamic>> activity = [];
+
+  /// The server's "more than 99 unread" flag.
+  bool unreadMore = false;
   final calls = <String>[];
   @override
-  Future<(ApiPage<Map<String, dynamic>>, int)> notifications(
+  Future<(ApiPage<Map<String, dynamic>>, UnreadBadge)> notifications(
     Session s, [
     String? cursor,
-  ]) async => (
-    ApiPage(activity, null),
-    activity.where((i) => i['readAt'] == null).length,
-  );
+  ]) async => (ApiPage(activity, null), await unreadNotifications(s));
   @override
-  Future<int> unreadNotifications(Session s) async =>
-      activity.where((i) => i['readAt'] == null).length;
+  Future<UnreadBadge> unreadNotifications(Session s) async => UnreadBadge(
+    activity.where((i) => i['readAt'] == null).length,
+    more: unreadMore,
+  );
   @override
   Future<void> markNotificationRead(Session s, String id) async =>
       calls.add('read $id');

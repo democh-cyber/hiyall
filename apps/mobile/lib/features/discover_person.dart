@@ -356,12 +356,12 @@ class DiscoverPersonTile extends StatelessWidget {
             ),
           ),
           if (online)
-            Positioned(
+            PositionedDirectional(
               // Bottom right, where presence lives elsewhere in the app; the
               // top left only when a country badge takes that corner.
-              right: DiscoverStyle.showCountryBadge ? null : -3,
+              end: DiscoverStyle.showCountryBadge ? null : -3,
               bottom: DiscoverStyle.showCountryBadge ? null : -3,
-              left: DiscoverStyle.showCountryBadge ? -3 : null,
+              start: DiscoverStyle.showCountryBadge ? -3 : null,
               top: DiscoverStyle.showCountryBadge ? -3 : null,
               child: PresenceDot(
                 key: Key('online-dot-${person.userId}'),
@@ -371,8 +371,8 @@ class DiscoverPersonTile extends StatelessWidget {
               ),
             ),
           if (DiscoverStyle.showCountryBadge && person.country != null)
-            Positioned(
-              right: -3,
+            PositionedDirectional(
+              end: -3,
               bottom: -2,
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
@@ -418,7 +418,12 @@ class DiscoverPersonTile extends StatelessWidget {
                   pressedScale: .98,
                   minHeight: 68,
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(_pad, 8, 4, 8),
+                    padding: const EdgeInsetsDirectional.fromSTEB(
+                      _pad,
+                      8,
+                      4,
+                      8,
+                    ),
                     child: Row(
                       children: [
                         avatar,
@@ -436,17 +441,17 @@ class DiscoverPersonTile extends StatelessWidget {
         ),
         if (note != null)
           Padding(
-            padding: const EdgeInsets.only(
-              left: _inset + _pad + _avatar * 2 + _gap,
-              right: discoverPad,
+            padding: const EdgeInsetsDirectional.only(
+              start: _inset + _pad + _avatar * 2 + _gap,
+              end: discoverPad,
             ),
             child: note,
           ),
         if (showDivider)
           Padding(
-            padding: const EdgeInsets.only(
-              left: _inset + _pad + _avatar * 2 + _gap,
-              right: discoverPad,
+            padding: const EdgeInsetsDirectional.only(
+              start: _inset + _pad + _avatar * 2 + _gap,
+              end: discoverPad,
             ),
             child: Divider(
               height: 1,

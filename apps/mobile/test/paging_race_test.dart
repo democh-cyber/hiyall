@@ -17,7 +17,7 @@ class RaceApi extends FakeApi {
   ];
   List<Post> firstPosts = [post('p1')];
   @override
-  Future<(ApiPage<Map<String, dynamic>>, int)> notifications(
+  Future<(ApiPage<Map<String, dynamic>>, UnreadBadge)> notifications(
     Session s, [
     String? cursor,
   ]) async {
@@ -27,10 +27,10 @@ class RaceApi extends FakeApi {
         ApiPage<Map<String, dynamic>>([
           {'notificationId': 'old-2', 'readAt': null},
         ], null),
-        2,
+        const UnreadBadge(2),
       );
     }
-    return (ApiPage(firstPage, 'c1'), firstPage.length);
+    return (ApiPage(firstPage, 'c1'), UnreadBadge(firstPage.length));
   }
 
   @override

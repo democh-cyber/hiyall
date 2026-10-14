@@ -14,6 +14,7 @@ import 'core/location_sync.dart';
 import 'core/state.dart';
 import 'features/chat.dart';
 import 'features/help_safety.dart';
+import 'l10n/l10n.dart';
 import 'features/home.dart';
 import 'features/legal_screens.dart';
 import 'features/live_sync.dart';
@@ -394,17 +395,32 @@ class ThemeController extends Notifier<ThemeMode> {
   void useSystem() => set(ThemeMode.system);
 }
 
+/// Forces a reading direction on every screen. Only tests set it: the app has
+/// no right-to-left language yet, so this is how RTL layouts are checked.
+@visibleForTesting
+final textDirectionOverrideProvider = Provider<TextDirection?>((ref) => null);
+
 class HiyallApp extends ConsumerWidget {
   const HiyallApp({super.key});
   @override
-  Widget build(BuildContext context, WidgetRef ref) => MaterialApp.router(
-    title: 'Hiyall',
-    debugShowCheckedModeBanner: false,
-    theme: hiyallTheme(Brightness.light),
-    darkTheme: hiyallTheme(Brightness.dark),
-    themeMode: ref.watch(themeProvider),
-    routerConfig: ref.watch(routerProvider),
-  );
+  Widget build(BuildContext context, WidgetRef ref) {
+    final direction = ref.watch(textDirectionOverrideProvider);
+    return MaterialApp.router(
+      title: 'Hiyall',
+      debugShowCheckedModeBanner: false,
+      theme: hiyallTheme(Brightness.light),
+      darkTheme: hiyallTheme(Brightness.dark),
+      themeMode: ref.watch(themeProvider),
+      // English only for now; see docs/mobile/17-localization.md.
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      builder: direction == null
+          ? null
+          : (context, child) =>
+                Directionality(textDirection: direction, child: child!),
+      routerConfig: ref.watch(routerProvider),
+    );
+  }
 }
 
 class AppShell extends ConsumerWidget {
@@ -449,8 +465,9 @@ class AppShell extends ConsumerWidget {
     final profile = ref.watch(profileProvider).asData?.value;
     final unreadChats = ref.watch(chatUnreadProvider);
     final unreadActivity = ref.watch(
-      activityProvider.select((s) => s.asData?.value.unread ?? 0),
+      activityProvider.select((s) => s.asData?.value.unreadLabel ?? '0'),
     );
+    final hasUnreadActivity = unreadActivity != '0';
     Widget logo() => Row(
       children: [
         const BrandMark(size: 36),
@@ -527,7 +544,9 @@ class AppShell extends ConsumerWidget {
       padding: const EdgeInsets.fromLTRB(22, 28, 22, 22),
       decoration: BoxDecoration(
         color: scheme.surface,
-        border: Border(right: BorderSide(color: scheme.outlineVariant)),
+        border: BorderDirectional(
+          end: BorderSide(color: scheme.outlineVariant),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -567,13 +586,13 @@ class AppShell extends ConsumerWidget {
               ),
             ),
           IconButton(
-            tooltip: unreadActivity > 0
+            tooltip: hasUnreadActivity
                 ? 'Open notifications, $unreadActivity unread'
                 : 'Open notifications',
             onPressed: () => context.go('/notifications'),
             icon: Badge(
-              isLabelVisible: unreadActivity > 0,
-              label: Text(unreadActivity > 99 ? '99+' : '$unreadActivity'),
+              isLabelVisible: hasUnreadActivity,
+              label: Text(unreadActivity),
               backgroundColor: VibeColors.lime,
               textColor: VibeColors.ink,
               child: const Icon(Icons.notifications_none_rounded, size: 23),
@@ -645,7 +664,7 @@ class AppShell extends ConsumerWidget {
                 profile?.userId ?? '',
                 profile?.avatarUrl,
               ),
-              newActivity: unreadActivity > 0,
+              newActivity: hasUnreadActivity,
               unreadChats: unreadChats,
               onSelected: (i) => context.go(routes[i]),
             ),

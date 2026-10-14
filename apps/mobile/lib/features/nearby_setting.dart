@@ -66,7 +66,7 @@ class _NearbySettingsState extends ConsumerState<NearbySettingsGroup> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.only(left: 4, bottom: 8),
+            padding: const EdgeInsetsDirectional.only(start: 4, bottom: 8),
             child: Text(
               'NEARBY',
               style: TextStyle(

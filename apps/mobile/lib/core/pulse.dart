@@ -162,6 +162,9 @@ class Story {
   final DateTime createdAt, expiresAt;
   final bool seen;
   final int? viewCount;
+
+  /// More than 99 members saw it: [viewCount] stops at 99, show "99+".
+  final bool viewCountMore;
   const Story({
     required this.storyId,
     required this.body,
@@ -173,7 +176,11 @@ class Story {
     this.media,
     this.seen = false,
     this.viewCount,
+    this.viewCountMore = false,
   });
+
+  /// "Seen by 3", or "Seen by 99+" once the server stops counting.
+  String get viewsLabel => badgeLabel(viewCount ?? 0, more: viewCountMore);
   factory Story.fromJson(Map<String, dynamic> json) => Story(
     storyId: json['storyId'] as String,
     body: json['body'] as String? ?? '',
@@ -187,6 +194,7 @@ class Story {
         : PostMedia.fromJson(json['media'] as Map),
     seen: json['seen'] as bool? ?? false,
     viewCount: json['viewCount'] as int?,
+    viewCountMore: json['viewCountMore'] as bool? ?? false,
   );
 }
 

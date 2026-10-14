@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/app.dart';
+import 'package:hiyall/core/activity_state.dart';
 import 'package:hiyall/core/state.dart';
 import 'package:hiyall/core/theme.dart';
 import 'package:hiyall/features/activity.dart';
@@ -499,4 +500,51 @@ void main() {
     expect(find.text('Niko sent you a friend request'), findsNothing);
     expect(find.byTooltip('Open notifications'), findsOneWidget);
   });
+
+  testWidgets(
+    'More than 99 unread shows 99+ on the bell and keeps it past a read',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(390, 844);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      final api = FakeApi()
+        ..unreadMore = true
+        ..activity = [for (var i = 0; i < 99; i++) notification(i)];
+      final container = ProviderContainer(
+        overrides: [
+          apiProvider.overrideWithValue(api),
+          sessionProvider.overrideWith(SignedIn.new),
+        ],
+      );
+      addTearDown(container.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const HiyallApp(),
+        ),
+      );
+      container.read(routerProvider).go('/notifications');
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Open notifications, 99+ unread'), findsOneWidget);
+      expect(find.text('99+'), findsOneWidget);
+      expect(find.text('100'), findsNothing);
+      // One read here: the real count is still above 99, so the badge holds.
+      await container
+          .read(activityProvider.notifier)
+          .markRead(api.activity.first['notificationId'] as String);
+      await tester.pump();
+      expect(find.byTooltip('Open notifications, 99+ unread'), findsOneWidget);
+      // Reading everything clears it.
+      api.unreadMore = false;
+      await container.read(activityProvider.notifier).markAllRead();
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Open notifications'), findsOneWidget);
+      expect(
+        container.read(activityProvider).asData!.value.unreadMore,
+        isFalse,
+      );
+    },
+  );
 }

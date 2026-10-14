@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app.dart';
+import 'bindings.dart';
 import 'core/auth/firebase_config.dart';
 import 'core/error_reporting.dart';
 import 'core/licenses.dart';
@@ -22,6 +23,6 @@ Future<void> main() async {
       }
     }
     registerAppLicenses();
-    runApp(const ProviderScope(child: HiyallApp()));
+    runApp(ProviderScope(overrides: appBindings(), child: const HiyallApp()));
   });
 }

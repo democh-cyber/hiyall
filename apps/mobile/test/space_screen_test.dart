@@ -89,6 +89,12 @@ void main() {
   ) async {
     final a = LiveSpace();
     await pump(t, a, const SpaceScreen(id: 'circle'));
+    // Posts are built lazily, so scroll them into view first.
+    await t.scrollUntilVisible(
+      find.text('Newest thought'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('Newest thought'), findsOneWidget);
     a.offline = true;
     await resume(t);
@@ -111,7 +117,11 @@ void main() {
     final a = LiveSpace()..firstCursor = 'older';
     await pump(t, a, const SpaceScreen(id: 'circle'));
     final more = find.text('Older thoughts');
-    await t.ensureVisible(more);
+    await t.scrollUntilVisible(
+      more,
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
     await t.pumpAndSettle();
     await t.tap(more);
     await t.pumpAndSettle();

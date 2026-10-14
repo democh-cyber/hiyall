@@ -4,9 +4,12 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import 'app_info.dart';
+import 'badge.dart';
 import 'discovery.dart';
 import 'presence.dart';
 import 'realtime/realtime_client.dart';
+
+export 'badge.dart' show UnreadBadge, badgeLabel;
 
 part 'pulse.dart';
 part 'spaces.dart';
@@ -810,7 +813,7 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
         );
 
   // Activity.
-  Future<(ApiPage<Map<String, dynamic>>, int)> notifications(
+  Future<(ApiPage<Map<String, dynamic>>, UnreadBadge)> notifications(
     Session s, [
     String? cursor,
   ]) async {
@@ -819,13 +822,14 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
       '/v1/notifications${cursor == null ? '' : '?cursor=${Uri.encodeQueryComponent(cursor)}'}',
       token: s.token,
     ) as Map<String, dynamic>;
-    return (ApiPage.fromJson(data, (v) => v), data['unreadCount'] as int? ?? 0);
+    return (ApiPage.fromJson(data, (v) => v), UnreadBadge.fromJson(data));
   }
 
-  Future<int> unreadNotifications(Session s) async =>
-      (await _request('GET', '/v1/notifications/unread-count', token: s.token)
-              as Map<String, dynamic>)['unreadCount']
-          as int;
+  Future<UnreadBadge> unreadNotifications(Session s) async =>
+      UnreadBadge.fromJson(
+        await _request('GET', '/v1/notifications/unread-count', token: s.token)
+            as Map<String, dynamic>,
+      );
   Future<void> markNotificationRead(Session s, String id) async =>
       await _request('POST', '/v1/notifications/$id/read', token: s.token);
   Future<void> markAllNotificationsRead(Session s) async =>

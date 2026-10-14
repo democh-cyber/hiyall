@@ -24,7 +24,7 @@ class DiscoveryHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = ChatTokens.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(discoverPad, 0, 8, 0),
+      padding: const EdgeInsetsDirectional.fromSTEB(discoverPad, 0, 8, 0),
       child: Row(
         children: [
           Expanded(
@@ -113,7 +113,7 @@ class SurpriseCard extends StatelessWidget {
       pressedScale: .97,
       minHeight: 44,
       child: Align(
-        alignment: Alignment.centerLeft,
+        alignment: AlignmentDirectional.centerStart,
         widthFactor: 1,
         heightFactor: 1,
         child: AnimatedContainer(
@@ -176,8 +176,8 @@ class SurpriseCard extends StatelessWidget {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(22),
           gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
+            begin: AlignmentDirectional.topStart,
+            end: AlignmentDirectional.bottomEnd,
             colors: [s.cardFrom, s.cardTo],
           ),
           border: Border.all(
@@ -186,10 +186,10 @@ class SurpriseCard extends StatelessWidget {
         ),
         child: Stack(
           children: [
-            Positioned(
+            PositionedDirectional(
               // Beside the title (the button sits below it) when the card is one
               // row, bottom right when it stacks.
-              right: stacked ? 10 : 14,
+              end: stacked ? 10 : 14,
               top: stacked ? null : 3,
               bottom: stacked ? 6 : null,
               child: ExcludeSemantics(
@@ -201,7 +201,7 @@ class SurpriseCard extends StatelessWidget {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
+              padding: const EdgeInsetsDirectional.fromSTEB(16, 10, 12, 10),
               child: clampedChrome(
                 context,
                 Column(
@@ -209,13 +209,13 @@ class SurpriseCard extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Padding(
-                      padding: const EdgeInsets.only(right: 48),
+                      padding: const EdgeInsetsDirectional.only(end: 48),
                       child: title,
                     ),
                     const SizedBox(height: 2),
                     if (stacked) ...[
                       Padding(
-                        padding: const EdgeInsets.only(right: 48),
+                        padding: const EdgeInsetsDirectional.only(end: 48),
                         child: subtitle,
                       ),
                       const SizedBox(height: 6),
@@ -310,7 +310,7 @@ class DiscoveryExploreRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = ChatTokens.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(discoverPad, 2, 12, 0),
+      padding: const EdgeInsetsDirectional.fromSTEB(discoverPad, 2, 12, 0),
       child: Row(
         children: [
           Expanded(
@@ -493,7 +493,7 @@ class DiscoveryChipsHeader extends SliverPersistentHeaderDelegate {
     child: SizedBox(
       height: extent,
       child: Align(
-        alignment: Alignment.centerLeft,
+        alignment: AlignmentDirectional.centerStart,
         child: DiscoveryCategoryChips(categories: categories),
       ),
     ),
