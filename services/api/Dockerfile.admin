@@ -1,0 +1,39 @@
+# Hiyall admin console image: the console binary (/admin) and its built single page app (/console).
+#
+# Build from the REPOSITORY ROOT (the UI lives in apps/admin):
+#   docker build -f services/api/Dockerfile.admin -t hiyall-admin .
+# Run:       docker run --env-file admin.env -p 127.0.0.1:8081:8081 hiyall-admin
+# Operators: docker run -it --env-file admin.env hiyall-admin operator-add -email EMAIL -role admin
+#
+# Never expose this image to the internet: see docs/security/15-admin-console.md and the deploy guide. It
+# listens on loopback unless ADMIN_ADDR, ADMIN_ALLOW_REMOTE=true, ADMIN_TRUST_PROXY=true (a TLS terminating proxy
+# you control) and ADMIN_ALLOWED_HOSTS are set, and it connects as the least-privilege hiyall_admin database role
+# (ADMIN_DATABASE_URL, database/roles/roles.sql), never as the migration role.
+#
+# Tags checked to exist on 2026-10-14: node:24.21.0-alpine3.24 (toolchains.lock.json), golang:1.27.2-alpine3.24
+# (go.mod) and gcr.io/distroless/static-debian13:nonroot. Resolve them to @sha256 digests in the deploy pipeline
+# for a reproducible build.
+
+FROM node:24.21.0-alpine3.24 AS ui
+WORKDIR /src/apps/admin
+COPY apps/admin/package.json apps/admin/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY apps/admin/ ./
+# tsc --noEmit, then a build with no inline script or style (the console's CSP forbids both).
+RUN npm run build
+
+FROM golang:1.27.2-alpine3.24 AS build
+ENV GOTOOLCHAIN=local CGO_ENABLED=0 GOFLAGS=-mod=readonly
+WORKDIR /src/services/api
+COPY services/api/go.mod services/api/go.sum ./
+RUN go mod download
+COPY services/api/ ./
+RUN go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/admin ./cmd/admin
+
+FROM gcr.io/distroless/static-debian13:nonroot
+COPY --from=build /out/admin /admin
+COPY --from=ui /src/apps/admin/dist /console
+ENV ADMIN_STATIC_DIR=/console
+USER nonroot:nonroot
+EXPOSE 8081
+ENTRYPOINT ["/admin"]

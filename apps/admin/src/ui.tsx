@@ -93,19 +93,23 @@ export interface ReasonDialogProps {
   /** A second step: the person must tick this before the action can be sent (suspend). */
   confirmText?: string
   danger?: boolean
-  onSubmit: (reason: string) => Promise<void>
+  /** An extra required line of text (a report reference); onSubmit then receives it as the second argument. */
+  referenceLabel?: string
+  onSubmit: (reason: string, reference: string) => Promise<void>
   onClose: () => void
 }
 
 /** Every action needs a written reason of at least 10 characters, and some need an explicit confirmation. */
-export function ReasonDialog({ title, intro, confirmLabel, confirmText, danger, onSubmit, onClose }: ReasonDialogProps) {
+export function ReasonDialog({ title, intro, confirmLabel, confirmText, danger, referenceLabel, onSubmit, onClose }: ReasonDialogProps) {
   const [reason, setReason] = useState('')
+  const [reference, setReference] = useState('')
+  const referenceId = useId()
   const [confirmed, setConfirmed] = useState(!confirmText)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const reasonId = useId()
   const trimmed = reason.trim()
-  const ready = trimmed.length >= MIN_REASON && confirmed && !busy
+  const ready = trimmed.length >= MIN_REASON && confirmed && !busy && (!referenceLabel || reference.trim().length > 0)
 
   async function submit(e: FormEvent) {
     e.preventDefault()
@@ -113,7 +117,7 @@ export function ReasonDialog({ title, intro, confirmLabel, confirmText, danger, 
     setBusy(true)
     setError(null)
     try {
-      await onSubmit(trimmed)
+      await onSubmit(trimmed, reference.trim())
     } catch (err) {
       setError(messageOf(err))
       setBusy(false)
@@ -127,6 +131,12 @@ export function ReasonDialog({ title, intro, confirmLabel, confirmText, danger, 
         <label htmlFor={reasonId}>Reason (recorded in the audit log, at least {MIN_REASON} characters)</label>
         <textarea id={reasonId} value={reason} onChange={(e) => setReason(e.target.value)} rows={4} maxLength={1000} required />
         <div className="hint">{trimmed.length < MIN_REASON ? `${MIN_REASON - trimmed.length} more characters needed` : 'Reason ready'}</div>
+        {referenceLabel && (
+          <>
+            <label htmlFor={referenceId}>{referenceLabel}</label>
+            <input id={referenceId} type="text" value={reference} onChange={(e) => setReference(e.target.value)} maxLength={200} required />
+          </>
+        )}
         {confirmText && (
           <label className="check">
             <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />

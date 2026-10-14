@@ -1,0 +1,341 @@
+package admin
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/media"
+	"hiyall/services/api/internal/store"
+)
+
+// Content preview and quarantine cases (docs/security/15-admin-console.md, docs/security/16-csam-and-illegal-content.md).
+//
+// Reported public items (posts, comments, stories, spaces and their entries, a reported member's avatar)
+// can be read by moderators and administrators after typing a reason; every such view is audited before
+// anything is returned, and so is every photo the console proxies. Photos are fetched by the console from
+// object storage with its own read-only token and streamed to the browser through /admin/v1/media: the
+// browser never gets a storage URL, and the stream URL carries a two minute token bound to the operator,
+// the photo and the report or case it was issued for. Quarantined uploads can be read only by
+// administrators, behind a second, explicit reveal. Private chats have no preview at all.
+
+const mediaTokenTTL = 2 * time.Minute
+
+type mediaToken struct {
+	Scope string `json:"s"` // "report" or "case"
+	Op    string `json:"o"`
+	Ref   string `json:"r"` // report id or case id
+	Media string `json:"m"`
+	Exp   int64  `json:"e"`
+}
+
+func (s *Server) signMediaToken(t mediaToken) string {
+	t.Exp = s.svc.Now().Add(mediaTokenTTL).Unix()
+	raw, _ := json.Marshal(t)
+	m := hmac.New(sha256.New, s.svc.keys.derive("media"))
+	m.Write(raw)
+	return base64.RawURLEncoding.EncodeToString(raw) + "." + base64.RawURLEncoding.EncodeToString(m.Sum(nil))
+}
+
+func (s *Server) openMediaToken(raw string) (mediaToken, bool) {
+	var t mediaToken
+	body, sig, ok := strings.Cut(raw, ".")
+	if !ok || len(raw) > 1024 {
+		return t, false
+	}
+	b, e1 := base64.RawURLEncoding.DecodeString(body)
+	g, e2 := base64.RawURLEncoding.DecodeString(sig)
+	m := hmac.New(sha256.New, s.svc.keys.derive("media"))
+	m.Write(b)
+	if e1 != nil || e2 != nil || !hmac.Equal(g, m.Sum(nil)) || json.Unmarshal(b, &t) != nil {
+		return t, false
+	}
+	return t, t.Exp > s.svc.Now().Unix()
+}
+
+func (s *Server) mediaURL(t mediaToken) string {
+	return "/admin/v1/media/" + t.Media + "?t=" + url.QueryEscape(s.signMediaToken(t))
+}
+
+var errMediaUnavailable = &domain.PolicyError{Status: 503, Code: "MEDIA_UNAVAILABLE", Message: "The console has no access to photo storage (ADMIN_MEDIA_*)"}
+
+// routeContent registers the content routes; routeAPI calls it.
+func (s *Server) routeContent() {
+	s.handle("POST", "/admin/v1/reports/{id}/content", RoleModerator, s.reportContent)
+	s.handle("GET", "/admin/v1/media/{id}", RoleModerator, s.streamMedia)
+	s.handle("GET", "/admin/v1/content-cases", RoleModerator, s.listContentCases)
+	s.handle("GET", "/admin/v1/content-cases/{id}", RoleModerator, s.getContentCase)
+	s.handle("POST", "/admin/v1/content-cases/{id}/view", RoleAdmin, s.viewContentCase)
+	s.handle("POST", "/admin/v1/content-cases/{id}/reveal", RoleAdmin, s.revealContentCase)
+	s.handle("POST", "/admin/v1/content-cases/{id}/resolve", RoleAdmin, s.resolveContentCase)
+}
+
+type previewMedia struct {
+	store.AdminMediaRef
+	URL string `json:"url"`
+}
+
+// reportContent returns the reported item. It is a POST because it carries the operator's reason, which
+// is written to the audit log first: a view that cannot be recorded does not happen.
+func (s *Server) reportContent(w http.ResponseWriter, r *http.Request, p *Principal) {
+	id := r.PathValue("id")
+	var body reasonBody
+	if err := decode(w, r, &body); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	reason, err := Reason(body.Reason)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if !domain.IsID(id) {
+		s.fail(w, r, domain.ErrNotFound)
+		return
+	}
+	if err = s.auditedWithReason(r.Context(), p, "report_content_view", "report", id, reason, nil); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	c, err := s.svc.Store.ReportedContent(r.Context(), id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	media := make([]previewMedia, 0, len(c.Media))
+	for _, m := range c.Media {
+		item := previewMedia{AdminMediaRef: m}
+		if s.svc.Media != nil {
+			item.URL = s.mediaURL(mediaToken{Scope: "report", Op: p.Operator.ID, Ref: id, Media: m.MediaID})
+		}
+		media = append(media, item)
+	}
+	s.ok(w, r, map[string]any{"content": c, "media": media, "mediaAvailable": s.svc.Media != nil})
+}
+
+// auditedWithReason is audited for reads that carry a reason.
+func (s *Server) auditedWithReason(ctx context.Context, p *Principal, action, targetType, targetID, reason string, detail map[string]any) error {
+	id := p.Operator.ID
+	return insertAudit(ctx, s.svc.Pool, AuditEntry{OperatorID: &id, Actor: p.Operator.Email, Action: action, TargetType: targetType, TargetID: targetID, Reason: reason, IP: p.IP, Detail: detail})
+}
+
+// streamMedia proxies one photo. The token says what it was issued for; the audit entry is written before
+// a byte is fetched.
+func (s *Server) streamMedia(w http.ResponseWriter, r *http.Request, p *Principal) {
+	mediaID := r.PathValue("id")
+	t, ok := s.openMediaToken(r.URL.Query().Get("t"))
+	if !ok || t.Op != p.Operator.ID || t.Media != mediaID || !domain.IsID(mediaID) {
+		s.fail(w, r, &domain.ValidationError{Field: "t", Message: "this link has expired; open the item again"})
+		return
+	}
+	if s.svc.Media == nil {
+		s.fail(w, r, errMediaUnavailable)
+		return
+	}
+	var key, action string
+	var err error
+	switch t.Scope {
+	case "report":
+		action = "content_media_fetch"
+		key, err = s.svc.Store.ReadyMediaKey(r.Context(), mediaID)
+	case "case":
+		if !p.Operator.Role.Allows(RoleAdmin) { // the token was issued to an administrator; roles are checked again
+			s.fail(w, r, ErrForbidden)
+			return
+		}
+		action = "quarantine_media_fetch"
+		var held string
+		if held, key, err = s.svc.Store.HeldCaseKey(r.Context(), t.Ref); err == nil && held != mediaID {
+			err = domain.ErrNotFound
+		}
+	default:
+		err = domain.ErrNotFound
+	}
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if err = s.audited(r.Context(), p, action, "media", mediaID, map[string]any{"ref": t.Ref}); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	data, err := s.svc.Media.Get(r.Context(), key, media.MaxUploadBytes)
+	if err != nil {
+		s.fail(w, r, domain.ErrNotFound)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "image/jpeg")
+	h.Set("Content-Disposition", "inline")
+	h.Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (s *Server) listContentCases(w http.ResponseWriter, r *http.Request, p *Principal) {
+	q := r.URL.Query()
+	status := q.Get("status")
+	if status != "" && status != "open" && status != "confirmed" && status != "cleared" && status != "reported" {
+		s.fail(w, r, &domain.ValidationError{Field: "status", Message: "must be open, confirmed, cleared or reported"})
+		return
+	}
+	limit, err := limitParam(r)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	filter := filterKey(status)
+	var at *time.Time
+	var id string
+	if raw := q.Get("cursor"); raw != "" {
+		c, ok := s.openCursor(raw, "cases", p.Operator.ID, filter)
+		if !ok || !domain.IsID(c.ID) {
+			s.failure(w, r, 422, "INVALID_CURSOR", "Reload the cases")
+			return
+		}
+		at, id = &c.At, c.ID
+	}
+	cases, err := s.svc.Store.AdminContentCases(r.Context(), status, limit, at, id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	var next any
+	if len(cases) > limit {
+		cases = cases[:limit]
+		last := cases[len(cases)-1]
+		next = s.signCursor(cursor{Kind: "cases", Op: p.Operator.ID, Filter: filter, At: last.CreatedAt, ID: last.CaseID})
+	}
+	s.ok(w, r, map[string]any{"items": cases, "nextCursor": next, "hasMore": next != nil})
+}
+
+func (s *Server) getContentCase(w http.ResponseWriter, r *http.Request, p *Principal) {
+	id := r.PathValue("id")
+	if !domain.IsID(id) {
+		s.fail(w, r, domain.ErrNotFound)
+		return
+	}
+	if err := s.audited(r.Context(), p, "content_case_view", "content_case", id, nil); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	c, err := s.svc.Store.AdminContentCase(r.Context(), id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.ok(w, r, map[string]any{"case": c, "mediaAvailable": s.svc.Media != nil})
+}
+
+// viewContentCase issues the link to the quarantined photo. The viewer shows it blurred; the explicit
+// reveal is a separate audited step.
+func (s *Server) viewContentCase(w http.ResponseWriter, r *http.Request, p *Principal) {
+	id := r.PathValue("id")
+	var body reasonBody
+	if err := decode(w, r, &body); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	reason, err := Reason(body.Reason)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if !domain.IsID(id) {
+		s.fail(w, r, domain.ErrNotFound)
+		return
+	}
+	if s.svc.Media == nil {
+		s.fail(w, r, errMediaUnavailable)
+		return
+	}
+	mediaID, _, err := s.svc.Store.HeldCaseKey(r.Context(), id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if err = s.auditedWithReason(r.Context(), p, "quarantine_media_view", "content_case", id, reason, nil); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.ok(w, r, map[string]any{"url": s.mediaURL(mediaToken{Scope: "case", Op: p.Operator.ID, Ref: id, Media: mediaID}), "blurred": true})
+}
+
+// revealContentCase records that the administrator chose to see the quarantined photo unblurred.
+func (s *Server) revealContentCase(w http.ResponseWriter, r *http.Request, p *Principal) {
+	id := r.PathValue("id")
+	var body reasonBody
+	if err := decode(w, r, &body); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	reason, err := Reason(body.Reason)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if !domain.IsID(id) {
+		s.fail(w, r, domain.ErrNotFound)
+		return
+	}
+	if _, _, err = s.svc.Store.HeldCaseKey(r.Context(), id); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if err = s.auditedWithReason(r.Context(), p, "quarantine_media_reveal", "content_case", id, reason, nil); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.ok(w, r, map[string]any{"revealed": true})
+}
+
+func (s *Server) resolveContentCase(w http.ResponseWriter, r *http.Request, p *Principal) {
+	id := r.PathValue("id")
+	var body struct {
+		Action          string `json:"action"`
+		Reason          string `json:"reason"`
+		ReportReference string `json:"reportReference"`
+		LegalHold       *bool  `json:"legalHold"`
+	}
+	if err := decode(w, r, &body); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	reason, err := Reason(body.Reason)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	ref := strings.TrimSpace(body.ReportReference)
+	switch {
+	case body.Action != "confirm" && body.Action != "clear" && body.Action != "reported":
+		s.fail(w, r, &domain.ValidationError{Field: "action", Message: "must be confirm, clear or reported"})
+		return
+	case body.Action == "reported" && (ref == "" || len(ref) > 200):
+		s.fail(w, r, &domain.ValidationError{Field: "reportReference", Message: "record the NCMEC report number or the authority's reference (up to 200 characters)"})
+		return
+	case !domain.IsID(id):
+		s.fail(w, r, domain.ErrNotFound)
+		return
+	}
+	hook := func(ctx context.Context, tx pgx.Tx, subject string) error {
+		opID := p.Operator.ID
+		return insertAudit(ctx, tx, AuditEntry{OperatorID: &opID, Actor: p.Operator.Email, Action: "content_case_" + body.Action, TargetType: "content_case", TargetID: id,
+			Reason: reason, IP: p.IP, Detail: map[string]any{"subjectId": subject, "reportReference": ref}})
+	}
+	err = s.svc.Store.ResolveContentCase(r.Context(), id, store.ContentCaseStep{Action: body.Action, Operator: p.Operator.Email, Note: reason, ReportReference: ref, LegalHold: body.LegalHold}, hook)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.ok(w, r, map[string]any{"caseId": id, "action": body.Action})
+}

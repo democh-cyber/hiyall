@@ -10,7 +10,8 @@
 // prompt, or from the first line of stdin when stdin is not a terminal; it is never taken from a flag,
 // the environment or a log. The environment is the same as the other binaries (APP_ENV, DATABASE_URL)
 // plus ADMIN_DATA_KEY, ADMIN_ADDR, ADMIN_STATIC_DIR, ADMIN_ALLOW_REMOTE, ADMIN_TRUST_PROXY,
-// ADMIN_ALLOWED_HOSTS, ADMIN_TLS_CERT and ADMIN_TLS_KEY.
+// ADMIN_ALLOWED_HOSTS, ADMIN_TLS_CERT and ADMIN_TLS_KEY, ADMIN_DATABASE_URL (the hiyall_admin role; falls back to
+// DATABASE_URL) and ADMIN_MEDIA_* (read-only photo storage token for the content preview).
 package main
 
 import (
@@ -32,6 +33,8 @@ import (
 	"golang.org/x/term"
 
 	"hiyall/services/api/internal/admin"
+	"hiyall/services/api/internal/logscrub"
+	"hiyall/services/api/internal/media"
 	"hiyall/services/api/internal/store"
 )
 
@@ -42,7 +45,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, string(usage))
 			os.Exit(2)
 		}
-		slog.Error("admin failed", "reason", err.Error())
+		slog.Error("admin failed", "reason", logscrub.Err(err))
 		os.Exit(1)
 	}
 }
@@ -89,6 +92,19 @@ func serve(ctx context.Context, getenv func(string) string) error {
 	svc, err := admin.NewService(db, cfg)
 	if err != nil {
 		return err
+	}
+	if cfg.MediaEndpoint != "" {
+		// A read-only token for the media bucket. It never creates a bucket and the console never writes to it.
+		objects, err := media.NewS3(startup, media.S3Config{Endpoint: cfg.MediaEndpoint, AccessKey: cfg.MediaAccessKey, SecretKey: cfg.MediaSecretKey, Bucket: cfg.MediaBucket, Region: cfg.MediaRegion, Secure: cfg.MediaSecure, NoCreate: true})
+		if err != nil {
+			return errors.New("media storage unavailable; check ADMIN_MEDIA_* configuration")
+		}
+		svc.Media = objects
+	} else {
+		slog.Warn("photo preview off: ADMIN_MEDIA_ENDPOINT is not set; the console shows reported text only")
+	}
+	if cfg.SharedDatabase {
+		slog.Warn("the console runs on DATABASE_URL (the API's database role); set ADMIN_DATABASE_URL to the hiyall_admin role (database/roles/roles.sql)")
 	}
 	var operators int
 	if err = db.Pool.QueryRow(startup, `SELECT count(*) FROM operators`).Scan(&operators); err != nil {

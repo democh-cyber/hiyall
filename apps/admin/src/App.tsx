@@ -5,6 +5,8 @@ import type { Role } from './api'
 import { Account } from './pages/Account'
 import { Audit } from './pages/Audit'
 import { Case } from './pages/Case'
+import { ContentCases } from './pages/ContentCases'
+import { ContentCaseView } from './pages/ContentCaseView'
 import { Login } from './pages/Login'
 import { Operators } from './pages/Operators'
 import { Queue } from './pages/Queue'
@@ -25,6 +27,14 @@ function Guard({ role, children }: { role: Role; children: ReactNode }) {
   return <>{children}</>
 }
 
+/** The pages for moderators and administrators; the server checks the role on every call too. */
+function MinRole({ min, children }: { min: 'moderator'; children: ReactNode }) {
+  const { state } = useAuth()
+  if (state.status !== 'in') return null
+  if (min === 'moderator' && state.operator.role === 'viewer') return <p role="alert" className="error">Your role does not allow this page.</p>
+  return <>{children}</>
+}
+
 function Shell() {
   const { state, signOut } = useAuth()
   if (state.status === 'loading') return <p role="status" className="center">Loading…</p>
@@ -37,6 +47,7 @@ function Shell() {
         <Link to="/" className="brand">Hiyall Admin</Link>
         <nav aria-label="Main">
           <NavLink to="/" end>Reports</NavLink>
+          {op.role !== 'viewer' && <NavLink to="/content">Quarantine</NavLink>}
           {op.role === 'admin' && <NavLink to="/audit">Audit log</NavLink>}
           {op.role === 'admin' && <NavLink to="/operators">Operators</NavLink>}
           <NavLink to="/account">Account</NavLink>
@@ -49,6 +60,8 @@ function Shell() {
           <Route path="/" element={<Queue />} />
           <Route path="/reports/:id" element={<Case />} />
           <Route path="/users/:id" element={<User />} />
+          <Route path="/content" element={<MinRole min="moderator"><ContentCases /></MinRole>} />
+          <Route path="/content/:id" element={<MinRole min="moderator"><ContentCaseView /></MinRole>} />
           <Route path="/audit" element={<Guard role="admin"><Audit /></Guard>} />
           <Route path="/operators" element={<Guard role="admin"><Operators /></Guard>} />
           <Route path="/account" element={<Account />} />

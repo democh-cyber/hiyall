@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/media"
 	"hiyall/services/api/internal/store"
 )
 
@@ -105,6 +106,8 @@ func Reason(s string) (string, error) {
 type Service struct {
 	Store *store.Store
 	Pool  *pgxpool.Pool
+	// Media is the console's read-only view of the media bucket; nil when ADMIN_MEDIA_* is not set.
+	Media media.Store
 	cfg   Config
 	keys  keys
 	// Now is the clock for one-time codes and signed cursors. Session and lockout expiry use the

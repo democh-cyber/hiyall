@@ -20,6 +20,8 @@ import (
 //	POST reports/{id}/resolve, users/{id}/restore   moderator
 //	GET  audit, operators; POST operator disable, enable, role   admin
 //	GET  users/{id}?identity=true           admin (audited separately)
+//	POST reports/{id}/content, GET media/{id}, GET content-cases(/{id})   moderator (content.go)
+//	POST content-cases/{id}/view|reveal|resolve   admin (quarantined uploads)
 func (s *Server) routeAPI() {
 	s.handle("POST", "/admin/v1/login", "", s.login)
 	s.handle("POST", "/admin/v1/logout", RoleViewer, s.logout)
@@ -31,6 +33,8 @@ func (s *Server) routeAPI() {
 	s.handle("POST", "/admin/v1/reports/{id}/resolve", RoleModerator, s.resolveReport)
 	s.handle("GET", "/admin/v1/users/{id}", RoleViewer, s.getUser)
 	s.handle("POST", "/admin/v1/users/{id}/restore", RoleModerator, s.restoreUser)
+
+	s.routeContent()
 
 	s.handle("GET", "/admin/v1/audit", RoleAdmin, s.listAudit)
 	s.handle("GET", "/admin/v1/operators", RoleAdmin, s.listOperators)

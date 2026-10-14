@@ -25,6 +25,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/logscrub"
 )
 
 // Server is the console's HTTP surface: JSON under /admin/v1 and the built single page app everywhere
@@ -223,7 +224,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		}
 		s.failure(w, r, policy.Status, policy.Code, policy.Message)
 	default:
-		slog.Error("admin request failed", "requestId", r.Context().Value(requestIDKey{}), "method", r.Method, "path", r.URL.Path, "reason", err.Error())
+		slog.Error("admin request failed", "requestId", r.Context().Value(requestIDKey{}), "method", r.Method, "route", adminRoute(r.URL.Path), "reason", logscrub.Err(err))
 		s.failure(w, r, 500, "INTERNAL", "Something went wrong")
 	}
 }
