@@ -160,6 +160,12 @@ func (s *Store) ExportAccount(ctx context.Context, user string, w io.Writer, o E
 		return false, err
 	}
 	defer tx.Rollback(ctx)
+	// An export reads a whole account and streams it to a client, so it gets longer limits than a request
+	// (SET LOCAL ends with the transaction): the pool's 5 s statement and 15 s idle-in-transaction timeouts
+	// would cut a large export or one to a slow connection.
+	if _, err = tx.Exec(ctx, `SELECT set_config('statement_timeout','60000',true),set_config('idle_in_transaction_session_timeout','120000',true),set_config('lock_timeout','5000',true)`); err != nil {
+		return false, err
+	}
 	e := &exportWriter{w: bufio.NewWriterSize(w, 32<<10), max: o.MaxBytes, cap: o.ListCap, first: []bool{true}}
 	e.raw("{")
 	e.value("exportVersion", exportVersion)

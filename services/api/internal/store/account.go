@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/logscrub"
 	"hiyall/services/api/internal/realtime"
 )
 
@@ -65,7 +66,7 @@ func (s *Store) Username(ctx context.Context, user string) (string, error) {
 func (s *Store) ScheduleDeletion(ctx context.Context, user string) (DeletionState, error) {
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var status string
-		if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1 FOR UPDATE`, user).Scan(&status); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, user).Scan(&status); err != nil {
 			return mapped(err)
 		}
 		if status == "pending_deletion" {
@@ -104,7 +105,7 @@ func (s *Store) CancelDeletion(ctx context.Context, user string) (DeletionState,
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var status string
 		var open bool
-		if err := tx.QueryRow(ctx, `SELECT status,coalesce(deletion_due_at>now(),false) FROM users WHERE user_id=$1 FOR UPDATE`, user).Scan(&status, &open); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT status,coalesce(deletion_due_at>now(),false) FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, user).Scan(&status, &open); err != nil {
 			return mapped(err)
 		}
 		if status != "pending_deletion" {
@@ -204,7 +205,7 @@ func (s *Store) purgeAccount(ctx context.Context, id string, deleter IdentityDel
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		var status string
 		var due bool
-		if err := tx.QueryRow(ctx, `SELECT status,coalesce(deletion_due_at<=now(),false) FROM users WHERE user_id=$1 FOR UPDATE`, id).Scan(&status, &due); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT status,coalesce(deletion_due_at<=now(),false) FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, id).Scan(&status, &due); err != nil {
 			return mapped(err)
 		}
 		switch {
@@ -216,9 +217,17 @@ func (s *Store) purgeAccount(ctx context.Context, id string, deleter IdentityDel
 			return nil // cancelled, or not due yet
 		}
 		started = true
-		return purgeContent(ctx, tx, id)
+		return nil
 	})
 	if err != nil || !started {
+		return false, err
+	}
+	// The account is 'deleting' from here on, durably: the content goes in bounded batches, each in its
+	// own transaction (see purge.go), and a crash resumes at the next run.
+	if err = s.purgeContent(ctx, id); err != nil {
+		if errors.Is(err, errPurgeFenced) {
+			return false, nil
+		}
 		return false, err
 	}
 
@@ -246,17 +255,21 @@ func (s *Store) purgeAccount(ctx context.Context, id string, deleter IdentityDel
 		}
 	}
 
-	// Finished once no file or file record of theirs is left to remove.
+	// Finished once no file or file record of theirs is left to remove. The content statements run once more
+	// first (cheap: nothing is left but what the cleanups released since).
+	if err = s.purgeContent(ctx, id); err != nil {
+		if errors.Is(err, errPurgeFenced) {
+			return false, nil
+		}
+		return false, err
+	}
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		var status string
-		if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1 FOR UPDATE`, id).Scan(&status); err != nil || status != "deleting" {
+		if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, id).Scan(&status); err != nil || status != "deleting" {
 			return mapped(err)
 		}
-		if err := purgeContent(ctx, tx, id); err != nil {
-			return err
-		}
 		var drained bool
-		if err := tx.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM media_assets WHERE owner_id=$1)
+		if err := tx.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM media_assets WHERE owner_id=$1 AND status<>'quarantined')
  AND NOT EXISTS(SELECT 1 FROM chat_blobs b WHERE b.held_report_id IS NULL AND (b.uploader_id=$1 OR b.conversation_id IN (`+memberConversations+`)))
  AND NOT EXISTS(SELECT 1 FROM auth_identities WHERE user_id=$1 AND provider_deleted_at IS NULL)`, id).Scan(&drained); err != nil || !drained {
 			return err
@@ -285,15 +298,17 @@ const memberConversations = `SELECT conversation_id FROM conversations WHERE $1:
 // encrypted evidence (chat_blobs.held_report_id), which stays for as long as the hold does.
 const retainedReport = `(r.status='open' OR EXISTS(SELECT 1 FROM chat_blobs hb WHERE hb.held_report_id=r.report_id))`
 
-// purgeContent deletes what an account in status 'deleting' made and what exists about them. Every
-// statement is safe to run again, so the purge repeats it until the file records have drained. Order
-// follows the foreign keys. What it leaves, all without personal data once the rest is gone (see the
-// retention table in the docs): the users row, reports and their evidence while retained, the chat
-// rows those hold, and the media and attachment rows still waiting for their objects to be removed.
-func purgeContent(ctx context.Context, tx pgx.Tx, id string) error {
+// purgeContent deletes what an account in status 'deleting' made and what exists about them, in bounded
+// batches (see purge.go): each statement is cut to at most purgeBatch rows per transaction and repeated until
+// it runs dry, and every transaction first checks the account is still 'deleting'. Every statement is safe to
+// run again, so the purge repeats it until the file records have drained. Order follows the foreign keys. What
+// it leaves, all without personal data once the rest is gone (see the retention table in the docs): the users
+// row, reports and their evidence while retained, the chat rows those hold, and the media and attachment rows
+// still waiting for their objects to be removed.
+func (s *Store) purgeContent(ctx context.Context, id string) error {
 	run := func(statements ...string) error {
 		for _, statement := range statements {
-			if _, err := tx.Exec(ctx, statement, id); err != nil {
+			if err := s.purgeStatement(ctx, id, statement, false); err != nil {
 				return err
 			}
 		}
@@ -304,34 +319,39 @@ func purgeContent(ctx context.Context, tx pgx.Tx, id string) error {
 		`DELETE FROM sessions WHERE user_id=$1`,
 		`DELETE FROM key_claims WHERE claimer_id=$1 OR device_id IN (SELECT device_id FROM devices WHERE user_id=$1)`,
 		`DELETE FROM notification_prefs WHERE user_id=$1`,
-		`UPDATE devices SET push_provider=NULL,push_token=NULL WHERE user_id=$1`,
+		`UPDATE devices SET push_provider=NULL,push_token=NULL WHERE user_id=$1 AND push_token IS NOT NULL`,
 	); err != nil {
 		return err
 	}
 
-	// Pulse. Reactions and comments on other people's posts leave the counters with them.
-	if err := run(
-		`INSERT INTO post_counters(post_id,slot,reactions,comments) SELECT r.post_id,0,-count(*),0 FROM post_reactions r JOIN posts p ON p.post_id=r.post_id
- WHERE r.user_id=$1 AND p.author_id<>$1 GROUP BY r.post_id ON CONFLICT (post_id,slot) DO UPDATE SET reactions=post_counters.reactions+excluded.reactions`,
-		`INSERT INTO post_counters(post_id,slot,reactions,comments) SELECT c.post_id,0,0,-count(*) FROM comments c JOIN posts p ON p.post_id=c.post_id
- WHERE c.author_id=$1 AND p.author_id<>$1 AND NOT c.hidden AND c.deleted_at IS NULL GROUP BY c.post_id ON CONFLICT (post_id,slot) DO UPDATE SET comments=post_counters.comments+excluded.comments`,
-		`DELETE FROM post_reactions WHERE user_id=$1`,
-	); err != nil {
+	// Pulse. Reactions and comments on other people's posts leave the counters with them: the counter
+	// adjustment and the delete are one statement, so a repeated run never subtracts twice.
+	if err := s.purgeStatement(ctx, id, `WITH del AS (DELETE FROM post_reactions WHERE ctid IN (SELECT ctid FROM post_reactions WHERE user_id=$1 LIMIT $2) RETURNING post_id),
+ adj AS (INSERT INTO post_counters(post_id,slot,reactions,comments) SELECT d.post_id,0,-count(*),0 FROM del d JOIN posts p ON p.post_id=d.post_id WHERE p.author_id<>$1 GROUP BY d.post_id
+  ON CONFLICT (post_id,slot) DO UPDATE SET reactions=post_counters.reactions+excluded.reactions RETURNING 1)
+ SELECT count(*) FROM del`, false); err != nil {
 		return err
 	}
-	// Their comments go, leaf first; one that others replied to stays as an empty, deleted placeholder so
-	// the thread keeps its shape.
-	for range 100 {
-		tag, err := tx.Exec(ctx, `DELETE FROM comments c WHERE c.author_id=$1 AND NOT EXISTS(SELECT 1 FROM comments k WHERE k.parent_id=c.comment_id)`, id)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() == 0 {
-			break
-		}
+	// Their comments go, leaf first (until none is left); one that others replied to stays as an empty,
+	// deleted placeholder so the thread keeps its shape.
+	if err := s.purgeStatement(ctx, id, `WITH del AS (DELETE FROM comments c WHERE c.ctid IN (SELECT c2.ctid FROM comments c2 WHERE c2.author_id=$1 AND NOT EXISTS(SELECT 1 FROM comments k WHERE k.parent_id=c2.comment_id) LIMIT $2)
+  RETURNING c.post_id,c.hidden,c.deleted_at),
+ adj AS (INSERT INTO post_counters(post_id,slot,reactions,comments) SELECT d.post_id,0,0,-count(*) FROM del d JOIN posts p ON p.post_id=d.post_id WHERE p.author_id<>$1 AND NOT d.hidden AND d.deleted_at IS NULL GROUP BY d.post_id
+  ON CONFLICT (post_id,slot) DO UPDATE SET comments=post_counters.comments+excluded.comments RETURNING 1)
+ SELECT count(*) FROM del`, true); err != nil {
+		return err
+	}
+	if err := s.purgeStatement(ctx, id, `WITH o AS (SELECT comment_id,deleted_at AS was FROM comments WHERE author_id=$1 AND (body<>'' OR deleted_at IS NULL) LIMIT $2),
+ upd AS (UPDATE comments c SET body='',deleted_at=coalesce(c.deleted_at,now()) FROM o WHERE c.comment_id=o.comment_id RETURNING c.post_id,c.hidden,o.was),
+ adj AS (INSERT INTO post_counters(post_id,slot,reactions,comments) SELECT u.post_id,0,0,-count(*) FROM upd u JOIN posts p ON p.post_id=u.post_id WHERE p.author_id<>$1 AND NOT u.hidden AND u.was IS NULL GROUP BY u.post_id
+  ON CONFLICT (post_id,slot) DO UPDATE SET comments=post_counters.comments+excluded.comments RETURNING 1)
+ SELECT count(*) FROM upd`, false); err != nil {
+		return err
 	}
 	if err := run(
-		`UPDATE comments SET body='',deleted_at=coalesce(deleted_at,now()) WHERE author_id=$1 AND (body<>'' OR deleted_at IS NULL)`,
+		// Threads under their own posts are flattened first: the parent foreign key would otherwise reject a
+		// batch that deletes a parent before its replies.
+		`UPDATE comments SET parent_id=NULL WHERE post_id IN (SELECT post_id FROM posts WHERE author_id=$1) AND parent_id IS NOT NULL`,
 		`DELETE FROM comments WHERE post_id IN (SELECT post_id FROM posts WHERE author_id=$1)`,
 		`DELETE FROM post_reactions WHERE post_id IN (SELECT post_id FROM posts WHERE author_id=$1)`,
 		`DELETE FROM saved_posts WHERE post_id IN (SELECT post_id FROM posts WHERE author_id=$1) OR user_id=$1`,
@@ -339,30 +359,35 @@ func purgeContent(ctx context.Context, tx pgx.Tx, id string) error {
 		`DELETE FROM post_media WHERE post_id IN (SELECT post_id FROM posts WHERE author_id=$1)`,
 		`DELETE FROM posts WHERE author_id=$1`,
 		`DELETE FROM story_views WHERE viewer_id=$1`,
-		`DELETE FROM stories WHERE author_id=$1`, // their viewers' rows go with them
+		`DELETE FROM story_views WHERE story_id IN (SELECT story_id FROM stories WHERE author_id=$1)`, // so deleting a popular story is not one huge cascade
+		`DELETE FROM stories WHERE author_id=$1`,
 		// Photos: whatever is not deleted yet is released for the media cleanup (MediaGarbage), which removes
 		// the objects and clears the keys; the row itself goes on the first pass after that.
-		`UPDATE media_assets SET attached=false,expires_at=now()-interval '1 second' WHERE owner_id=$1 AND status<>'deleted'`,
+		`UPDATE media_assets SET attached=false,expires_at=now()-interval '1 second' WHERE owner_id=$1 AND status NOT IN ('deleted','quarantined') AND (attached OR expires_at>=now())`, // quarantined photos stay under their evidence hold
 		`DELETE FROM media_assets WHERE owner_id=$1 AND status='deleted' AND variants IS NULL`,
 	); err != nil {
 		return err
 	}
 
-	// Relationships and activity, in both directions.
+	// Relationships and activity, in both directions. Deleting a follow or friendship updates the other
+	// member's counters through the triggers of migration 0033; the member's own counter row goes last.
 	if err := run(
 		`DELETE FROM notifications WHERE recipient_id=$1 OR actor_id=$1`,
 		`DELETE FROM follows WHERE follower_id=$1 OR followee_id=$1`,
 		`DELETE FROM friendships WHERE user_low_id=$1 OR user_high_id=$1`,
+		`DELETE FROM social_counters WHERE user_id=$1`,
 		`DELETE FROM blocks WHERE blocker_id=$1 OR blocked_id=$1`,
 		`DELETE FROM user_controls WHERE actor_id=$1 OR target_id=$1`,
 		`DELETE FROM profile_visits WHERE profile_id=$1 OR visitor_id=$1`,
 		`DELETE FROM profile_visit_counts WHERE profile_id=$1`,
 		`DELETE FROM user_locations WHERE user_id=$1`,
+		`DELETE FROM nearby_prefs WHERE user_id=$1`,
+		`DELETE FROM member_daily_counts WHERE user_id=$1`,
 	); err != nil {
 		return err
 	}
 
-	if err := purgeSpaces(ctx, tx, id); err != nil {
+	if err := s.purgeSpaces(ctx, id); err != nil {
 		return err
 	}
 
@@ -380,7 +405,10 @@ func purgeContent(ctx context.Context, tx pgx.Tx, id string) error {
 	// Chat. The server holds no readable content: this is the ciphertext still in transit, the attachments
 	// (their objects go through PurgeChatBlobs), message metadata and conversation membership. A held
 	// attachment keeps its message and conversation rows, nothing else.
-	if _, err := DeleteUserChatBlobs(ctx, tx, id); err != nil {
+	if err := s.purgeTx(ctx, id, func(tx pgx.Tx) error {
+		_, err := DeleteUserChatBlobs(ctx, tx, id)
+		return err
+	}); err != nil {
 		return err
 	}
 	if err := run(
@@ -417,9 +445,10 @@ func purgeContent(ctx context.Context, tx pgx.Tx, id string) error {
 
 // purgeSpaces removes the member from every space. A space they own passes to its longest-standing active
 // member (admins and moderators first) so a community does not vanish with its founder; one with nobody
-// else in it is deleted with its entries, and its child spaces become top-level.
-func purgeSpaces(ctx context.Context, tx pgx.Tx, id string) error {
-	rows, err := tx.Query(ctx, `SELECT space_id::text FROM spaces WHERE owner_id=$1`, id)
+// else in it is deleted with its entries, and its child spaces become top-level. Each space is handled in its
+// own transactions, and a space's entries and members go in batches.
+func (s *Store) purgeSpaces(ctx context.Context, id string) error {
+	rows, err := s.Pool.Query(ctx, `SELECT space_id::text FROM spaces WHERE owner_id=$1`, id)
 	if err != nil {
 		return err
 	}
@@ -428,20 +457,29 @@ func purgeSpaces(ctx context.Context, tx pgx.Tx, id string) error {
 		return err
 	}
 	for _, space := range owned {
-		var successor string
-		err := tx.QueryRow(ctx, `SELECT m.user_id::text FROM space_members m JOIN users u ON u.user_id=m.user_id AND u.status='active'
+		handed := false
+		err := s.purgeTx(ctx, id, func(tx pgx.Tx) error {
+			var successor string
+			err := tx.QueryRow(ctx, `SELECT m.user_id::text FROM space_members m JOIN users u ON u.user_id=m.user_id AND u.status='active'
  WHERE m.space_id=$1 AND m.user_id<>$2 AND m.state='active' ORDER BY (m.role='admin') DESC,(m.role='moderator') DESC,m.created_at,m.user_id LIMIT 1`, space, id).Scan(&successor)
-		if err == nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
 			if _, err = tx.Exec(ctx, `UPDATE space_members SET role='owner' WHERE space_id=$1 AND user_id=$2`, space, successor); err != nil {
 				return err
 			}
-			if _, err = tx.Exec(ctx, `UPDATE spaces SET owner_id=$2 WHERE space_id=$1`, space, successor); err != nil {
-				return err
-			}
-			continue
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+			handed = true
+			_, err = tx.Exec(ctx, `UPDATE spaces SET owner_id=$2 WHERE space_id=$1`, space, successor)
 			return err
+		})
+		if err != nil {
+			return err
+		}
+		if handed {
+			continue
 		}
 		for _, statement := range []string{
 			`DELETE FROM notifications WHERE target_id=$1`,
@@ -450,21 +488,18 @@ func purgeSpaces(ctx context.Context, tx pgx.Tx, id string) error {
 			`UPDATE spaces SET parent_id=NULL WHERE parent_id=$1`,
 			`DELETE FROM spaces WHERE space_id=$1`,
 		} {
-			if _, err = tx.Exec(ctx, statement, space); err != nil {
+			if err = s.purgeStatementArgs(ctx, id, statement, false, space); err != nil {
 				return err
 			}
 		}
 	}
-	for _, statement := range []string{
-		`DELETE FROM space_entries WHERE author_id=$1`,
-		`UPDATE spaces s SET member_count=greatest(s.member_count-1,1) FROM space_members m WHERE m.space_id=s.space_id AND m.user_id=$1 AND m.state='active'`,
-		`DELETE FROM space_members WHERE user_id=$1`,
-	} {
-		if _, err = tx.Exec(ctx, statement, id); err != nil {
-			return err
-		}
+	if err = s.purgeStatement(ctx, id, `DELETE FROM space_entries WHERE author_id=$1`, false); err != nil {
+		return err
 	}
-	return nil
+	// Leaving every space lowers its member count in the same statement that removes the membership.
+	return s.purgeStatement(ctx, id, `WITH del AS (DELETE FROM space_members WHERE ctid IN (SELECT ctid FROM space_members WHERE user_id=$1 LIMIT $2) RETURNING space_id,state),
+ upd AS (UPDATE spaces s SET member_count=greatest(s.member_count-d.n,1) FROM (SELECT space_id,count(*)::int AS n FROM del WHERE state='active' GROUP BY space_id) d WHERE s.space_id=d.space_id RETURNING 1)
+ SELECT count(*) FROM del`, false)
 }
 
 // ClaimExport records that the member is downloading their data now, if the last export was more than
@@ -474,7 +509,7 @@ func (s *Store) ClaimExport(ctx context.Context, user string) (previous *time.Ti
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		var wait float64
 		var last *time.Time
-		if err := tx.QueryRow(ctx, `SELECT last_export_at,coalesce(extract(epoch FROM last_export_at+$2::interval-now()),0) FROM users WHERE user_id=$1 AND status='active' FOR UPDATE`, user, domain.ExportInterval).Scan(&last, &wait); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT last_export_at,coalesce(extract(epoch FROM last_export_at+$2::interval-now()),0) FROM users WHERE user_id=$1 AND status='active' FOR NO KEY UPDATE`, user, domain.ExportInterval).Scan(&last, &wait); err != nil {
 			return mapped(err)
 		}
 		if wait > 0 {
@@ -490,6 +525,6 @@ func (s *Store) ClaimExport(ctx context.Context, user string) (previous *time.Ti
 // ReleaseExport gives back the claim of an export that did not finish.
 func (s *Store) ReleaseExport(ctx context.Context, user string, previous *time.Time) {
 	if _, err := s.Pool.Exec(context.WithoutCancel(ctx), `UPDATE users SET last_export_at=$2 WHERE user_id=$1`, user, previous); err != nil {
-		slog.Warn("export claim not released", "reason", strconv.Quote(err.Error()))
+		slog.Warn("export claim not released", "reason", strconv.Quote(logscrub.Err(err)))
 	}
 }

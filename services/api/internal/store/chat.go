@@ -15,6 +15,21 @@ const maxDevices, maxOneTimeKeys = 10, 100
 // RegisterDevice is idempotent for the same keys. A device id or identity key
 // already bound to other keys is a conflict, never an overwrite.
 func (s *Store) RegisterDevice(ctx context.Context, d domain.Device) (domain.Device, error) {
+	d, _, err := s.RegisterDeviceNew(ctx, d)
+	return d, err
+}
+
+// FirstContactMessages is how many conversation messages (not reactions) a member may send in a
+// conversation before the other person has sent one of their own.
+const FirstContactMessages = 3
+
+// StaleDeviceAfter is how long a chat device may go unseen before maintenance revokes it.
+const StaleDeviceAfter = 90 * 24 * time.Hour
+
+// RegisterDeviceNew is RegisterDevice that also reports whether the device is new to the account
+// (the caller then tells the owner's other devices).
+func (s *Store) RegisterDeviceNew(ctx context.Context, d domain.Device) (domain.Device, bool, error) {
+	created := false
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var active bool
 		if err := tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR UPDATE`, d.UserID).Scan(&active); err != nil || !active {
@@ -28,7 +43,8 @@ func (s *Store) RegisterDevice(ctx context.Context, d domain.Device) (domain.Dev
 			if owner != d.UserID || identity != d.IdentityKey || signing != d.SigningKey || revoked {
 				return domain.ErrDeviceConflict
 			}
-			_, err = tx.Exec(ctx, `UPDATE devices SET last_seen_at=now(),display_name=$2,platform=$3 WHERE device_id=$1`, d.DeviceID, d.DisplayName, d.Platform)
+			// The device now belongs to the session that registered it last (a sign-in on the same phone).
+			_, err = tx.Exec(ctx, `UPDATE devices SET last_seen_at=now(),display_name=$2,platform=$3,session_id=coalesce(NULLIF($4,'')::uuid,session_id) WHERE device_id=$1`, d.DeviceID, d.DisplayName, d.Platform, d.SessionID)
 			return err
 		case !errors.Is(err, pgx.ErrNoRows):
 			return err
@@ -40,15 +56,56 @@ func (s *Store) RegisterDevice(ctx context.Context, d domain.Device) (domain.Dev
 		if count >= maxDevices {
 			return domain.ErrTooManyDevices
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO devices(device_id,user_id,identity_key,signing_key,signature,platform,display_name) VALUES($1,$2,$3,$4,$5,$6,$7)`, d.DeviceID, d.UserID, d.IdentityKey, d.SigningKey, d.Signature, d.Platform, d.DisplayName); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO devices(device_id,user_id,identity_key,signing_key,signature,platform,display_name,session_id) VALUES($1,$2,$3,$4,$5,$6,$7,NULLIF($8,'')::uuid)`, d.DeviceID, d.UserID, d.IdentityKey, d.SigningKey, d.Signature, d.Platform, d.DisplayName, d.SessionID); err != nil {
 			return err
 		}
+		created = true
 		return appendEvent(ctx, tx, d.UserID, "device.added", 0)
 	})
 	if err != nil {
-		return d, err
+		return d, false, err
 	}
-	return s.device(ctx, d.UserID, d.DeviceID)
+	registered, err := s.device(ctx, d.UserID, d.DeviceID)
+	return registered, created, err
+}
+
+// RevokeStaleDevices revokes at most batch active devices not seen for olderThan, drops their
+// unclaimed keys and undelivered ciphertext, and so frees the per-account device cap. A device
+// that comes back after this gets 404 from the inbox and registers a fresh identity.
+func (s *Store) RevokeStaleDevices(ctx context.Context, olderThan time.Duration, batch int) (int64, error) {
+	var total int64
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `UPDATE devices SET revoked_at=now(),push_provider=NULL,push_token=NULL WHERE device_id IN (
+ SELECT device_id FROM devices WHERE revoked_at IS NULL AND last_seen_at<now()-$1::interval ORDER BY last_seen_at LIMIT $2 FOR UPDATE SKIP LOCKED) RETURNING device_id::text`, olderThan, batch)
+		if err != nil {
+			return err
+		}
+		ids := []string{}
+		for rows.Next() {
+			var id string
+			if err = rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err = rows.Err(); err != nil || len(ids) == 0 {
+			return err
+		}
+		for _, statement := range []string{
+			`DELETE FROM one_time_keys WHERE device_id=ANY($1::uuid[])`,
+			`DELETE FROM fallback_keys WHERE device_id=ANY($1::uuid[])`,
+			`DELETE FROM message_envelopes WHERE recipient_device_id=ANY($1::uuid[]) AND delivered_at IS NULL`,
+		} {
+			if _, err = tx.Exec(ctx, statement, ids); err != nil {
+				return err
+			}
+		}
+		total = int64(len(ids))
+		return nil
+	})
+	return total, err
 }
 
 const deviceColumns = `device_id::text,user_id::text,identity_key,signing_key,signature,platform,display_name,created_at`
@@ -454,6 +511,17 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 		if err := canMessage(ctx, tx, user, peer); err != nil {
 			return err
 		}
+		if m.Aux == "" {
+			// First-contact cap: until the peer has sent a message of their own in this conversation, the
+			// sender gets FirstContactMessages messages. A reaction does not count either way.
+			var mine, theirs int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE sender_id=$2),count(*) FILTER (WHERE sender_id<>$2) FROM messages WHERE conversation_id=$1 AND NOT aux`, conversationID, user).Scan(&mine, &theirs); err != nil {
+				return err
+			}
+			if theirs == 0 && mine >= FirstContactMessages {
+				return domain.ErrAwaitingReply
+			}
+		}
 		var senderOK bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM devices WHERE device_id=$1 AND user_id=$2 AND revoked_at IS NULL)`, m.SenderDeviceID, user).Scan(&senderOK); err != nil {
 			return err
@@ -515,11 +583,12 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 			return err
 		}
 		// The sender has read up to their own message; the peer has one more unread.
+		// Both rows are named by their primary key (conversation_id, user_id): two index probes.
 		rows, err = tx.Query(ctx, `UPDATE conversation_members SET sort_at=$2,
  unread_count=CASE WHEN user_id=$3 THEN 0 ELSE unread_count+1 END,
  read_at=CASE WHEN user_id=$3 THEN greatest(read_at,$2) ELSE read_at END
- WHERE conversation_id=$1
- RETURNING user_id=$3,coalesce(muted_until>now(),false) OR `+quietFrom("user_id", "$3::uuid"), conversationID, created, user)
+ WHERE conversation_id=$1 AND user_id IN ($3::uuid,$4::uuid)
+ RETURNING user_id=$3,coalesce(muted_until>now(),false) OR `+quietFrom("user_id", "$3::uuid"), conversationID, created, user, peer)
 		if err != nil {
 			return err
 		}

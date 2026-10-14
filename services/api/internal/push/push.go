@@ -23,6 +23,9 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
+
+	"hiyall/services/api/internal/logscrub"
+	"hiyall/services/api/internal/metrics"
 )
 
 // Target is one device token.
@@ -48,6 +51,14 @@ type Message struct {
 type Sender interface {
 	Send(ctx context.Context, t Target, m Message) error
 }
+
+// ErrConfig marks a refusal caused by the server's own push configuration, such as FCM's
+// SENDER_ID_MISMATCH (the credentials belong to another project than the device token). It is neither a
+// dead token nor transient: the token is kept, the failure is counted in hiyall_push_config_errors_total and
+// logged as an error.
+var ErrConfig = errors.New("push provider refused the configuration")
+
+var pushConfigErrors = metrics.NewCounter("hiyall_push_config_errors_total", "Pushes the provider refused because of this server's own configuration (alert on any).", "provider")
 
 // ErrUnregistered reports a token the provider will never deliver to again.
 var ErrUnregistered = errors.New("push token is no longer valid")
@@ -283,7 +294,7 @@ func (d *Dispatcher) process(ctx context.Context, n Notice) {
 	}
 	verdict, err := d.cfg.Check(ctx, n, spec.category)
 	if err != nil {
-		slog.Warn("push eligibility check failed; nothing sent", "kind", n.Kind, "reason", err.Error())
+		slog.Warn("push eligibility check failed; nothing sent", "kind", n.Kind, "reason", logscrub.Err(err))
 		return
 	}
 	if !verdict.OK {
@@ -291,7 +302,7 @@ func (d *Dispatcher) process(ctx context.Context, n Notice) {
 	}
 	targets, err := d.cfg.Targets(ctx, []string{n.Recipient})
 	if err != nil {
-		slog.Warn("push lookup failed", "reason", err.Error())
+		slog.Warn("push lookup failed", "reason", logscrub.Err(err))
 		return
 	}
 	if len(targets) == 0 {
@@ -356,16 +367,25 @@ func (d *Dispatcher) deliver(ctx context.Context, t Target, m Message) {
 				// The request context may be gone already; clearing a dead token must still happen.
 				fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 				if ferr := d.cfg.Forget(fctx, t); ferr != nil {
-					slog.Warn("push token not cleared", "device", t.DeviceID, "reason", ferr.Error())
+					slog.Warn("push token not cleared", "device", t.DeviceID, "reason", logscrub.Err(ferr))
 				}
 				cancel()
 			}
 			return
 		}
+		if errors.Is(err, ErrConfig) {
+			// The provider refused because of OUR configuration (a token from another Firebase project, wrong
+			// credentials): every token would be refused the same way, so none is a dead token and none is
+			// cleared. An operator has to fix the configuration.
+			d.failed.Add(1)
+			pushConfigErrors.Inc(t.Provider)
+			slog.Error("push refused because of the configuration; tokens are kept", "provider", t.Provider, "kind", m.Kind, "reason", logscrub.Err(err))
+			return
+		}
 		var transient *TransientError
 		if !errors.As(err, &transient) || attempt >= d.cfg.Attempts || ctx.Err() != nil {
 			d.failed.Add(1)
-			slog.Warn("push send failed", "provider", t.Provider, "kind", m.Kind, "attempts", attempt, "reason", err.Error())
+			slog.Warn("push send failed", "provider", t.Provider, "kind", m.Kind, "attempts", attempt, "reason", logscrub.Err(err))
 			return
 		}
 		d.retried.Add(1)

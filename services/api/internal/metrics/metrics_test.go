@@ -174,3 +174,16 @@ func TestDefaultRegistryHasRuntimeSeries(t *testing.T) {
 		}
 	}
 }
+
+func TestGoRuntimeSeriesAreRegistered(t *testing.T) {
+	var sb strings.Builder
+	if _, err := Default.WriteTo(&sb); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"go_goroutines", "go_memstats_heap_alloc_bytes", "go_memstats_heap_inuse_bytes", "go_memstats_sys_bytes", "go_memstats_next_gc_bytes",
+		"go_gc_cycles_total", "go_gc_pause_seconds_total", "go_gomaxprocs", "hiyall_process_uptime_seconds"} {
+		if !strings.Contains(sb.String(), "\n"+name+" ") {
+			t.Errorf("%s missing from the registry", name)
+		}
+	}
+}

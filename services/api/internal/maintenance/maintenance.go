@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"time"
 
+	"hiyall/services/api/internal/logscrub"
 	"hiyall/services/api/internal/metrics"
 )
 
@@ -18,8 +19,15 @@ import (
 // runner repeats it while it returns a full batch.
 type Job struct {
 	Name string
-	Run  func() (int64, error)
+	// Run does one batch under ctx, which ends at the job's Timeout (or when the process shuts down).
+	Run func(ctx context.Context) (int64, error)
+	// Timeout bounds the whole job, every batch of one drain included; zero means DefaultJobTimeout. A job
+	// that overruns is cut off, counted as result="timeout", and resumes on the next tick.
+	Timeout time.Duration
 }
+
+// DefaultJobTimeout applies to a Job without a Timeout of its own.
+const DefaultJobTimeout = 10 * time.Minute
 
 // Elector decides which instance runs the jobs. store.Leader implements it.
 type Elector interface {
@@ -83,17 +91,23 @@ func RunOnce(ctx context.Context, el Elector, jobs []Job, batch int64) bool {
 	return true
 }
 
-func runJob(ctx context.Context, job Job, batch int64) {
+func runJob(parent context.Context, job Job, batch int64) {
 	start := time.Now()
 	var total int64
 	result := "ok"
+	timeout := job.Timeout
+	if timeout <= 0 {
+		timeout = DefaultJobTimeout
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
 	for ctx.Err() == nil {
-		n, err := job.Run()
+		n, err := job.Run(ctx)
 		total += n
 		if err != nil {
 			result = "error"
 			if ctx.Err() == nil {
-				slog.Warn(job.Name+" failed", "reason", err.Error())
+				slog.Warn(job.Name+" failed", "reason", logscrub.Err(err))
 			}
 			break
 		}
@@ -101,8 +115,14 @@ func runJob(ctx context.Context, job Job, batch int64) {
 			break
 		}
 	}
-	if ctx.Err() != nil && result == "ok" {
+	if ctx.Err() != nil && result != "ok" && parent.Err() == nil {
+		result = "timeout"
+	} else if ctx.Err() != nil && result == "ok" {
 		result = "canceled"
+		if parent.Err() == nil {
+			result = "timeout"
+			slog.Warn(job.Name+" timed out; it continues on the next tick", "timeout", timeout.String())
+		}
 	}
 	runs.Inc(job.Name, result)
 	rows.Add(float64(total), job.Name)

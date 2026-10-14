@@ -227,6 +227,7 @@ func TestFCMErrorMapping(t *testing.T) {
 		dead outcome = iota
 		retry
 		final
+		config
 	)
 	cases := []struct {
 		name string
@@ -234,7 +235,8 @@ func TestFCMErrorMapping(t *testing.T) {
 		want outcome
 	}{
 		{"unregistered", fcmFailure(404, "NOT_FOUND", "UNREGISTERED", "Requested entity was not found.", ""), dead},
-		{"sender mismatch", fcmFailure(403, "PERMISSION_DENIED", "SENDER_ID_MISMATCH", "SenderId mismatch", ""), dead},
+		// Our credentials and the token belong to different projects: a configuration error, never a dead token.
+		{"sender mismatch", fcmFailure(403, "PERMISSION_DENIED", "SENDER_ID_MISMATCH", "SenderId mismatch", ""), config},
 		{"invalid token by field", fcmFailure(400, "INVALID_ARGUMENT", "INVALID_ARGUMENT", "bad request", "message.token"), dead},
 		{"invalid token by message", fcmFailure(400, "INVALID_ARGUMENT", "", "The registration token is not a valid FCM registration token", ""), dead},
 		{"invalid payload", fcmFailure(400, "INVALID_ARGUMENT", "INVALID_ARGUMENT", "Invalid value at message.data", "message.data"), final},
@@ -255,6 +257,9 @@ func TestFCMErrorMapping(t *testing.T) {
 		switch {
 		case err == nil:
 			t.Fatalf("%s: no error", c.name)
+		case c.want == config && (!errors.Is(err, ErrConfig) || errors.Is(err, ErrUnregistered) || errors.As(err, &transient)):
+			t.Fatalf("%s: not a config error: %v", c.name, err)
+		case c.want == config:
 		case c.want == dead && !errors.Is(err, ErrUnregistered), c.want == retry && !errors.As(err, &transient),
 			c.want == final && (errors.Is(err, ErrUnregistered) || errors.As(err, &transient)):
 			t.Fatalf("%s: wrong class: %v", c.name, err)

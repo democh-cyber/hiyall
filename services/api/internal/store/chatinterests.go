@@ -16,8 +16,8 @@ func (s *Store) withSharedInterests(ctx context.Context, viewer string, c domain
 // fillSharedInterests sets SharedInterests on conversations the caller can already see (the conversation
 // queries leave out blocked and age-barred pairs), so a new chat can start from what two people have in common.
 //
-// It is a read-only lookup of two profile rows plus, only for peers with something in common, the peer's
-// privacy settings and relationship to the caller. It never goes through the profile view, so it records no
+// It is a read-only lookup of the profile rows plus, only for peers with something in common, the peers'
+// privacy settings and relationship to the caller, all in two statements however many conversations there are. It never goes through the profile view, so it records no
 // visit and touches no visitor counter. The peer's interests are used only when the peer's profile audience
 // and "interests" field audience both admit the caller, exactly as the profile does; otherwise the list stays
 // empty, which is also what "nothing in common" looks like.
@@ -50,23 +50,60 @@ func (s *Store) fillSharedInterests(ctx context.Context, viewer string, cs []dom
 	if err = rows.Err(); err != nil {
 		return err
 	}
+	// Peers with something in common need their privacy settings and relationship to the viewer, read for all of
+	// them in one statement (audit D10) instead of two queries per conversation.
+	var shared []string
+	common := make([][]string, len(cs))
 	for i := range cs {
 		cs[i].SharedInterests = []string{}
-		common := domain.SharedInterests(interests[viewer], interests[cs[i].Peer.UserID])
-		if len(common) == 0 {
-			continue
+		common[i] = domain.SharedInterests(interests[viewer], interests[cs[i].Peer.UserID])
+		if len(common[i]) > 0 {
+			shared = append(shared, cs[i].Peer.UserID)
 		}
-		policy, err := privacyOf(ctx, s.Pool, cs[i].Peer.UserID)
-		if err != nil {
-			return err
-		}
-		rel, err := relationship(ctx, s.Pool, viewer, cs[i].Peer.UserID, policy)
-		if err != nil {
-			return err
-		}
-		if rel.Allows(policy.ProfileAudience) && rel.Allows(policy.FieldAudiences["interests"]) {
-			cs[i].SharedInterests = common
+	}
+	if len(shared) == 0 {
+		return nil
+	}
+	admitted, err := s.interestsVisibleTo(ctx, viewer, shared)
+	if err != nil {
+		return err
+	}
+	for i := range cs {
+		if len(common[i]) > 0 && admitted[cs[i].Peer.UserID] {
+			cs[i].SharedInterests = common[i]
 		}
 	}
 	return nil
+}
+
+// interestsVisibleTo reports, for each of peers, whether the viewer may see that peer's interests: the peer's
+// profile audience and "interests" field audience must both admit the viewer's relationship (an accepted
+// friendship, an active follow of the peer), with the rule of domain.Relationship.Allows. A peer without
+// settings is never admitted.
+func (s *Store) interestsVisibleTo(ctx context.Context, viewer string, peers []string) (map[string]bool, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT q.user_id::text,coalesce(q.data->>'profileAudience',''),coalesce(q.data->'fieldAudiences'->>'interests','nobody'),
+  EXISTS(SELECT 1 FROM friendships f WHERE f.user_low_id=least($1::uuid,q.user_id) AND f.user_high_id=greatest($1::uuid,q.user_id) AND f.status='accepted'),
+  EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id=$1::uuid AND fo.followee_id=q.user_id AND fo.state='active')
+ FROM privacy_settings q WHERE q.user_id=ANY($2::uuid[])`, viewer, peers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	admitted := map[string]bool{}
+	for rows.Next() {
+		var id, profile, field string
+		var friend, following bool
+		if err = rows.Scan(&id, &profile, &field, &friend, &following); err != nil {
+			return nil, err
+		}
+		rel := domain.Relationship{Friendship: "none", Following: "none"}
+		if friend {
+			rel.Friendship = "accepted"
+		}
+		if following {
+			rel.Following = "active"
+		}
+		admitted[id] = rel.Allows(profile) && rel.Allows(field)
+	}
+	return admitted, rows.Err()
 }

@@ -33,7 +33,8 @@ type Config struct {
 	// then to the project named in the service-account file.
 	FCMProjectID, FCMServiceAccountFile string
 	// FirebaseServiceAccountFile (FIREBASE_SERVICE_ACCOUNT_FILE) is a service-account key that may delete
-	// Firebase users. Optional: without it, an account purge leaves the Firebase user in place and logs that.
+	// Firebase users. Required (and must be readable) in production with Firebase sign-in; optional in
+	// development, where an account purge leaves the Firebase user in place and logs that.
 	FirebaseServiceAccountFile string
 	// Operations. MetricsAddr is the separate Prometheus listener (METRICS_ADDR; default
 	// 127.0.0.1:9090, empty disables it) and MetricsToken (METRICS_TOKEN) the bearer token it then
@@ -42,6 +43,13 @@ type Config struct {
 	// database has every migration this release ships; unset, it falls back to the repository's
 	// database/migrations next to the source tree when that exists.
 	MetricsAddr, MetricsToken, RateLimitBackend, MigrationsDir string
+	// Platform: proxies, cursor key, database pool and timeouts, client versions, logs (platform.go).
+	Platform
+	// Trust and safety: upload scanner, Apple token revocation (trust.go).
+	Trust
+	// Error reporting and feature switches (reporting.go).
+	Reporting
+	Features
 }
 
 func Load() (Config, error) {
@@ -145,6 +153,15 @@ func Load() (Config, error) {
 		return c, errors.New("invalid listen address")
 	}
 	if err := c.loadOps(); err != nil {
+		return c, err
+	}
+	if err := c.loadPlatform(); err != nil {
+		return c, err
+	}
+	if err := c.loadTrust(); err != nil {
+		return c, err
+	}
+	if err := c.loadReporting(); err != nil {
 		return c, err
 	}
 	return c, nil

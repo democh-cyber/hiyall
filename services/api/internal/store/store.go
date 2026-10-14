@@ -25,13 +25,44 @@ type Store struct {
 	// block-only behaviour. The minor defaults and the coarser minor location do not depend on it.
 	AgeBandIsolation bool
 	tracer           pgx.QueryTracer
+	dsn              string
+	maxConns         int32
+	timeouts         Timeouts
 }
+
+// Timeouts are set on every connection of a pool (see New). A zero value turns that limit off, as in
+// PostgreSQL.
+type Timeouts struct {
+	// Statement cancels one statement that runs longer (statement_timeout).
+	Statement time.Duration
+	// Lock cancels a statement that waits longer for a lock (lock_timeout).
+	Lock time.Duration
+	// IdleInTransaction ends a session that sits idle inside an open transaction
+	// (idle_in_transaction_session_timeout), so a stuck request cannot hold row locks for ever.
+	IdleInTransaction time.Duration
+}
+
+// Request-path defaults: a request has a 10 second deadline, so nothing in it may run longer than 5.
+var DefaultTimeouts = Timeouts{Statement: 5 * time.Second, Lock: 3 * time.Second, IdleInTransaction: 15 * time.Second}
+
+// MaintenanceTimeouts are for the background jobs and the data export, which run bigger statements
+// than a request ever should.
+var MaintenanceTimeouts = Timeouts{Statement: 2 * time.Minute, Lock: 10 * time.Second, IdleInTransaction: 2 * time.Minute}
+
+// DefaultMaxConns is the pool size unless WithMaxConns or the DSN's pool_max_conns says otherwise.
+const DefaultMaxConns = 20
 
 // Option configures New.
 type Option func(*Store)
 
 // WithAgeBandIsolation sets Store.AgeBandIsolation (default true).
 func WithAgeBandIsolation(on bool) Option { return func(s *Store) { s.AgeBandIsolation = on } }
+
+// WithMaxConns sets the pool size (default DefaultMaxConns). A pool_max_conns in the DSN wins.
+func WithMaxConns(n int32) Option { return func(s *Store) { s.maxConns = n } }
+
+// WithTimeouts replaces DefaultTimeouts for every connection of the pool.
+func WithTimeouts(t Timeouts) Option { return func(s *Store) { s.timeouts = t } }
 
 // WithQueryTracer attaches a pgx tracer to every connection of the pool (tests count statements with it).
 func WithQueryTracer(t pgx.QueryTracer) Option { return func(s *Store) { s.tracer = t } }
@@ -57,7 +88,7 @@ type Session struct {
 }
 
 func New(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
-	s := &Store{AgeBandIsolation: true}
+	s := &Store{AgeBandIsolation: true, dsn: dsn, maxConns: DefaultMaxConns, timeouts: DefaultTimeouts}
 	for _, option := range opts {
 		option(s)
 	}
@@ -75,11 +106,17 @@ func New(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 		// Every timestamp the API returns is UTC whatever the server's own zone: timestamptz
 		// values are scanned in UTC, and the session zone is UTC for anything formatted in SQL.
 		conn.TypeMap().RegisterType(&pgtype.Type{Name: "timestamptz", OID: pgtype.TimestamptzOID, Codec: &pgtype.TimestamptzCodec{ScanLocation: time.UTC}})
-		_, err := conn.Exec(ctx, `SELECT set_config('hiyall.age_band_isolation',$1,false),set_config('TimeZone','UTC',false)`, isolation)
+		// Timeouts in milliseconds: a request that hits one fails fast instead of piling up behind a lock.
+		ms := func(d time.Duration) string { return strconv.FormatInt(d.Milliseconds(), 10) }
+		_, err := conn.Exec(ctx, `SELECT set_config('hiyall.age_band_isolation',$1,false),set_config('TimeZone','UTC',false),
+ set_config('statement_timeout',$2,false),set_config('lock_timeout',$3,false),set_config('idle_in_transaction_session_timeout',$4,false)`,
+			isolation, ms(s.timeouts.Statement), ms(s.timeouts.Lock), ms(s.timeouts.IdleInTransaction))
 		return err
 	}
 	cfg.ConnConfig.Tracer = s.tracer
-	cfg.MaxConns = 10
+	if !strings.Contains(dsn, "pool_max_conns") {
+		cfg.MaxConns = s.maxConns
+	}
 	cfg.MinConns = 1
 	cfg.MaxConnLifetime = 30 * time.Minute
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
@@ -94,14 +131,29 @@ func New(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 	return s, nil
 }
 
+// NewMaintenance opens a small second pool for the background jobs, with MaintenanceTimeouts: their
+// batches may legitimately run far longer than the request path allows. Close it with Pool.Close.
+func (s *Store) NewMaintenance(ctx context.Context) (*Store, error) {
+	return New(ctx, s.dsn, WithAgeBandIsolation(s.AgeBandIsolation), WithMaxConns(4), WithTimeouts(MaintenanceTimeouts))
+}
+
 func newID() string { return uuid.Must(uuid.NewV7()).String() }
+
+// usernameConstraint is profiles.username's UNIQUE constraint (migration 0001).
+const usernameConstraint = "profiles_username_key"
+
 func mapped(err error) error {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ErrNotFound
 	}
 	var pe *pgconn.PgError
 	if errors.As(err, &pe) && pe.Code == "23505" {
-		return domain.ErrUsernameTaken
+		// Only the username's own constraint means "taken"; any other duplicate is a race on
+		// something else, and the caller is told to reload rather than that a name is taken.
+		if pe.ConstraintName == usernameConstraint {
+			return domain.ErrUsernameTaken
+		}
+		return domain.ErrConflict
 	}
 	// Text PostgreSQL cannot store (NUL, invalid byte sequence) is the caller's input.
 	if errors.As(err, &pe) && (pe.Code == "22021" || pe.Code == "22P05") {
@@ -229,9 +281,46 @@ func (s *Store) VerifyDevSession(ctx context.Context, token string) (Principal, 
 	return p, err
 }
 
-// OIDC identity and session registration are transactionally fenced by issuer/sub.
-// A revoked sid is never silently recreated by a still-valid token.
+// sessionTouchInterval is how often a session's last_seen_at is written: at most once a minute.
+const sessionTouchInterval = time.Minute
+
+// ResolveOIDC authenticates one token of an identity provider session.
+//
+// The common case is a session that already exists and is live: one read-only statement (no
+// transaction, no row lock, no advisory lock), plus a conditional single-row UPDATE only when last_seen_at
+// is older than a minute or the token outlives the session's expiry. Everything else (a first sign-in, a
+// session that expired, was revoked, or a Firebase sign-in older than a sign-out-everywhere watermark)
+// takes resolveOIDCSlow, which is transactionally fenced by issuer/subject: a revoked sid is never
+// silently recreated by a still-valid token.
 func (s *Store) ResolveOIDC(ctx context.Context, issuer, subject, sid string, expiry time.Time) (Principal, error) {
+	var p Principal
+	var status string
+	var due bool
+	err := s.Pool.QueryRow(ctx, `SELECT s.user_id::text,s.session_id::text,o.completed_at IS NOT NULL,u.status,
+ (s.last_seen_at<now()-$5::interval OR s.expires_at<$4)
+ FROM auth_identities a JOIN sessions s ON s.issuer=a.issuer AND s.external_sid=$3 AND s.user_id=a.user_id
+ JOIN users u ON u.user_id=a.user_id LEFT JOIN onboarding o ON o.user_id=a.user_id
+ WHERE a.issuer=$1 AND a.subject=$2 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.status IN ('active','pending_deletion')`,
+		issuer, subject, sid, expiry, sessionTouchInterval).Scan(&p.UserID, &p.SessionID, &p.Onboarded, &status, &due)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return s.resolveOIDCSlow(ctx, issuer, subject, sid, expiry)
+	case err != nil:
+		return Principal{}, err
+	}
+	p.PendingDeletion = status == "pending_deletion"
+	if due {
+		// Guarded again so that a revocation that landed since the read is never undone, and two requests
+		// that both saw a stale row write it once.
+		if _, err = s.Pool.Exec(ctx, `UPDATE sessions SET last_seen_at=now(),expires_at=greatest(expires_at,$2) WHERE session_id=$1 AND revoked_at IS NULL AND (last_seen_at<now()-$3::interval OR expires_at<$2)`,
+			p.SessionID, expiry, sessionTouchInterval); err != nil {
+			return Principal{}, err
+		}
+	}
+	return p, nil
+}
+
+func (s *Store) resolveOIDCSlow(ctx context.Context, issuer, subject, sid string, expiry time.Time) (Principal, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return Principal{}, err
@@ -258,7 +347,7 @@ func (s *Store) ResolveOIDC(ctx context.Context, issuer, subject, sid string, ex
 	// A member who asked to delete their account signs in like anyone else; the API then serves them
 	// only the deletion routes (Principal.PendingDeletion). Any other state is refused.
 	var status string
-	if err = tx.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1 FOR UPDATE`, id).Scan(&status); err != nil || (status != "active" && status != "pending_deletion") {
+	if err = tx.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, id).Scan(&status); err != nil || (status != "active" && status != "pending_deletion") {
 		return Principal{}, domain.ErrUnauthorized
 	}
 	// A Firebase sign-in from before "sign out everywhere else" never gets a session row it
@@ -336,10 +425,10 @@ func scanProfile(row pgx.Row, extra ...any) (domain.Profile, error) {
 // GetProfile is the caller's own profile with signed URLs for their photo (see avatar.go).
 func (s *Store) GetProfile(ctx context.Context, id string, sign Signer) (domain.ProfileView, error) {
 	var thumb, full *string
-	p, err := scanProfile(s.Pool.QueryRow(ctx, `SELECT p.user_id::text,p.username,p.data || jsonb_build_object('socialStats',jsonb_build_object('friends',c.friends,'following',c.following,'followers',c.followers,
+	p, err := scanProfile(s.Pool.QueryRow(ctx, `SELECT p.user_id::text,p.username,p.data || jsonb_build_object('socialStats',jsonb_build_object('friends',greatest(coalesce(c.friends,0),0),'following',greatest(coalesce(c.following,0),0),'followers',greatest(coalesce(c.followers,0),0),
  'visitors',`+visitorsSQL("p.user_id")+`,
  'stories',(SELECT count(*) FROM stories st WHERE st.author_id=p.user_id AND st.deleted_at IS NULL AND st.expires_at>now()))),p.version,p.created_at,p.updated_at,`+avatarThumbKey("av")+`,`+avatarFullKey("av")+`
- FROM profiles p JOIN users u USING(user_id) JOIN profile_social_counts c USING(user_id)`+avatarJoin("av", "p")+`WHERE p.user_id=$1 AND u.status='active'`, id), &thumb, &full)
+ FROM profiles p JOIN users u USING(user_id) LEFT JOIN social_counters c USING(user_id)`+avatarJoin("av", "p")+`WHERE p.user_id=$1 AND u.status='active'`, id), &thumb, &full)
 	return domain.ProfileView{Profile: p, AvatarURL: avatarURL(sign, thumb), AvatarFullURL: avatarURL(sign, full)}, err
 }
 func (s *Store) GetPrivacy(ctx context.Context, id string) (domain.Privacy, error) {
@@ -359,19 +448,12 @@ func (s *Store) GetPrivacy(ctx context.Context, id string) (domain.Privacy, erro
 	return p, nil
 }
 
-func appendEvent(ctx context.Context, tx pgx.Tx, id, kind string, resourceVersion int64) error {
-	var version int64
-	if err := tx.QueryRow(ctx, `UPDATE users SET aggregate_version=aggregate_version+1 WHERE user_id=$1 RETURNING aggregate_version`, id).Scan(&version); err != nil {
-		return err
-	}
-	payload := map[string]any{}
-	if resourceVersion > 0 {
-		payload["resourceVersion"] = resourceVersion
-	}
-	data, _ := json.Marshal(payload)
-	_, err := tx.Exec(ctx, `INSERT INTO outbox_events(event_id,aggregate_type,aggregate_id,aggregate_version,event_type,payload) VALUES($1,'user',$2,$3,$4,$5)`, newID(), id, version, kind, data)
-	return err
-}
+// appendEvent used to stage an outbox event and bump users.aggregate_version in the caller's transaction.
+// Nothing ever consumed those rows, and each append wrote the hot users row, so it now does nothing
+// (audit D5); the remaining callers are in files owned by other features and go when they next change.
+// The outbox_events table and users.aggregate_version stay until a later release drops them (expand and
+// contract, docs/deployment/10-deploy-guide.md section 5); PurgeOutbox clears what was written before.
+func appendEvent(context.Context, pgx.Tx, string, string, int64) error { return nil }
 
 // UpdateProfile applies a validated patch at the expected version and returns the profile as GetProfile does.
 // A new avatarMediaId must be the caller's own ready, unattached photo; it is attached in the same
@@ -393,10 +475,10 @@ func (s *Store) updateProfile(ctx context.Context, id string, expected int64, pa
 	}
 	defer tx.Rollback(ctx)
 	var active bool
-	if err = tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR UPDATE`, id).Scan(&active); err != nil || !active {
+	if err = tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, id).Scan(&active); err != nil || !active {
 		return domain.ErrNotFound
 	}
-	p, err := scanProfile(tx.QueryRow(ctx, `SELECT p.user_id::text,p.username,p.data,p.version,p.created_at,p.updated_at FROM profiles p JOIN users u USING(user_id) WHERE p.user_id=$1 AND u.status='active' FOR UPDATE OF u,p`, id))
+	p, err := scanProfile(tx.QueryRow(ctx, `SELECT p.user_id::text,p.username,p.data,p.version,p.created_at,p.updated_at FROM profiles p JOIN users u USING(user_id) WHERE p.user_id=$1 AND u.status='active' FOR NO KEY UPDATE OF u,p`, id))
 	if err != nil {
 		return err
 	}
@@ -440,7 +522,19 @@ func (s *Store) updateProfile(ctx context.Context, id string, expected int64, pa
 	if p.Username != previous && domain.IsPlaceholderUsername(p.Username) {
 		return &domain.ValidationError{Field: "username", Message: "this username is reserved"}
 	}
-	if _, err = tx.Exec(ctx, `UPDATE profiles SET username=$2,data=$3,version=version+1,updated_at=now() WHERE user_id=$1`, id, p.Username, data); err != nil {
+	// A rename starts a 30 day cooldown, except the first real name chosen over the generated one. The row is
+	// locked above, so two renames cannot both pass.
+	renamed := p.Username != previous && !domain.IsPlaceholderUsername(previous)
+	if renamed {
+		var wait float64
+		if err = tx.QueryRow(ctx, `SELECT coalesce(greatest(0,extract(epoch FROM (username_changed_at+$2::interval-now()))),0)::float8 FROM profiles WHERE user_id=$1`, id, domain.UsernameChangeCooldown).Scan(&wait); err != nil {
+			return err
+		}
+		if wait > 0 {
+			return domain.RetryAfter(domain.ErrUsernameCooldown, time.Duration(wait*float64(time.Second)))
+		}
+	}
+	if _, err = tx.Exec(ctx, `UPDATE profiles SET username=$2,data=$3,version=version+1,updated_at=now(),username_changed_at=CASE WHEN $4::boolean THEN now() ELSE username_changed_at END WHERE user_id=$1`, id, p.Username, data, renamed); err != nil {
 		return mapped(err)
 	}
 	if released != nil {
@@ -454,14 +548,19 @@ func (s *Store) updateProfile(ctx context.Context, id string, expected int64, pa
 			return err
 		}
 	}
-	if err = appendEvent(ctx, tx, id, "profile.updated", current+1); err != nil {
-		return err
-	}
 	return tx.Commit(ctx)
 }
 func (s *Store) UpdatePrivacy(ctx context.Context, id string, expected int64, patch map[string]json.RawMessage) (domain.Privacy, error) {
 	if err := domain.ValidatePrivacyPatch(patch); err != nil {
 		return domain.Privacy{}, err
+	}
+	// A member under 18 cannot loosen presence, location or connections past the minor defaults.
+	if minor, err := s.IsMinor(ctx, id); err != nil {
+		return domain.Privacy{}, err
+	} else if minor {
+		if err = domain.ValidateMinorPrivacyPatch(patch); err != nil {
+			return domain.Privacy{}, err
+		}
 	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -469,12 +568,12 @@ func (s *Store) UpdatePrivacy(ctx context.Context, id string, expected int64, pa
 	}
 	defer tx.Rollback(ctx)
 	var active bool
-	if err = tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR UPDATE`, id).Scan(&active); err != nil || !active {
+	if err = tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, id).Scan(&active); err != nil || !active {
 		return domain.Privacy{}, domain.ErrNotFound
 	}
 	var data []byte
 	var current int64
-	err = tx.QueryRow(ctx, `SELECT p.data,p.version FROM privacy_settings p JOIN users u USING(user_id) WHERE p.user_id=$1 AND u.status='active' FOR UPDATE OF u,p`, id).Scan(&data, &current)
+	err = tx.QueryRow(ctx, `SELECT p.data,p.version FROM privacy_settings p JOIN users u USING(user_id) WHERE p.user_id=$1 AND u.status='active' FOR NO KEY UPDATE OF u,p`, id).Scan(&data, &current)
 	if err != nil {
 		return domain.Privacy{}, mapped(err)
 	}
@@ -504,9 +603,6 @@ func (s *Store) UpdatePrivacy(ctx context.Context, id string, expected int64, pa
 			return domain.Privacy{}, err
 		}
 	}
-	if err = appendEvent(ctx, tx, id, "privacy.updated", current+1); err != nil {
-		return domain.Privacy{}, err
-	}
 	if err = tx.Commit(ctx); err != nil {
 		return domain.Privacy{}, err
 	}
@@ -535,8 +631,8 @@ func (s *Store) VisibleProfile(ctx context.Context, viewer, target string, onlin
 	var counts domain.SocialStats
 	var age *int
 	var thumb, full *string
-	err = tx.QueryRow(ctx, `SELECT p.data,p.username,q.data,c.friends,c.following,c.followers,`+visitorsSQL("p.user_id")+`,
- (SELECT count(*) FROM stories st WHERE st.author_id=p.user_id AND st.deleted_at IS NULL AND st.expires_at>now() AND `+visibleTo("st.author_id", "st.audience")+`),member_age(p.user_id),`+avatarThumbKey("av")+`,`+avatarFullKey("av")+` FROM profiles p JOIN privacy_settings q USING(user_id) JOIN users u USING(user_id) JOIN profile_social_counts c USING(user_id)`+avatarJoin("av", "p")+`WHERE p.user_id=$2 AND u.status='active' AND ($1=$2 OR (NOT `+barredBetween+` AND EXISTS(SELECT 1 FROM onboarding o WHERE o.user_id=p.user_id AND o.completed_at IS NOT NULL)))`, viewer, target).Scan(&data, &username, &policyData, &counts.Friends, &counts.Following, &counts.Followers, &counts.Visitors, &counts.Stories, &age, &thumb, &full)
+	err = tx.QueryRow(ctx, `SELECT p.data,p.username,q.data,greatest(coalesce(c.friends,0),0),greatest(coalesce(c.following,0),0),greatest(coalesce(c.followers,0),0),`+visitorsSQL("p.user_id")+`,
+ (SELECT count(*) FROM stories st WHERE st.author_id=p.user_id AND st.deleted_at IS NULL AND st.expires_at>now() AND `+visibleTo("st.author_id", "st.audience")+`),member_age(p.user_id),`+avatarThumbKey("av")+`,`+avatarFullKey("av")+` FROM profiles p JOIN privacy_settings q USING(user_id) JOIN users u USING(user_id) LEFT JOIN social_counters c USING(user_id)`+avatarJoin("av", "p")+`WHERE p.user_id=$2 AND u.status='active' AND ($1=$2 OR (NOT `+barredBetween+` AND EXISTS(SELECT 1 FROM onboarding o WHERE o.user_id=p.user_id AND o.completed_at IS NOT NULL)))`, viewer, target).Scan(&data, &username, &policyData, &counts.Friends, &counts.Following, &counts.Followers, &counts.Visitors, &counts.Stories, &age, &thumb, &full)
 	if err != nil {
 		return nil, mapped(err)
 	}
@@ -628,7 +724,7 @@ func (s *Store) SetBlock(ctx context.Context, actor, target string, blocked bool
 	}
 	return s.inTx(ctx, func(tx pgx.Tx) error {
 		// Ordered user locks prevent deadlock on reciprocal blocks.
-		rows, err := tx.Query(ctx, `SELECT user_id::text,status FROM users WHERE user_id IN ($1,$2) ORDER BY user_id FOR UPDATE`, actor, target)
+		rows, err := tx.Query(ctx, `SELECT user_id::text,status FROM users WHERE user_id IN ($1,$2) ORDER BY user_id FOR NO KEY UPDATE`, actor, target)
 		if err != nil {
 			return err
 		}
@@ -653,7 +749,7 @@ func (s *Store) SetBlock(ctx context.Context, actor, target string, blocked bool
 			if err != nil {
 				return err
 			}
-			return appendEvent(ctx, tx, actor, "block.changed", 0)
+			return nil
 		}
 		for _, statement := range []string{
 			`INSERT INTO blocks(blocker_id,blocked_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
@@ -669,7 +765,7 @@ func (s *Store) SetBlock(ctx context.Context, actor, target string, blocked bool
 				return err
 			}
 		}
-		return appendEvent(ctx, tx, actor, "block.changed", 0)
+		return nil
 	})
 }
 

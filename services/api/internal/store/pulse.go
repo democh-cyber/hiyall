@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"time"
@@ -110,7 +111,7 @@ func (s *Store) PendingUpload(ctx context.Context, owner, id string) (PendingUpl
 // media expires after a day.
 func (s *Store) MediaReady(ctx context.Context, owner, id string, width, height int, full, thumb string, size int64) error {
 	variants, _ := json.Marshal(map[string]string{"full": full, "thumb": thumb})
-	tag, err := s.Pool.Exec(ctx, `UPDATE media_assets SET status='ready',width=$3,height=$4,variants=$5,size_bytes=$6,expires_at=now()+interval '1 day'
+	tag, err := s.Pool.Exec(ctx, `UPDATE media_assets SET status='ready',scan_result='clean',scanned_at=now(),width=$3,height=$4,variants=$5,size_bytes=$6,expires_at=now()+interval '1 day'
  WHERE media_id=$1 AND owner_id=$2 AND status='pending'`, id, owner, width, height, variants, size)
 	if err == nil && tag.RowsAffected() == 0 {
 		err = domain.ErrNotFound
@@ -125,7 +126,7 @@ func claimMedia(ctx context.Context, tx pgx.Tx, owner, purpose string, ids []str
 		return nil
 	}
 	tag, err := tx.Exec(ctx, `UPDATE media_assets SET attached=true WHERE media_id IN (
- SELECT media_id FROM media_assets WHERE media_id=ANY($1::uuid[]) AND owner_id=$2 AND purpose=$3 AND status='ready' AND NOT attached FOR UPDATE)`, ids, owner, purpose)
+ SELECT media_id FROM media_assets WHERE media_id=ANY($1::uuid[]) AND owner_id=$2 AND purpose=$3 AND status='ready' AND NOT attached FOR NO KEY UPDATE)`, ids, owner, purpose)
 	if err != nil {
 		return err
 	}
@@ -183,13 +184,13 @@ type postKey struct {
 
 // Feed returns a page of posts for the viewer, newest first. "following" is
 // the viewer's circle (self, follows, friends); "everyone" is recent public
-// posts. Muted and blocked accounts never appear.
+// posts of the last 7 days (audit D8: the feed never walks the whole table). Muted and blocked accounts never appear.
 func (s *Store) Feed(ctx context.Context, viewer, mode string, before *time.Time, beforeID string, limit int, sign Signer) ([]domain.Post, error) {
 	var rows pgx.Rows
 	var err error
 	if mode == "everyone" {
 		rows, err = s.Pool.Query(ctx, `SELECT p.post_id::text,p.created_at FROM posts p JOIN users u ON u.user_id=p.author_id AND u.status='active'
- WHERE p.deleted_at IS NULL AND p.audience='public' AND ($2::timestamptz IS NULL OR (p.created_at,p.post_id)<($2,$3::uuid))
+ WHERE p.deleted_at IS NULL AND p.audience='public' AND p.created_at>now()-interval '7 days' AND ($2::timestamptz IS NULL OR (p.created_at,p.post_id)<($2,$3::uuid))
  AND NOT interaction_barred($1::uuid,p.author_id)
  AND NOT EXISTS(SELECT 1 FROM user_controls m WHERE m.actor_id=$1 AND m.target_id=p.author_id AND m.control='mute' AND (m.until IS NULL OR m.until>now()))
  ORDER BY p.created_at DESC,p.post_id DESC LIMIT $4`, viewer, before, beforeID, limit)
@@ -483,7 +484,7 @@ func (s *Store) Comments(ctx context.Context, viewer, post string, after *time.T
 
 // AddComment applies the post author's commentsFrom setting. It returns the
 // comment and the post's author, and whether the comment is hidden.
-func (s *Store) AddComment(ctx context.Context, viewer, post string, in domain.NewComment, sign Signer) (domain.Comment, string, bool, error) {
+func (s *Store) AddComment(ctx context.Context, viewer, post string, in domain.NewComment, sign Signer, e domain.Entitlements) (domain.Comment, string, bool, error) {
 	var c domain.Comment
 	var author string
 	var hidden bool
@@ -519,6 +520,9 @@ func (s *Store) AddComment(ctx context.Context, viewer, post string, in domain.N
 			if !ok {
 				return &domain.ValidationError{Field: "parentId", Message: "reply to a comment on this post"}
 			}
+		}
+		if err = capDaily(ctx, tx, viewer, domain.DailyComments, e.CommentsPerDay); err != nil {
+			return err
 		}
 		c = domain.Comment{CommentID: newID(), PostID: post, ParentID: in.ParentID, Body: in.Body, Mine: true, CanDelete: true}
 		err = tx.QueryRow(ctx, `INSERT INTO comments(comment_id,post_id,author_id,parent_id,body,hidden) VALUES($1,$2,$3,$4,$5,$6) RETURNING created_at`,
@@ -610,9 +614,19 @@ func (s *Store) DeleteStory(ctx context.Context, author, id string) error {
 
 // storyViewCountSQL is how many members saw story st: the same people StoryViewers lists, so the count a
 // member reads never differs from the list behind it (inactive accounts and anyone barred from the author
-// are left out).
-const storyViewCountSQL = `(SELECT count(*) FROM story_views v JOIN users vu ON vu.user_id=v.viewer_id AND vu.status='active'
-  WHERE v.story_id=st.story_id AND NOT interaction_barred(st.author_id,v.viewer_id))::int`
+// are left out). It counts at most BadgeCap+1 rows (audit F20): capViewCount turns the result into the
+// reported count and the "more" flag, so a story with a huge audience costs a bounded read.
+var storyViewCountSQL = fmt.Sprintf(`(SELECT count(*) FROM (SELECT 1 FROM story_views v JOIN users vu ON vu.user_id=v.viewer_id AND vu.status='active'
+  WHERE v.story_id=st.story_id AND NOT interaction_barred(st.author_id,v.viewer_id) LIMIT %d) vc)::int`, BadgeCap+1)
+
+// capViewCount applies the BadgeCap to a story's raw view count: the count stops at BadgeCap and ViewCountMore
+// says there are more (the app shows "99+").
+func capViewCount(st *domain.Story) {
+	if st.ViewCount != nil && *st.ViewCount > BadgeCap {
+		capped := BadgeCap
+		st.ViewCount, st.ViewCountMore = &capped, true
+	}
+}
 
 // Story tray bounds: at most trayPerAuthor stories per author (their newest) and
 // trayStories in all, own stories first and then the newest.
@@ -661,6 +675,7 @@ func (s *Store) StoryTray(ctx context.Context, viewer string, sign Signer) ([]do
 			&author.UserID, &author.Username, &author.DisplayName, &avatar, &self, &st.Seen, &st.ViewCount); err != nil {
 			return nil, err
 		}
+		capViewCount(&st)
 		author.AvatarURL = avatarURL(sign, avatar)
 		if mediaID != nil {
 			st.Media = &domain.MediaView{MediaID: *mediaID, URL: sign(variants["full"]), ThumbURL: sign(variants["thumb"]), Width: w, Height: h}
@@ -744,6 +759,7 @@ func (s *Store) MyStories(ctx context.Context, author string, before *time.Time,
 		if err = rows.Scan(&st.StoryID, &st.Body, &st.Background, &st.TextStyle, &st.Audience, &st.CreatedAt, &st.ExpiresAt, &mediaID, &variants, &w, &h, &st.ViewCount); err != nil {
 			return nil, err
 		}
+		capViewCount(&st)
 		if mediaID != nil {
 			st.Media = &domain.MediaView{MediaID: *mediaID, URL: sign(variants["full"]), ThumbURL: sign(variants["thumb"]), Width: w, Height: h}
 		}
@@ -812,10 +828,14 @@ func (s *Store) StoryViewers(ctx context.Context, author, id string, before *tim
 // MediaGarbage lists object keys to delete: abandoned or never-attached
 // uploads past expiry, and media marked deleted. Purged rows keep only their
 // tombstone, so nothing is returned twice.
+//
+// It marks the rows finished BEFORE the caller has deleted any object, so a storage failure orphans the
+// photos for good (audit D3). The maintenance job therefore uses PurgeMedia (mediacleanup.go), which
+// deletes the objects first; this stays for tests that inspect which keys a cleanup would remove.
 func (s *Store) MediaGarbage(ctx context.Context, batch int) ([]string, int64, error) {
 	// Keys are read before the update clears them.
 	rows, err := s.Pool.Query(ctx, `WITH gone AS (
-  (SELECT media_id,upload_key,variants FROM media_assets WHERE status<>'deleted' AND NOT attached AND expires_at<now() ORDER BY expires_at LIMIT $1)
+  (SELECT media_id,upload_key,variants FROM media_assets WHERE status NOT IN ('deleted','quarantined') AND NOT attached AND expires_at<now() ORDER BY expires_at LIMIT $1)
   UNION ALL
   (SELECT media_id,upload_key,variants FROM media_assets WHERE status='deleted' AND variants IS NOT NULL ORDER BY deleted_at LIMIT $1)
  ), purged AS (

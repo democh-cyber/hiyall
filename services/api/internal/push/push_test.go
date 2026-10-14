@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"hiyall/services/api/internal/metrics"
 )
 
 const (
@@ -351,6 +353,39 @@ func TestUnregisteredTokenIsForgotten(t *testing.T) {
 	if s := h.d.Stats(); s.Forgotten != 1 || s.Sent != 0 || s.Failed != 0 {
 		t.Fatalf("stats %+v", s)
 	}
+}
+
+// FCM's SENDER_ID_MISMATCH means our credentials and the device token belong to different projects: every
+// token would fail, so none may be cleared. It is counted as a failure and a configuration error.
+func TestConfigErrorKeepsTheTokenAndIsCounted(t *testing.T) {
+	h := newHarness(t, nil)
+	before := configErrors(t)
+	h.sender.errs = []error{fmt.Errorf("%w: FCM refused the push (HTTP 403 SENDER_ID_MISMATCH)", ErrConfig)}
+	h.d.Notify(chat(conv1))
+	h.drain()
+	if len(h.forgot) != 0 || h.sender.n != 1 {
+		t.Fatalf("a config error cleared %v tokens after %d sends", h.forgot, h.sender.n)
+	}
+	if s := h.d.Stats(); s.Forgotten != 0 || s.Failed != 1 {
+		t.Fatalf("stats %+v", s)
+	}
+	if after := configErrors(t); after != before+1 {
+		t.Fatalf("hiyall_push_config_errors_total %v -> %v", before, after)
+	}
+}
+
+func configErrors(t *testing.T) float64 {
+	t.Helper()
+	var sb strings.Builder
+	metrics.Default.WriteTo(&sb)
+	for _, line := range strings.Split(sb.String(), "\n") {
+		if strings.HasPrefix(line, "hiyall_push_config_errors_total{") {
+			var v float64
+			_, _ = fmt.Sscan(line[strings.LastIndex(line, " ")+1:], &v)
+			return v
+		}
+	}
+	return 0
 }
 
 func TestTransientFailuresRetryWithBackoffThenGiveUp(t *testing.T) {

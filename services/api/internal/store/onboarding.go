@@ -39,7 +39,7 @@ func (s *Store) CompleteOnboarding(ctx context.Context, userID string, birth tim
 	var result Onboarding
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var active bool
-		if err := tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR UPDATE`, userID).Scan(&active); err != nil || !active {
+		if err := tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, userID).Scan(&active); err != nil || !active {
 			return domain.ErrNotFound
 		}
 		var completedAt *time.Time
@@ -50,6 +50,11 @@ func (s *Store) CompleteOnboarding(ctx context.Context, userID string, birth tim
 		if completedAt != nil {
 			result = Onboarding{true, completedAt}
 			return nil
+		}
+		if blocked, e := ageGateBlocked(ctx, tx, userID); e != nil {
+			return e
+		} else if blocked {
+			return domain.ErrAgeGateCooldown
 		}
 		var username, name string
 		if err = tx.QueryRow(ctx, `SELECT username,coalesce(data->>'displayName','') FROM profiles WHERE user_id=$1`, userID).Scan(&username, &name); err != nil {
@@ -67,7 +72,7 @@ func (s *Store) CompleteOnboarding(ctx context.Context, userID string, birth tim
 		if err = recordBirth(ctx, tx, userID, birth, true); err != nil {
 			return err
 		}
-		return appendEvent(ctx, tx, userID, "onboarding.completed", 0)
+		return nil
 	})
 	return result, err
 }
