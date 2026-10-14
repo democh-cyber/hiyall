@@ -1,6 +1,6 @@
 # Encrypted direct chat: implementation record
 
-**Status:** integration proof plus a working 1:1 chat on Android, 8 October 2026. This follows [the library evaluation](12-e2ee-library-evaluation.md). It is not yet the independent integration review required before launch.
+**Status, 13 October 2026:** a working 1:1 chat (text, photos, reactions and replies), first run on an Android emulator on 8 October; safety numbers and FCM push (sender and app token registration) are built. Not run on a real device end to end. This follows [the library evaluation](12-e2ee-library-evaluation.md). It is not yet the independent integration review required before launch.
 
 ## What runs where
 
@@ -21,15 +21,15 @@
   - Each device signs `hiyall-device-v1\n{user}\n{device}\n{identityKey}\n{signingKey}`.
   - Each one-time key signs `hiyall-otk-v1\n{user}\n{device}\n{keyId}\n{key}`.
   - The server and the clients both verify these signatures. The clients don't rely on the server's check.
-- **Device pinning:** device keys are pinned on first use. A known device id presenting different keys stops sending with `KEY_CHANGED`. A new device on a known account adds a notice in the conversation. Safety-number comparison isn't built yet.
+- **Device pinning:** device keys are pinned on first use. A known device id presenting different keys stops sending with `KEY_CHANGED`. A new device on a known account is announced (see [Hardening](#hardening-after-the-13-october-audit)). Safety numbers can be compared and marked verified.
 - **Message payload:** each payload is JSON `{v, kind, text, messageId, conversationId, senderId, sentAt}`. The receiver rejects it unless these fields match the relay metadata, so the server can't replay ciphertext into another conversation or as another sender. The kinds are `text`, `image` ([attachments](14-encrypted-chat-attachments.md)) and `reaction` (see [Reactions and replies](#reactions-and-replies)); a text or image payload may also carry a quote, `re`. A kind this app does not know, sent by a newer app, is ignored: no bubble, no notice, no error.
 - **Delivery:** each message carries one envelope per active device of the peer, plus the sender's other devices. The server rejects any other set with `DEVICES_CHANGED`, so devices can't be silently skipped or injected.
-- **Ordering:** ratchet and account state are saved before ciphertext leaves the device and before a delivery is acknowledged. All Olm calls are serialized. This follows vodozemac's guidance against message-key reuse.
+- **Ordering:** ratchet and account state are saved before ciphertext leaves the device. On receive the order is decrypt in memory, write the history, save account and sessions in one write, acknowledge (see Hardening). All Olm calls are serialized. This follows vodozemac's guidance against message-key reuse.
 - **Server retention:** the server deletes ciphertext once a device acknowledges it. Blocking closes the conversation and deletes undelivered ciphertext in both directions. Revoking a device deletes its keys and pending ciphertext.
 
 ## Storage
 
-- **App:** the pickle key, encrypted pickles, pinned keys and history are stored with `flutter_secure_storage` (Android Keystore / iOS Keychain backed). History is capped at 500 messages per conversation.
+- **App:** the pickle key, encrypted pickles, pinned keys and history are stored with `flutter_secure_storage` (Android Keystore / iOS Keychain backed, iOS items "after first unlock, this device only"). History is capped at 500 messages per conversation. Account and sessions are one entry (`hiyall.chat.<uid>.state`). Everything chat-related is erased on sign-out and account deletion, and on the first launch after a reinstall.
 - **Web:** chat is unavailable and shows a notice. Browsers can't hold keys with keystore-grade protection.
 - **Command-line peer:** `tool/chat_peer.dart` stores its state in `.runtime/chat-peer-<user>.json` (mode 600) for local testing only.
 
@@ -56,8 +56,8 @@
 - **Inbox at scale.** Migration 0008 adds `conversation_members`, one row per participant. Each row holds a sort key, a read pointer and an unread counter maintained on write. A conversation-list page is a single index range, and the unread badge is O(1). Inbox reads update `last_seen_at` at most every 5 minutes, and acknowledgements match on uuid so the primary key is used.
 - **Read receipts and typing** follow the existing `readReceipts` privacy setting and are reciprocal: both people must have it on. Your own devices always learn that you read something, so badges clear everywhere. Read pointers use the relay's clock (`serverAt`), not the sender's.
 - **Push.** `PUT/DELETE /v1/devices/{id}/push` stores an FCM or APNs token. A token is moved when it is reused and cleared when its device is revoked. The `push.Dispatcher` sends content-free wake-ups off the request path from a bounded queue, only to users with no socket on that node. `LogSender` stands in until FCM/APNs credentials exist.
-- **Safety numbers.** The conversation header shows 60 digits derived from both accounts' current device identity keys, each checked against the keys pinned on first contact: 5200 rounds of SHA-512 per side, ordered by user id. Adding or removing a device changes the number.
-- **Devices.** Profile → Chat devices lists the account's devices, with last activity shown only to the owner. Any device other than the current phone can be removed.
+- **Safety numbers.** The safety-number screen shows 60 digits derived from both accounts' current device identity keys, each checked against the keys pinned on first contact: 5200 rounds of SHA-512 per side, ordered by user id. Adding or removing a device changes the number. The screen never pins a device: a change is shown first, and a persisted "verified" mark per peer clears when either account's devices change.
+- **Devices.** Profile → Chat devices lists the account's devices, with last activity shown only to the owner. Any device other than the current phone can be removed. The list and removal work without a started chat engine (they use only the account credential), so they are usable when registration fails with `TOO_MANY_DEVICES`.
 - **Expiry.** An hourly sweep deletes delivered envelope rows after 7 days and undelivered ciphertext after 30 days, in batches of 5,000.
 
 ## Reactions and replies
@@ -108,12 +108,77 @@ The relay cannot read a message's kind, so it needs a hint to keep reactions out
 - **Server rules for `aux` messages** (`SendMessage`): every existing gate applies unchanged (blocks, age band, `messagesFrom`, exact device set, idempotency: a replay of a stored message id is answered from the stored row, quietly if it was a reaction). Then, only for `aux`: no unread increment for the peer, no `last_message_at` or member `sort_at` update (a reaction never reorders the list), the sender's read pointer is left alone, no push, but the realtime `inbox` signal is sent so the peer fetches it at once. Each envelope is at most 2048 bytes decoded (`413 TOO_LARGE`), and at most 60 reactions per sender per conversation per ten minutes (a token bucket in the shared `ratelimit` package, burst 60, one token back every ten seconds, `429 RATE_LIMITED` with `Retry-After`; with `RATE_LIMIT_BACKEND=postgres` it is shared by every node). A reaction also spends a token of the ordinary per-account send limiter, so it can never be a way round it. There is no per-day message quota; reactions are counted by the same limiter as messages. A reaction by the peer is not "the peer replied": it does not unlock photos or `messagesFrom` for the other side, and it is not counted when the app decides whether a conversation has ever held a message.
 - **Retention.** A reaction's envelopes expire exactly like a message's (delivered rows after 7 days, undelivered after 30, deleted on block or device revocation). The `messages` row keeps `aux = true`, so unread recounts, the "has the peer written" gates and report evidence can tell it from a conversation turn.
 
+## Hardening after the 13 October audit
+
+Findings C1 to C12, D1 and U1 of the v1 audit. Code: `core/chat/chat_engine.dart`, `chat_history.dart`, `chat_local_data.dart`, `chat_blob_cache.dart`, `chat_text.dart`, `features/chat.dart`; server `store/chat.go`, `httpapi/chat.go`, migration `0035_chat_devices.sql`. Tests: `test/chat_robustness_test.dart` (41, most over two devices with the real Olm core and the in-memory relay), `test/chat_robustness_ui_test.dart`, `internal/httpapi/chat_devices_test.go`.
+
+### Sessions that cross, and unwedging (C1)
+
+- Up to **5 Olm sessions per peer device**, newest first, persisted as a list per device. A pre-key message goes to the session whose id it carries (`matchesPreKey`); if it matches none, a new inbound session is created **and added**, never replacing one. Any other message is tried against each session in order. The session that last decrypted moves to the front and is the one used for sending, so two devices that both started a session (two people waving at once) converge after the first reply in each direction. A failed decrypt restores the session from its pickle, so a failure cannot damage a working one.
+- A replayed pre-key message (also one that used the fallback key) matches the session it created, fails to decrypt (the message key is spent) and changes nothing.
+- **Unwedge:** when a peer device's message cannot be decrypted, the device starts a fresh outbound session to it and sends an empty `noop` payload on it, flagged `aux` (quiet: not unread, not pushed, 2 KiB cap, same limiters as a reaction), at most **once per hour per peer device** (persisted). The peer receives a pre-key message, adds a session and the two sides match again. `noop` is an ignored kind: no bubble, no notice. The failed message itself shows the usual "couldn't be decrypted" notice.
+- Messages already in the history or opened in this run are acknowledged without decrypting again (a lost acknowledgement does not look like a decryption failure).
+
+### Relay time orders everything (C4)
+
+Messages are ordered, evicted (500 per conversation) and read-pointed by the relay's `serverAt`. `sentAt` is the sender's claim: the time shown is `sentAt` only within ±10 minutes of `serverAt`, otherwise `serverAt`. A burst of future-dated messages sorts where the relay received it and cannot push out older history or reorder a victim's own messages. Messages not yet accepted by the relay use the local clock.
+
+### Sign-out, deletion and reinstall (C2)
+
+- On sign-out and when the session ends for any reason, every `hiyall.chat.<uid>.*` secure-storage entry, `chat_blobs` and `chat_outbox` are deleted (`ChatLocalData.wipeAccount`). The stored owner id (`hiyall.chatowner`) means a sign-out is cleaned up even if the chat engine was never built in that run. A signed-out state is only believed when the session provider has resolved (not while it is still loading).
+- This phone's chat device is revoked on the server before the credential is dropped (a sign-out hook, 4 s timeout). If that fails the device id is kept under `hiyall.chatrevoke.<uid>` and removed on the next start of the same account. The server also revokes the device itself when its auth session is revoked (below).
+- iOS items use `first_unlock_this_device`: no iCloud Keychain, no backup, no move to a new phone. The Keychain survives deleting the app, so a **marker file** in the app's support folder (which does not survive) tells a fresh install from a launch: marker absent and chat items present means they are erased, the old device ids are queued for removal, and a new identity is registered. Behaviour change: a build upgrade from before this change looks like a fresh install once.
+- Android: `allowBackup=false` plus `dataExtractionRules` and `fullBackupContent` that exclude every domain.
+- Remaining: iOS includes the app support folder (ciphertext photo cache, unsent uploads) in iCloud backups; the keys that open them are this-device-only, so a restored copy is unreadable, but the files are not excluded (needs native code).
+
+### Device lifecycle (C5)
+
+- A registration refused with `409 DEVICE_CONFLICT` (revoked, or keys that belong to something else) and an inbox `404` (the relay forgot the device) make the app discard the device identity (key, account, sessions, id, this account's own pins and every verification) and register a new one. History and pins of other people stay. `TOO_MANY_DEVICES` is not reset: the person removes a device.
+- Maintenance revokes devices unseen for **90 days** (`stale chat devices`, 500 per hour), dropping their keys and pending ciphertext, which frees the 10-device cap.
+- Migration `0035`: `devices.session_id` (the auth session that registered, or last registered, the device) and a trigger on `sessions.revoked_at`: revoking a session revokes its devices, their keys and pending ciphertext, however the session was revoked (sign out, sign out everywhere else, suspension, deletion).
+
+### New devices are announced (C3, interim)
+
+There is **no cross-signing**: anyone who can authenticate to the account can register a device, and from then on receives the account's new messages (not older ones). What exists instead:
+
+- The relay sends a `device` realtime event to all of the account's devices on registration and removal. Each other device re-reads its list and shows an in-app banner "A new device was added to your account" with a link to Chat devices and a dismiss (persisted until dismissed). No push is sent for it (not done).
+- A peer's new device is recorded per peer and shown as a notice in **every** conversation with that person the next time it is opened, and at once in the conversation that saw it.
+- The safety-number screen reads the relay's current lists without pinning. It shows a change first ("changed since you verified", "added a device since your last message"). A `verified` mark is stored per peer with fingerprints of both accounts' device sets and clears when either changes; the header menu shows its state.
+- The privacy policy and data-retention text (`docs/legal`, `assets/legal`, identical) describe this caveat.
+
+### Text outbox (C9)
+
+A text is written to the history as "sending" with its final id before any network call. A transient failure (offline, 429, 5xx, 401) leaves it "not sent" with Retry and Delete under the bubble; a restart shows an interrupted send the same way; retry rebuilds the identical payload with the same id, which the relay answers idempotently. A refusal (not allowed, closed, a changed key, `AWAITING_REPLY`) removes it and puts the text back in the composer.
+
+### Receive path (C8, partly)
+
+Atomic storage is not built. Account and sessions are now **one write**. Order per message: decrypt in memory, build the message, write the history, save state, acknowledge. A failed history or state write rolls the in-memory ratchet back and leaves the message unacknowledged, to be delivered again; the saved state was never ahead of the history. A crash between the history write and the state write is repaired by the repeat (the history ignores the duplicate). Remaining risk: history and state are still separate secure-storage entries, so a crash during the state write itself can leave the ratchet one message behind what was acknowledged only if the acknowledgement had already been sent, which this order prevents; a lost acknowledgement after both writes is handled by the processed-id check but only for this run and for messages that have a history row (a reaction or noop redelivered after a restart fails to decrypt and shows a notice).
+
+### Photos (C10)
+
+A received descriptor may claim at most 2048 px on the long edge and 4 Mi pixels for the full image (the sender's own limits; a 2048 x 2048 square is allowed), 320 px for the thumbnail, a caption of 500 code points. Cached ciphertext is stored under a digest of conversation id, blob id and the descriptor's ciphertext hash, so a descriptor cannot point at another chat's photo or other bytes; a cached file that matches its own descriptor is never deleted because of a message, and dropping a message from the history deletes its cache entries only when no kept message names them. See [attachments](14-encrypted-chat-attachments.md).
+
+### Relay rules (D1, U1, C12)
+
+- The send path updates only the two `conversation_members` rows by primary key.
+- **First-contact cap:** a sender may send `FirstContactMessages` = **3** messages (not reactions or `noop`) in a conversation until the peer has sent one of their own; the fourth is refused with `403 AWAITING_REPLY`. A reaction or noop does not count and is not blocked; a replay of a stored message is not re-counted. The app shows "Waiting for <name> to reply" in the composer and disables it; Say hi counts as one of the three.
+- Per-account limiters (shared with the Postgres backend): device register, list and revoke (burst 20, one per 2 s), key count and upload (burst 30, 2/s), inbox and ack (burst 60, 5/s). Registered as `chat_devices`, `chat_keys`, `chat_inbox`.
+
+### Rendering (F23)
+
+Bidirectional controls, zero-width characters (except the joiners emoji need) and C0/C1 controls are removed from received text on receipt and again when a bubble is drawn. One unreadable history entry is skipped; an unreadable list is an empty conversation, not a crash.
+
 ## Not done yet (before launch)
 
 - Independent review of this integration: key storage, device lists, envelope handling, gateway.
-- FCM and APNs senders and the app-side token registration. Needs Firebase and Apple credentials.
+- Push delivery on real devices. The FCM sender (`internal/push/fcm.go`, iOS through FCM's APNs bridge) and the app's token registration are built and tested; they need the FCM service-account key and the APNs key uploaded to Firebase, and have not delivered to a real phone. A direct APNs sender is not built (iOS registers its FCM token instead).
 - A Redis or NATS bus and a presence registry before running more than one cell.
 - Multi-device history sync for new devices.
 - Messages sent by a device that is revoked before the recipient fetches them can't be verified and show as undecryptable. Keeping revoked devices' public keys verifiable would fix this.
+- **Cross-signing** (a device must be approved by one the owner already trusts). Until then the device-add notices above are the only defence against a stolen credential adding a device; there is no push for the notice (the push allow-list has no such kind).
+- **Forgetting the previous fallback key** after a grace period (audit F11): vodozemac has `forget_fallback_key`, but the binding in `apps/mobile/rust` does not expose it and changing the binding regenerates the bridge; not done. Until then a replayed pre-key for the old fallback key can still create a session (harmless: it is added, never replaces one, and the message id binding stops it from becoming a message).
+- **Atomic encrypted storage** for account, sessions and history together (audit C8); see the receive-path note above.
+- iCloud backup exclusion of the app support folder on iOS (needs native code); push for "new device added"; a conversation-level "message request" inbox for non-mutual senders (the cap is the only guard so far).
+- Device test of everything in the hardening section: it is tested against the real Olm core and an in-memory relay, and the server against PostgreSQL, but not on a phone.
 - Attachments: the server side is built ([storage, quotas, retention and evidence hold](../api/21-chat-attachments.md), migration `0023`); the Rust crypto core, the app (payload, outbox, cache, bubble, viewer, report evidence) are written ([attachments](14-encrypted-chat-attachments.md)) but have not been run on a device or against real storage. Edits, unsend and deleting a message for the peer, message requests from non-allowed senders, and group chat (Megolm or MLS). Reactions and replies are built (see above) and tested against the real Olm core with an in-memory relay; they have not been run on a device.
 - iOS build and test (needs macOS). Proxy-certificate rejection tests and release artifact scans.

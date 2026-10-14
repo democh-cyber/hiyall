@@ -16,6 +16,7 @@ import 'widget_test.dart' show FakeApi, SignedIn;
 /// An API whose account routes can be scripted.
 class AccountFake extends FakeApi {
   final scheduled = <String>[];
+  final appleCodes = <String?>[];
   var cancelled = 0, exports = 0;
   final scheduleFailures = <ApiFailure>[];
   ApiFailure? exportFailure, cancelFailure;
@@ -26,9 +27,14 @@ class AccountFake extends FakeApi {
       const OnboardingStatus(true, '2026-10-01');
 
   @override
-  Future<DeletionStatus> scheduleDeletion(Session s, String name) async {
+  Future<DeletionStatus> scheduleDeletion(
+    Session s,
+    String name, {
+    String? appleAuthorizationCode,
+  }) async {
     if (scheduleFailures.isNotEmpty) throw scheduleFailures.removeAt(0);
     scheduled.add(name);
+    appleCodes.add(appleAuthorizationCode);
     return DeletionStatus(
       pending: true,
       scheduledAt: DateTime.utc(2026, 10, 13),
@@ -56,7 +62,15 @@ class FakeReauth extends Reauthenticator {
   AuthMethod? kind;
   AuthFailure? failure;
   final passwords = <String?>[];
+  String? appleCode;
   FakeReauth(this.kind);
+  @override
+  String? takeAppleAuthorizationCode() {
+    final code = appleCode;
+    appleCode = null;
+    return code;
+  }
+
   @override
   AuthMethod? get method => kind;
   @override
@@ -340,6 +354,31 @@ void main() {
         reauth.failure = null;
         await press(tester, 'delete-reauth');
         expect(api.scheduled, ['anjali']);
+      },
+    );
+
+    testWidgets(
+      'An Apple account signs in with Apple first and sends the one-time code',
+      (tester) async {
+        final api = AccountFake();
+        final reauth = FakeReauth(AuthMethod.apple);
+        final container = await openAccount(tester, api, reauth: reauth);
+        await container.read(profileProvider.future);
+        await start(tester);
+        await press(tester, 'delete-continue');
+        await tester.enterText(
+          find.byKey(const Key('delete-username')),
+          'anjali',
+        );
+        await tester.pump();
+        // Even with a fresh sign-in the server has not been asked yet: Apple comes first.
+        await press(tester, 'delete-confirm');
+        expect(find.text('Continue with Apple'), findsOneWidget);
+        expect(api.scheduled, isEmpty);
+        reauth.appleCode = 'apple-code-1';
+        await press(tester, 'delete-reauth');
+        expect(api.scheduled, ['anjali']);
+        expect(api.appleCodes, ['apple-code-1']);
       },
     );
 

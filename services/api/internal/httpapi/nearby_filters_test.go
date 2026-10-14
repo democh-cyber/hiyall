@@ -94,12 +94,12 @@ func TestNearbyFiltersCombineWithDistanceOrder(t *testing.T) {
 	// The radius still applies: the filter narrows the list and never widens it.
 	users, buckets := h.nearbyOK(alice, map[string]any{"radiusKm": 25, "country": "FR"})
 	same(t, users, cara)
-	if fmt.Sprint(buckets) != "[3]" {
+	if fmt.Sprint(buckets) != "[5]" {
 		t.Fatalf("buckets %v", buckets)
 	}
 	users, buckets = h.nearbyOK(alice, map[string]any{"radiusKm": 25, "country": "IN"})
 	same(t, users, bob, dev)
-	if fmt.Sprint(buckets) != "[1 10]" {
+	if fmt.Sprint(buckets) != "[5 10]" {
 		t.Fatalf("buckets %v", buckets)
 	}
 	// Ties inside a bucket are still ordered by user id.
@@ -107,7 +107,7 @@ func TestNearbyFiltersCombineWithDistanceOrder(t *testing.T) {
 	h.north(cara, 0)
 	users, buckets = h.nearbyOK(alice, map[string]any{"radiusKm": 25, "interests": []string{"music", "art"}})
 	same(t, users, bob, cara, dev, eli) // eli likes art too, 11 km away
-	if fmt.Sprint(buckets) != "[1 1 1 15]" || !slices.IsSorted(users) {
+	if fmt.Sprint(buckets) != "[5 5 5 15]" || !slices.IsSorted(users) {
 		t.Fatalf("%v %v", users, buckets)
 	}
 	// Items keep their shape: the filter adds nothing to them.
@@ -274,7 +274,7 @@ func TestNearbyFiltersPageAndBindTheCursor(t *testing.T) {
 	invalid("interests added", map[string]any{"country": "IN", "interests": []string{"music"}, "cursor": cursor})
 	invalid("languages added", map[string]any{"country": "IN", "languages": []string{"en"}, "cursor": cursor})
 	invalid("radius changed", map[string]any{"country": "IN", "radiusKm": 50, "cursor": cursor})
-	invalid("radius dropped is not 25 here", map[string]any{"country": "IN", "radiusKm": 24, "cursor": cursor})
+	invalid("radius dropped is not 25 here", map[string]any{"country": "IN", "radiusKm": 15, "cursor": cursor})
 	// The same filters in another key order, and an explicit default radius, are the same search.
 	got, users, _ := h.nearbyList(alice, json.RawMessage(`{"cursor":"`+cursor+`","radiusKm":25,"vibe":"","country":"IN"}`))
 	h.expect(got, 200, "")

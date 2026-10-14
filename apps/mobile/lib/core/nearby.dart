@@ -14,6 +14,28 @@ class LocationStatus {
   );
 }
 
+/// The "Show me in Nearby" switch. Off by default for everyone; [minor] is
+/// whether the server treats the member as under 18 (stronger explainer, a
+/// coarser area). Coordinates never come back.
+class NearbyStatus {
+  final bool visible, sharing, minor;
+  final DateTime? updatedAt;
+  const NearbyStatus({
+    this.visible = false,
+    this.sharing = false,
+    this.minor = false,
+    this.updatedAt,
+  });
+  factory NearbyStatus.fromJson(Map<String, dynamic> json) => NearbyStatus(
+    visible: json['visible'] as bool? ?? false,
+    sharing: json['sharing'] as bool? ?? false,
+    minor: json['minor'] as bool? ?? false,
+    updatedAt: json['updatedAt'] == null
+        ? null
+        : DateTime.parse(json['updatedAt'] as String),
+  );
+}
+
 mixin NearbyApi {
   Future<dynamic> _request(
     String method,
@@ -23,6 +45,23 @@ mixin NearbyApi {
     // ignore: unused_element_parameter
     String? version,
   });
+
+  Future<NearbyStatus> nearbyStatus(Session s) async => NearbyStatus.fromJson(
+    await _request('GET', '/v1/me/nearby', token: s.token)
+        as Map<String, dynamic>,
+  );
+
+  /// Turns "Show me in Nearby" on. Stores no location; send one afterwards.
+  Future<NearbyStatus> showMeInNearby(Session s) async => NearbyStatus.fromJson(
+    await _request('PUT', '/v1/me/nearby', token: s.token)
+        as Map<String, dynamic>,
+  );
+
+  /// Turns it off and deletes the stored area on the server.
+  Future<NearbyStatus> hideFromNearby(Session s) async => NearbyStatus.fromJson(
+    await _request('DELETE', '/v1/me/nearby', token: s.token)
+        as Map<String, dynamic>,
+  );
 
   Future<LocationStatus> locationStatus(Session s) async =>
       LocationStatus.fromJson(
@@ -55,7 +94,7 @@ mixin NearbyApi {
   Future<ApiPage<Profile>> nearby(
     Session s, {
     PeopleFilters? filters,
-    int radiusKm = 50,
+    int radiusKm = 50, // one of 5, 10, 15, 25, 50, 100
     String? cursor,
   }) async {
     final body = {

@@ -58,14 +58,42 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 			a.error(w, r, err)
 			return true
 		}
-		respond(a.Store.RegisterDevice(ctx, d))
+		if limited(a.chatDevices) {
+			return true
+		}
+		if isID(p.SessionID) {
+			d.SessionID = p.SessionID
+		}
+		registered, created, err := a.Store.RegisterDeviceNew(ctx, d)
+		if err != nil {
+			a.error(w, r, err)
+			return true
+		}
+		if created {
+			// Every device of the account learns at once that one was added, so an unexpected one is noticed.
+			a.signal(ctx, "device", map[string]string{"deviceId": registered.DeviceID, "change": "added"}, p.UserID)
+		}
+		a.ok(w, r, registered)
 	case n == 3 && parts[1] == "me" && parts[2] == "devices" && method == "GET":
+		if limited(a.chatDevices) {
+			return true
+		}
 		items, err := a.Store.MyDevices(ctx, p.UserID)
 		respond(map[string]any{"items": items}, err)
 	case n == 3 && parts[1] == "devices" && isID(parts[2]) && method == "DELETE":
-		respond(map[string]bool{"revoked": true}, a.Store.RevokeDevice(ctx, p.UserID, parts[2]))
+		if limited(a.chatDevices) {
+			return true
+		}
+		err := a.Store.RevokeDevice(ctx, p.UserID, parts[2])
+		if err == nil {
+			a.signal(ctx, "device", map[string]string{"deviceId": parts[2], "change": "revoked"}, p.UserID)
+		}
+		respond(map[string]bool{"revoked": true}, err)
 	case n == 4 && parts[1] == "devices" && isID(parts[2]) && parts[3] == "keys":
 		device := parts[2]
+		if (method == "GET" || method == "POST") && limited(a.chatKeys) {
+			return true
+		}
 		if method == "GET" {
 			count, fallback, err := a.Store.KeyCount(ctx, p.UserID, device)
 			respond(map[string]any{"oneTimeKeyCount": count, "hasFallbackKey": fallback}, err)
@@ -89,6 +117,9 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		count, err := a.Store.UploadKeys(ctx, p.UserID, device, upload)
 		respond(map[string]int{"oneTimeKeyCount": count}, err)
 	case n == 4 && parts[1] == "devices" && isID(parts[2]) && parts[3] == "inbox" && method == "GET":
+		if limited(a.chatInbox) {
+			return true
+		}
 		limit := 50
 		if value := r.URL.Query().Get("limit"); value != "" {
 			v, err := strconv.Atoi(value)
@@ -101,6 +132,9 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		items, err := a.Store.Inbox(ctx, p.UserID, parts[2], limit)
 		respond(map[string]any{"items": items}, err)
 	case n == 5 && parts[1] == "devices" && isID(parts[2]) && parts[3] == "inbox" && parts[4] == "ack" && method == "POST":
+		if limited(a.chatInbox) {
+			return true
+		}
 		raw, ok := body()
 		if !ok {
 			return true

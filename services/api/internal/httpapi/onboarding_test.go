@@ -477,7 +477,7 @@ func TestHappyPathCompletionUnlocksTheAppAndKeepsTheBirthDatePrivate(t *testing.
 	// A new session for the same account is onboarded as well.
 	h.expect(h.call("GET", "/v1/feed", h.login(sam), ""), 200, "")
 
-	// Idempotent: a repeat answers the same body, changes nothing and writes no second event.
+	// Idempotent: a repeat answers the same body, changes nothing and writes nothing else.
 	again := h.expect(h.call("POST", "/v1/me/onboarding/complete", token, completeBody("1990-01-02", "2026-10-01")), 200, "").data
 	if again["completedAt"] != completedAt || again["completed"] != true || again["termsVersion"] != "2026-10-01" {
 		t.Fatalf("repeat %v", again)
@@ -486,8 +486,9 @@ func TestHappyPathCompletionUnlocksTheAppAndKeepsTheBirthDatePrivate(t *testing.
 		t.Fatal("completing twice moved completed_at")
 	}
 	var events int
-	if err = h.db.Pool.QueryRow(h.ctx, `SELECT count(*) FROM outbox_events WHERE event_type='onboarding.completed' AND aggregate_id=$1`, sam).Scan(&events); err != nil || events != 1 {
-		t.Fatalf("%d completion events (%v), want 1", events, err)
+	// No outbox rows are written any more (audit D5).
+	if err = h.db.Pool.QueryRow(h.ctx, `SELECT count(*) FROM outbox_events WHERE event_type='onboarding.completed' AND aggregate_id=$1`, sam).Scan(&events); err != nil || events != 0 {
+		t.Fatalf("%d completion events (%v), want none", events, err)
 	}
 	// Even a repeat has to be a well-formed request, and an under-13 date is still refused for a completed account.
 	h.expect(h.call("POST", "/v1/me/onboarding/complete", token, `{}`), 422, "VALIDATION")

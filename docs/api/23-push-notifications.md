@@ -114,10 +114,16 @@ worst case is a few extra nudges, never a lost message.
 * Pushes are queued (4096 entries) and sent by 4 workers. A full queue drops the
   push with a log line (`push queue full; push dropped`) and a counter
   (`Dispatcher.Stats`). Shutdown cancels the workers and any wait between retries.
-* `UNREGISTERED`, `SENDER_ID_MISMATCH`, and `INVALID_ARGUMENT` naming the token
+* `UNREGISTERED` and `INVALID_ARGUMENT` naming the token
   clear that device's token (only if the device still holds that exact token, so
   a token the app has just refreshed is kept). A bare 404 is not treated as a
   dead token, because a wrong project id also answers 404.
+* `SENDER_ID_MISMATCH` means the server's service account and the app belong to
+  different Firebase projects: a **configuration error**, not a dead token. Every
+  token would be refused the same way, so none is cleared; the failure is counted
+  in `hiyall_push_config_errors_total` (alert on any) and logged as an error.
+* In production a set but unreadable or invalid `FCM_SERVICE_ACCOUNT_FILE` stops
+  the API from starting (in development it falls back to logging pushes).
 * 429, 5xx, 401 (the cached access token is dropped) and network failures are
   retried up to 4 attempts with exponential backoff (0.5 s, 1 s, 2 s) plus jitter,
   honouring `Retry-After`. Requests time out after 10 seconds.

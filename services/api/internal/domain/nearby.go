@@ -3,12 +3,15 @@ package domain
 import (
 	"encoding/json"
 	"math"
+	"slices"
 	"strconv"
 )
 
-// Nearby is deliberately coarse. A member opts in by sending a location, the
-// server rounds it to a ~1.1 km grid before it is stored, the stored point
-// expires, and other members only ever see a distance bucket, never a point.
+// Nearby is deliberately coarse and opt-in. A member turns on "Show me in Nearby"
+// (PUT /v1/me/nearby), then sends a location; the server moves it by the member's
+// daily random offset, rounds it to a ~1.1 km grid (~11 km for minors) before it is
+// stored, the stored point expires, and other members only ever see a distance bucket
+// of at least 5 km, never a point. Only visible members can search Nearby.
 
 const (
 	// LocationDecimals is the number of decimal places kept in a stored coordinate.
@@ -24,8 +27,23 @@ const (
 	EarthRadiusKm = 6371.0
 )
 
-// NearbyBuckets are the only distances a member is ever shown, in km.
-var NearbyBuckets = []int{1, 2, 3, 5, 10, 15, 25, 50, 100}
+// NearbyBuckets are the only distances a member is ever shown, in km, and the only radii a search may
+// ask for (NearbyRadii). The smallest is MinNearbyRadiusKm: nothing finer than 5 km is ever revealed,
+// by a distance or by narrowing the radius, so a series of searches cannot close in on a member's cell.
+var NearbyBuckets = []int{5, 10, 15, 25, 50, 100}
+
+// NearbyRadii are the accepted values of radiusKm. A minor viewer's radius is widened to their own
+// bucket set (NearbyRadiusFor).
+var NearbyRadii = NearbyBuckets
+
+// MinNearbyRadiusKm is the smallest radius and the smallest distance bucket.
+const MinNearbyRadiusKm = 5
+
+// NearbyRadiusFor is the radius actually searched for a viewer: the requested one for an adult, and the
+// smallest of the minor buckets that covers it for a minor (5 becomes 10, 15 becomes 25).
+func NearbyRadiusFor(minorViewer bool, radiusKm int) int {
+	return DistanceBucketIn(NearbyBucketsFor(minorViewer), float64(radiusKm))
+}
 
 var ErrLocationNotShared = &PolicyError{409, "LOCATION_NOT_SHARED", "Share your location to see people nearby."}
 
@@ -104,13 +122,14 @@ func ParseLocation(body map[string]json.RawMessage) (LocationInput, error) {
 	}, nil
 }
 
-// ParseNearbyRadius reads a present radiusKm value: the text of a plain integer
-// from 1 to 100 with no sign, space, decimal point, exponent or leading zero. A
-// JSON string or null never matches, because its raw text carries quotes or letters.
+// ParseNearbyRadius reads a present radiusKm value: the text of a plain integer that is one of
+// NearbyRadii, with no sign, space, decimal point, exponent or leading zero. A JSON string or null never
+// matches, because its raw text carries quotes or letters. Any other radius is refused, so the circle
+// cannot be narrowed below MinNearbyRadiusKm or moved between the buckets.
 func ParseNearbyRadius(raw string) (int, error) {
 	n, err := strconv.Atoi(raw)
-	if err != nil || n < 1 || n > MaxNearbyRadiusKm || strconv.Itoa(n) != raw {
-		return 0, invalid("radiusKm", "must be a whole number from 1 to 100")
+	if err != nil || strconv.Itoa(n) != raw || !slices.Contains(NearbyRadii, n) {
+		return 0, invalid("radiusKm", "must be one of 5, 10, 15, 25, 50 or 100")
 	}
 	return n, nil
 }

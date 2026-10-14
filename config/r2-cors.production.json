@@ -1,0 +1,9 @@
+[
+  {
+    "AllowedOrigins": ["https://app.<your-domain>"],
+    "AllowedMethods": ["GET", "PUT"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]

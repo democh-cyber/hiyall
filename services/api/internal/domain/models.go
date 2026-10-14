@@ -154,7 +154,11 @@ func validateString(name string, raw json.RawMessage, min, max int) (string, err
 	if multiline[name] {
 		clean = CleanText
 	}
-	if json.Unmarshal(raw, &value) != nil || !clean(value) {
+	if json.Unmarshal(raw, &value) != nil {
+		return "", invalid(name, "must be valid text")
+	}
+	value = Normalize(value)
+	if !clean(value) {
 		return "", invalid(name, "must be valid text")
 	}
 	length := utf8.RuneCountInString(value)
@@ -179,6 +183,9 @@ func ValidateProfilePatch(patch map[string]json.RawMessage) error {
 			if err != nil {
 				return err
 			}
+			// The stored value is the normalised one (NFC), not the text as typed.
+			normalised, _ := json.Marshal(value)
+			patch[name] = normalised
 			switch name {
 			case "profileAccent":
 				if !member(value, "lime", "violet", "cyan") {
@@ -268,13 +275,17 @@ func ValidateProfilePatch(patch map[string]json.RawMessage) error {
 				return invalid(name, "choose up to ten interests")
 			}
 			seen := map[string]bool{}
-			for _, value := range values {
+			for i, value := range values {
+				value = Normalize(value)
+				values[i] = value
 				key := strings.ToLower(value)
 				if strings.TrimSpace(value) != value || value == "" || !CleanLine(value) || utf8.RuneCountInString(value) > 40 || seen[key] {
 					return invalid(name, "use unique interests of 1–40 characters")
 				}
 				seen[key] = true
 			}
+			normalised, _ := json.Marshal(values)
+			patch[name] = normalised
 		default:
 			return invalid(name, "field is not editable")
 		}

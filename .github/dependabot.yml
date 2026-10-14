@@ -25,11 +25,18 @@ updates:
     schedule: { interval: weekly, day: monday }
     groups:
       npm-minor-patch: { update-types: [minor, patch] }
+  # The admin console UI has its own lockfile (apps/admin/package-lock.json), so the root entry does not see it.
+  - package-ecosystem: npm
+    directory: /apps/admin
+    schedule: { interval: weekly, day: monday }
+    groups:
+      admin-npm-minor-patch: { update-types: [minor, patch] }
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly, day: monday }
     groups:
       actions-minor-patch: { update-types: [minor, patch] }
+  # Covers services/api/Dockerfile and services/api/Dockerfile.admin.
   - package-ecosystem: docker
     directory: /services/api
     schedule: { interval: weekly, day: monday }

@@ -11,6 +11,7 @@ import '../../core/theme.dart';
 import '../../shared/widgets.dart';
 import '../legal_screens.dart' show LegalFooter;
 import 'auth_widgets.dart';
+import '../../core/user_error.dart';
 
 /// Shown while the app restores a sign-in, or when it could not reach the
 /// service to finish one.
@@ -113,13 +114,14 @@ class WelcomeScreen extends ConsumerWidget {
           ],
           FilledButton(
             key: const Key('create-account'),
-            onPressed: () => context.go('/signup'),
+            // push, so Back from Sign up returns here instead of leaving the app.
+            onPressed: () => context.push('/signup'),
             child: const Text('Create account'),
           ),
           const SizedBox(height: 12),
           OutlinedButton(
             key: const Key('log-in'),
-            onPressed: () => context.go('/login'),
+            onPressed: () => context.push('/login'),
             child: const Text('Log in'),
           ),
           const SizedBox(height: 18),
@@ -158,7 +160,7 @@ class WelcomeScreen extends ConsumerWidget {
               ),
             if (session.hasError)
               Text(
-                session.error.toString(),
+                friendlyError(session.error),
                 style: TextStyle(color: scheme.error),
               ),
           ],
@@ -551,30 +553,68 @@ class VerifyEmailScreen extends ConsumerStatefulWidget {
   ConsumerState<VerifyEmailScreen> createState() => _VerifyEmailState();
 }
 
+/// How long to wait before the next automatic "is it verified yet?" check:
+/// 5 s, then 15 s, then every 30 s. Each check refreshes the account's token,
+/// so it backs off instead of hammering the identity provider.
+Duration verifyPollDelay(int attempt) => Duration(
+  seconds: switch (attempt) {
+    0 => 5,
+    1 => 15,
+    _ => 30,
+  },
+);
+
 class _VerifyEmailState extends ConsumerState<VerifyEmailScreen>
     with AuthActions {
   static const cooldown = 45;
   Timer? poll, tick;
-  int wait = cooldown;
+  int wait = cooldown, attempts = 0;
   String? notice;
+  AppLifecycleListener? lifecycle;
 
-  @override
-  void initState() {
-    super.initState();
-    poll = Timer.periodic(const Duration(seconds: 5), (_) {
+  void schedulePoll() {
+    poll?.cancel();
+    poll = Timer(verifyPollDelay(attempts), () {
+      attempts++;
       if (!busy) {
         ref.read(sessionProvider.notifier).refreshAuth().catchError((_) {});
       }
+      if (mounted) schedulePoll();
     });
+  }
+
+  void startTick() {
+    tick?.cancel();
     tick = Timer.periodic(const Duration(seconds: 1), (_) {
       if (wait > 0 && mounted) setState(() => wait--);
     });
   }
 
   @override
+  void initState() {
+    super.initState();
+    schedulePoll();
+    startTick();
+    // Nothing runs in the background; coming back checks straight away.
+    lifecycle = AppLifecycleListener(
+      onPause: () {
+        poll?.cancel();
+        tick?.cancel();
+      },
+      onResume: () {
+        attempts = 0;
+        schedulePoll();
+        startTick();
+        ref.read(sessionProvider.notifier).refreshAuth().catchError((_) {});
+      },
+    );
+  }
+
+  @override
   void dispose() {
     poll?.cancel();
     tick?.cancel();
+    lifecycle?.dispose();
     super.dispose();
   }
 

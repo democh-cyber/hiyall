@@ -64,7 +64,9 @@ Proposed local development: Docker Compose with Postgres, Redis, OpenSearch, S3-
 
 Production: ECS Fargate containers across at least two AZs (prefer three where available), ALB/WAF ingress, private subnets, regional Postgres writer, replicas for eligible reads, Redis, dedicated OpenSearch, S3 private quarantine/published buckets, CDN origin access control, SQS/DLQs, Secrets Manager/KMS. Admin is a separate hostname, audience, ECS task role, and access policy. Scheduled cleanup runs from one leased job owner; worker concurrency caps expensive jobs.
 
-| Configuration key | Purpose | Secret? |
+**Planned, not implemented.** The keys below describe the target architecture; apart from `APP_ENV` none of them is read by the API today. The variables the API actually reads are listed, with defaults, in [`infrastructure/docker/api.example.env`](../../infrastructure/docker/api.example.env) and section 3 of the [deploy guide](10-deploy-guide.md).
+
+| Configuration key (planned) | Purpose | Secret? |
 |---|---|---|
 | `APP_ENV`, `REGION`, `HOME_CELL_ID` | Environment/routing identity | No |
 | `PUBLIC_API_BASE_URL`, `REALTIME_URL` | Mobile build-safe endpoints | No |
@@ -88,7 +90,7 @@ Pin Flutter/Dart, Go, Terraform, database, and library versions at repository se
 4. Run migration rehearsal, authorization tests, provider integration, load baseline, rollback and restore drills in staging. Deploy immutable image digests, migration version, schema compatibility manifest, and SBOM.
 5. Release to limited production audience with progressive routing/feature flags; monitor error budget, queue age, and auth/delivery errors. Roll back application readers only while data schema stays compatible.
 
-CI: format/lint → domain unit/property tests → source integration/migration checks → API/security negatives → mobile widget/device flows → dependency/image/IaC scans → signed builds → staging deploy → smoke/load budget checks → controlled production release. Android release needs signing ownership; iOS build/release requires macOS and Apple developer configuration. Docker cannot substitute for iOS build tools.
+CI today (`.github/workflows/foundation.yml` on every pull request and push to `main`; `.github/workflows/release.yml` on `v*` tags): formatting, analysis and tests for Go, Flutter (with the real-Olm tests against a freshly built Rust core), Rust and the contract; govulncheck, npm audit, cargo-audit and osv-scanner; an image build with a trivy scan and a migrate-and-ready smoke run; tagged releases push the image to GHCR by digest with an SBOM and run migrations only after a reviewer approves the `production` environment. Target pipeline: format/lint → domain unit/property tests → source integration/migration checks → API/security negatives → mobile widget/device flows → dependency/image/IaC scans → signed builds → staging deploy → smoke/load budget checks → controlled production release. Android release needs signing ownership; iOS build/release requires macOS and Apple developer configuration. Docker cannot substitute for iOS build tools.
 
 ## Recovery objectives and runbooks
 

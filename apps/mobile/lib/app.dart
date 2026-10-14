@@ -8,9 +8,12 @@ import 'core/account_state.dart';
 import 'core/activity_state.dart';
 import 'core/home_prefs.dart';
 import 'core/legal_documents.dart';
+import 'core/app_info.dart';
+import 'core/deep_link.dart';
 import 'core/location_sync.dart';
 import 'core/state.dart';
 import 'features/chat.dart';
+import 'features/help_safety.dart';
 import 'features/home.dart';
 import 'features/legal_screens.dart';
 import 'features/live_sync.dart';
@@ -19,6 +22,7 @@ import 'features/account_data.dart'
 import 'features/auth/auth_screens.dart';
 import 'features/auth/onboarding_screen.dart';
 import 'features/screens.dart';
+import 'features/system_screens.dart';
 import 'features/profile.dart';
 import 'features/pulse.dart';
 import 'features/safety.dart';
@@ -40,8 +44,23 @@ const _openRoutes = {
 };
 
 /// Where each sign-in state belongs. Re-evaluated whenever the session, or an
-/// account waiting on email verification, changes.
-String? authRedirect(Ref ref, String location) {
+/// account waiting on email verification, changes. A page someone was sent
+/// away from ([uri], defaulting to [location]) is remembered and opened once
+/// they are signed in and onboarded, instead of Home.
+String? authRedirect(Ref ref, String location, [Uri? uri]) {
+  // A retired app version can do nothing but update.
+  if (ref.read(upgradeRequiredProvider)) {
+    return location == '/update' ? null : '/update';
+  }
+  final memory = ref.read(deepLinkMemoryProvider);
+  final target = _authTarget(ref, location);
+  if (target == null) return null;
+  memory.remember(uri ?? Uri(path: location));
+  if (target == '/home') return memory.take() ?? '/home';
+  return target;
+}
+
+String? _authTarget(Ref ref, String location) {
   // Legal pages are readable in every state, including signed out and mid-sign-up.
   if (LegalDoc.forPath(location) != null) return null;
   final session = ref.read(sessionProvider);
@@ -71,6 +90,7 @@ String? authRedirect(Ref ref, String location) {
         '/verify-email',
         '/splash',
         '/account-deletion',
+        '/update',
       }.contains(location)) {
     return '/home';
   }
@@ -82,11 +102,18 @@ final routerProvider = Provider<GoRouter>((ref) {
   ref.listen(sessionProvider, (_, _) => refresh.value++);
   ref.listen(awaitingVerificationProvider, (_, _) => refresh.value++);
   ref.listen(pendingAccountProvider, (_, _) => refresh.value++);
+  ref.listen(upgradeRequiredProvider, (_, _) => refresh.value++);
   final router = GoRouter(
     initialLocation: '/home',
     refreshListenable: refresh,
-    redirect: (context, state) => authRedirect(ref, state.matchedLocation),
+    redirect: (context, state) =>
+        authRedirect(ref, state.matchedLocation, state.uri),
+    errorBuilder: (context, state) => const NotFoundScreen(),
     routes: [
+      GoRoute(
+        path: '/update',
+        builder: (context, state) => const UpdateRequiredScreen(),
+      ),
       GoRoute(
         path: '/splash',
         builder: (context, state) => const SplashScreen(),
@@ -136,10 +163,20 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/spaces/new',
-        builder: (context, state) => CreateSpaceScreen(
-          kind: state.uri.queryParameters['kind'] ?? 'community',
-          parentId: state.uri.queryParameters['parent'],
-        ),
+        builder: (context, state) {
+          final kind = state.uri.queryParameters['kind'] ?? 'community';
+          // Events and Moments (and anything nested under a community) are
+          // switched off for V1.
+          if (!FeatureFlags.events &&
+              (kind != 'community' ||
+                  state.uri.queryParameters['parent'] != null)) {
+            return const NotFoundScreen();
+          }
+          return CreateSpaceScreen(
+            kind: kind,
+            parentId: state.uri.queryParameters['parent'],
+          );
+        },
       ),
       GoRoute(
         path: '/people',
@@ -302,6 +339,10 @@ final routerProvider = Provider<GoRouter>((ref) {
               GoRoute(
                 path: 'settings',
                 builder: (context, state) => const SettingsScreen(),
+              ),
+              GoRoute(
+                path: 'help',
+                builder: (context, state) => const HelpSafetyScreen(),
               ),
               GoRoute(
                 path: 'reports',

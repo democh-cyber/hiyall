@@ -79,6 +79,26 @@ void main() {
     expect(status.pending && status.canCancel, isTrue);
   });
 
+  test('An Apple account sends its one-time authorization code too', () async {
+    final seen = <String>[];
+    final api = clientWith(
+      seen,
+      (o) => json(o, 200, {
+        'success': true,
+        'data': {'pending': true, 'canCancel': true},
+      }),
+    );
+    await api.scheduleDeletion(
+      session,
+      'anjali',
+      appleAuthorizationCode: 'c.abc',
+    );
+    expect(
+      seen.single,
+      'POST /v1/me/deletion Bearer tok {"confirmUsername":"anjali","appleAuthorizationCode":"c.abc"}',
+    );
+  });
+
   test('A stale sign-in is REAUTH_REQUIRED with the server\'s words', () async {
     final api = clientWith(
       [],

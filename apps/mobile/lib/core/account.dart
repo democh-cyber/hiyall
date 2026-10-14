@@ -48,16 +48,21 @@ mixin AccountApi {
       );
 
   /// Schedules deletion in 30 days. Throws [ApiFailure] with code
-  /// `REAUTH_REQUIRED` when the sign-in is older than five minutes.
+  /// `REAUTH_REQUIRED` when the sign-in is older than five minutes. Apple accounts send the one-time
+  /// [appleAuthorizationCode] from their Apple re-sign-in so the server can revoke Apple's token.
   Future<DeletionStatus> scheduleDeletion(
     Session s,
-    String confirmUsername,
-  ) async => DeletionStatus.fromJson(
+    String confirmUsername, {
+    String? appleAuthorizationCode,
+  }) async => DeletionStatus.fromJson(
     await _request(
       'POST',
       '/v1/me/deletion',
       token: s.token,
-      body: {'confirmUsername': confirmUsername},
+      body: {
+        'confirmUsername': confirmUsername,
+        'appleAuthorizationCode': ?appleAuthorizationCode,
+      },
     ) as Map<String, dynamic>,
   );
 

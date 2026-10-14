@@ -6,7 +6,7 @@
     "flutter": "3.47.6",
     "flutterCommit": "5fc346839b5d0eef006ed8404392afb4dfae428d",
     "dart": "3.13.5",
-    "go": "1.27.1",
+    "go": "1.27.2",
     "node": "24.21.0",
     "java": "Temurin 21.0.12.1+1",
     "postgresql": "16.15",
@@ -65,8 +65,8 @@
       "sha256": "a134b0319a82d14581b3a14820d2832af4ec9778ed8b9b4ddaeecfb0555ec325"
     },
     {
-      "file": "go1.27.1.tar.gz",
-      "sha256": "63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445"
+      "file": "go1.27.2.tar.gz",
+      "sha256": "ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5"
     },
     {
       "file": "java.tar.gz",

@@ -18,6 +18,7 @@ import '../core/state.dart';
 import '../shared/person_link.dart';
 import '../shared/widgets.dart';
 import '../shared/profile_space.dart';
+import '../core/user_error.dart';
 
 class NotificationsScreen extends ConsumerWidget {
   const NotificationsScreen({super.key});
@@ -30,7 +31,7 @@ class NotificationsScreen extends ConsumerWidget {
       try {
         await action();
       } catch (e) {
-        if (context.mounted) showMessage(context, e.toString());
+        if (context.mounted) showFailure(context, e);
       }
     }
 
@@ -132,7 +133,7 @@ class _PersonState extends ConsumerState<PersonScreen> {
         if (blocked) goBack(context);
       }
     } catch (e) {
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     } finally {
       if (mounted) setState(() => busy = false);
     }

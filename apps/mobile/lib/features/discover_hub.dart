@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/api.dart';
+import '../core/app_info.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
 import '../shared/widgets.dart';
@@ -60,10 +61,10 @@ class _DiscoverHubState extends ConsumerState<DiscoverHub> {
                 icon: const Icon(Icons.explore_outlined, size: 22),
                 onSelected: (value) => setState(() => section = value),
                 itemBuilder: (_) => [
-                  for (final (value, label) in const [
+                  for (final (value, label) in [
                     ('people', 'People'),
                     ('circles', 'Circles'),
-                    ('moments', 'Moments'),
+                    if (FeatureFlags.events) ('moments', 'Moments'),
                   ])
                     CheckedPopupMenuItem(
                       key: Key('discover-tab-$value'),

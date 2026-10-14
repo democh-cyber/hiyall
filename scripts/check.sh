@@ -15,8 +15,20 @@ go run ./cmd/migrate
 go vet ./...
 go test -race ./...
 if command -v govulncheck >/dev/null; then govulncheck ./...; fi
+# Admin console (apps/admin): typecheck, tests and build, only when its dependencies are installed
+# (run `npm --prefix apps/admin ci` once; this script stays runnable offline and never installs them).
+if [[ -d "$task_root/apps/admin/node_modules" ]]; then
+  npm --prefix "$task_root/apps/admin" run typecheck
+  npm --prefix "$task_root/apps/admin" test
+  npm --prefix "$task_root/apps/admin" run build
+else
+  echo "check.sh: apps/admin/node_modules missing, skipping the admin console checks (npm --prefix apps/admin ci)"
+fi
 cd "$task_root/apps/mobile/rust"
 cargo test --quiet
+# The real-Olm interop tests load the debug build of the Rust core; build it so they run, not skip.
+cargo build --quiet
 cd "$task_root/apps/mobile"
+dart format --set-exit-if-changed lib test
 flutter analyze
-flutter test --dart-define=ENABLE_DEV_LOGIN=true --dart-define=API_BASE_URL=http://127.0.0.1:8080
+REQUIRE_RUST_CORE=1 flutter test --dart-define=ENABLE_DEV_LOGIN=true --dart-define=API_BASE_URL=http://127.0.0.1:8080

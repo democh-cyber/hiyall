@@ -76,7 +76,11 @@ Checks run in this order:
 {"success":true,"data":{"available":true},"meta":{...}}
 ```
 
-The username must match the profile grammar (3-30 lowercase letters, digits or underscores), otherwise 422 `VALIDATION`. It is available when no other account holds it; the caller's own current name is available. Generated `member_<12 hex>` names are never available, and `PATCH /v1/me/profile` refuses to change a username to one (422 `VALIDATION`, "this username is reserved"). The check shares the per-account `search` rate limit (burst 10, one more every 2 seconds): 429 `RATE_LIMITED` with `Retry-After`. It is advisory; the profile `PATCH` is still the authority and can answer 409 `USERNAME_TAKEN`.
+The username must match the profile grammar (3-30 lowercase letters, digits or underscores), otherwise 422 `VALIDATION`. It is available when no other account holds it; the caller's own current name is available. Generated `member_<12 hex>` names are never available, and `PATCH /v1/me/profile` refuses to change a username to one (422 `VALIDATION`, "this username is reserved"). The check shares the per-account `search` rate limit (burst 10, one more every 2 seconds): 429 `RATE_LIMITED` with `Retry-After`. It is advisory; the profile `PATCH` is still the authority and can answer 409 `USERNAME_TAKEN` (only when the unique constraint on `profiles.username` is what failed; any other duplicate is a 412 conflict).
+
+**Renaming.** Changing the username starts a **30 day cooldown**: a second change before it ends is 429 `USERNAME_COOLDOWN` with `Retry-After` (`profiles.username_changed_at`, migration 0037). Choosing the first real name over the generated `member_…` one does not start it, a refused rename (taken, reserved) does not either, and the cooldown never blocks other profile edits. `PATCH /v1/me/profile` and `/v1/me/privacy` are also limited per account (burst 30, then one every 3 seconds; 429 `RATE_LIMITED`).
+
+`POST /v1/me/onboarding/age` `{birthDate}` (allowed before onboarding) checks a declared date as soon as it is chosen and stores nothing: `200 {allowed:true}`, `403 AGE_REQUIREMENT_NOT_MET` for a date under 13 (recorded against the sign-in identity, no date kept), and `403 AGE_GATE_COOLDOWN` for 7 days after a refusal, whatever date follows; `complete` refuses the same way. See [18 teen safety](../architecture/18-teen-safety.md#age-gate-t5).
 
 ### Gating
 
@@ -103,7 +107,8 @@ The location and Nearby routes (`/v1/me/location`, `/v1/discover/nearby`) are de
 | 403 | `AGE_REQUIREMENT_NOT_MET` | Declared age under 13 (`domain.MinimumAge`) |
 | 422 | `VALIDATION` | Malformed completion body or username |
 | 422 | `PROFILE_INCOMPLETE` | Name or username still generated |
-| 429 | `RATE_LIMITED` | Username checks too frequent |
+| 429 | `RATE_LIMITED` | Username checks or profile edits too frequent |
+| 429 | `USERNAME_COOLDOWN` | The username was changed in the last 30 days (`Retry-After`) |
 | 503 | `AUTH_UNAVAILABLE` | Signing keys or database unreachable; do not sign the person out |
 
 CORS is unchanged: the same allowed headers and methods, and the same exposed headers (`ETag`, `X-Request-Id`). The refusals above carry the usual CORS headers, so the web client can read them.

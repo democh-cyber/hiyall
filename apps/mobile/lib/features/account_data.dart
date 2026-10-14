@@ -278,16 +278,29 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen> {
     error = null;
   });
 
+  /// The one-time Apple code from the last Apple re-sign-in; spent by the request, so it is cleared after.
+  String? appleCode;
+
   Future<void> schedule() async {
     if (busy) return;
+    // An Apple account always signs in with Apple again first: that gives the one-time code the server
+    // trades for Apple's token and revokes (App Store guideline 5.1.1(v)).
+    final reauth = ref.read(reauthenticatorProvider);
+    appleCode ??= reauth.takeAppleAuthorizationCode();
+    if (reauth.method == AuthMethod.apple && appleCode == null) {
+      go(_Step.reauth);
+      return;
+    }
     setState(() {
       busy = true;
       error = null;
     });
+    final code = appleCode;
+    appleCode = null;
     try {
       final status = await ref
           .read(apiProvider)
-          .scheduleDeletion(session, typed);
+          .scheduleDeletion(session, typed, appleAuthorizationCode: code);
       // Every session ended on the server; leave this one too, quietly, and say when it ends.
       ref.read(deletionScheduledProvider.notifier).set(status.dueAt);
       final router = ref.read(routerProvider);
@@ -465,7 +478,7 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen> {
       tokens,
       Icons.lock_outline_rounded,
       'Your chat messages',
-      'They’re end-to-end encrypted and live only on your devices, so we can’t read or restore them. The conversations are removed from our servers; copies on your devices go when you sign out or remove the app.',
+      'They’re end-to-end encrypted and live only on your devices, so we can’t read or restore them. The conversations are removed from our servers; the copy on this phone is erased when you sign out or delete your account. If you remove the app without signing out, Android erases it with the app; on iPhone it is erased the next time you open Hiyall after reinstalling.',
     ),
     const SizedBox(height: 6),
     FilledButton(

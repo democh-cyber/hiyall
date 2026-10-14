@@ -1,8 +1,6 @@
 package httpapi
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -33,9 +31,7 @@ type page struct {
 
 func (a *API) signList(c listCursor) string {
 	data, _ := json.Marshal(c)
-	mac := hmac.New(sha256.New, a.cursorKey[:])
-	mac.Write(data)
-	return base64.RawURLEncoding.EncodeToString(data) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return base64.RawURLEncoding.EncodeToString(data) + "." + base64.RawURLEncoding.EncodeToString(a.cursorMAC("", data))
 }
 
 func (a *API) pageOf(w http.ResponseWriter, r *http.Request, p store.Principal, kind string) (page, bool) {
@@ -58,9 +54,7 @@ func (a *API) pageOf(w http.ResponseWriter, r *http.Request, p store.Principal, 
 	if valid {
 		data, e := base64.RawURLEncoding.DecodeString(parts[0])
 		sig, e2 := base64.RawURLEncoding.DecodeString(parts[1])
-		mac := hmac.New(sha256.New, a.cursorKey[:])
-		mac.Write(data)
-		valid = e == nil && e2 == nil && hmac.Equal(sig, mac.Sum(nil)) && json.Unmarshal(data, &c) == nil && c.User == p.UserID && c.Kind == kind && c.Exp > time.Now().Unix()
+		valid = e == nil && e2 == nil && a.cursorSigValid(sig, "", data) && json.Unmarshal(data, &c) == nil && c.User == p.UserID && c.Kind == kind && c.Exp > time.Now().Unix()
 		valid = valid && isID(c.ID)
 	}
 	if !valid {
@@ -137,7 +131,7 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 			if !write() {
 				return true
 			}
-			state, err := a.Store.Follow(ctx, p.UserID, target)
+			state, err := a.Store.Follow(ctx, p.UserID, target, a.entitlementsFor(ctx, p.UserID))
 			if err != nil {
 				a.error(w, r, err)
 				return true
@@ -160,7 +154,7 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 			if !write() {
 				return true
 			}
-			value, err := a.Store.SendFriendRequest(ctx, p.UserID, target, a.signer(ctx))
+			value, err := a.Store.SendFriendRequest(ctx, p.UserID, target, a.signer(ctx), a.entitlementsFor(ctx, p.UserID))
 			if err != nil {
 				a.error(w, r, err)
 				return true
@@ -276,7 +270,7 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 		switch {
 		case n == 2 && method == "GET":
 			unreadOnly := r.URL.Query().Get("unreadOnly") == "true"
-			unread, err := a.Store.UnreadNotifications(ctx, p.UserID)
+			unread, more, err := a.Store.UnreadBadge(ctx, p.UserID)
 			if err != nil {
 				a.error(w, r, err)
 				return true
@@ -287,14 +281,15 @@ func (a *API) socialRoute(w http.ResponseWriter, r *http.Request, p store.Princi
 			}
 			paged(a, w, r, p, kind, func(pg page) ([]domain.Notification, error) {
 				return a.Store.ListNotifications(ctx, p.UserID, unreadOnly, pg.before, pg.id, pg.limit, a.signer(ctx))
-			}, func(n domain.Notification) (time.Time, string) { return n.CreatedAt, n.NotificationID }, map[string]any{"unreadCount": unread})
+			}, func(n domain.Notification) (time.Time, string) { return n.CreatedAt, n.NotificationID }, map[string]any{"unreadCount": unread, "unreadMore": more})
 		case n == 3 && parts[2] == "unread-count" && method == "GET":
-			unread, err := a.Store.UnreadNotifications(ctx, p.UserID)
+			unread, more, err := a.Store.UnreadBadge(ctx, p.UserID)
 			if err != nil {
 				a.error(w, r, err)
 				return true
 			}
-			a.ok(w, r, map[string]int{"unreadCount": unread})
+			// unreadCount stops at 99; unreadMore tells the app to show "99+".
+			a.ok(w, r, map[string]any{"unreadCount": unread, "unreadMore": more})
 		case n == 3 && parts[2] == "read-all" && method == "POST":
 			count, err := a.Store.MarkAllNotificationsRead(ctx, p.UserID)
 			if err != nil {

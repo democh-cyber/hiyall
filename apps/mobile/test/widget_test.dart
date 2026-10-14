@@ -23,6 +23,8 @@ class FakeApi extends ApiClient {
   bool? requestedBlock;
   int profileReads = 0;
   @override
+  Future<NearbyStatus> nearbyStatus(Session s) async => const NearbyStatus();
+  @override
   Future<Profile> otherProfile(Session session, String userId) async {
     if (blocked) throw const ApiFailure("This profile is unavailable.", 404);
     return Profile(

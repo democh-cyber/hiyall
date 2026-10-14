@@ -34,3 +34,22 @@ func ParseDeletionRequest(body map[string]json.RawMessage) (string, error) {
 	}
 	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(confirm), "@")), nil
 }
+
+// ParseDeletion reads the body of POST /v1/me/deletion: {confirmUsername} and, for a member who signs in
+// with Apple, {appleAuthorizationCode}, the one-time code from re-authenticating with Apple.
+func ParseDeletion(body map[string]json.RawMessage) (confirm, appleCode string, err error) {
+	if code, ok := body["appleAuthorizationCode"]; ok {
+		if json.Unmarshal(code, &appleCode) != nil || appleCode == "" || len(appleCode) > 2048 {
+			return "", "", &ValidationError{Field: "appleAuthorizationCode", Message: "send the code Apple returned"}
+		}
+		rest := map[string]json.RawMessage{}
+		for k, v := range body {
+			if k != "appleAuthorizationCode" {
+				rest[k] = v
+			}
+		}
+		body = rest
+	}
+	confirm, err = ParseDeletionRequest(body)
+	return confirm, appleCode, err
+}

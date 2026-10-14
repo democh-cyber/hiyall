@@ -16,6 +16,7 @@ Bytes never pass through the API or live in Postgres.
    - It rejects anything that isn't a JPEG, PNG or WebP image (415), and any image over 40 megapixels, so a small file can't declare a huge canvas.
    - It applies EXIF orientation and re-encodes a 2048 px "full" and a 640 px "thumb" JPEG.
    - Re-encoding from pixels drops all metadata, including GPS. The original upload is deleted.
+   - **Scanning.** Before the variants are stored, the upload scanner (`SCAN_HASHLIST_FILE` and/or `SCAN_PROVIDER_URL`) inspects the exact upload and the re-encoded copy. `clean` continues. A flag or a match quarantines the photo (kept under `hold/`, never served, never attachable), opens a case in the admin console, and a match suspends the uploader; the member gets `422 UPLOAD_REJECTED` and nothing about why. A scanner that cannot answer gives `503 SCAN_UNAVAILABLE` and the upload stays pending (retry). See [illegal content runbook](../security/16-csam-and-illegal-content.md). Chat photos are end-to-end encrypted and cannot be scanned.
    - Processing is CPU-bound, so each node runs at most 4 at once. At scale this moves to a media worker behind a queue.
 
 Reads use signed GET URLs that last one hour. They are minted only after the viewer has been authorized for the post or story that uses the photo (profile photos follow the profile: see [Profile photos](20-profile-photos.md)). Unsigned reads are refused by storage. The app caches images by media id, so a refreshed URL doesn't refetch the bytes.
@@ -26,6 +27,10 @@ Clean-up runs hourly in the API's maintenance loop:
 - photos of deleted posts and stories
 - profile photos that were replaced or cleared
 - stories a day after they expire, along with their views (in batches of 5000; the loop repeats while a batch deletes 5000 stories, counted as stories, not photos)
+
+**Objects first, then rows.** The "media cleanup" job (`store.PurgeMedia`) claims photo rows 50 at a time with `FOR UPDATE SKIP LOCKED` (two nodes never take the same ones), deletes each row's objects from storage, and only then marks the rows whose objects are all gone as finished (status `deleted`, keys cleared). A failed delete leaves its row untouched for the next run and does not hold back the others; the job reports an error so `hiyall_maintenance_job_runs_total{job="media cleanup",result="error"}` shows it. A row is therefore never finished while an object remains, which is what lets the account purge treat "no `media_assets` rows left" as "no photo objects left". Every job has its own timeout (10 minutes; 20 for the cleanups and the account purge) and runs on a separate small database pool with longer statement limits than a request. `outbox_events` older than 7 days are deleted by the "outbox purge" job (nothing writes the table any more).
+
+**Finishing an upload** (`POST /v1/media/{id}/complete`) downloads, decodes and re-encodes the photo, so it has its own 30 second deadline (every other request: 10) and its own per-account limiter (burst 30, then one every 2 seconds, 429 `RATE_LIMITED`). At most 4 photos are processed at once per node, and a photo may be at most 20 megapixels (15 MB, checked before decoding). Set `GOMEMLIMIT` on the machine (deploy guide, section 7).
 
 Encrypted chat photos do not use this pipeline or this bucket: see [encrypted chat attachments](21-chat-attachments.md). Development uses SeaweedFS (`scripts/dev-storage.sh`, S3 on `127.0.0.1:8333`, credentials generated into `.runtime/storage/`). Production sets `MEDIA_ENDPOINT`, `MEDIA_ACCESS_KEY`, `MEDIA_SECRET_KEY`, `MEDIA_BUCKET` and `MEDIA_SECURE=true` for S3, R2 or similar, behind a CDN. Video is not accepted yet: it needs a transcoding worker that also strips metadata.
 
@@ -86,7 +91,7 @@ The daily limits send `Retry-After`: whole seconds until enough of the oldest co
 | Upload slots, declared bytes, storage, posts, stories, pending uploads, rates | Yes, per member, in the database transaction |
 | Size of a photo | Yes: declared size checked at the slot (15 MB), stored size pinned by the signed URL (403 otherwise) |
 | Content type and real image format | Yes: signed content type, then decoding and re-encoding at complete (415) |
-| Decoded pixels | Yes: 40 MP checked before decoding |
+| Decoded pixels | Yes: 20 MP checked before decoding (a decoded 20 MP image is about 80 MB; four are processed at a time per node) |
 | Text lengths, photos per post | Yes |
 | Retention, expiry, who may see what | Yes |
 | Chat photos: byte sizes, counts, quotas, rates, retention, who may send | Yes, see [chat attachments](21-chat-attachments.md) |

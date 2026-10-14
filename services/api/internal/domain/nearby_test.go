@@ -61,17 +61,17 @@ func TestParseLocationAcceptsOnlyTwoFiniteNumbersInRange(t *testing.T) {
 }
 
 func TestParseNearbyRadius(t *testing.T) {
-	for raw, want := range map[string]int{"1": 1, "25": 25, "99": 99, "100": 100} {
+	for raw, want := range map[string]int{"5": 5, "10": 10, "15": 15, "25": 25, "50": 50, "100": 100} {
 		if got, err := ParseNearbyRadius(raw); err != nil || got != want {
 			t.Fatalf("%q: %d %v", raw, got, err)
 		}
 	}
-	for _, raw := range []string{"", "0", "-5", "101", "1.5", "05", "+5", " 5", "5 ", "1e1", "abc", "0x10", "99999999999999999999"} {
+	for _, raw := range []string{"", "0", "1", "2", "3", "4", "6", "24", "99", "-5", "101", "1.5", "05", "+5", " 5", "5 ", "1e1", "abc", "0x10", "99999999999999999999"} {
 		if _, err := ParseNearbyRadius(raw); err == nil {
 			t.Errorf("accepted %q", raw)
 		}
 	}
-	if DefaultNearbyRadiusKm != 25 || MaxNearbyRadiusKm != 100 {
+	if DefaultNearbyRadiusKm != 25 || MaxNearbyRadiusKm != 100 || MinNearbyRadiusKm != 5 {
 		t.Fatal("radius bounds changed")
 	}
 }
@@ -81,7 +81,7 @@ func TestDistanceBucketsAreTheSmallestValueAtLeastTheDistance(t *testing.T) {
 		km   float64
 		want int
 	}{
-		{0, 1}, {0.99, 1}, {1, 1}, {1.0001, 2}, {2, 2}, {2.5, 3}, {3, 3}, {3.01, 5}, {5, 5}, {5.01, 10}, {10, 10}, {10.5, 15}, {15, 15}, {16, 25}, {25, 25}, {25.1, 50}, {50, 50}, {50.1, 100}, {100, 100}, {250, 100},
+		{0, 5}, {0.99, 5}, {1, 5}, {1.0001, 5}, {2, 5}, {2.5, 5}, {3, 5}, {3.01, 5}, {5, 5}, {5.01, 10}, {10, 10}, {10.5, 15}, {15, 15}, {16, 25}, {25, 25}, {25.1, 50}, {50, 50}, {50.1, 100}, {100, 100}, {250, 100},
 	} {
 		if got := DistanceBucket(tc.km); got != tc.want {
 			t.Fatalf("DistanceBucket(%v)=%d, want %d", tc.km, got, tc.want)
@@ -155,6 +155,17 @@ func TestParseNearbyRequestSharesPeopleSearchRules(t *testing.T) {
 	} {
 		if _, err := ParseNearbyRequest(locationBody(body)); err == nil {
 			t.Errorf("accepted %s", body)
+		}
+	}
+}
+
+func TestNearbyRadiusForWidensAMinorsRadiusToTheirBuckets(t *testing.T) {
+	for _, tc := range []struct {
+		minor  bool
+		in, to int
+	}{{false, 5, 5}, {false, 15, 15}, {true, 5, 10}, {true, 10, 10}, {true, 15, 25}, {true, 25, 25}, {true, 100, 100}} {
+		if got := NearbyRadiusFor(tc.minor, tc.in); got != tc.to {
+			t.Errorf("NearbyRadiusFor(%v,%d)=%d, want %d", tc.minor, tc.in, got, tc.to)
 		}
 	}
 }

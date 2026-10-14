@@ -93,6 +93,9 @@ class _LiveSyncState extends ConsumerState<LiveSync> {
   static const connectedPoll = Duration(seconds: 60);
   static const fallbackPoll = Duration(seconds: 10);
 
+  /// How often everything is re-read when there is no live socket.
+  static const fallbackSync = Duration(seconds: 30);
+
   /// How often open chat screens re-read conversation state while the socket
   /// is live, so a peer's online dot and last-seen text stay current. (Without
   /// a socket the 30 s sync below already does it.) Presence only moves in
@@ -106,21 +109,39 @@ class _LiveSyncState extends ConsumerState<LiveSync> {
 
   bool get live => client?.connected.value ?? false;
 
-  @override
-  void initState() {
-    super.initState();
-    fallback = Timer.periodic(const Duration(seconds: 30), (_) {
+  /// The safety-net poll and the presence refresh run only while the app is in
+  /// the foreground; [startTimers] and [stopTimers] pair with pause and resume.
+  void startTimers() {
+    fallback?.cancel();
+    presence?.cancel();
+    fallback = Timer.periodic(fallbackSync, (_) {
       if (!live) syncAll();
     });
     presence = Timer.periodic(presenceRefresh, (_) {
       if (live) ref.read(chatSignalProvider.notifier).bump();
     });
+  }
+
+  void stopTimers() {
+    fallback?.cancel();
+    presence?.cancel();
+    fallback = presence = null;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    startTimers();
     lifecycle = AppLifecycleListener(
       onResume: () {
         client?.start();
+        startTimers();
         syncAll();
       },
-      onPause: () => client?.stop(),
+      onPause: () {
+        client?.stop();
+        stopTimers();
+      },
     );
   }
 
@@ -177,6 +198,15 @@ class _LiveSyncState extends ConsumerState<LiveSync> {
         });
         final id = e.data['conversationId'];
         if (id != null) ref.read(typingProvider.notifier).clear(id);
+      case 'device':
+        // A chat device was added to or removed from this account: look at the
+        // list again (a new one raises the banner) and fetch what is waiting
+        // (this phone's own removal makes it start over).
+        quietly(() async {
+          final engine = await ref.read(chatEngineProvider.future);
+          await engine?.refreshOwnDevices();
+          await engine?.pollNow();
+        });
       case 'read':
         quietly(() => ref.read(chatUnreadProvider.notifier).refresh());
         ref.read(chatSignalProvider.notifier).bump();

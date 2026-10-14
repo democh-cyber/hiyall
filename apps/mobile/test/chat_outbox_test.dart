@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/core/chat/chat_api.dart';
 import 'package:hiyall/core/chat/chat_attachment.dart';
+import 'package:hiyall/core/chat/chat_blob_cache.dart';
 import 'package:hiyall/core/chat/chat_engine.dart';
 import 'package:hiyall/features/chat.dart' show chatError, photoFailureText;
 
@@ -110,8 +111,10 @@ void main() {
       // Local state is cleaned up and the verified ciphertext is kept as cache.
       expect(h.outbox.pending, isEmpty);
       expect(h.outboxDir.existsSync() ? h.outboxDir.listSync() : [], isEmpty);
-      expect(await h.cache.has(att.full.blobId!), isTrue);
-      expect(await h.cache.has(att.thumb.blobId!), isTrue);
+      String key(BlobPart part) =>
+          blobCacheKey(conv, part.blobId!, part.ctSha256);
+      expect(await h.cache.has(key(att.full)), isTrue);
+      expect(await h.cache.has(key(att.thumb)), isTrue);
       expect(h.outbox.progress(m.messageId)!.value, 1);
     });
 

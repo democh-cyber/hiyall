@@ -207,25 +207,20 @@ func TestAgeFiltersRespectTheBandBarrier(t *testing.T) {
 	}
 	h.place(alice, bengaluru.Latitude, bengaluru.Longitude)
 	h.policy(store.KaiID, "discoverable", false) // the minor fixture would otherwise be one more result in search
-	search, nearby := h.both(alice, map[string]any{"ageMin": 25, "ageMax": 34})
-	if len(search) != 0 || len(nearby) != 0 {
-		t.Fatalf("a minor filtering for 25-34 found %v %v", search, nearby)
-	}
-	for name, tc := range map[string]struct {
-		filters map[string]any
-		want    []string
-	}{
-		"all minors":      {map[string]any{}, sorted(dev, eli, xan)},
-		"from 14":         {map[string]any{"ageMin": 14}, sorted(eli, xan)},
-		"up to 15":        {map[string]any{"ageMax": 15}, sorted(dev, eli)},
-		"exactly 13":      {map[string]any{"ageMin": 13, "ageMax": 13}, sorted(dev)},
-		"17 and over":     {map[string]any{"ageMin": 17, "ageMax": 99}, sorted(xan)},
-		"adult ages only": {map[string]any{"ageMin": 18}, nil},
+	// A minor has no age or gender filters: every one is refused, and the plain list is the minor band.
+	for name, filters := range map[string]map[string]any{
+		"25-34": {"ageMin": 25, "ageMax": 34}, "from 14": {"ageMin": 14}, "up to 15": {"ageMax": 15}, "adult ages only": {"ageMin": 18},
+		"gender": {"gender": "man"}, "age and gender": {"ageMin": 14, "gender": "woman"},
 	} {
-		s, n := h.both(alice, tc.filters)
-		if fmt.Sprint(s) != fmt.Sprint(tc.want) || fmt.Sprint(n) != fmt.Sprint(tc.want) {
-			t.Fatalf("%s: search %v nearby %v want %v", name, s, n, tc.want)
+		h.api.search.reset(alice)
+		h.expect(h.send(alice, "POST", "/v1/discovery/search", filters), 422, "FILTER_NOT_AVAILABLE")
+		got, _, _ := h.nearbyList(alice, merge(filters, map[string]any{"radiusKm": 100}))
+		if got.status != 422 || got.code != "FILTER_NOT_AVAILABLE" {
+			t.Fatalf("%s: nearby answered %d %q", name, got.status, got.code)
 		}
+	}
+	if s, n := h.both(alice, map[string]any{}); fmt.Sprint(s) != fmt.Sprint(sorted(dev, eli, xan)) || fmt.Sprint(n) != fmt.Sprint(sorted(dev, eli, xan)) {
+		t.Fatalf("a minor's plain list: search %v nearby %v", s, n)
 	}
 	// The adult sees no minors, even when the filter names their age.
 	h.place(cara, bengaluru.Latitude, bengaluru.Longitude)

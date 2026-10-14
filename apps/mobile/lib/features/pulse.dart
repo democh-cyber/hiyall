@@ -18,6 +18,7 @@ import '../shared/widgets.dart';
 import '../shared/story_canvas.dart';
 import 'people_lists.dart' show storyTimeLeft;
 import 'safety.dart';
+import '../core/user_error.dart';
 
 export 'story_composer.dart' show StoryComposerScreen;
 
@@ -133,8 +134,20 @@ ImageProvider Function(String url, String cacheKey) postPhotoFactory = (
   cacheKey,
 ) => CachedNetworkImageProvider(url, cacheKey: cacheKey);
 
+/// Pixels worth decoding for a photo shown [logical] pixels wide on a screen
+/// of density [dpr]: rounded up to a multiple of 64 so a layout that shifts a
+/// little reuses the same decoded image, and never more than [cap] (the
+/// server's longest edge). A 2048 px upload shown 360 px wide on a 3x phone
+/// decodes at 1088 px instead of 2048: a quarter of the memory.
+int photoDecodeWidth(double logical, double dpr, {int cap = 2048}) {
+  if (!logical.isFinite || logical <= 0) return cap;
+  final pixels = (logical * dpr).ceil();
+  return (((pixels + 63) ~/ 64) * 64).clamp(64, cap);
+}
+
 /// A photo loaded from a signed URL but cached by media id, so a fresh URL
-/// for the same photo never downloads it again.
+/// for the same photo never downloads it again. Decoded at layout width x
+/// device pixel ratio ([photoDecodeWidth]), not at full size.
 class _Photo extends StatelessWidget {
   final PostMedia media;
   final BoxFit fit;
@@ -145,31 +158,38 @@ class _Photo extends StatelessWidget {
     final url = media.url;
     final blank = ColoredBox(color: scheme.surfaceContainerHighest);
     if (url.isEmpty) return blank;
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        blank,
-        Image(
-          image: postPhotoFactory(url, 'media:${media.mediaId}:full'),
-          fit: fit,
-          excludeFromSemantics: true,
-          frameBuilder: (_, child, frame, synchronous) => synchronous
-              ? child
-              : AnimatedOpacity(
-                  opacity: frame == null ? 0 : 1,
-                  duration: MediaQuery.disableAnimationsOf(context)
-                      ? Duration.zero
-                      : const Duration(milliseconds: 150),
-                  child: child,
-                ),
-          errorBuilder: (_, _, _) => Center(
-            child: Icon(
-              Icons.broken_image_outlined,
-              color: scheme.onSurfaceVariant,
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    return LayoutBuilder(
+      builder: (context, box) => Stack(
+        fit: StackFit.expand,
+        children: [
+          blank,
+          Image(
+            image: ResizeImage.resizeIfNeeded(
+              photoDecodeWidth(box.maxWidth, dpr),
+              null,
+              postPhotoFactory(url, 'media:${media.mediaId}:full'),
+            ),
+            fit: fit,
+            excludeFromSemantics: true,
+            frameBuilder: (_, child, frame, synchronous) => synchronous
+                ? child
+                : AnimatedOpacity(
+                    opacity: frame == null ? 0 : 1,
+                    duration: MediaQuery.disableAnimationsOf(context)
+                        ? Duration.zero
+                        : const Duration(milliseconds: 150),
+                    child: child,
+                  ),
+            errorBuilder: (_, _, _) => Center(
+              child: Icon(
+                Icons.broken_image_outlined,
+                color: scheme.onSurfaceVariant,
+              ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -286,7 +306,7 @@ class PostCard extends ConsumerWidget {
       try {
         await action();
       } catch (e) {
-        if (context.mounted) showMessage(context, e.toString());
+        if (context.mounted) showFailure(context, e);
       }
     }
 
@@ -699,7 +719,7 @@ Future<void> _postMenu(
         );
     }
   } catch (e) {
-    if (context.mounted) showMessage(context, e.toString());
+    if (context.mounted) showFailure(context, e);
   }
 }
 
@@ -799,7 +819,7 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
         replyTo = null;
       });
     } catch (e) {
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     } finally {
       if (mounted) setState(() => sending = false);
     }
@@ -853,7 +873,7 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
             );
           }
         } catch (e) {
-          if (mounted) showMessage(context, e.toString());
+          if (mounted) showFailure(context, e);
         }
       case 'report':
         await showReportSheet(
@@ -1086,6 +1106,36 @@ class _ComposePostScreenState extends ConsumerState<ComposePostScreen> {
       photos.every((p) => p.done) &&
       (body.text.trim().isNotEmpty || photos.isNotEmpty);
 
+  /// Text or photos that leaving would throw away.
+  bool get dirty => body.text.trim().isNotEmpty || photos.isNotEmpty;
+
+  void close() => context.canPop() ? context.pop() : context.go('/home');
+
+  /// Asks before discarding a draft, then leaves.
+  Future<void> leave() async {
+    if (!dirty || sharing) return close();
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Discard this post?'),
+        content: const Text('What you wrote and any photos will be lost.'),
+        actions: [
+          TextButton(
+            key: const Key('keep-editing'),
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Keep editing'),
+          ),
+          FilledButton(
+            key: const Key('discard-post'),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Discard'),
+          ),
+        ],
+      ),
+    );
+    if (discard == true && mounted) close();
+  }
+
   Future<void> addPhotos() async {
     final room = 10 - photos.length;
     if (room <= 0) return;
@@ -1128,7 +1178,7 @@ class _ComposePostScreenState extends ConsumerState<ComposePostScreen> {
         context.canPop() ? context.pop() : context.go('/home');
       }
     } catch (e) {
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     } finally {
       if (mounted) setState(() => sharing = false);
     }
@@ -1144,195 +1194,203 @@ class _ComposePostScreenState extends ConsumerState<ComposePostScreen> {
           ref.watch(privacyProvider).asData?.value.values['profileAudience']
               as String?,
         );
-    return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          tooltip: 'Close',
-          icon: const Icon(Icons.close_rounded),
-          onPressed: () =>
-              context.canPop() ? context.pop() : context.go('/home'),
-        ),
-        title: const Text('New post'),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: FilledButton(
-              key: const Key('share-post'),
-              onPressed: ready ? () => share(chosen) : null,
-              child: Text(sharing ? 'Sharing…' : 'Share'),
-            ),
+    return PopScope(
+      // System Back and the swipe gesture ask first when there is a draft.
+      canPop: !dirty || sharing,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) leave();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            tooltip: 'Close',
+            icon: const Icon(Icons.close_rounded),
+            onPressed: leave,
           ),
-        ],
-      ),
-      body: ReadingWidth(
-        child: ListView(
-          padding: const EdgeInsets.all(20),
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _Avatar(
-                  profile?.displayName ?? '?',
-                  userId: profile?.userId ?? '',
-                  avatarUrl: profile?.avatarUrl,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: TextField(
-                    key: const Key('post-body'),
-                    controller: body,
-                    autofocus: true,
-                    maxLength: 2200,
-                    minLines: 3,
-                    maxLines: 12,
-                    onChanged: (_) => setState(() {}),
-                    decoration: const InputDecoration(
-                      hintText: 'What’s the vibe?',
-                      border: InputBorder.none,
+          title: const Text('New post'),
+          actions: [
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: FilledButton(
+                key: const Key('share-post'),
+                onPressed: ready ? () => share(chosen) : null,
+                child: Text(sharing ? 'Sharing…' : 'Share'),
+              ),
+            ),
+          ],
+        ),
+        body: ReadingWidth(
+          child: ListView(
+            padding: const EdgeInsets.all(20),
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _Avatar(
+                    profile?.displayName ?? '?',
+                    userId: profile?.userId ?? '',
+                    avatarUrl: profile?.avatarUrl,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: TextField(
+                      key: const Key('post-body'),
+                      controller: body,
+                      autofocus: true,
+                      maxLength: 2200,
+                      minLines: 3,
+                      maxLines: 12,
+                      onChanged: (_) => setState(() {}),
+                      decoration: const InputDecoration(
+                        hintText: 'What’s the vibe?',
+                        border: InputBorder.none,
+                      ),
                     ),
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            SizedBox(
-              height: 110,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                children: [
-                  for (final p in photos)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(14),
-                        child: SizedBox(
-                          width: 110,
-                          child: Stack(
-                            fit: StackFit.expand,
-                            children: [
-                              Image.memory(
-                                p.bytes,
-                                fit: BoxFit.cover,
-                                cacheWidth: 330,
-                              ),
-                              if (!p.done && p.error == null)
-                                ColoredBox(
-                                  color: Colors.black38,
-                                  child: Center(
-                                    child: CircularProgressIndicator(
-                                      value: p.progress > 0 ? p.progress : null,
-                                      color: Colors.white,
+                ],
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 110,
+                child: ListView(
+                  scrollDirection: Axis.horizontal,
+                  children: [
+                    for (final p in photos)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(14),
+                          child: SizedBox(
+                            width: 110,
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                Image.memory(
+                                  p.bytes,
+                                  fit: BoxFit.cover,
+                                  cacheWidth: 330,
+                                ),
+                                if (!p.done && p.error == null)
+                                  ColoredBox(
+                                    color: Colors.black38,
+                                    child: Center(
+                                      child: CircularProgressIndicator(
+                                        value: p.progress > 0
+                                            ? p.progress
+                                            : null,
+                                        color: Colors.white,
+                                      ),
                                     ),
                                   ),
-                                ),
-                              if (p.error != null)
-                                Material(
-                                  color: Colors.black54,
-                                  child: InkWell(
-                                    onTap: p.limited
-                                        ? null
-                                        : () => uploadPendingPhoto(
-                                            ref,
-                                            p,
-                                            'post',
-                                            () {
-                                              if (mounted) setState(() {});
-                                            },
-                                          ),
-                                    child: Center(
-                                      child: Padding(
-                                        padding: const EdgeInsets.all(6),
-                                        child: Text(
-                                          p.limited
-                                              ? p.error!
-                                              : '${p.error!}\nTap to retry',
-                                          textAlign: TextAlign.center,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 11,
+                                if (p.error != null)
+                                  Material(
+                                    color: Colors.black54,
+                                    child: InkWell(
+                                      onTap: p.limited
+                                          ? null
+                                          : () => uploadPendingPhoto(
+                                              ref,
+                                              p,
+                                              'post',
+                                              () {
+                                                if (mounted) setState(() {});
+                                              },
+                                            ),
+                                      child: Center(
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(6),
+                                          child: Text(
+                                            p.limited
+                                                ? p.error!
+                                                : '${p.error!}\nTap to retry',
+                                            textAlign: TextAlign.center,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 11,
+                                            ),
                                           ),
                                         ),
                                       ),
                                     ),
                                   ),
-                                ),
-                              Positioned(
-                                top: 4,
-                                right: 4,
-                                child: IconButton.filled(
-                                  tooltip: 'Remove photo',
-                                  visualDensity: VisualDensity.compact,
-                                  iconSize: 16,
-                                  style: IconButton.styleFrom(
-                                    backgroundColor: Colors.black54,
+                                Positioned(
+                                  top: 4,
+                                  right: 4,
+                                  child: IconButton.filled(
+                                    tooltip: 'Remove photo',
+                                    visualDensity: VisualDensity.compact,
+                                    iconSize: 16,
+                                    style: IconButton.styleFrom(
+                                      backgroundColor: Colors.black54,
+                                    ),
+                                    onPressed: () =>
+                                        setState(() => photos.remove(p)),
+                                    icon: const Icon(
+                                      Icons.close_rounded,
+                                      color: Colors.white,
+                                    ),
                                   ),
-                                  onPressed: () =>
-                                      setState(() => photos.remove(p)),
-                                  icon: const Icon(
-                                    Icons.close_rounded,
-                                    color: Colors.white,
-                                  ),
                                 ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (photos.length < 10)
+                      InkWell(
+                        key: const Key('add-photos'),
+                        borderRadius: BorderRadius.circular(14),
+                        onTap: addPhotos,
+                        child: Container(
+                          width: 110,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: scheme.outlineVariant),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.add_photo_alternate_outlined),
+                              const SizedBox(height: 6),
+                              Text(
+                                photos.isEmpty
+                                    ? 'Add photos'
+                                    : '${photos.length}/10',
+                                style: const TextStyle(fontSize: 12),
                               ),
                             ],
                           ),
                         ),
                       ),
-                    ),
-                  if (photos.length < 10)
-                    InkWell(
-                      key: const Key('add-photos'),
-                      borderRadius: BorderRadius.circular(14),
-                      onTap: addPhotos,
-                      child: Container(
-                        width: 110,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: scheme.outlineVariant),
-                        ),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            const Icon(Icons.add_photo_alternate_outlined),
-                            const SizedBox(height: 6),
-                            Text(
-                              photos.isEmpty
-                                  ? 'Add photos'
-                                  : '${photos.length}/10',
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                          ],
-                        ),
-                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                'Who can see this?',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              SegmentedButton<String>(
+                key: const Key('post-audience'),
+                segments: [
+                  for (final e in audienceLabels.entries)
+                    ButtonSegment(
+                      value: e.key,
+                      label: Text(e.value),
+                      icon: Icon(audienceIcon(e.key)),
                     ),
                 ],
+                selected: {chosen},
+                onSelectionChanged: (s) => setState(() => audience = s.single),
               ),
-            ),
-            const SizedBox(height: 20),
-            Text(
-              'Who can see this?',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 8),
-            SegmentedButton<String>(
-              key: const Key('post-audience'),
-              segments: [
-                for (final e in audienceLabels.entries)
-                  ButtonSegment(
-                    value: e.key,
-                    label: Text(e.value),
-                    icon: Icon(audienceIcon(e.key)),
-                  ),
-              ],
-              selected: {chosen},
-              onSelectionChanged: (s) => setState(() => audience = s.single),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'Photos are re-saved without location or camera details before anyone sees them.',
-              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
-            ),
-          ],
+              const SizedBox(height: 12),
+              Text(
+                'Photos are re-saved without location or camera details before anyone sees them.',
+                style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1712,7 +1770,7 @@ class _StoryViewerState extends ConsumerState<StoryViewer>
         show();
         return;
       } catch (e) {
-        if (mounted) showMessage(context, e.toString());
+        if (mounted) showFailure(context, e);
       }
     } else if (choice == 'report') {
       await showReportSheet(

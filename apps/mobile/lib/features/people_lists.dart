@@ -14,6 +14,7 @@ import '../shared/widgets.dart';
 import 'chat.dart';
 import 'pulse.dart';
 import 'settings.dart' show timeAgo;
+import '../core/user_error.dart';
 
 /// A list read a page at a time from the server's signed cursor. The server
 /// decides who may read it and what it leaves out; this only holds the pages.
@@ -182,43 +183,40 @@ class _ListPage<T> extends StatelessWidget {
       listenable: list,
       builder: (context, _) {
         final error = list.error;
-        final Widget body;
+        // Loading, failure and empty states are one box; real rows are built
+        // lazily, so a long list only lays out what is on screen.
+        Widget? state;
         if (!list.loaded && list.loading) {
-          body = const VibeLoading();
+          state = const VibeLoading();
         } else if (error != null && list.items.isEmpty) {
-          body =
+          state =
               calm?.call(error) ?? FailureCard(error: error, retry: list.load);
         } else if (list.loaded && list.items.isEmpty) {
-          body = empty;
-        } else {
-          body = Column(
-            children: [
-              for (final item in list.items) row(item),
-              if (list.cursor != null || list.loadingMore)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  child: list.loadingMore
-                      ? const Center(
-                          child: SizedBox(
-                            width: 24,
-                            height: 24,
-                            child: CircularProgressIndicator(strokeWidth: 2.5),
-                          ),
-                        )
-                      : OutlinedButton(
-                          key: const Key('list-more'),
-                          onPressed: () async {
-                            final failure = await list.more();
-                            if (failure != null && context.mounted) {
-                              showMessage(context, failure.toString());
-                            }
-                          },
-                          child: const Text('Show more'),
-                        ),
-                ),
-            ],
-          );
+          state = empty;
         }
+        final footer = list.cursor != null || list.loadingMore
+            ? Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: list.loadingMore
+                    ? const Center(
+                        child: SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2.5),
+                        ),
+                      )
+                    : OutlinedButton(
+                        key: const Key('list-more'),
+                        onPressed: () async {
+                          final failure = await list.more();
+                          if (failure != null && context.mounted) {
+                            showFailure(context, failure);
+                          }
+                        },
+                        child: const Text('Show more'),
+                      ),
+              )
+            : null;
         return NotificationListener<ScrollNotification>(
           onNotification: (n) {
             if (n.metrics.extentAfter < 240 &&
@@ -231,36 +229,59 @@ class _ListPage<T> extends StatelessWidget {
           },
           child: RefreshIndicator(
             onRefresh: list.load,
-            child: ListView(
+            child: CustomScrollView(
               physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 120),
-              children: [
-                Align(
-                  alignment: AlignmentDirectional.centerStart,
-                  child: TextButton.icon(
-                    key: const Key('list-back'),
-                    onPressed: () => goBack(context, backTo),
-                    icon: const Icon(Icons.arrow_back),
-                    label: Text(backLabel),
-                  ),
-                ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Semantics(
-                        header: true,
-                        child: Text(
-                          title,
-                          style: Theme.of(context).textTheme.headlineMedium,
+              slivers: [
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 120),
+                  sliver: SliverMainAxisGroup(
+                    slivers: [
+                      SliverToBoxAdapter(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Align(
+                              alignment: AlignmentDirectional.centerStart,
+                              child: TextButton.icon(
+                                key: const Key('list-back'),
+                                onPressed: () => goBack(context, backTo),
+                                icon: const Icon(Icons.arrow_back),
+                                label: Text(backLabel),
+                              ),
+                            ),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Semantics(
+                                    header: true,
+                                    child: Text(
+                                      title,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .headlineMedium,
+                                    ),
+                                  ),
+                                ),
+                                ?trailing,
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            ...header,
+                          ],
                         ),
                       ),
-                    ),
-                    ?trailing,
-                  ],
+                      if (state != null)
+                        SliverToBoxAdapter(child: state)
+                      else
+                        SliverList.builder(
+                          itemCount: list.items.length,
+                          itemBuilder: (context, i) => row(list.items[i]),
+                        ),
+                      if (state == null && footer != null)
+                        SliverToBoxAdapter(child: footer),
+                    ],
+                  ),
                 ),
-                const SizedBox(height: 8),
-                ...header,
-                body,
               ],
             ),
           ),
@@ -445,7 +466,7 @@ class _ConnectionsState extends ConsumerState<ConnectionsScreen> {
     try {
       await action();
     } catch (e) {
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     } finally {
       busy.remove(id);
       if (mounted) setState(() {});
@@ -752,7 +773,7 @@ class _VisitorsState extends ConsumerState<VisitorsScreen> {
         );
       }
     } catch (e) {
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     } finally {
       busy.remove(id);
     }
@@ -775,7 +796,7 @@ class _VisitorsState extends ConsumerState<VisitorsScreen> {
       ref.invalidate(otherProfileProvider(id));
       if (mounted) showMessage(context, 'Account blocked.');
     } catch (e) {
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     }
   }
 
@@ -921,7 +942,7 @@ class _MyStoriesState extends ConsumerState<MyStoriesScreen> {
       ref.invalidate(storyTrayProvider);
       if (mounted) showMessage(context, 'Story deleted.');
     } catch (e) {
-      if (mounted) showMessage(context, e.toString());
+      if (mounted) showFailure(context, e);
     }
   }
 
@@ -957,6 +978,7 @@ class _MyStoriesState extends ConsumerState<MyStoriesScreen> {
               ? Image.network(
                   s.media!.thumbUrl,
                   fit: BoxFit.cover,
+                  cacheWidth: 192,
                   errorBuilder: (_, _, _) =>
                       ColoredBox(color: scheme.surfaceContainerHighest),
                 )
@@ -1164,28 +1186,30 @@ class _StoryViewersState extends ConsumerState<_StoryViewersSheet> {
             child: Text('No views yet.'),
           );
         } else {
-          body = ListView(
-            children: [
-              for (final v in list.items)
-                ListTile(
-                  key: ValueKey('viewer-${v.user.userId}'),
-                  onTap: () => widget.onOpen(v.user.userId),
-                  leading: PersonAvatar(
-                    name: v.user.name,
-                    avatarUrl: v.user.avatarUrl,
-                    userId: v.user.userId,
-                    radius: 18,
-                  ),
-                  title: Text(v.user.name),
-                  subtitle: Text('@${v.user.username} · ${timeAgo(v.since)}'),
-                ),
-              if (list.cursor != null)
-                TextButton(
+          body = ListView.builder(
+            itemCount: list.items.length + (list.cursor != null ? 1 : 0),
+            itemBuilder: (context, i) {
+              if (i == list.items.length) {
+                return TextButton(
                   key: const Key('viewers-more'),
                   onPressed: list.more,
                   child: const Text('Show more'),
+                );
+              }
+              final v = list.items[i];
+              return ListTile(
+                key: ValueKey('viewer-${v.user.userId}'),
+                onTap: () => widget.onOpen(v.user.userId),
+                leading: PersonAvatar(
+                  name: v.user.name,
+                  avatarUrl: v.user.avatarUrl,
+                  userId: v.user.userId,
+                  radius: 18,
                 ),
-            ],
+                title: Text(v.user.name),
+                subtitle: Text('@${v.user.username} · ${timeAgo(v.since)}'),
+              );
+            },
           );
         }
         return Column(
@@ -1274,6 +1298,6 @@ Future<void> watchStories(
       ),
     ], 0);
   } catch (e) {
-    if (context.mounted) showMessage(context, e.toString());
+    if (context.mounted) showFailure(context, e);
   }
 }

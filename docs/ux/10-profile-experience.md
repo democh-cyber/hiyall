@@ -18,7 +18,7 @@ no editor, owner settings, sessions, or account details.
 - Headline, optional quote (up to 160 characters), interests (up to ten), Current
   Vibe, accent (`lime`, `violet`, `cyan`),
   background (`glow`, `orbit`, `plain`), and frame (`minimal`, `orbit`) are validated
-  and saved with the existing optimistic version check and transactional outbox.
+  and saved with the existing optimistic version check.
 - Languages use `{code, level?}` entries. Levels are explicitly selected from
   basic/conversational/fluent/native. Legacy tag-only arrays remain readable and
   accepted without guessing proficiency; subsequent serialization is structured.

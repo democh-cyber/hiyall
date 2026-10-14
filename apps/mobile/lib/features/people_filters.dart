@@ -23,6 +23,7 @@ Future<PeopleFilters?> showPeopleFilters(
   BuildContext context, {
   PeopleFilters? initial,
   Profile? ownProfile,
+  bool hideAgeGender = false,
 }) => showModalBottomSheet<PeopleFilters>(
   context: context,
   isScrollControlled: true,
@@ -32,7 +33,11 @@ Future<PeopleFilters?> showPeopleFilters(
     heightFactor: .92,
     child: ClipRRect(
       borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-      child: PeopleFilterScreen(initial: initial, ownProfile: ownProfile),
+      child: PeopleFilterScreen(
+        initial: initial,
+        ownProfile: ownProfile,
+        hideAgeGender: hideAgeGender,
+      ),
     ),
   ),
 );
@@ -40,7 +45,15 @@ Future<PeopleFilters?> showPeopleFilters(
 class PeopleFilterScreen extends StatefulWidget {
   final PeopleFilters? initial;
   final Profile? ownProfile;
-  const PeopleFilterScreen({super.key, this.initial, this.ownProfile});
+
+  /// Members under 18 have no age or gender filters (the server refuses them).
+  final bool hideAgeGender;
+  const PeopleFilterScreen({
+    super.key,
+    this.initial,
+    this.ownProfile,
+    this.hideAgeGender = false,
+  });
 
   @override
   State<PeopleFilterScreen> createState() => _PeopleFilterScreenState();
@@ -328,37 +341,41 @@ class _PeopleFilterScreenState extends State<PeopleFilterScreen> {
                       opensPicker: true,
                       onTap: () => choose(isCountry: false),
                     ),
-                    section('Age'),
-                    Text(
-                      ageLabel,
-                      key: const Key('filter-age-label'),
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: scheme.primary,
-                      ),
-                    ),
-                    SliderTheme(
-                      data: SliderTheme.of(context).copyWith(
-                        activeTickMarkColor: Colors.transparent,
-                        inactiveTickMarkColor: Colors.transparent,
-                      ),
-                      child: RangeSlider(
-                        key: const Key('filter-age'),
-                        min: ageFloor,
-                        max: ageCeiling,
-                        divisions: (ageCeiling - ageFloor).round(),
-                        values: RangeValues(ageLow, ageHigh),
-                        labels: RangeLabels(
-                          '${ageLow.round()}',
-                          ageHigh >= ageCeiling ? '60+' : '${ageHigh.round()}',
+                    if (!widget.hideAgeGender) ...[
+                      section('Age'),
+                      Text(
+                        ageLabel,
+                        key: const Key('filter-age-label'),
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: scheme.primary,
                         ),
-                        onChanged: (range) => setState(() {
-                          ageLow = range.start;
-                          ageHigh = range.end;
-                        }),
                       ),
-                    ),
+                      SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          activeTickMarkColor: Colors.transparent,
+                          inactiveTickMarkColor: Colors.transparent,
+                        ),
+                        child: RangeSlider(
+                          key: const Key('filter-age'),
+                          min: ageFloor,
+                          max: ageCeiling,
+                          divisions: (ageCeiling - ageFloor).round(),
+                          values: RangeValues(ageLow, ageHigh),
+                          labels: RangeLabels(
+                            '${ageLow.round()}',
+                            ageHigh >= ageCeiling
+                                ? '60+'
+                                : '${ageHigh.round()}',
+                          ),
+                          onChanged: (range) => setState(() {
+                            ageLow = range.start;
+                            ageHigh = range.end;
+                          }),
+                        ),
+                      ),
+                    ],
                     section('Location'),
                     _FilterRow(
                       key: const Key('filter-nearby'),
@@ -368,23 +385,25 @@ class _PeopleFilterScreenState extends State<PeopleFilterScreen> {
                       checkbox: true,
                       onTap: () => change(() => nearby = !nearby),
                     ),
-                    section('Gender'),
-                    for (final (value, label) in const [
-                      ('', 'All'),
-                      ('man', 'Man'),
-                      ('woman', 'Woman'),
-                      ('nonbinary', 'Non-binary'),
-                    ]) ...[
-                      _FilterRow(
-                        key: Key(
-                          'filter-gender-${value.isEmpty ? 'any' : value}',
+                    if (!widget.hideAgeGender) ...[
+                      section('Gender'),
+                      for (final (value, label) in const [
+                        ('', 'All'),
+                        ('man', 'Man'),
+                        ('woman', 'Woman'),
+                        ('nonbinary', 'Non-binary'),
+                      ]) ...[
+                        _FilterRow(
+                          key: Key(
+                            'filter-gender-${value.isEmpty ? 'any' : value}',
+                          ),
+                          label: label,
+                          selected: gender == value,
+                          radio: true,
+                          onTap: () => change(() => gender = value),
                         ),
-                        label: label,
-                        selected: gender == value,
-                        radio: true,
-                        onTap: () => change(() => gender = value),
-                      ),
-                      const SizedBox(height: 10),
+                        const SizedBox(height: 10),
+                      ],
                     ],
                     section(
                       'Interests',
