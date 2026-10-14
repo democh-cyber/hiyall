@@ -598,9 +598,9 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
                   ),
                 ),
                 // "👋 sent to Mira": over the bottom of the list, never taking a tap.
-                const Positioned(
-                  left: 16,
-                  right: 16,
+                const PositionedDirectional(
+                  start: 16,
+                  end: 16,
                   bottom: 14,
                   child: SayHiToastHost(),
                 ),

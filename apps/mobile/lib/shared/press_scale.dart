@@ -214,7 +214,7 @@ class SnapRow extends StatelessWidget {
             itemExtent: width + gap,
             physics: SnapPhysics(width + gap),
             itemBuilder: (context, i) => Padding(
-              padding: EdgeInsets.only(right: gap),
+              padding: EdgeInsetsDirectional.only(end: gap),
               child: itemBuilder(context, i),
             ),
           ),

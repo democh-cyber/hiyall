@@ -324,7 +324,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with AuthActions {
           ),
         ),
         Align(
-          alignment: Alignment.centerRight,
+          alignment: AlignmentDirectional.centerEnd,
           child: TextButton(
             key: const Key('forgot-password'),
             onPressed: working ? null : () => context.push('/forgot-password'),

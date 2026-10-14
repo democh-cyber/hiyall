@@ -418,7 +418,7 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
             child: Column(
               children: [
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
+                  padding: const EdgeInsetsDirectional.fromSTEB(8, 8, 16, 0),
                   child: Row(
                     children: [
                       if (step > 0)

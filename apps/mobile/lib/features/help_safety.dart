@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../core/app_info.dart';
 import '../core/legal_documents.dart';
+import '../l10n/l10n.dart';
 import '../shared/widgets.dart';
 import 'legal_screens.dart' show openLegal;
 
@@ -27,52 +28,6 @@ abstract final class HelpContacts {
   );
   static bool isPlaceholder(String address) => address.endsWith('.example');
 }
-
-/// Help lines for someone in distress. A starting list: confirm every number
-/// for the countries you launch in before release (docs/mobile/store-listing.md).
-const crisisResources = <(String, String)>[
-  (
-    'Emergency services',
-    'Call your local emergency number (911, 999, 112, 000).',
-  ),
-  ('United States', '988 Suicide & Crisis Lifeline: call or text 988.'),
-  ('United Kingdom', 'Samaritans: 116 123. Childline (under 19): 0800 1111.'),
-  (
-    'Canada',
-    'Talk Suicide Canada: 1-833-456-4566. Kids Help Phone: text 686868.',
-  ),
-  ('Australia', 'Lifeline: 13 11 14. Kids Helpline: 1800 55 1800.'),
-  ('India', 'Tele-MANAS: 14416.'),
-  ('Anywhere else', 'Find a helpline for your country at findahelpline.com.'),
-];
-
-const safetyTips = <(IconData, String, String)>[
-  (
-    Icons.lock_outline_rounded,
-    'Keep it in Hiyall at first',
-    'Don’t share your phone number, address, school or where you hang out with someone you just met.',
-  ),
-  (
-    Icons.person_search_outlined,
-    'People can pretend',
-    'Someone may not be who they say. If it feels off, trust that feeling.',
-  ),
-  (
-    Icons.photo_camera_back_outlined,
-    'Think before you send a photo',
-    'A photo can be saved or shared by the person who gets it, even in an encrypted chat.',
-  ),
-  (
-    Icons.groups_outlined,
-    'Meeting in person',
-    'If you ever do, tell a parent or a friend, pick a busy public place and bring someone along. Under 18, check with a parent or guardian first.',
-  ),
-  (
-    Icons.pause_circle_outline_rounded,
-    'You can always stop',
-    'Leave a chat, block or report. You never owe anyone a reply.',
-  ),
-];
 
 /// Opens a mail draft. Replaced in tests, which have no mail app.
 @visibleForTesting
@@ -96,7 +51,7 @@ Future<void> writeTo(
   if (opened || !context.mounted) return;
   await Clipboard.setData(ClipboardData(text: address));
   if (context.mounted) {
-    showMessage(context, 'No mail app here. Copied $address instead.');
+    showMessage(context, context.l10n.helpNoMailApp(address));
   }
 }
 
@@ -111,7 +66,7 @@ class _Section extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.only(left: 4, bottom: 8),
+          padding: const EdgeInsetsDirectional.only(start: 4, bottom: 8),
           child: Semantics(
             header: true,
             child: Text(
@@ -136,21 +91,33 @@ class _Section extends StatelessWidget {
 
 class _ContactTile extends StatelessWidget {
   final IconData icon;
+
+  /// Names the row's key (`help-contact-<keyName>`); not shown, so it does not
+  /// change with the language.
+  final String keyName;
   final String title, address, subject;
-  const _ContactTile(this.icon, this.title, this.address, this.subject);
+  const _ContactTile(
+    this.icon,
+    this.keyName,
+    this.title,
+    this.address,
+    this.subject,
+  );
   @override
   Widget build(BuildContext context) => ListTile(
-    key: Key('help-contact-$title'),
+    key: Key('help-contact-$keyName'),
     minTileHeight: 64,
     leading: Icon(icon),
     title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
     subtitle: SelectableText(address),
     trailing: IconButton(
-      tooltip: 'Copy $address',
+      tooltip: context.l10n.helpCopyTooltip(address),
       icon: const Icon(Icons.copy_rounded),
       onPressed: () async {
         await Clipboard.setData(ClipboardData(text: address));
-        if (context.mounted) showMessage(context, 'Copied $address');
+        if (context.mounted) {
+          showMessage(context, context.l10n.helpCopied(address));
+        }
       },
     ),
     onTap: () => writeTo(context, address, subject),
@@ -164,8 +131,8 @@ class HelpSafetyScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final scheme = Theme.of(context).colorScheme;
-    final muted = TextStyle(color: scheme.onSurfaceVariant, height: 1.5);
+    final l10n = context.l10n;
+    final muted = _mutedStyle(context);
     return ReadingWidth(
       child: ListView(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 48),
@@ -177,125 +144,188 @@ class HelpSafetyScreen extends ConsumerWidget {
                   ? context.pop()
                   : context.go('/profile/settings'),
               icon: const Icon(Icons.arrow_back),
-              label: const Text('Back'),
+              label: Text(l10n.helpBack),
             ),
           ),
           Semantics(
             header: true,
             child: Text(
-              'Help & Safety',
+              l10n.helpTitle,
               style: Theme.of(context).textTheme.headlineMedium,
             ),
           ),
           const SizedBox(height: 6),
-          Text(
-            'A real person reads what you send. Tap an address to write to us, or copy it.',
-            style: muted,
-          ),
-          _Section('Contact us', [
-            const _ContactTile(
-              Icons.mail_outline_rounded,
-              'Help and feedback',
-              HelpContacts.support,
-              'Help',
-            ),
-            const _ContactTile(
-              Icons.shield_outlined,
-              'Safety concerns',
-              HelpContacts.safety,
-              'Safety',
-            ),
-            const _ContactTile(
-              Icons.privacy_tip_outlined,
-              'Privacy and your data',
-              HelpContacts.privacy,
-              'Privacy',
-            ),
-          ]),
-          _Section('Staying safe', [
-            for (final (icon, title, body) in safetyTips)
-              ListTile(
-                leading: Icon(icon),
-                title: Text(
-                  title,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-                subtitle: Text(body),
-              ),
-          ]),
-          _Section('Block or report someone', [
-            const ListTile(
-              leading: Icon(Icons.block_rounded),
-              title: Text(
-                'Block',
-                style: TextStyle(fontWeight: FontWeight.w700),
-              ),
-              subtitle: Text(
-                'Open their profile or chat, tap the three dots, then Block. They can’t message you or see you.',
-              ),
-            ),
-            const ListTile(
-              leading: Icon(Icons.flag_outlined),
-              title: Text(
-                'Report',
-                style: TextStyle(fontWeight: FontWeight.w700),
-              ),
-              subtitle: Text(
-                'From the same menu, tap Report and pick a reason. They never see who reported them.',
-              ),
-            ),
-            ListTile(
-              key: const Key('help-your-reports'),
-              leading: const Icon(Icons.history_rounded),
-              title: const Text(
-                'Your reports',
-                style: TextStyle(fontWeight: FontWeight.w700),
-              ),
-              subtitle: const Text('See what happened to reports you sent'),
-              trailing: const Icon(Icons.chevron_right_rounded),
-              onTap: () => context.go('/profile/reports'),
-            ),
-          ]),
-          _Section('If you need urgent help', [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-              child: Text(
-                'If you or someone else is in danger, contact local emergency services first. Hiyall can’t send help.',
-                style: muted,
-              ),
-            ),
-            for (final (place, line) in crisisResources)
-              ListTile(
-                dense: true,
-                title: Text(
-                  place,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-                subtitle: SelectableText(line),
-              ),
-          ]),
-          _Section('Our rules', [
-            for (final doc in const [
-              LegalDoc.guidelines,
-              LegalDoc.teens,
-              LegalDoc.privacy,
-              LegalDoc.terms,
-            ])
-              ListTile(
-                key: Key('help-legal-${doc.name}'),
-                minTileHeight: 56,
-                title: Text(
-                  doc.title,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-                trailing: const Icon(Icons.chevron_right_rounded),
-                onTap: () => openLegal(context, doc),
-              ),
-          ]),
+          Text(l10n.helpIntro, style: muted),
+          const _ContactSection(),
+          const _SafetyTipsSection(),
+          const _BlockReportSection(),
+          const _UrgentHelpSection(),
+          const _RulesSection(),
         ],
       ),
     );
   }
+}
+
+TextStyle _mutedStyle(BuildContext context) => TextStyle(
+  color: Theme.of(context).colorScheme.onSurfaceVariant,
+  height: 1.5,
+);
+
+const _bold = TextStyle(fontWeight: FontWeight.w700);
+
+class _ContactSection extends StatelessWidget {
+  const _ContactSection();
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return _Section(l10n.helpSectionContact, [
+      _ContactTile(
+        Icons.mail_outline_rounded,
+        'Help and feedback',
+        l10n.helpContactHelp,
+        HelpContacts.support,
+        l10n.helpMailSubjectHelp,
+      ),
+      _ContactTile(
+        Icons.shield_outlined,
+        'Safety concerns',
+        l10n.helpContactSafety,
+        HelpContacts.safety,
+        l10n.helpMailSubjectSafety,
+      ),
+      _ContactTile(
+        Icons.privacy_tip_outlined,
+        'Privacy and your data',
+        l10n.helpContactPrivacy,
+        HelpContacts.privacy,
+        l10n.helpMailSubjectPrivacy,
+      ),
+    ]);
+  }
+}
+
+class _SafetyTipsSection extends StatelessWidget {
+  const _SafetyTipsSection();
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final tips = <(IconData, String, String)>[
+      (
+        Icons.lock_outline_rounded,
+        l10n.helpTipKeepInHiyallTitle,
+        l10n.helpTipKeepInHiyallBody,
+      ),
+      (
+        Icons.person_search_outlined,
+        l10n.helpTipPeopleTitle,
+        l10n.helpTipPeopleBody,
+      ),
+      (
+        Icons.photo_camera_back_outlined,
+        l10n.helpTipPhotoTitle,
+        l10n.helpTipPhotoBody,
+      ),
+      (
+        Icons.groups_outlined,
+        l10n.helpTipMeetingTitle,
+        l10n.helpTipMeetingBody,
+      ),
+      (
+        Icons.pause_circle_outline_rounded,
+        l10n.helpTipStopTitle,
+        l10n.helpTipStopBody,
+      ),
+    ];
+    return _Section(l10n.helpSectionStayingSafe, [
+      for (final (icon, title, body) in tips)
+        ListTile(
+          leading: Icon(icon),
+          title: Text(title, style: _bold),
+          subtitle: Text(body),
+        ),
+    ]);
+  }
+}
+
+class _BlockReportSection extends StatelessWidget {
+  const _BlockReportSection();
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return _Section(l10n.helpSectionBlockReport, [
+      ListTile(
+        leading: const Icon(Icons.block_rounded),
+        title: Text(l10n.helpBlockTitle, style: _bold),
+        subtitle: Text(l10n.helpBlockBody),
+      ),
+      ListTile(
+        leading: const Icon(Icons.flag_outlined),
+        title: Text(l10n.helpReportTitle, style: _bold),
+        subtitle: Text(l10n.helpReportBody),
+      ),
+      ListTile(
+        key: const Key('help-your-reports'),
+        leading: const Icon(Icons.history_rounded),
+        title: Text(l10n.helpYourReportsTitle, style: _bold),
+        subtitle: Text(l10n.helpYourReportsBody),
+        trailing: const Icon(Icons.chevron_right_rounded),
+        onTap: () => context.go('/profile/reports'),
+      ),
+    ]);
+  }
+}
+
+/// Help lines for someone in distress. A starting list: confirm every number
+/// for the countries you launch in before release (docs/mobile/store-listing.md).
+class _UrgentHelpSection extends StatelessWidget {
+  const _UrgentHelpSection();
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final resources = <(String, String)>[
+      (l10n.helpCrisisEmergencyPlace, l10n.helpCrisisEmergencyLine),
+      (l10n.helpCrisisUSPlace, l10n.helpCrisisUSLine),
+      (l10n.helpCrisisUKPlace, l10n.helpCrisisUKLine),
+      (l10n.helpCrisisCAPlace, l10n.helpCrisisCALine),
+      (l10n.helpCrisisAUPlace, l10n.helpCrisisAULine),
+      (l10n.helpCrisisINPlace, l10n.helpCrisisINLine),
+      (l10n.helpCrisisElsePlace, l10n.helpCrisisElseLine),
+    ];
+    return _Section(l10n.helpSectionUrgent, [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+        child: Text(l10n.helpUrgentIntro, style: _mutedStyle(context)),
+      ),
+      for (final (place, line) in resources)
+        ListTile(
+          dense: true,
+          title: Text(place, style: _bold),
+          subtitle: SelectableText(line),
+        ),
+    ]);
+  }
+}
+
+class _RulesSection extends StatelessWidget {
+  const _RulesSection();
+  @override
+  Widget build(BuildContext context) =>
+      _Section(context.l10n.helpSectionRules, [
+        for (final doc in const [
+          LegalDoc.guidelines,
+          LegalDoc.teens,
+          LegalDoc.privacy,
+          LegalDoc.terms,
+        ])
+          ListTile(
+            key: Key('help-legal-${doc.name}'),
+            minTileHeight: 56,
+            title: Text(doc.title, style: _bold),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () => openLegal(context, doc),
+          ),
+      ]);
 }
 
 /// The Settings group that leads here, plus the open-source licence page.

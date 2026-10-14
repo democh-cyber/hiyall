@@ -656,7 +656,9 @@ class _ControlsScreenState extends ConsumerState<ControlsScreen> {
               onPressed: () => context.go('/profile/settings'),
               icon: const Icon(Icons.arrow_back),
               label: const Text('Settings'),
-              style: TextButton.styleFrom(alignment: Alignment.centerLeft),
+              style: TextButton.styleFrom(
+                alignment: AlignmentDirectional.centerStart,
+              ),
             ),
             Text(
               'People you’ve limited',

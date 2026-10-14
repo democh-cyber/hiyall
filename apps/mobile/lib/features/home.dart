@@ -110,8 +110,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ),
             ),
           ),
-          Positioned(
-            right: 16,
+          PositionedDirectional(
+            end: 16,
             bottom: 16,
             child: HomeCreateButton(extended: extended),
           ),
@@ -129,7 +129,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         width: _railWidth,
         child: ListView(
           key: const Key('home-rail'),
-          padding: const EdgeInsets.fromLTRB(0, 8, 16, 120),
+          padding: const EdgeInsetsDirectional.fromSTEB(0, 8, 16, 120),
           children: const [
             StaggerIn(index: 0, child: HomeVibeStrip(wrap: true)),
             HomeProfileNudge(rail: true, topGap: 16),
@@ -564,7 +564,7 @@ class HomeCreateButton extends StatelessWidget {
             child: AnimatedSize(
               duration: duration,
               curve: Curves.easeOutBack,
-              alignment: Alignment.centerRight,
+              alignment: AlignmentDirectional.centerEnd,
               child: Container(
                 height: 56,
                 constraints: const BoxConstraints(minWidth: 56),

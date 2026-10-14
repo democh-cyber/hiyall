@@ -96,6 +96,8 @@ feature/
 
 The layers are boundaries, not a reason to create abstractions without a caller. A feature can keep a small folder until it has separate persistence, network, and presentation behavior.
 
+**Dependency direction (14 October 2026).** `lib/core` never imports `lib/app.dart` or `lib/features`. Where core needs something the shell owns, it declares a seam in `core/app_bindings.dart` with a harmless default: `chatEngineSourceProvider` (the chat engine, used by `core/push/push_controller.dart`) and `routeOpenerProvider` (open an in-app location from a push tap). `lib/bindings.dart` is the only file that knows both sides: `appBindings()` points the seams at `chatEngineProvider` (still defined in `features/chat.dart`) and at the router, and `main()` installs it on the root `ProviderScope`. Tests override the seams directly. When `chatEngineProvider` moves into core, `chatEngineSourceProvider` goes away. Large screens are split by screen and widget into `features/<name>/` folders (no `part` files); the original `features/<name>.dart` stays as the entry and re-exports the public names. Widgets reach the API through small per-feature `...Actions` classes (a provider that reads `apiProvider` at call time), not through `ref.read(apiProvider)` in the widget.
+
 ## 3. Application shell and routing
 
 ```mermaid

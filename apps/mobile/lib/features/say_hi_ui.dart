@@ -170,7 +170,7 @@ class SayHiNote extends ConsumerWidget {
     final s = DiscoverStyle.of(context);
     return AnimatedSize(
       duration: VibeMotion.duration(context),
-      alignment: Alignment.topLeft,
+      alignment: AlignmentDirectional.topStart,
       child: note == null
           ? const SizedBox(width: double.infinity)
           : Padding(

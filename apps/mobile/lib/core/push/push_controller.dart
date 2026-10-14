@@ -2,8 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../app.dart' show routerProvider;
-import '../../features/chat.dart' show chatEngineProvider;
+import '../app_bindings.dart';
 import '../chat/chat_engine.dart' show ChatEngine;
 import '../state.dart';
 import 'push_prefs.dart';
@@ -23,7 +22,7 @@ abstract class PushBackend {
 class ChatPushBackend implements PushBackend {
   final Ref ref;
   ChatPushBackend(this.ref);
-  Future<ChatEngine?> _engine() => ref.read(chatEngineProvider.future);
+  Future<ChatEngine?> _engine() => ref.read(chatEngineSourceProvider.future);
 
   @override
   Future<String?> deviceId() async => (await _engine())?.deviceId;
@@ -47,7 +46,7 @@ final pushBackendProvider = Provider<PushBackend>(ChatPushBackend.new);
 /// Opens a location in the app. Replaced in tests.
 final pushOpenerProvider = Provider<void Function(String)>(
   (ref) =>
-      (location) => ref.read(routerProvider).go(location),
+      (location) => ref.read(routeOpenerProvider)(location),
 );
 
 /// The member's chat/social choices, read from the server.
@@ -138,7 +137,7 @@ class PushController extends Notifier<PushState> {
     final session = ref.read(sessionProvider.notifier);
     session.signOutHooks.add(beforeSignOut);
     ref.onDispose(() => session.signOutHooks.remove(beforeSignOut));
-    ref.listen(chatEngineProvider, (_, next) {
+    ref.listen(chatEngineSourceProvider, (_, next) {
       next.asData?.value?.api.onSent = () => unawaited(engaged());
     }, fireImmediately: true);
     scheduleMicrotask(_start);

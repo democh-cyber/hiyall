@@ -304,7 +304,7 @@ class DiscoveryMoreButton extends StatelessWidget {
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.fromLTRB(discoverPad, 12, discoverPad, 0),
     child: Align(
-      alignment: Alignment.centerLeft,
+      alignment: AlignmentDirectional.centerStart,
       child: _StateAction(
         key: const Key('discover-more'),
         label: 'Explore more people',

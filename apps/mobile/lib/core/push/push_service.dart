@@ -9,17 +9,21 @@ import '../auth/firebase_config.dart';
 /// Where the system's notification permission stands.
 enum PushPermission { notAsked, granted, denied }
 
-/// A tap on a notification: a conversation, or Activity for everything social.
+/// A tap on a notification: a conversation, Activity for everything social, or
+/// the chat devices screen for "a new device was added".
 class PushTap {
   final String kind;
   final String? conversationId;
   const PushTap.chat(String this.conversationId) : kind = 'chat';
   const PushTap.social() : kind = 'social', conversationId = null;
 
+  /// A device was added to this account: opens the chat devices screen.
+  const PushTap.device() : kind = 'device', conversationId = null;
+
   static final _id = RegExp(r'^[0-9a-fA-F-]{36}$');
 
-  /// The payload the server sends is `{kind: chat, conversationId}` or
-  /// `{kind: social, event}`; anything else is ignored.
+  /// The payload the server sends is `{kind: chat, conversationId}`,
+  /// `{kind: social, event}` or `{kind: device}`; anything else is ignored.
   static PushTap? fromData(Map<String, dynamic> data) {
     switch (data['kind']) {
       case 'chat':
@@ -27,13 +31,18 @@ class PushTap {
         return id is String && _id.hasMatch(id) ? PushTap.chat(id) : null;
       case 'social':
         return const PushTap.social();
+      case 'device':
+        return const PushTap.device();
     }
     return null;
   }
 
   /// Where the app goes. A conversation loads its own peer from the id.
-  String get location =>
-      kind == 'chat' ? '/chats/$conversationId' : '/notifications';
+  String get location => switch (kind) {
+    'chat' => '/chats/$conversationId',
+    'device' => '/profile/devices',
+    _ => '/notifications',
+  };
 }
 
 /// What the app needs from the platform's push stack. A fake stands in for it

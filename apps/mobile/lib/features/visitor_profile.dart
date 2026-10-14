@@ -226,8 +226,8 @@ class _Header extends StatelessWidget {
                 ),
               ),
               if (p.country != null)
-                Positioned(
-                  right: -4,
+                PositionedDirectional(
+                  end: -4,
                   top: -4,
                   child: Container(
                     key: const Key('visitor-country'),
@@ -250,8 +250,8 @@ class _Header extends StatelessWidget {
                   ),
                 ),
               if (p.online == true)
-                Positioned(
-                  right: 4,
+                PositionedDirectional(
+                  end: 4,
                   bottom: 4,
                   child: PresenceDot(
                     key: Key('online-dot-${p.userId}'),
@@ -369,7 +369,7 @@ class _LanguageMark extends StatelessWidget {
             const SizedBox(width: 5),
             for (var i = 0; i < 4; i++)
               Container(
-                margin: const EdgeInsets.only(right: 2),
+                margin: const EdgeInsetsDirectional.only(end: 2),
                 width: 5,
                 height: 5,
                 decoration: BoxDecoration(
