@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router'
-import { api, canModerate, type Case as CaseData, type Member } from '../api'
+import { api, canModerate, hasPreview, type Case as CaseData, type ContentPreview, type Member } from '../api'
 import { useOperator } from '../auth'
 import { Chip, ErrorNote, formatBytes, ReasonDialog, Time, useLoad } from '../ui'
 
@@ -12,6 +12,8 @@ export function Case() {
   const { data: c, error, loading, reload } = useLoad(() => api<CaseData>('GET', `/reports/${id}`), id)
   const [pending, setPending] = useState<Pending>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [asking, setAsking] = useState(false)
+  const [preview, setPreview] = useState<ContentPreview | null>(null)
 
   if (loading && !c) return <p role="status">Loading…</p>
   if (!c) return <ErrorNote error={error ?? 'Not found'} />
@@ -22,6 +24,11 @@ export function Case() {
     setPending(null)
     setNotice(action === 'dismiss' ? 'Report dismissed.' : action === 'warn' ? 'Marked as warned.' : 'Member suspended and signed out everywhere.')
     await reload()
+  }
+
+  async function viewContent(reason: string) {
+    setPreview(await api<ContentPreview>('POST', `/reports/${id}/content`, { reason }))
+    setAsking(false)
   }
 
   return (
@@ -81,6 +88,33 @@ export function Case() {
         )}
       </section>
 
+      <section aria-labelledby="content-title">
+        <h2 id="content-title">Reported content</h2>
+        {!hasPreview(c.targetType) ? (
+          <p className="muted">This report is about a private chat. Chats are end-to-end encrypted, so staff only see what the reporter shared above.</p>
+        ) : !canModerate(operator.role) ? (
+          <p className="hint">Your role can read the case but not the reported content.</p>
+        ) : !preview ? (
+          <>
+            <p className="hint">Shows the {c.targetType === 'user' ? 'profile photo' : `reported ${c.targetType.replace('_', ' ')}`} as members saw it. You will be asked for a reason, and the view is audited.</p>
+            <button type="button" className="secondary" onClick={() => setAsking(true)}>View reported content…</button>
+          </>
+        ) : (
+          <>
+            <p className="muted">By @{preview.content.authorUsername || 'unknown'}{preview.content.deleted && ' · deleted by the author'}</p>
+            {preview.content.title && <h3>{preview.content.title}</h3>}
+            {preview.content.text ? <p className="content-text">{preview.content.text}</p> : <p className="muted">No text.</p>}
+            {preview.media.length > 0 && (
+              preview.mediaAvailable ? (
+                <div className="photos">
+                  {preview.media.map((m) => <img key={m.mediaId} src={m.url} alt="Reported photo" width={m.width || undefined} height={m.height || undefined} />)}
+                </div>
+              ) : <p className="hint">{preview.media.length} photo(s) not shown: the console has no access to photo storage.</p>
+            )}
+          </>
+        )}
+      </section>
+
       <section aria-labelledby="history-title">
         <h2 id="history-title">History of the reported member</h2>
         <h3>Other reports</h3>
@@ -113,6 +147,11 @@ export function Case() {
       )}
       {!canModerate(operator.role) && <p className="hint">Your role can read cases but not act on them.</p>}
 
+      {asking && (
+        <ReasonDialog title="View reported content" confirmLabel="Show content"
+          intro={<p>You are about to read content a member published. Your name and this reason are recorded in the audit log.</p>}
+          onSubmit={(reason) => viewContent(reason)} onClose={() => setAsking(false)} />
+      )}
       {pending && (
         <ReasonDialog
           title={pending === 'dismiss' ? 'Dismiss this report' : pending === 'warn' ? 'Warn the member' : 'Suspend the member'}

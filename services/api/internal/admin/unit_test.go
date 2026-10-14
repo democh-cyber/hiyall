@@ -143,19 +143,27 @@ func TestRemoteBindIsRefusedWithoutTLS(t *testing.T) {
 		t.Fatalf("defaults %+v %v", c, err)
 	}
 	for name, m := range map[string]map[string]string{
-		"remote":           with(map[string]string{"ADMIN_ADDR": "0.0.0.0:8081"}),
-		"remote no tls":    with(map[string]string{"ADMIN_ADDR": "0.0.0.0:8081", "ADMIN_ALLOW_REMOTE": "true", "ADMIN_ALLOWED_HOSTS": "a.test"}),
-		"remote no hosts":  with(map[string]string{"ADMIN_ADDR": "0.0.0.0:8081", "ADMIN_ALLOW_REMOTE": "true", "ADMIN_TRUST_PROXY": "true"}),
-		"no key":           with(map[string]string{"ADMIN_DATA_KEY": ""}),
-		"short key":        with(map[string]string{"ADMIN_DATA_KEY": "c2hvcnQ="}),
-		"half tls":         with(map[string]string{"ADMIN_TLS_CERT": "/x"}),
-		"production dbssl": with(map[string]string{"APP_ENV": "production", "DATABASE_URL": "postgres://x?sslmode=require"}),
-		"bad flag":         with(map[string]string{"ADMIN_ALLOW_REMOTE": "yes"}),
-		"no env":           with(map[string]string{"APP_ENV": ""}),
+		"remote":               with(map[string]string{"ADMIN_ADDR": "0.0.0.0:8081"}),
+		"remote no tls":        with(map[string]string{"ADMIN_ADDR": "0.0.0.0:8081", "ADMIN_ALLOW_REMOTE": "true", "ADMIN_ALLOWED_HOSTS": "a.test"}),
+		"remote no hosts":      with(map[string]string{"ADMIN_ADDR": "0.0.0.0:8081", "ADMIN_ALLOW_REMOTE": "true", "ADMIN_TRUST_PROXY": "true"}),
+		"no key":               with(map[string]string{"ADMIN_DATA_KEY": ""}),
+		"short key":            with(map[string]string{"ADMIN_DATA_KEY": "c2hvcnQ="}),
+		"half tls":             with(map[string]string{"ADMIN_TLS_CERT": "/x"}),
+		"production dbssl":     with(map[string]string{"APP_ENV": "production", "DATABASE_URL": "postgres://x?sslmode=require"}),
+		"production shared db": with(map[string]string{"APP_ENV": "production", "DATABASE_URL": "postgres://x?sslmode=verify-full"}),
+		"media half":           with(map[string]string{"ADMIN_MEDIA_ENDPOINT": "s3.example.test"}),
+		"bad flag":             with(map[string]string{"ADMIN_ALLOW_REMOTE": "yes"}),
+		"no env":               with(map[string]string{"APP_ENV": ""}),
 	} {
 		if _, err := LoadConfig(env(m)); err == nil {
 			t.Fatalf("%s accepted", name)
 		}
+	}
+	if c, err = LoadConfig(env(with(map[string]string{"APP_ENV": "production", "ADMIN_DATABASE_URL": "postgres://admin@x?sslmode=verify-full"}))); err != nil || c.SharedDatabase || c.DatabaseURL != "postgres://admin@x?sslmode=verify-full" {
+		t.Fatalf("own role %+v %v", c, err)
+	}
+	if _, err = LoadConfig(env(with(map[string]string{"APP_ENV": "production", "DATABASE_URL": "postgres://x?sslmode=verify-full", "ADMIN_ALLOW_SHARED_DB": "true"}))); err != nil {
+		t.Fatalf("explicit shared role refused: %v", err)
 	}
 	c, err = LoadConfig(env(with(map[string]string{"ADMIN_ADDR": "0.0.0.0:8081", "ADMIN_ALLOW_REMOTE": "true", "ADMIN_TRUST_PROXY": "true", "ADMIN_ALLOWED_HOSTS": "Admin.Internal, other.test"})))
 	if err != nil || !c.SecureCookies || len(c.AllowedHosts) != 2 || c.AllowedHosts[0] != "admin.internal" {

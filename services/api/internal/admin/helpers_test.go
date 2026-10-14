@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -30,6 +31,26 @@ func init() {
 // with random names and never truncate, but the last-admin test disables every other administrator.
 const testDatabase = "hiyall_test_admin"
 
+// adminTestDSN is the connection string of the console's own test database, hiyall_test_admin:
+// ADMIN_TEST_DATABASE_URL, else TEST_DATABASE_URL with its database name swapped. The integration tests create
+// operators and disable administrators, so they never share a database with the API's tests (which truncate).
+func adminTestDSN(t *testing.T) string {
+	t.Helper()
+	if dsn := os.Getenv("ADMIN_TEST_DATABASE_URL"); dsn != "" {
+		return dsn
+	}
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("ADMIN_TEST_DATABASE_URL (a database named hiyall_test_admin) required for PostgreSQL integration")
+	}
+	u, err := url.Parse(dsn)
+	if err != nil || strings.TrimPrefix(u.Path, "/") != "hiyall_test" {
+		t.Skip("ADMIN_TEST_DATABASE_URL (a database named hiyall_test_admin) required for PostgreSQL integration")
+	}
+	u.Path = "/hiyall_test_admin"
+	return u.String()
+}
+
 type env struct {
 	t     *testing.T
 	ctx   context.Context
@@ -48,19 +69,19 @@ func testConfig() Config {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL required for PostgreSQL integration")
-	}
+	dsn := adminTestDSN(t)
 	ctx := context.Background()
 	db, err := store.New(ctx, dsn)
 	if err != nil {
+		if os.Getenv("ADMIN_TEST_DATABASE_URL") == "" {
+			t.Skipf("no %s database next to TEST_DATABASE_URL: %v", testDatabase, err)
+		}
 		t.Fatal(err)
 	}
 	t.Cleanup(db.Pool.Close)
 	var name string
 	if err = db.Pool.QueryRow(ctx, "SELECT current_database()").Scan(&name); err != nil || name != testDatabase {
-		t.Skipf("admin integration tests need a database named %s, not %q (see docs/security/15-admin-console.md)", testDatabase, name)
+		t.Fatalf("admin integration tests need a database named %s, not %q (see docs/security/15-admin-console.md)", testDatabase, name)
 	}
 	if err = db.Seed(ctx); err != nil {
 		t.Fatal(err)

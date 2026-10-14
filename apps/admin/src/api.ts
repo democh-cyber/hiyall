@@ -111,6 +111,57 @@ export interface AuditRecord {
   detail: Record<string, unknown>
 }
 
+export interface PreviewMedia {
+  mediaId: string
+  width: number
+  height: number
+  /** Short-lived link through the console; empty when the console has no storage access. */
+  url: string
+}
+
+export interface ReportedContent {
+  targetType: string
+  targetId: string
+  text: string
+  title?: string
+  authorId: string
+  authorUsername: string
+  createdAt: string
+  deleted: boolean
+}
+
+export interface ContentPreview {
+  content: ReportedContent
+  media: PreviewMedia[]
+  mediaAvailable: boolean
+}
+
+export interface ContentCase {
+  caseId: string
+  mediaId: string
+  userId: string
+  username: string
+  ageBand: 'minor' | 'adult'
+  accountStatus: string
+  purpose: string
+  result: 'flagged' | 'match'
+  scanner: string
+  signals: Record<string, string>
+  originalSha256: string
+  originalBytes: number
+  contentType: string
+  suspendedUser: boolean
+  status: 'open' | 'confirmed' | 'cleared' | 'reported'
+  createdAt: string
+  holdUntil: string
+  legalHold: boolean
+  reviewedBy: string
+  reviewedAt: string | null
+  resolutionNote: string
+  reportReference: string
+  reportedAt: string | null
+}
+
 export interface Page<T> {
   items: T[]
   nextCursor: string | null
@@ -182,6 +233,11 @@ export function query(params: Record<string, string | boolean | undefined>): str
   }
   const s = q.toString()
   return s ? '?' + s : ''
+}
+
+/** Reports about chats have no preview: staff only see what the reporter shared. */
+export function hasPreview(targetType: string): boolean {
+  return targetType !== 'conversation' && targetType !== 'message'
 }
 
 export function canModerate(role: Role | undefined): boolean {

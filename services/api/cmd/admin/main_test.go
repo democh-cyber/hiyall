@@ -6,6 +6,7 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"errors"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -18,19 +19,28 @@ import (
 
 func testEnv(t *testing.T) (func(string) string, *store.Store, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
+	dsn := os.Getenv("ADMIN_TEST_DATABASE_URL")
 	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL required for PostgreSQL integration")
+		// Same rule as internal/admin: TEST_DATABASE_URL with the database name swapped.
+		u, err := url.Parse(os.Getenv("TEST_DATABASE_URL"))
+		if err != nil || strings.TrimPrefix(u.Path, "/") != "hiyall_test" {
+			t.Skip("ADMIN_TEST_DATABASE_URL (a database named hiyall_test_admin) required for PostgreSQL integration")
+		}
+		u.Path = "/hiyall_test_admin"
+		dsn = u.String()
 	}
 	ctx := context.Background()
 	db, err := store.New(ctx, dsn)
 	if err != nil {
+		if os.Getenv("ADMIN_TEST_DATABASE_URL") == "" {
+			t.Skipf("no hiyall_test_admin database next to TEST_DATABASE_URL: %v", err)
+		}
 		t.Fatal(err)
 	}
 	t.Cleanup(db.Pool.Close)
 	var name string
 	if err = db.Pool.QueryRow(ctx, `SELECT current_database()`).Scan(&name); err != nil || name != "hiyall_test_admin" {
-		t.Skipf("needs the hiyall_test_admin database, not %q", name)
+		t.Fatalf("needs the hiyall_test_admin database, not %q", name)
 	}
 	vars := map[string]string{"APP_ENV": "development", "DATABASE_URL": dsn, "ADMIN_DATA_KEY": base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))}
 	return func(k string) string { return vars[k] }, db, ctx

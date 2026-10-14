@@ -13,9 +13,16 @@ import (
 // nothing with the public API's config: the two binaries have separate settings and separate listeners.
 type Config struct {
 	Env         string // APP_ENV: development or production
-	DatabaseURL string // DATABASE_URL
-	Addr        string // ADMIN_ADDR, default 127.0.0.1:8081
-	StaticDir   string // ADMIN_STATIC_DIR, default apps/admin/dist
+	DatabaseURL string // ADMIN_DATABASE_URL (the hiyall_admin role), else DATABASE_URL (see database/roles/roles.sql)
+	// SharedDatabase is true when the console runs on DATABASE_URL, the API's role. Production refuses that
+	// unless ADMIN_ALLOW_SHARED_DB=true: the API role has no access to the operator tables.
+	SharedDatabase bool
+	// Media (ADMIN_MEDIA_*) is a READ-ONLY token for the media bucket, used to show reported photos and,
+	// to administrators, quarantined ones. Optional: without it the console shows content text only.
+	MediaEndpoint, MediaAccessKey, MediaSecretKey, MediaBucket, MediaRegion string
+	MediaSecure                                                             bool
+	Addr                                                                    string // ADMIN_ADDR, default 127.0.0.1:8081
+	StaticDir                                                               string // ADMIN_STATIC_DIR, default apps/admin/dist
 	// AllowRemote (ADMIN_ALLOW_REMOTE=true) permits a listener that is not loopback. It is only accepted
 	// with TLS in front: native TLS (ADMIN_TLS_CERT and ADMIN_TLS_KEY) or a trusted TLS terminating
 	// reverse proxy (ADMIN_TRUST_PROXY=true).
@@ -34,9 +41,26 @@ type Config struct {
 // LoadConfig reads and validates the configuration. getenv is os.Getenv in production.
 func LoadConfig(getenv func(string) string) (Config, error) {
 	c := Config{
-		Env: getenv("APP_ENV"), DatabaseURL: getenv("DATABASE_URL"), Addr: getenv("ADMIN_ADDR"), StaticDir: getenv("ADMIN_STATIC_DIR"),
+		Env: getenv("APP_ENV"), DatabaseURL: getenv("ADMIN_DATABASE_URL"), Addr: getenv("ADMIN_ADDR"), StaticDir: getenv("ADMIN_STATIC_DIR"),
 		AllowRemote: getenv("ADMIN_ALLOW_REMOTE") == "true", TrustProxy: getenv("ADMIN_TRUST_PROXY") == "true",
 		TLSCert: getenv("ADMIN_TLS_CERT"), TLSKey: getenv("ADMIN_TLS_KEY"),
+	}
+	if c.DatabaseURL == "" {
+		c.DatabaseURL, c.SharedDatabase = getenv("DATABASE_URL"), true
+	}
+	c.MediaEndpoint, c.MediaAccessKey, c.MediaSecretKey = getenv("ADMIN_MEDIA_ENDPOINT"), getenv("ADMIN_MEDIA_ACCESS_KEY"), getenv("ADMIN_MEDIA_SECRET_KEY")
+	c.MediaBucket, c.MediaRegion, c.MediaSecure = getenv("ADMIN_MEDIA_BUCKET"), getenv("ADMIN_MEDIA_REGION"), getenv("ADMIN_MEDIA_SECURE") == "true"
+	if c.MediaBucket == "" {
+		c.MediaBucket = "hiyall-media"
+	}
+	if c.MediaRegion == "" {
+		c.MediaRegion = "us-east-1"
+	}
+	if c.MediaEndpoint != "" && (c.MediaAccessKey == "" || c.MediaSecretKey == "") {
+		return c, errors.New("ADMIN_MEDIA_ACCESS_KEY and ADMIN_MEDIA_SECRET_KEY are required with ADMIN_MEDIA_ENDPOINT")
+	}
+	if c.Env == "production" && c.MediaEndpoint != "" && !c.MediaSecure {
+		return c, errors.New("production media storage requires ADMIN_MEDIA_SECURE=true")
 	}
 	if c.Addr == "" {
 		c.Addr = "127.0.0.1:8081"
@@ -44,7 +68,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if c.StaticDir == "" {
 		c.StaticDir = "apps/admin/dist"
 	}
-	for _, name := range []string{"ADMIN_ALLOW_REMOTE", "ADMIN_TRUST_PROXY"} {
+	for _, name := range []string{"ADMIN_ALLOW_REMOTE", "ADMIN_TRUST_PROXY", "ADMIN_ALLOW_SHARED_DB", "ADMIN_MEDIA_SECURE"} {
 		if v := getenv(name); v != "" && v != "true" && v != "false" {
 			return c, errors.New(name + " must be true or false")
 		}
@@ -59,6 +83,9 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		db, err := url.Parse(c.DatabaseURL)
 		if err != nil || db.Query().Get("sslmode") != "verify-full" {
 			return c, errors.New("production database requires sslmode=verify-full")
+		}
+		if c.SharedDatabase && getenv("ADMIN_ALLOW_SHARED_DB") != "true" {
+			return c, errors.New("production console needs its own database role: set ADMIN_DATABASE_URL (the hiyall_admin role, database/roles/roles.sql), or ADMIN_ALLOW_SHARED_DB=true to accept the API's role")
 		}
 	}
 	if (c.TLSCert == "") != (c.TLSKey == "") {
