@@ -87,12 +87,17 @@ func (LogSender) Send(_ context.Context, t Target, m Message) error {
 type Notice struct {
 	Kind                           string
 	Recipient, Actor, Conversation string
+	// Device is a device that must not receive this push: for "device", the one that was just added.
+	Device string
 }
 
 // Category is the member's notification choice a kind falls under.
 const (
 	CategoryChat   = "chat"
 	CategorySocial = "social"
+	// CategorySecurity is never switched off by the member's notification choices: the notice that a
+	// device was added to their account is the one defence against a stolen credential adding one.
+	CategorySecurity = "security"
 )
 
 // kindSpec is one row of the allowlist: only these kinds are ever pushed. Anything
@@ -111,6 +116,7 @@ const title = "Hiyall"
 
 var kinds = map[string]kindSpec{
 	"chat":            {CategoryChat, 30 * time.Second, "New message", ""},
+	"device":          {CategorySecurity, time.Minute, "New device added to your account", ""},
 	"friend_request":  {CategorySocial, 10 * time.Minute, "You have a new friend request", "%s sent you a friend request"},
 	"friend_accepted": {CategorySocial, 10 * time.Minute, "Your friend request was accepted", "%s accepted your friend request"},
 	"follow":          {CategorySocial, 10 * time.Minute, "You have a new follower", "%s started following you"},
@@ -234,8 +240,11 @@ func (n Notice) key() string {
 
 // collapseKey is the device-side counterpart: one slot per conversation, one for all social pushes.
 func (n Notice) collapseKey() string {
-	if n.Kind == "chat" {
+	switch n.Kind {
+	case "chat":
 		return "chat-" + n.Conversation
+	case "device":
+		return "device"
 	}
 	return "social"
 }
@@ -246,7 +255,8 @@ func (n Notice) collapseKey() string {
 // with a log line and a count.
 func (d *Dispatcher) Notify(n Notice) {
 	spec, ok := kinds[n.Kind]
-	if !ok || n.Recipient == "" || n.Recipient == n.Actor || (n.Kind == "chat" && n.Conversation == "") {
+	// A device notice is about the account itself, so its actor is the recipient.
+	if !ok || n.Recipient == "" || (n.Recipient == n.Actor && n.Kind != "device") || (n.Kind == "chat" && n.Conversation == "") {
 		return
 	}
 	// A live socket on another node is not seen here; that costs at most one redundant wake-up.
@@ -313,7 +323,7 @@ func (d *Dispatcher) process(ctx context.Context, n Notice) {
 	}
 	m := message(n, spec, verdict.ActorName)
 	for _, t := range targets {
-		if t.UserID != n.Recipient {
+		if t.UserID != n.Recipient || (n.Device != "" && t.DeviceID == n.Device) {
 			continue
 		}
 		d.deliver(ctx, t, m)
@@ -330,6 +340,9 @@ func message(n Notice, spec kindSpec, actorName string) Message {
 	data := map[string]string{"kind": n.Kind}
 	if n.Kind == "chat" {
 		data["conversationId"] = n.Conversation
+	} else if n.Kind == "device" {
+		// Content-free: the app opens the chat devices screen and lists what the relay knows.
+		data["kind"] = "device"
 	} else {
 		// The app opens Activity for anything that is not a chat.
 		data["kind"] = "social"

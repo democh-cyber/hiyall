@@ -139,6 +139,8 @@ type Report struct {
 	Status     string        `json:"status"`
 	CreatedAt  time.Time     `json:"createdAt"`
 	ResolvedAt *time.Time    `json:"resolvedAt"`
+	// Blocked is set by CreateReport when the report also blocked the subject; it is not part of a report's JSON.
+	Blocked bool `json:"-"`
 }
 
 // Control is one entry in the caller's blocked, muted or restricted list.

@@ -133,11 +133,21 @@ type AdminContentCase struct {
 	ResolutionNote  string            `json:"resolutionNote"`
 	ReportReference string            `json:"reportReference"`
 	ReportedAt      *time.Time        `json:"reportedAt"`
+	// Release of the hold (see ReleaseHold): when and by whom, and when the objects were removed.
+	ReleasedAt      *time.Time `json:"releasedAt"`
+	ReleasedBy      string     `json:"releasedBy"`
+	ReleaseReason   string     `json:"releaseReason"`
+	ObjectsPurgedAt *time.Time `json:"objectsPurgedAt"`
+	// ReleaseBlocker is why the hold cannot be released now (CASE_OPEN, LEGAL_HOLD, REPORT_OPEN or
+	// OTHER_CASE_OPEN), empty when it can. Empty too once it is released.
+	ReleaseBlocker string `json:"releaseBlocker"`
 }
 
 const contentCaseSQL = `SELECT c.case_id::text,c.media_id::text,c.user_id::text,coalesce(p.username,''),age_band(c.user_id),u.status,c.purpose,c.result,c.scanner,c.signals,
  c.original_sha256,c.original_bytes,c.content_type,c.suspended_user,c.status,c.created_at,c.hold_until,c.legal_hold,coalesce(c.reviewed_by,''),c.reviewed_at,
- coalesce(c.resolution_note,''),coalesce(c.report_reference,''),c.reported_at
+ coalesce(c.resolution_note,''),coalesce(c.report_reference,''),c.reported_at,
+ c.released_at,coalesce(c.released_by,''),coalesce(c.release_reason,''),c.objects_purged_at,
+ CASE WHEN c.released_at IS NULL THEN coalesce(hold_release_blocker(c.case_id),'') ELSE '' END
  FROM content_cases c JOIN users u ON u.user_id=c.user_id LEFT JOIN profiles p ON p.user_id=c.user_id `
 
 func scanContentCase(row pgx.Row) (AdminContentCase, error) {
@@ -145,7 +155,7 @@ func scanContentCase(row pgx.Row) (AdminContentCase, error) {
 	var signals []byte
 	if err := row.Scan(&c.CaseID, &c.MediaID, &c.UserID, &c.Username, &c.AgeBand, &c.AccountStatus, &c.Purpose, &c.Result, &c.Scanner, &signals,
 		&c.OriginalSHA256, &c.OriginalBytes, &c.ContentType, &c.SuspendedUser, &c.Status, &c.CreatedAt, &c.HoldUntil, &c.LegalHold, &c.ReviewedBy, &c.ReviewedAt,
-		&c.ResolutionNote, &c.ReportReference, &c.ReportedAt); err != nil {
+		&c.ResolutionNote, &c.ReportReference, &c.ReportedAt, &c.ReleasedAt, &c.ReleasedBy, &c.ReleaseReason, &c.ObjectsPurgedAt, &c.ReleaseBlocker); err != nil {
 		return c, err
 	}
 	c.Signals = map[string]string{}
@@ -229,6 +239,51 @@ func (s *Store) ResolveContentCase(ctx context.Context, caseID string, step Cont
  legal_hold=CASE WHEN $6::boolean IS NOT NULL THEN $6 WHEN $2 IN ('confirmed','reported') THEN true ELSE legal_hold END WHERE case_id=$1`,
 			caseID, next, step.Operator, step.Note, step.ReportReference, step.LegalHold)
 		if err != nil {
+			return err
+		}
+		if hook != nil {
+			return hook(ctx, tx, user)
+		}
+		return nil
+	})
+}
+
+// ErrHoldBlocked is 409 HOLD_BLOCKED: the hold may not be released. The code names the reason.
+func errHoldBlocked(blocker string) error {
+	messages := map[string]string{
+		"CASE_OPEN":       "Resolve the case before releasing its hold",
+		"LEGAL_HOLD":      "A legal hold keeps this evidence; it is lifted only on counsel's instruction",
+		"REPORT_OPEN":     "An open report about this member references the evidence",
+		"OTHER_CASE_OPEN": "Another open case of this member references the evidence",
+	}
+	return &domain.PolicyError{Status: 409, Code: "HOLD_" + blocker, Message: messages[blocker]}
+}
+
+// ErrHoldReleased is answered for a hold already released.
+var ErrHoldReleased = &domain.PolicyError{Status: 409, Code: "HOLD_ALREADY_RELEASED", Message: "This hold was already released"}
+
+// ReleaseHold marks the case's hold released. Allowed only when hold_release_blocker says nothing stands in the
+// way: the case is not open, there is no legal hold, no open member report or other open case is about the same
+// uploader. It deletes nothing: PurgeReleasedHolds removes the objects once hold_until has passed. hook runs in
+// the same transaction, where the console writes its audit entry.
+func (s *Store) ReleaseHold(ctx context.Context, caseID, operator, reason string, hook ModerationHook) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		var user string
+		var released *time.Time
+		if err := tx.QueryRow(ctx, `SELECT user_id::text,released_at FROM content_cases WHERE case_id=$1 FOR UPDATE`, caseID).Scan(&user, &released); err != nil {
+			return mapped(err)
+		}
+		if released != nil {
+			return ErrHoldReleased
+		}
+		var blocker *string
+		if err := tx.QueryRow(ctx, `SELECT hold_release_blocker($1)`, caseID).Scan(&blocker); err != nil {
+			return err
+		}
+		if blocker != nil {
+			return errHoldBlocked(*blocker)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE content_cases SET released_at=now(),released_by=$2,release_reason=$3 WHERE case_id=$1`, caseID, operator, reason); err != nil {
 			return err
 		}
 		if hook != nil {

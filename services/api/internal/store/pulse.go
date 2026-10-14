@@ -36,13 +36,13 @@ func visibleTo(author, audience string) string {
 // circle lists the viewer's own account plus everyone they follow or are
 // friends with, minus muted, blocked or inactive accounts, with whether each
 // is a friend. One row per author.
-const circle = `rel AS (
+var circle = `rel AS (
  SELECT followee_id AS id,false AS friend FROM follows WHERE follower_id=$1 AND state='active'
  UNION ALL SELECT CASE WHEN user_low_id=$1 THEN user_high_id ELSE user_low_id END,true FROM friendships WHERE (user_low_id=$1 OR user_high_id=$1) AND status='accepted'
 ), circle AS (
  SELECT r.id,bool_or(r.friend) AS friend,false AS self FROM rel r JOIN users u ON u.user_id=r.id AND u.status='active'
  WHERE NOT EXISTS(SELECT 1 FROM user_controls m WHERE m.actor_id=$1 AND m.target_id=r.id AND m.control='mute' AND (m.until IS NULL OR m.until>now()))
- AND NOT interaction_barred($1::uuid,r.id)
+ AND ` + notBarred("$1::uuid", "r.id") + `
  GROUP BY r.id
  UNION ALL SELECT $1::uuid,true,true
 )`
@@ -139,8 +139,19 @@ func claimMedia(ctx context.Context, tx pgx.Tx, owner, purpose string, ids []str
 // CreatePost publishes a post. The member's PostsPerDay (deleted posts included) is checked in this
 // transaction behind their post lock, text-only posts count too, and media is validated as before.
 func (s *Store) CreatePost(ctx context.Context, author string, p domain.NewPost, e domain.Entitlements) (string, error) {
-	id := newID()
-	err := s.inTx(ctx, func(tx pgx.Tx) error {
+	id, _, err := s.CreatePostOnce(ctx, author, p, e, Idem{})
+	return id, err
+}
+
+// CreatePostOnce is CreatePost with an optional idempotency key: a repeat of the same request returns the
+// post already made (replayed true) and creates nothing.
+func (s *Store) CreatePostOnce(ctx context.Context, author string, p domain.NewPost, e domain.Entitlements, idem Idem) (id string, replayed bool, err error) {
+	id = newID()
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		if id, replayed, err = claimKey(ctx, tx, author, idem, "post", id); err != nil || replayed {
+			return err
+		}
 		if err := lockQuota(ctx, tx, "post", author); err != nil {
 			return err
 		}
@@ -159,7 +170,7 @@ func (s *Store) CreatePost(ctx context.Context, author string, p domain.NewPost,
 		}
 		return tx.SendBatch(ctx, batch).Close()
 	})
-	return id, err
+	return id, replayed, err
 }
 
 // DeletePost tombstones the post; its media is queued for object deletion.
@@ -191,7 +202,7 @@ func (s *Store) Feed(ctx context.Context, viewer, mode string, before *time.Time
 	if mode == "everyone" {
 		rows, err = s.Pool.Query(ctx, `SELECT p.post_id::text,p.created_at FROM posts p JOIN users u ON u.user_id=p.author_id AND u.status='active'
  WHERE p.deleted_at IS NULL AND p.audience='public' AND p.created_at>now()-interval '7 days' AND ($2::timestamptz IS NULL OR (p.created_at,p.post_id)<($2,$3::uuid))
- AND NOT interaction_barred($1::uuid,p.author_id)
+ AND `+notBarred("$1::uuid", "p.author_id")+`
  AND NOT EXISTS(SELECT 1 FROM user_controls m WHERE m.actor_id=$1 AND m.target_id=p.author_id AND m.control='mute' AND (m.until IS NULL OR m.until>now()))
  ORDER BY p.created_at DESC,p.post_id DESC LIMIT $4`, viewer, before, beforeID, limit)
 	} else {
@@ -464,7 +475,7 @@ func (s *Store) Comments(ctx context.Context, viewer, post string, after *time.T
 	rows, err := s.Pool.Query(ctx, `SELECT c.comment_id::text,c.post_id::text,c.parent_id::text,c.body,c.created_at,a.user_id::text,a.username,coalesce(a.data->>'displayName',''),p.author_id=$1,`+avatarThumbKey("av")+`
  FROM comments c JOIN posts p ON p.post_id=c.post_id JOIN profiles a ON a.user_id=c.author_id JOIN users u ON u.user_id=c.author_id AND u.status='active'`+avatarJoin("av", "a")+`
  WHERE c.post_id=$2 AND c.deleted_at IS NULL AND (NOT c.hidden OR c.author_id=$1)
- AND NOT interaction_barred($1::uuid,c.author_id)
+ AND `+notBarred("$1::uuid", "c.author_id")+`
  AND ($3::timestamptz IS NULL OR (c.created_at,c.comment_id)>($3,$4::uuid))
  ORDER BY c.created_at,c.comment_id LIMIT $5`, viewer, post, after, afterID, limit)
 	if err != nil {
@@ -573,11 +584,21 @@ func (s *Store) DeleteComment(ctx context.Context, viewer, id string) error {
 // StoriesPerDay (deleted stories included) is checked in this transaction behind their story lock,
 // text-only stories count too.
 func (s *Store) CreateStory(ctx context.Context, author string, in domain.NewStory, e domain.Entitlements) (string, error) {
+	id, _, err := s.CreateStoryOnce(ctx, author, in, e, Idem{})
+	return id, err
+}
+
+// CreateStoryOnce is CreateStory with an optional idempotency key, as CreatePostOnce.
+func (s *Store) CreateStoryOnce(ctx context.Context, author string, in domain.NewStory, e domain.Entitlements, idem Idem) (id string, replayed bool, err error) {
 	if in.LifetimeHours != nil && !e.AllowsStoryLifetime(*in.LifetimeHours) {
-		return "", domain.StoryLifetimeError(e.StoryLifetimes)
+		return "", false, domain.StoryLifetimeError(e.StoryLifetimes)
 	}
-	id := newID()
-	err := s.inTx(ctx, func(tx pgx.Tx) error {
+	id = newID()
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		if id, replayed, err = claimKey(ctx, tx, author, idem, "story", id); err != nil || replayed {
+			return err
+		}
 		if err := lockQuota(ctx, tx, "story", author); err != nil {
 			return err
 		}
@@ -591,11 +612,11 @@ func (s *Store) CreateStory(ctx context.Context, author string, in domain.NewSto
 		if err := claimMedia(ctx, tx, author, "story", media); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO stories(story_id,author_id,media_id,body,background,text_style,audience,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,now()+$8::interval)`,
+		_, err = tx.Exec(ctx, `INSERT INTO stories(story_id,author_id,media_id,body,background,text_style,audience,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,now()+$8::interval)`,
 			id, author, in.MediaID, in.Body, in.Background, in.TextStyle, in.Audience, in.Lifetime())
 		return err
 	})
-	return id, err
+	return id, replayed, err
 }
 
 func (s *Store) DeleteStory(ctx context.Context, author, id string) error {
@@ -811,7 +832,7 @@ func (s *Store) StoryViewers(ctx context.Context, author, id string, before *tim
 	rows, err := s.Pool.Query(ctx, `SELECT p.user_id::text,p.username,coalesce(p.data->>'displayName',''),`+avatarThumbKey("av")+`,v.viewed_at FROM story_views v
  JOIN profiles p ON p.user_id=v.viewer_id JOIN users u ON u.user_id=v.viewer_id AND u.status='active'`+avatarJoin("av", "p")+`
  WHERE v.story_id=$1 AND ($2::timestamptz IS NULL OR (v.viewed_at,v.viewer_id)<($2,$3::uuid))
- AND NOT interaction_barred($5::uuid,v.viewer_id)
+ AND `+notBarred("$5::uuid", "v.viewer_id")+`
  ORDER BY v.viewed_at DESC,v.viewer_id DESC LIMIT $4`, id, before, beforeID, limit, author)
 	if err != nil {
 		return nil, err

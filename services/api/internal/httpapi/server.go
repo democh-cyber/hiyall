@@ -3,9 +3,7 @@ package httpapi
 import (
 	"bufio"
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -22,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/time/rate"
+	"hiyall/services/api/internal/appcheck"
 	"hiyall/services/api/internal/clientip"
 	"hiyall/services/api/internal/domain"
 	"hiyall/services/api/internal/media"
@@ -113,6 +112,10 @@ type API struct {
 	Migrations []string
 	ready      readyCache
 	routes     routeSet
+	// AppCheck verifies the X-Firebase-AppCheck token (appcheck.go); AppCheckMode says what to do with the answer.
+	// Nil or appcheck.Off: nothing is checked.
+	AppCheck     AppCheckVerifier
+	AppCheckMode appcheck.Mode
 }
 
 func New(s *store.Store, verify Verify, dev bool, origin string) *API {
@@ -168,31 +171,6 @@ func (a *API) SetCursorKeys(current []byte, previous ...[]byte) {
 			a.cursorKeyPrevious = append(a.cursorKeyPrevious, k)
 		}
 	}
-}
-
-// cursorMAC signs data with the current cursor key. prefix separates uses of the key (it may be empty).
-func (a *API) cursorMAC(prefix string, data []byte) []byte {
-	return macWith(a.cursorKey[:], prefix, data)
-}
-
-// cursorSigValid verifies a signature against the current key, then the previous ones.
-func (a *API) cursorSigValid(sig []byte, prefix string, data []byte) bool {
-	if hmac.Equal(sig, a.cursorMAC(prefix, data)) {
-		return true
-	}
-	for i := range a.cursorKeyPrevious {
-		if hmac.Equal(sig, macWith(a.cursorKeyPrevious[i][:], prefix, data)) {
-			return true
-		}
-	}
-	return false
-}
-
-func macWith(key []byte, prefix string, data []byte) []byte {
-	mac := hmac.New(sha256.New, key)
-	mac.Write([]byte(prefix))
-	mac.Write(data)
-	return mac.Sum(nil)
 }
 
 // Per-limiter key caps. User-keyed limiters evict the longest idle key past the cap, which resets that
@@ -270,6 +248,9 @@ func (a *API) Handler() http.Handler {
 		// The socket is long-lived, so it skips the request deadline below; its refusals
 		// still carry the request id and the standard headers.
 		if r.URL.Path == "/v1/realtime" {
+			if !a.checkAppCheck(w, r) {
+				return
+			}
 			a.realtimeGateway(w, r)
 			return
 		}
@@ -289,7 +270,7 @@ func (a *API) Handler() http.Handler {
 			}
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, If-Match, X-Client-Platform, X-Client-Version")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, If-Match, Idempotency-Key, X-Client-Platform, X-Client-Version, X-Firebase-AppCheck")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, PATCH, POST, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Expose-Headers", "ETag, X-Request-Id")
 			if r.Method == "OPTIONS" {
@@ -318,6 +299,9 @@ func (a *API) Handler() http.Handler {
 		raw := r.Header.Get("Authorization")
 		if !strings.HasPrefix(raw, "Bearer ") || len(raw) > 16384 {
 			a.failure(w, r, 401, "UNAUTHENTICATED", "Sign in to continue")
+			return
+		}
+		if !a.checkAppCheck(w, r) {
 			return
 		}
 		p, err := a.Verify(r.Context(), strings.TrimPrefix(raw, "Bearer "))
@@ -498,171 +482,6 @@ func (a *API) devSession(w http.ResponseWriter, r *http.Request) {
 	}
 	a.ok(w, r, map[string]any{"accessToken": token, "userId": p.UserID, "sessionId": p.SessionID, "expiresIn": 1800})
 }
-func (a *API) route(w http.ResponseWriter, r *http.Request, p store.Principal) {
-	ctx := r.Context()
-	path := r.URL.Path
-	// A member in the 30 day deletion grace period reaches only pendingDeletionAllowed; anything else is
-	// refused like any inactive account.
-	if p.PendingDeletion && !pendingDeletionAllowed(r.Method, path) {
-		a.failure(w, r, 401, "UNAUTHENTICATED", "Sign in to continue")
-		return
-	}
-	// The one place onboarding is enforced: until it is complete, only the routes
-	// in onboardingExempt are reachable, whatever handler would serve the request.
-	if !p.Onboarded && !onboardingExempt(r.Method, path) {
-		a.failOnboarding(w, r)
-		return
-	}
-	if isMediaComplete(r.Method, path) && !a.mediaComplete.allow(p.UserID) {
-		w.Header().Set("Retry-After", "2")
-		a.failure(w, r, 429, "RATE_LIMITED", "Slow down a little and try again")
-		return
-	}
-	if path == "/v1/discovery/search" && r.Method == "POST" {
-		a.searchPeople(w, r, p)
-		return
-	}
-	if path == "/v1/me/profile" || path == "/v1/me/privacy" {
-		if r.Method == "GET" {
-			if path == "/v1/me/profile" {
-				value, err := a.Store.GetProfile(ctx, p.UserID, a.signer(ctx))
-				if err != nil {
-					a.error(w, r, err)
-					return
-				}
-				w.Header().Set("ETag", strconv.Quote(value.Version))
-				a.ok(w, r, value)
-			} else {
-				value, err := a.Store.GetPrivacy(ctx, p.UserID)
-				if err != nil {
-					a.error(w, r, err)
-					return
-				}
-				w.Header().Set("ETag", strconv.Quote(value.Version))
-				a.ok(w, r, value)
-			}
-			return
-		}
-		if r.Method == "PATCH" {
-			// Edits are limited per account: with the username cooldown this closes the rename loop.
-			// Checked before the body is read.
-			if !a.profileEdits.allow(p.UserID) {
-				w.Header().Set("Retry-After", "3")
-				a.failure(w, r, 429, "RATE_LIMITED", "Slow down a little and try again")
-				return
-			}
-			v, ok := version(w, r)
-			if !ok {
-				a.failure(w, r, 428, "PRECONDITION_REQUIRED", "A quoted If-Match version is required")
-				return
-			}
-			body, err := decode(w, r)
-			if err != nil {
-				a.error(w, r, err)
-				return
-			}
-			if path == "/v1/me/profile" {
-				value, err := a.Store.UpdateProfile(ctx, p.UserID, v, body, a.signer(ctx))
-				if err != nil {
-					a.error(w, r, err)
-					return
-				}
-				w.Header().Set("ETag", strconv.Quote(value.Version))
-				a.ok(w, r, value)
-			} else {
-				value, err := a.Store.UpdatePrivacy(ctx, p.UserID, v, body)
-				if err != nil {
-					a.error(w, r, err)
-					return
-				}
-				w.Header().Set("ETag", strconv.Quote(value.Version))
-				a.ok(w, r, value)
-			}
-			return
-		}
-	}
-	if path == "/v1/auth/logout" && r.Method == "POST" {
-		if err := a.Store.RevokeSession(ctx, p, p.SessionID); err != nil {
-			a.error(w, r, err)
-			return
-		}
-		a.endSessions(ctx, p.UserID, p.SessionID, "")
-		a.ok(w, r, map[string]bool{"revoked": true})
-		return
-	}
-	if path == "/v1/auth/sessions" && r.Method == "GET" {
-		a.sessions(w, r, p)
-		return
-	}
-	if path == "/v1/auth/sessions/revoke-others" && r.Method == "POST" {
-		count, err := a.Store.RevokeOtherSessions(ctx, p)
-		if err != nil {
-			a.error(w, r, err)
-			return
-		}
-		a.endSessions(ctx, p.UserID, "", p.SessionID)
-		a.ok(w, r, map[string]int64{"revoked": count})
-		return
-	}
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) == 4 && parts[0] == "v1" && parts[1] == "users" {
-		if !isID(parts[2]) {
-			a.failure(w, r, 404, "NOT_FOUND", "This resource is unavailable")
-			return
-		}
-		if parts[3] == "profile" && r.Method == "GET" {
-			if !a.profileViewAllowed(w, r, p, parts[2]) {
-				return
-			}
-			value, err := a.Store.VisibleProfile(ctx, p.UserID, parts[2], a.presence, a.signer(ctx))
-			if err != nil {
-				a.error(w, r, err)
-				return
-			}
-			// The profile opened, so this is a visit (a locked card counts; one's own profile, and a request
-			// refused above as blocked, in the other age band or not found, do not). A first visit shows up in
-			// this response's count too. Failing to record it never fails the request.
-			if !a.visitWrites.allow(p.UserID + ">" + parts[2]) {
-				// This viewer's visit to this profile was already written within the hour.
-			} else if first, err := a.Store.RecordProfileVisit(ctx, p.UserID, parts[2]); err != nil {
-				slog.Warn("profile visit not recorded", "requestId", ctx.Value(requestIDKey{}))
-			} else if first {
-				if stats, ok := value["socialStats"].(domain.SocialStats); ok {
-					stats.Visitors++
-					value["socialStats"] = stats
-				}
-			}
-			a.ok(w, r, value)
-			return
-		}
-		if parts[3] == "block" && (r.Method == "POST" || r.Method == "DELETE") {
-			err := a.Store.SetBlock(ctx, p.UserID, parts[2], r.Method == "POST")
-			if err != nil {
-				a.error(w, r, err)
-				return
-			}
-			a.ok(w, r, map[string]bool{"blocked": r.Method == "POST"})
-			return
-		}
-	}
-	if len(parts) == 4 && parts[0] == "v1" && parts[1] == "auth" && parts[2] == "sessions" && r.Method == "DELETE" {
-		if !isID(parts[3]) {
-			a.failure(w, r, 404, "NOT_FOUND", "Session unavailable")
-			return
-		}
-		if err := a.Store.RevokeSession(ctx, p, parts[3]); err != nil {
-			a.error(w, r, err)
-			return
-		}
-		a.endSessions(ctx, p.UserID, parts[3], "")
-		a.ok(w, r, map[string]bool{"revoked": true})
-		return
-	}
-	if a.onboardingRoute(w, r, p, parts) || a.nearbyRoute(w, r, p, parts) || a.chatRoute(w, r, p, parts) || a.socialRoute(w, r, p, parts) || a.safetyRoute(w, r, p, parts) || a.pulseRoute(w, r, p, parts) || a.spacesRoute(w, r, p, parts) || a.accountRoute(w, r, p, parts) {
-		return
-	}
-	a.failure(w, r, 404, "NOT_FOUND", "Endpoint unavailable")
-}
 
 type cursor struct {
 	UserID string    `json:"u"`
@@ -671,10 +490,7 @@ type cursor struct {
 	Exp    int64     `json:"e"`
 }
 
-func (a *API) sign(c cursor) string {
-	bytes, _ := json.Marshal(c)
-	return base64.RawURLEncoding.EncodeToString(bytes) + "." + base64.RawURLEncoding.EncodeToString(a.cursorMAC("", bytes))
-}
+func (a *API) sign(c cursor) string { return sealCursor(a, "", c) }
 func (a *API) sessions(w http.ResponseWriter, r *http.Request, p store.Principal) {
 	limit := 20
 	if value := r.URL.Query().Get("limit"); value != "" {
@@ -688,16 +504,8 @@ func (a *API) sessions(w http.ResponseWriter, r *http.Request, p store.Principal
 	var before *time.Time
 	id := uuid.Nil.String()
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
-		parts := strings.Split(raw, ".")
-		valid := len(raw) < 2048 && len(parts) == 2
 		var c cursor
-		if valid {
-			bytes, e := base64.RawURLEncoding.DecodeString(parts[0])
-			sig, e2 := base64.RawURLEncoding.DecodeString(parts[1])
-			valid = e == nil && e2 == nil && a.cursorSigValid(sig, "", bytes) && json.Unmarshal(bytes, &c) == nil && c.UserID == p.UserID && c.Exp > time.Now().Unix()
-			valid = valid && isID(c.ID)
-		}
-		if !valid {
+		if !openCursor(a, "", raw, &c) || c.UserID != p.UserID || c.Exp <= time.Now().Unix() || !isID(c.ID) {
 			a.failure(w, r, 422, "INVALID_CURSOR", "Reload your sessions")
 			return
 		}

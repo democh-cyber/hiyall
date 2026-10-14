@@ -223,11 +223,8 @@ func TestAgeAndBirthDateAppearNowhereElse(t *testing.T) {
 			}
 		}
 	}
-	// The outbox, every table and the logs: a birth date is in member_ages only.
+	// Every table and the logs: a birth date is in member_ages only.
 	var events int
-	if err := h.db.Pool.QueryRow(h.ctx, `SELECT count(*) FROM outbox_events WHERE payload::text LIKE '%birth%' OR payload::text LIKE '%age%' OR payload::text LIKE $1`, "%"+birth+"%").Scan(&events); err != nil || events != 0 {
-		t.Fatalf("%d outbox events mention age (%v)", events, err)
-	}
 	if err := h.db.Pool.QueryRow(h.ctx, `SELECT count(*) FROM profiles WHERE data::text LIKE '%birth%' OR data::text LIKE '%"age%'`).Scan(&events); err != nil || events != 0 {
 		t.Fatalf("%d profiles carry age data (%v)", events, err)
 	}

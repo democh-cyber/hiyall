@@ -3,7 +3,7 @@
   "info": {
     "title": "Hiyall foundation API",
     "version": "0.1.0",
-    "description": "Implemented local foundation. The MVP contract is a separate roadmap. Profile/privacy and shared discussions are server-readable; direct chat relays ciphertext only. Not modelled as a path because OpenAPI does not describe WebSocket upgrades: GET /v1/realtime (bearer token, onboarding required) upgrades to a socket of content-free wake-up events (ready, inbox, activity, read, typing, device, resync; device means a chat device was added to or removed from your account; the client may send {\"type\":\"typing\",\"conversationId\"}). It lives only as long as its session: logout, revoke, sign out everywhere else, suspension and expiry (checked every 25 seconds) close it with 1008 \"session ended\", and 1013 asks the client to resync and reconnect. Refusals are the JSON error envelope with the request id: 401, 403 ONBOARDING_REQUIRED, 429 RATE_LIMITED, 503 AT_CAPACITY (10 sockets per account).",
+    "description": "Implemented local foundation. The MVP contract is a separate roadmap. Profile/privacy and shared discussions are server-readable; direct chat relays ciphertext only. Not modelled as a path because OpenAPI does not describe WebSocket upgrades: GET /v1/realtime (bearer token, onboarding required) upgrades to a socket of content-free wake-up events (ready, inbox, activity, read, typing, device, resync; device means a chat device was added to or removed from your account; the client may send {\"type\":\"typing\",\"conversationId\"}). It lives only as long as its session: logout, revoke, sign out everywhere else, suspension and expiry (checked every 25 seconds) close it with 1008 \"session ended\", and 1013 asks the client to resync and reconnect. Refusals are the JSON error envelope with the request id: 401, 403 ONBOARDING_REQUIRED, 429 RATE_LIMITED, 503 AT_CAPACITY (10 sockets per account). When the server enforces Firebase App Check, every authenticated request (the socket included) also carries the X-Firebase-AppCheck header.",
     "license": {
       "name": "Private project",
       "identifier": "LicenseRef-Proprietary"
@@ -500,7 +500,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -600,7 +600,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -634,7 +634,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -734,7 +734,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -793,7 +793,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -893,7 +893,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -927,7 +927,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1027,7 +1027,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1086,7 +1086,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1186,7 +1186,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1234,7 +1234,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1334,7 +1334,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1380,7 +1380,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1480,7 +1480,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1528,7 +1528,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1628,7 +1628,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1664,7 +1664,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1764,7 +1764,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1810,7 +1810,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1910,7 +1910,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1956,7 +1956,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2056,7 +2056,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2105,7 +2105,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2205,7 +2205,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2251,7 +2251,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2351,7 +2351,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2385,7 +2385,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2485,7 +2485,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2519,7 +2519,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2619,7 +2619,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2655,7 +2655,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2755,7 +2755,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2789,7 +2789,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2889,7 +2889,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2933,7 +2933,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3033,7 +3033,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3069,7 +3069,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3169,7 +3169,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3215,7 +3215,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3315,7 +3315,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3351,7 +3351,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3451,7 +3451,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3507,7 +3507,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3607,7 +3607,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3655,7 +3655,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3755,7 +3755,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3801,7 +3801,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3901,7 +3901,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3949,7 +3949,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4049,7 +4049,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4097,7 +4097,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4197,7 +4197,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4254,7 +4254,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4354,7 +4354,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4402,7 +4402,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4502,7 +4502,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4550,7 +4550,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4650,7 +4650,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4707,7 +4707,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4807,7 +4807,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4855,7 +4855,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4955,7 +4955,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5024,7 +5024,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5124,7 +5124,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5172,7 +5172,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5272,7 +5272,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5320,7 +5320,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5420,7 +5420,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5468,7 +5468,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5568,7 +5568,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5616,7 +5616,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5716,7 +5716,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5773,7 +5773,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5873,7 +5873,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5940,7 +5940,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6040,7 +6040,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6097,7 +6097,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6197,7 +6197,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6264,7 +6264,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6364,7 +6364,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6421,7 +6421,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6521,7 +6521,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6588,7 +6588,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6688,7 +6688,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6752,7 +6752,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6852,7 +6852,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6888,7 +6888,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6988,7 +6988,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7024,7 +7024,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7124,7 +7124,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7172,7 +7172,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7272,7 +7272,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7318,7 +7318,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7418,7 +7418,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7454,7 +7454,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7554,7 +7554,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7602,7 +7602,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7702,7 +7702,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7758,7 +7758,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7858,7 +7858,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7906,7 +7906,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8006,7 +8006,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8054,7 +8054,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8154,7 +8154,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8212,7 +8212,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8312,7 +8312,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8356,7 +8356,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8456,7 +8456,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8513,7 +8513,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8613,7 +8613,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8661,7 +8661,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8761,7 +8761,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8829,7 +8829,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8929,7 +8929,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8987,7 +8987,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9087,7 +9087,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9145,7 +9145,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9245,7 +9245,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9281,7 +9281,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9381,7 +9381,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9417,7 +9417,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9517,7 +9517,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9575,7 +9575,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9675,7 +9675,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9731,7 +9731,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9831,7 +9831,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9879,7 +9879,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9979,7 +9979,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10013,7 +10013,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10113,7 +10113,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10159,7 +10159,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10259,7 +10259,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10315,7 +10315,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10415,7 +10415,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10463,7 +10463,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10563,7 +10563,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10609,7 +10609,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10709,7 +10709,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10757,7 +10757,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10857,7 +10857,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10913,7 +10913,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11013,7 +11013,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11061,7 +11061,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11161,7 +11161,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11218,7 +11218,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11318,7 +11318,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11375,7 +11375,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11475,7 +11475,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11532,7 +11532,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11632,7 +11632,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11688,7 +11688,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11788,7 +11788,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11835,7 +11835,7 @@
         ],
         "responses": {
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11935,7 +11935,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12011,7 +12011,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12169,7 +12169,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12269,7 +12269,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12328,7 +12328,7 @@
         ],
         "responses": {
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12378,7 +12378,7 @@
             }
           },
           "422": {
-            "description": "Error 422; no internal details disclosed",
+            "description": "Error 422; no internal details disclosed IDEMPOTENCY_KEY_REUSED: the Idempotency-Key was used for a different request; VALIDATION also covers an Idempotency-Key that is not a UUID.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12428,7 +12428,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12445,6 +12445,17 @@
                   "$ref": "#/components/schemas/PostResponse"
                 }
               }
+            },
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "true when this answer repeats an earlier request with the same Idempotency-Key.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
             }
           }
         },
@@ -12457,7 +12468,19 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A UUID the client makes once per create and sends unchanged on every retry. A retry returns the original 201 and body with Idempotent-Replayed: true and creates nothing. The same key with a different body, kind of item or space is 422 IDEMPOTENCY_KEY_REUSED. Keys are kept for 24 hours.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
       }
     },
     "/v1/posts/{postId}": {
@@ -12484,7 +12507,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12584,7 +12607,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12630,7 +12653,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12730,7 +12753,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12778,7 +12801,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12878,7 +12901,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12934,7 +12957,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13034,7 +13057,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13082,7 +13105,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13182,7 +13205,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13228,7 +13251,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13328,7 +13351,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13376,7 +13399,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13476,7 +13499,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13531,7 +13554,7 @@
         ],
         "responses": {
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13631,7 +13654,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13699,7 +13722,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13799,7 +13822,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13847,7 +13870,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13947,7 +13970,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14014,7 +14037,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14114,7 +14137,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14161,7 +14184,7 @@
         ],
         "responses": {
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14211,7 +14234,7 @@
             }
           },
           "422": {
-            "description": "Error 422 VALIDATION: the field named is not acceptable (an unknown background or textStyle, a lifetimeHours the member does not have, no words and no photo). Nothing is stored and no limit is used.",
+            "description": "Error 422 VALIDATION: the field named is not acceptable (an unknown background or textStyle, a lifetimeHours the member does not have, no words and no photo). Nothing is stored and no limit is used. IDEMPOTENCY_KEY_REUSED: the Idempotency-Key was used for a different request; VALIDATION also covers an Idempotency-Key that is not a UUID.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14261,7 +14284,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14278,6 +14301,17 @@
                   "$ref": "#/components/schemas/StoryCreatedResponse"
                 }
               }
+            },
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "true when this answer repeats an earlier request with the same Idempotency-Key.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
             }
           }
         },
@@ -14290,7 +14324,19 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A UUID the client makes once per create and sends unchanged on every retry. A retry returns the original 201 and body with Idempotent-Replayed: true and creates nothing. The same key with a different body, kind of item or space is 422 IDEMPOTENCY_KEY_REUSED. Keys are kept for 24 hours.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ]
       }
     },
     "/v1/stories/tray": {
@@ -14317,7 +14363,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14417,7 +14463,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14453,7 +14499,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14553,7 +14599,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14610,7 +14656,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14710,7 +14756,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14777,7 +14823,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14877,7 +14923,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14925,7 +14971,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15025,7 +15071,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15073,7 +15119,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15173,7 +15219,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15230,7 +15276,7 @@
         ],
         "responses": {
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15408,7 +15454,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15566,7 +15612,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15734,7 +15780,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15882,7 +15928,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -15982,7 +16028,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16057,7 +16103,7 @@
         ],
         "responses": {
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16157,7 +16203,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16213,7 +16259,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16313,7 +16359,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16359,7 +16405,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16459,7 +16505,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16517,7 +16563,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16617,7 +16663,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16673,7 +16719,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16773,7 +16819,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16821,7 +16867,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16921,7 +16967,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -16979,7 +17025,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17079,7 +17125,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17137,7 +17183,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17237,7 +17283,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17318,7 +17364,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17418,7 +17464,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17486,7 +17532,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17586,7 +17632,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17641,7 +17687,7 @@
         ],
         "responses": {
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17691,7 +17737,7 @@
             }
           },
           "422": {
-            "description": "Error 422; no internal details disclosed",
+            "description": "Error 422; no internal details disclosed IDEMPOTENCY_KEY_REUSED: the Idempotency-Key was used for a different request; VALIDATION also covers an Idempotency-Key that is not a UUID.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17741,7 +17787,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17758,6 +17804,17 @@
                   "$ref": "#/components/schemas/SpaceEntryCreatedResponse"
                 }
               }
+            },
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "true when this answer repeats an earlier request with the same Idempotency-Key.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
             }
           }
         },
@@ -17770,6 +17827,16 @@
               "type": "string",
               "format": "uuid",
               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A UUID the client makes once per create and sends unchanged on every retry. A retry returns the original 201 and body with Idempotent-Replayed: true and creates nothing. The same key with a different body, kind of item or space is 422 IDEMPOTENCY_KEY_REUSED. Keys are kept for 24 hours.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
             }
           }
         ],
@@ -17809,7 +17876,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17909,7 +17976,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -17967,7 +18034,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18067,7 +18134,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18101,7 +18168,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18245,7 +18312,7 @@
             }
           },
           "401": {
-            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials.",
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18345,7 +18412,7 @@
             }
           },
           "503": {
-            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched. Retry without signing the person out.",
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
             "content": {
               "application/json": {
                 "schema": {

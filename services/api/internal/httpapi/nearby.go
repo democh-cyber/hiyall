@@ -3,16 +3,13 @@ package httpapi
 import (
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"hiyall/services/api/internal/domain"
 	"hiyall/services/api/internal/store"
 )
@@ -24,8 +21,8 @@ import (
 // as online while their sessions are active (within domain.PresenceOnlineWindow of the last request).
 func (a *API) presence(userID string) bool { return a.RT != nil && a.RT.Connected(userID) }
 
-// nearbyRoute serves the location and Nearby endpoints. They wait for onboarding
-// like every route outside the exemption list.
+// The location and Nearby endpoints (location, nearbySwitch and nearby below) wait for onboarding like every
+// route outside the exemption list.
 //
 //	GET    /v1/me/nearby                    -> {visible, sharing, updatedAt|null}
 //	PUT    /v1/me/nearby                    "Show me in Nearby": visible:true (no body); stores no location
@@ -35,23 +32,6 @@ func (a *API) presence(userID string) bool { return a.RT != nil && a.RT.Connecte
 //	DELETE /v1/me/location                  -> {sharing:false}
 //	POST   /v1/discover/nearby              {radiusKm?, interests?, languages?, country?, vibe?, cursor?} -> {items, nextCursor};
 //	                                        radiusKm is one of 5, 10, 15, 25, 50, 100; only visible members may ask
-func (a *API) nearbyRoute(w http.ResponseWriter, r *http.Request, p store.Principal, parts []string) bool {
-	if len(parts) != 3 || parts[0] != "v1" {
-		return false
-	}
-	switch {
-	case parts[1] == "me" && parts[2] == "location":
-		a.location(w, r, p)
-	case parts[1] == "me" && parts[2] == "nearby":
-		a.nearbySwitch(w, r, p)
-	case parts[1] == "discover" && parts[2] == "nearby" && r.Method == "POST":
-		a.nearby(w, r, p)
-	default:
-		return false
-	}
-	return true
-}
-
 func (a *API) location(w http.ResponseWriter, r *http.Request, p store.Principal) {
 	ctx := r.Context()
 	switch r.Method {
@@ -152,12 +132,9 @@ type nearbyCursor struct {
 	Page   int    `json:"p"`
 }
 
-func (a *API) nearbySeal(c nearbyCursor) string {
-	data, _ := json.Marshal(c)
-	return base64.RawURLEncoding.EncodeToString(data) + "." + base64.RawURLEncoding.EncodeToString(a.nearbyMAC(data))
-}
+const nearbyCursorPrefix = "nearby\x00"
 
-func (a *API) nearbyMAC(data []byte) []byte { return a.cursorMAC("nearby\x00", data) }
+func (a *API) nearbySeal(c nearbyCursor) string { return sealCursor(a, nearbyCursorPrefix, c) }
 
 // nearbyCentreTag is a keyed hash of the caller's stored point. It reveals nothing
 // about the point and changes when the caller shares a different one.
@@ -179,25 +156,13 @@ func nearbyQueryHash(f domain.PeopleFilters) string {
 // nearbyOpen verifies a cursor for this principal, radius, filters and centre.
 func (a *API) nearbyOpen(raw string, principal string, radius int, query, centre string, minorViewer bool) (nearbyCursor, bool) {
 	var c nearbyCursor
-	parts := strings.Split(raw, ".")
-	if len(raw) > 2048 || len(parts) != 2 {
+	if !openCursor(a, nearbyCursorPrefix, raw, &c) {
 		return c, false
 	}
-	data, e1 := base64.RawURLEncoding.DecodeString(parts[0])
-	sig, e2 := base64.RawURLEncoding.DecodeString(parts[1])
-	if e1 != nil || e2 != nil || !a.cursorSigValid(sig, "nearby\x00", data) || json.Unmarshal(data, &c) != nil {
-		return c, false
-	}
-	_, e3 := uuid.Parse(c.After)
-	return c, e3 == nil && c.User == principal && c.Radius == radius && c.Query == query && c.Loc == centre && c.Exp > time.Now().Unix() && c.Page > 0 && c.Page < 10 && slices.Contains(domain.NearbyBucketsFor(minorViewer), c.Bucket)
+	return c, isUUID(c.After) && c.User == principal && c.Radius == radius && c.Query == query && c.Loc == centre && c.Exp > time.Now().Unix() && c.Page > 0 && c.Page < 10 && slices.Contains(domain.NearbyBucketsFor(minorViewer), c.Bucket)
 }
 
 func (a *API) nearby(w http.ResponseWriter, r *http.Request, p store.Principal) {
-	if !a.allowSearch(p.UserID) {
-		w.Header().Set("Retry-After", "2")
-		a.failure(w, r, 429, "RATE_LIMITED", "Try again shortly")
-		return
-	}
 	body, err := decode(w, r)
 	var req domain.NearbyRequest
 	if err == nil {

@@ -136,3 +136,11 @@ The API never creates or probes the chat bucket (the token cannot create buckets
 ## Device lifecycle and limits (13 October 2026)
 
 Chat device routes (`POST /v1/devices`, `GET /v1/me/devices`, `DELETE /v1/devices/{id}`, keys, inbox and ack) have per-account limiters in addition to the per-address one (`chat_devices`, `chat_keys`, `chat_inbox`; see the implementation record). Migration `0035` links a device to the auth session that registered it: revoking the session revokes the device. A device unseen for 90 days is revoked by the hourly maintenance job. Photo descriptors are capped on receive and cached by conversation, blob id and hash: see [attachments](../security/14-encrypted-chat-attachments.md#receive-caps-and-cache-keys-13-october-2026-hardening). An unanswered sender gets `403 AWAITING_REPLY` after 3 messages, which also covers photo messages.
+
+### Device names, push tokens and the new-device push (14 October 2026)
+
+- `GET /v1/users/{userId}/devices` returns every device's keys and signature, but `displayName` is `""` unless the caller is the owner (`GET /v1/me/devices` and the owner's own id show it). A peer needs keys, not names.
+- `PUT /v1/devices/{id}/push` moves a token between the caller's own devices but never takes one from another account: `409 PUSH_TOKEN_IN_USE`, with no hint who holds it (see [push notifications](23-push-notifications.md#push-tokens)).
+- Registering a device the account has not had before (`POST /v1/devices`, first time) also sends a content-free push of kind `device` to the account's other devices that are not connected: body "New device added to your account", data `{kind: "device"}`, never switched off by the member's choices (category `security`). See [push notifications](23-push-notifications.md#what-is-pushed).
+- A peer who has only sent auxiliary messages (reactions) has not "written": they do not let the other side past `messagesFrom` for key lookups, claims or photo slots (`canMessage` and the images gate count only `NOT aux` messages).
+- Every chat request from the app carries `X-Client-Version` and `X-Client-Platform`; a `426 UPGRADE_REQUIRED` shows the app's blocking update screen.

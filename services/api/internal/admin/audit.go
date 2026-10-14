@@ -103,3 +103,11 @@ func (s *Service) ListAudit(ctx context.Context, f AuditFilter) ([]AuditRecord, 
 	}
 	return recs, err
 }
+
+// PruneAudit deletes audit entries older than days (at least 365) through prune_operator_audit, which also
+// records the prune. It is the only way an entry is ever removed.
+func (s *Service) PruneAudit(ctx context.Context, p *Principal, reason string, days int) (int64, error) {
+	var removed int64
+	err := s.Pool.QueryRow(ctx, `SELECT prune_operator_audit($1,$2,$3,$4)`, p.Operator.ID, p.Operator.Email, reason, days).Scan(&removed)
+	return removed, err
+}

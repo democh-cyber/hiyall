@@ -45,7 +45,7 @@ func newAcctHarness(t *testing.T) *acctHarness {
 	if err = db.Pool.QueryRow(ctx, "SELECT current_database()").Scan(&name); err != nil || !strings.HasPrefix(name, "hiyall_test") || name == "hiyall" {
 		t.Fatal("integration tests require a database named hiyall_test*")
 	}
-	if _, err = db.Pool.Exec(ctx, "TRUNCATE users,auth_identities,profiles,privacy_settings,sessions,blocks,outbox_events,follows,friendships,notifications,discovery_eligibility,deleted_users CASCADE"); err != nil {
+	if _, err = db.Pool.Exec(ctx, "TRUNCATE users,auth_identities,profiles,privacy_settings,sessions,blocks,follows,friendships,notifications,discovery_eligibility,deleted_users CASCADE"); err != nil {
 		t.Fatal(err)
 	}
 	if err = db.Seed(ctx); err != nil {

@@ -160,6 +160,12 @@ export interface ContentCase {
   resolutionNote: string
   reportReference: string
   reportedAt: string | null
+  releasedAt: string | null
+  releasedBy: string
+  releaseReason: string
+  objectsPurgedAt: string | null
+  /** Why the hold cannot be released now; empty when it can, and once it is released. */
+  releaseBlocker: '' | 'CASE_OPEN' | 'LEGAL_HOLD' | 'REPORT_OPEN' | 'OTHER_CASE_OPEN'
 }
 
 export interface Page<T> {

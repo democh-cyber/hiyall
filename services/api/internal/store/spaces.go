@@ -27,9 +27,9 @@ func unblockedSQL(a, b string) string {
 	return `NOT interaction_barred(` + a + `::uuid,` + b + `::uuid)`
 }
 func spaceVisible() string {
-	return memberSQL("$1::uuid") + ` AND ` + memberSQL("s.owner_id") + ` AND ` + unblockedSQL("$1::uuid", "s.owner_id") + `
+	return memberSQL("$1::uuid") + ` AND ` + memberSQL("s.owner_id") + ` AND ` + notBarred("$1::uuid", "s.owner_id") + `
  AND coalesce(m.state,'')<>'banned' AND (s.visibility<>'invite' OR m.state IN ('active','invited'))
- AND (s.parent_id IS NULL OR EXISTS(SELECT 1 FROM space_members pm JOIN spaces ps ON ps.space_id=pm.space_id WHERE pm.space_id=s.parent_id AND pm.user_id=$1 AND pm.state='active' AND ` + memberSQL("ps.owner_id") + ` AND ` + unblockedSQL("$1::uuid", "ps.owner_id") + `))`
+ AND (s.parent_id IS NULL OR EXISTS(SELECT 1 FROM space_members pm JOIN spaces ps ON ps.space_id=pm.space_id WHERE pm.space_id=s.parent_id AND pm.user_id=$1 AND pm.state='active' AND ` + memberSQL("ps.owner_id") + ` AND ` + notBarred("$1::uuid", "ps.owner_id") + `))`
 }
 
 var spaceSelect = `SELECT s.space_id::text,p.user_id::text,p.username,coalesce(p.data->>'displayName',''),` + avatarThumbKey("av") + `,s.kind,s.title,s.description,s.rules,s.visibility,s.parent_id::text,s.capacity,s.starts_at,s.ends_at,s.timezone,
@@ -419,33 +419,45 @@ func (s *Store) SpaceEntries(ctx context.Context, user, id string, before *time.
 	})
 }
 func (s *Store) CreateSpaceEntry(ctx context.Context, user, id, body string, e domain.Entitlements) (string, error) {
+	entry, _, err := s.CreateSpaceEntryOnce(ctx, user, id, body, e, Idem{})
+	return entry, err
+}
+
+// CreateSpaceEntryOnce is CreateSpaceEntry with an optional idempotency key, as CreatePostOnce.
+func (s *Store) CreateSpaceEntryOnce(ctx context.Context, user, id, body string, e domain.Entitlements, idem Idem) (string, bool, error) {
 	body = domain.Normalize(strings.TrimSpace(body))
 	if !domain.SpaceText(body, 1, 2000) {
-		return "", &domain.ValidationError{Field: "body", Message: "write 1–2000 characters"}
+		return "", false, &domain.ValidationError{Field: "body", Message: "write 1–2000 characters"}
 	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer tx.Rollback(ctx)
+	entry, replayed, err := claimKey(ctx, tx, user, idem, "entry:"+id, newID())
+	if err != nil {
+		return "", false, err
+	}
+	if replayed {
+		return entry, true, nil
+	}
 	x, err := lockedSpace(ctx, tx, user, id, nil)
 	if err != nil {
-		return "", mapped(err)
+		return "", false, mapped(err)
 	}
 	if x.MyState != "active" {
-		return "", ErrSpaceMember
+		return "", false, ErrSpaceMember
 	}
 	if !x.CanDiscuss {
-		return "", ErrSpaceClosed
+		return "", false, ErrSpaceClosed
 	}
 	if err = capDaily(ctx, tx, user, domain.DailySpaceEntries, e.SpaceEntriesPerDay); err != nil {
-		return "", err
+		return "", false, err
 	}
-	entry := newID()
 	if _, err = tx.Exec(ctx, `INSERT INTO space_entries(entry_id,space_id,author_id,body) VALUES($1,$2,$3,$4)`, entry, id, user, body); err != nil {
-		return "", err
+		return "", false, err
 	}
-	return entry, tx.Commit(ctx)
+	return entry, false, tx.Commit(ctx)
 }
 func (s *Store) DeleteSpaceEntry(ctx context.Context, user, id, entry string) error {
 	tx, err := s.Pool.Begin(ctx)

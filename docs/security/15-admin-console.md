@@ -65,7 +65,9 @@ JSON under `/admin/v1`, same envelope as the public API: `{"success":true,"data"
 | `POST /content-cases/{id}/view` | admin | `{reason}`; returns a link to the **blurred** image. Audited as `quarantine_media_view` |
 | `POST /content-cases/{id}/reveal` | admin | `{reason}`; records the explicit unblur (the page then removes the blur). Audited as `quarantine_media_reveal` |
 | `POST /content-cases/{id}/resolve` | admin | `{action: confirm\|clear\|reported, reason, reportReference?, legalHold?}`; `reported` needs the reference of the report made outside the console; `409 CASE_STATE` for a step the case does not allow. Confirm and reported set the legal hold. Audited in the same transaction
+| `POST /holds/{caseId}/release` | admin | `{reason}`: releases the evidence hold of a quarantine case. `409` `HOLD_CASE_OPEN`, `HOLD_LEGAL_HOLD`, `HOLD_REPORT_OPEN`, `HOLD_OTHER_CASE_OPEN` or `HOLD_ALREADY_RELEASED`. Deletes nothing at once: the maintenance job removes the files after `holdUntil` ([16](16-csam-and-illegal-content.md)). Audited as `hold_release` |
 | `GET /audit?operator=&action=&target=&limit=&cursor=` | admin | newest first; the first page of a visit is itself audited (`audit_view`) |
+| `POST /audit/prune` | admin | `{reason, olderThanDays?}` (default and minimum 365): prunes audit entries older than that through the database function; see Audit log. Audited as `audit_prune` |
 | `GET /operators` | admin | never includes credentials |
 | `POST /operators/{id}/disable`, `/enable`, `/role` | admin | `{reason}` (and `{role}`); `409 LAST_ADMIN`, `SELF_DISABLE`, `NO_CHANGE` |
 
@@ -93,6 +95,8 @@ Photos are **proxied, not linked**. The console fetches the object from storage 
 
 Privacy stance: client addresses are stored **truncated** in the audit log and sessions (IPv4 /24, IPv6 /48), enough to tell the VPN from somewhere else and not to identify a household. Login attempt records hold only keyed hashes of the email and address and are deleted after 2 days. The log holds no message text. Retention follows the "Security/admin audit" row of [08](08-security-and-privacy.md): 180 days online, then archive; the append-only trigger means pruning needs a reviewed migration, not an ad hoc DELETE.
 
+**Retention.** Audit entries older than a year may be pruned by an administrator: `POST /admin/v1/audit/prune` `{reason, olderThanDays?}` (default and minimum 365; the console role has no DELETE on the table). The append-only trigger stays on for every role: the database function `prune_operator_audit` (migration 0038, `SECURITY DEFINER`, executable only by `hiyall_admin`) is the only way an entry is removed. It runs as the table's owner, switches the trigger off for its single `DELETE` and on again in the same transaction (a failure leaves it on), refuses anything younger than 365 days whatever it is asked, needs a reason, and writes its own `audit_prune` entry (rows deleted, cut-off, reason). Review the log as the runbook says before pruning anything. Tests: `TestAuditPruneKeepsTheLogAppendOnly`, `TestHoldAndAuditFunctionsAreGrantedToOneRoleEach`.
+
 Not audited per row: the queue listing and the operator list (they show summaries, not cases).
 
 ## Deployment
@@ -110,8 +114,8 @@ Not audited per row: the queue listing and the operator list (they show summarie
 | Role | Used by | Can | Cannot |
 |---|---|---|---|
 | `hiyall_migrate` | the release step (`/migrate`) only | owns the schema; creates and alters tables, triggers and grants | nothing is run with it besides migrations |
-| `hiyall_api` | the public API (`DATABASE_URL`) | read and write member data; `INSERT` into `content_cases` (the scanner opens a case); read `schema_migrations` | any access to `operators`, `operator_sessions`, `operator_login_attempts`, `operator_audit` or their sequence; read or change a case; DDL; TRUNCATE |
-| `hiyall_admin` | the console (`ADMIN_DATABASE_URL`) | read what cases and member views show; update `users`, `reports`, `sessions`, `content_cases` for moderation; insert `moderation_actions`; run the operator tables; **INSERT and SELECT on `operator_audit`** | UPDATE, DELETE, TRUNCATE or DDL on `operator_audit`; any access to messages, envelopes, locations, visitors, devices or keys; write to the media bucket |
+| `hiyall_api` | the public API (`DATABASE_URL`) | read and write member data; `INSERT` into `content_cases` (the scanner opens a case); read `schema_migrations`; `EXECUTE` `held_objects_due` and `mark_hold_purged` (the maintenance job that removes the files of released evidence holds) | any access to `operators`, `operator_sessions`, `operator_login_attempts`, `operator_audit` or their sequence; read or change a case; DDL; TRUNCATE |
+| `hiyall_admin` | the console (`ADMIN_DATABASE_URL`) | read what cases and member views show; update `users`, `reports`, `sessions`, `content_cases` for moderation; insert `moderation_actions`; run the operator tables; **INSERT and SELECT on `operator_audit`**; `EXECUTE` `prune_operator_audit` | UPDATE, DELETE, TRUNCATE or DDL on `operator_audit`; any access to messages, envelopes, locations, visitors, devices or keys; write to the media bucket |
 
 Two trigger functions that moderation writes fire (`users_status_counters`, `revoke_session_devices`) are `SECURITY DEFINER` since migration 0036 so the console role needs no grant on the tables they touch. `TestDatabaseRolesHaveLeastPrivilege` and `TestConsoleWorksEndToEndOnTheRestrictedAdminRole` check the grants and run the whole console on the restricted role; CI fails if they skip. Roles are created `NOLOGIN` (many managed databases do not let the migration role create roles, so this is a script, not a migration): give each a password or certificate once with `ALTER ROLE ... LOGIN PASSWORD`, outside the repository.
 

@@ -173,7 +173,7 @@ func (s *Store) SearchPeople(ctx context.Context, viewer string, f domain.People
  JOIN onboarding o ON o.user_id=p.user_id AND o.completed_at IS NOT NULL`+avatarJoin("av", "p")+`
  WHERE p.user_id<>$1 AND p.user_id>$2::uuid AND u.status='active'
  AND q.data->>'discoverable'='true' AND q.data->>'profileAudience'='public'
- AND NOT interaction_barred($1::uuid,p.user_id)
+ AND `+notBarred("$1::uuid", "p.user_id")+`
  `+peopleFilterSQL(3)+`
  ORDER BY p.user_id LIMIT $11`, append(args, limit)...)
 	if err != nil {

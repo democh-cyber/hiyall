@@ -77,6 +77,7 @@ func (s *Server) routeContent() {
 	s.handle("POST", "/admin/v1/content-cases/{id}/view", RoleAdmin, s.viewContentCase)
 	s.handle("POST", "/admin/v1/content-cases/{id}/reveal", RoleAdmin, s.revealContentCase)
 	s.handle("POST", "/admin/v1/content-cases/{id}/resolve", RoleAdmin, s.resolveContentCase)
+	s.handle("POST", "/admin/v1/holds/{id}/release", RoleAdmin, s.releaseHold)
 }
 
 type previewMedia struct {
@@ -338,4 +339,41 @@ func (s *Server) resolveContentCase(w http.ResponseWriter, r *http.Request, p *P
 		return
 	}
 	s.ok(w, r, map[string]any{"caseId": id, "action": body.Action})
+}
+
+// releaseHold lifts the evidence hold of a quarantine case ({id} is the case id). It needs a reason, is audited
+// in the transaction that records the release, and is refused (409 HOLD_CASE_OPEN, HOLD_LEGAL_HOLD,
+// HOLD_REPORT_OPEN, HOLD_OTHER_CASE_OPEN) while anything still depends on the evidence. Nothing is deleted
+// here: the API's maintenance job removes the held objects once the retention window (holdUntil) is over.
+func (s *Server) releaseHold(w http.ResponseWriter, r *http.Request, p *Principal) {
+	id := r.PathValue("id")
+	var body reasonBody
+	if err := decode(w, r, &body); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	reason, err := Reason(body.Reason)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if !domain.IsID(id) {
+		s.fail(w, r, domain.ErrNotFound)
+		return
+	}
+	hook := func(ctx context.Context, tx pgx.Tx, subject string) error {
+		opID := p.Operator.ID
+		return insertAudit(ctx, tx, AuditEntry{OperatorID: &opID, Actor: p.Operator.Email, Action: "hold_release", TargetType: "content_case", TargetID: id,
+			Reason: reason, IP: p.IP, Detail: map[string]any{"subjectId": subject}})
+	}
+	if err = s.svc.Store.ReleaseHold(r.Context(), id, p.Operator.Email, reason, hook); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	c, err := s.svc.Store.AdminContentCase(r.Context(), id)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.ok(w, r, map[string]any{"caseId": id, "releasedAt": c.ReleasedAt, "objectsRemovedAfter": c.HoldUntil})
 }

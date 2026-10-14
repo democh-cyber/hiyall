@@ -72,3 +72,13 @@ GRANT UPDATE ON users, reports, sessions, content_cases, operators, operator_ses
 GRANT INSERT ON moderation_actions, operators, operator_sessions, operator_login_attempts, operator_audit TO hiyall_admin;
 GRANT DELETE ON operator_sessions, operator_login_attempts TO hiyall_admin;
 GRANT USAGE, SELECT ON SEQUENCE operator_login_attempts_attempt_id_seq, operator_audit_audit_id_seq TO hiyall_admin;
+
+-- ---- Functions that cross the table boundary, each granted to exactly one role (migration 0038). They run with the
+-- owner's rights, so the role needs no table grant behind them.
+REVOKE ALL ON FUNCTION held_objects_due(integer), mark_hold_purged(uuid), prune_operator_audit(uuid, text, text, integer) FROM PUBLIC, hiyall_api, hiyall_admin;
+-- The API's maintenance job removes the objects of released evidence holds once their window is over, and records it;
+-- it still cannot read or change a case.
+GRANT EXECUTE ON FUNCTION held_objects_due(integer), mark_hold_purged(uuid) TO hiyall_api;
+-- The console prunes audit entries older than a year (POST /admin/v1/audit/prune); the trigger that keeps the
+-- table append-only stays on for everything else.
+GRANT EXECUTE ON FUNCTION prune_operator_audit(uuid, text, text, integer) TO hiyall_admin;

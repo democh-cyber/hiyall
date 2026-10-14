@@ -50,6 +50,8 @@ type Config struct {
 	// Error reporting and feature switches (reporting.go).
 	Reporting
 	Features
+	// Firebase App Check (appcheck.go).
+	AppCheck
 }
 
 func Load() (Config, error) {
@@ -162,6 +164,9 @@ func Load() (Config, error) {
 		return c, err
 	}
 	if err := c.loadReporting(); err != nil {
+		return c, err
+	}
+	if err := c.loadAppCheck(); err != nil {
 		return c, err
 	}
 	return c, nil

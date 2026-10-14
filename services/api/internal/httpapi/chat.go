@@ -72,6 +72,9 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		if created {
 			// Every device of the account learns at once that one was added, so an unexpected one is noticed.
 			a.signal(ctx, "device", map[string]string{"deviceId": registered.DeviceID, "change": "added"}, p.UserID)
+			// And a content-free push to the others that are not connected, so a device added with a stolen
+			// credential is noticed even when nobody has the app open. Never off: it is a security notice.
+			a.wake(push.Notice{Kind: "device", Actor: p.UserID, Recipient: p.UserID, Device: registered.DeviceID})
 		}
 		a.ok(w, r, registered)
 	case n == 3 && parts[1] == "me" && parts[2] == "devices" && method == "GET":

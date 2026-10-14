@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -156,16 +157,35 @@ type NearbyAfter struct {
 const nearbyBucketSQL = `CASE WHEN $23::boolean THEN CASE WHEN km<=10 THEN 10 WHEN km<=25 THEN 25 WHEN km<=50 THEN 50 ELSE 100 END
  ELSE CASE WHEN km<=5 THEN 5 WHEN km<=10 THEN 10 WHEN km<=15 THEN 15 WHEN km<=25 THEN 25 WHEN km<=50 THEN 50 ELSE 100 END END`
 
+// NearbyCandidateCap bounds how many stored points one Nearby page measures (audit D16). The bounding box
+// reads user_locations through a GiST index on point(longitude, latitude) and the candidates come nearest
+// first (by planar distance in degrees, the index's own order), so in a very dense area the cap drops the
+// farthest points, never the nearest. The exact haversine, the radius, the barrier and the member's
+// settings are applied to the capped set.
+const NearbyCandidateCap = 5000
+
+// nearbyPoint is the indexed expression: user_locations_point_gist (migration 0038) is built on exactly it.
+const nearbyPoint = `point(l.longitude,l.latitude)`
+
+// nearbyBoxSQL is the bounding-box prefilter as index conditions ($5/$6 latitude min/max, $7 box is longitude
+// limited, $8 box wraps the antimeridian, $9/$10 longitude min/max). A box that wraps is two boxes. All of it
+// is a superset of the circle, so it never changes the answer.
+func nearbyBoxSQL(wrap bool) string {
+	if wrap {
+		return `AND $7::boolean AND $8::boolean AND (` + nearbyPoint + ` <@ box(point($9::float8,$5::float8),point(180,$6::float8))
+   OR ` + nearbyPoint + ` <@ box(point(-180,$5::float8),point($10::float8,$6::float8)))`
+	}
+	return `AND NOT $8::boolean AND ` + nearbyPoint + ` <@ box(point(CASE WHEN $7::boolean THEN $9::float8 ELSE -180 END,$5::float8),point(CASE WHEN $7::boolean THEN $10::float8 ELSE 180 END,$6::float8))`
+}
+
 // nearbySQL finds members whose fresh stored point lies within the radius of the
-// caller's. The bounding box on (latitude, longitude) bounds the rows the exact
-// haversine has to look at; it is a superset of the circle, so it never changes
-// the answer. The box, the distance and the barrier (blocks and age bands) are
-// evaluated first, once per nearby row, in a materialized step that PostgreSQL cannot
-// reorder: the planner has no statistics for the settings stored as JSON, so left alone
-// it can start from every discoverable member in the system instead of from the few
-// who are nearby, and an expensive barrier check would be repeated for every pairing.
-// The settings are then read by key from a fenced (OFFSET 0) lateral subquery, which
-// cannot be turned into a join over all members. Parameters: $1
+// caller's. The bounding box on point(longitude, latitude) is answered by a GiST index and bounds the rows
+// the exact haversine has to look at; the nearest NearbyCandidateCap of them are kept. The haversine, the
+// barrier (blocks and age bands, see notBarred) and the radius are evaluated first, once per nearby row, in a
+// materialized step that PostgreSQL cannot reorder: the planner has no statistics for the settings stored as
+// JSON, so left alone it can start from every discoverable member in the system instead of from the few who
+// are nearby. The settings are then read by key from a fenced (OFFSET 0) lateral subquery, which cannot be
+// turned into a join over all members. Parameters: $1
 // viewer, $2/$3 caller latitude/longitude, $4 radius km, $5/$6 box latitude
 // min/max, $7 box is longitude limited, $8 box wraps the antimeridian, $9/$10 box
 // longitude min/max, $11/$12 keyset bucket and user id, $13 limit, $14 freshness
@@ -175,7 +195,8 @@ const nearbyBucketSQL = `CASE WHEN $23::boolean THEN CASE WHEN km<=10 THEN 10 WH
 // bucket (the only distance a member is ever shown) rather than the exact
 // distance means neither the order nor the keyset cursor can reveal anything
 // finer than the bucket.
-var nearbySQLBase = `
+func nearbySQLFor(wrap bool) string {
+	return `
 WITH within AS MATERIALIZED (
  SELECT c.user_id,` + nearbyBucketSQL + ` AS bucket FROM (
   SELECT l.user_id,
@@ -183,9 +204,9 @@ WITH within AS MATERIALIZED (
   FROM user_locations l
   WHERE l.user_id<>$1::uuid AND l.updated_at>now()-make_interval(hours=>$14::int)
   AND EXISTS(SELECT 1 FROM nearby_prefs np WHERE np.user_id=l.user_id AND np.visible)
-  AND l.latitude BETWEEN $5::float8 AND $6::float8
-  AND (NOT $7::boolean OR CASE WHEN $8::boolean THEN (l.longitude>=$9::float8 OR l.longitude<=$10::float8) ELSE l.longitude BETWEEN $9::float8 AND $10::float8 END)
- ) c WHERE c.km<=$4::float8 AND NOT interaction_barred($1::uuid,c.user_id)
+  ` + nearbyBoxSQL(wrap) + `
+  ORDER BY ` + nearbyPoint + ` <-> point($3::float8,$2::float8) LIMIT ` + strconv.Itoa(NearbyCandidateCap) + `
+ ) c WHERE c.km<=$4::float8 AND ` + notBarred("$1::uuid", "c.user_id") + `
 )
 SELECT p.user_id::text,p.username,p.data,q.data,w.bucket,` + avatarThumbKey("av") + `
 FROM within w
@@ -195,10 +216,15 @@ JOIN profiles p ON p.user_id=w.user_id
 JOIN LATERAL (SELECT s.data FROM privacy_settings s WHERE s.user_id=w.user_id AND s.data->>'discoverable'='true' AND s.data->>'profileAudience'='public' OFFSET 0) q ON true` + avatarJoin("av", "p") + `
 WHERE (w.bucket,w.user_id)>($11::int,$12::uuid)
 `
+}
 
 // nearbySQL adds the people-search filters ($15 to $22: country, vibe, interests, languages,
-// age minimum, age maximum, gender, online) before the order and the limit.
-var nearbySQL = nearbySQLBase + peopleFilterSQL(15) + ` ORDER BY w.bucket,w.user_id LIMIT $13`
+// age minimum, age maximum, gender, online) before the order and the limit. nearbyWrapSQL is the variant
+// for a box that crosses the antimeridian.
+var (
+	nearbySQL     = nearbySQLFor(false) + peopleFilterSQL(15) + ` ORDER BY w.bucket,w.user_id LIMIT $13`
+	nearbyWrapSQL = nearbySQLFor(true) + peopleFilterSQL(15) + ` ORDER BY w.bucket,w.user_id LIMIT $13`
+)
 
 // NearbyPeople lists discoverable members near centre, nearest bucket first.
 // Eligibility is the same as people search: active, onboarded, discoverable,
@@ -224,7 +250,11 @@ func (s *Store) NearbyPeople(ctx context.Context, viewer string, centre domain.L
 		afterID = "00000000-0000-0000-0000-000000000000"
 	}
 	args := append([]any{viewer, centre.Latitude, centre.Longitude, float64(radiusKm), box.LatMin, box.LatMax, box.LonLimited, box.Wrap, box.LonMin, box.LonMax, after.Bucket, afterID, limit, domain.LocationFreshHours}, peopleFilterArgs(f).list()...)
-	rows, err := s.Pool.Query(ctx, nearbySQL, append(args, minorViewer)...)
+	query := nearbySQL
+	if box.Wrap {
+		query = nearbyWrapSQL
+	}
+	rows, err := s.Pool.Query(ctx, query, append(args, minorViewer)...)
 	if err != nil {
 		return nil, err
 	}

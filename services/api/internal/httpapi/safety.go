@@ -23,8 +23,8 @@ func isID(value string) bool { return domain.IsID(value) }
 func controlKey(c domain.Control) (time.Time, string) { return c.Since, c.User.UserID }
 func reportKey(r domain.Report) (time.Time, string)   { return r.CreatedAt, r.ReportID }
 
-// safetyRoute serves mute, restrict, per-chat mute, the control lists and
-// reports. Nothing it stores is visible to the person it is about.
+// Mute, restrict, per-chat mute, the control lists and reports. Nothing stored here is visible to the person
+// it is about.
 //
 //	POST|DELETE /v1/users/{id}/mute           {until?}
 //	POST|DELETE /v1/users/{id}/restrict
@@ -32,113 +32,110 @@ func reportKey(r domain.Report) (time.Time, string)   { return r.CreatedAt, r.Re
 //	GET         /v1/me/blocked|muted|restricted
 //	POST        /v1/reports
 //	GET         /v1/me/reports
-func (a *API) safetyRoute(w http.ResponseWriter, r *http.Request, p store.Principal, parts []string) bool {
-	ctx := r.Context()
-	n, method := len(parts), r.Method
-	if n < 2 || parts[0] != "v1" {
-		return false
+
+// muteUntil reads the optional {until}; a POST with no body mutes indefinitely.
+func (a *API) muteUntil(w http.ResponseWriter, r *http.Request) (*time.Time, bool) {
+	if r.ContentLength == 0 {
+		return nil, true
 	}
-	// until is optional; a POST with no body mutes indefinitely.
-	until := func() (*time.Time, bool) {
-		if r.ContentLength == 0 {
-			return nil, true
-		}
-		raw, err := decode(w, r)
-		if err == nil {
-			var value *time.Time
-			if value, err = domain.ParseMuteUntil(raw, time.Now()); err == nil {
-				return value, true
-			}
-		}
-		a.error(w, r, err)
-		return nil, false
-	}
-	switch {
-	case n == 4 && parts[1] == "users" && isID(parts[2]) && (parts[3] == "mute" || parts[3] == "restrict") && (method == "POST" || method == "DELETE"):
-		on := method == "POST"
-		if on && !a.graph.allow(p.UserID) {
-			w.Header().Set("Retry-After", "2")
-			a.failure(w, r, 429, "RATE_LIMITED", "Slow down a little and try again")
-			return true
-		}
+	raw, err := decode(w, r)
+	if err == nil {
 		var value *time.Time
-		if on && parts[3] == "mute" {
+		if value, err = domain.ParseMuteUntil(raw, time.Now()); err == nil {
+			return value, true
+		}
+	}
+	a.error(w, r, err)
+	return nil, false
+}
+
+// setUserControl is POST (on) and DELETE (off) for /v1/users/{userId}/mute and /restrict. Turning one on takes
+// the per-account graph limit in the route table.
+func setUserControl(control, key string) handlerFunc {
+	return func(a *API, w http.ResponseWriter, r *http.Request, p store.Principal) {
+		on := r.Method == http.MethodPost
+		var value *time.Time
+		if on && control == "mute" {
 			var ok bool
-			if value, ok = until(); !ok {
-				return true
+			if value, ok = a.muteUntil(w, r); !ok {
+				return
 			}
 		}
-		control := map[string]string{"mute": "mute", "restrict": "restrict"}[parts[3]]
-		if err := a.Store.SetControl(ctx, p.UserID, parts[2], control, on, value); err != nil {
+		if err := a.Store.SetControl(r.Context(), p.UserID, r.PathValue("userId"), control, on, value); err != nil {
 			a.error(w, r, err)
-			return true
+			return
 		}
 		// Own devices refresh the profile and chat list; the target learns nothing.
-		a.signal(ctx, "inbox", nil, p.UserID)
-		key := map[string]string{"mute": "muted", "restrict": "restricted"}[parts[3]]
+		a.signal(r.Context(), "inbox", nil, p.UserID)
 		a.ok(w, r, map[string]any{key: on, "until": value})
-	case n == 4 && parts[1] == "conversations" && isID(parts[2]) && parts[3] == "mute" && (method == "POST" || method == "DELETE"):
-		on := method == "POST"
-		var value *time.Time
-		if on {
-			var ok bool
-			if value, ok = until(); !ok {
-				return true
-			}
+	}
+}
+
+func (a *API) setConversationMute(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx, id := r.Context(), r.PathValue("conversationId")
+	on := r.Method == http.MethodPost
+	var value *time.Time
+	if on {
+		var ok bool
+		if value, ok = a.muteUntil(w, r); !ok {
+			return
 		}
-		if err := a.Store.SetConversationMute(ctx, p.UserID, parts[2], on, value); err != nil {
-			a.error(w, r, err)
-			return true
-		}
-		a.signal(ctx, "inbox", map[string]string{"conversationId": parts[2]}, p.UserID)
-		a.ok(w, r, map[string]any{"muted": on, "until": value})
-	case n == 3 && parts[1] == "me" && (parts[2] == "blocked" || parts[2] == "muted" || parts[2] == "restricted") && method == "GET":
-		kind := parts[2]
+	}
+	if err := a.Store.SetConversationMute(ctx, p.UserID, id, on, value); err != nil {
+		a.error(w, r, err)
+		return
+	}
+	a.signal(ctx, "inbox", map[string]string{"conversationId": id}, p.UserID)
+	a.ok(w, r, map[string]any{"muted": on, "until": value})
+}
+
+// controlList is GET /v1/me/blocked, /muted and /restricted.
+func controlList(kind string) handlerFunc {
+	return func(a *API, w http.ResponseWriter, r *http.Request, p store.Principal) {
+		ctx := r.Context()
 		paged(a, w, r, p, kind, func(pg page) ([]domain.Control, error) {
 			return a.Store.ListControls(ctx, p.UserID, kind, pg.before, pg.id, pg.limit, a.signer(ctx))
 		}, controlKey, nil)
-	case n == 3 && parts[1] == "me" && parts[2] == "reports" && method == "GET":
-		paged(a, w, r, p, "reports", func(pg page) ([]domain.Report, error) {
-			return a.Store.ListReports(ctx, p.UserID, pg.before, pg.id, pg.limit)
-		}, reportKey, nil)
-	case n == 2 && parts[1] == "reports" && method == "POST":
-		raw, err := decode(w, r)
-		if err != nil {
-			a.error(w, r, err)
-			return true
-		}
-		data, _ := json.Marshal(raw)
-		report, err := domain.ParseReport(data)
-		if err != nil {
-			a.error(w, r, err)
-			return true
-		}
-		if !a.reports.allow(p.UserID) {
-			w.Header().Set("Retry-After", "60")
-			a.failure(w, r, 429, "RATE_LIMITED", "You’ve sent a lot of reports. Try again in a minute.")
-			return true
-		}
-		value, created, err := a.Store.CreateReport(ctx, p.UserID, report)
-		if err != nil {
-			a.error(w, r, err)
-			return true
-		}
-		blocked := false
-		if report.Block {
-			if err = a.Store.SetBlock(ctx, p.UserID, value.Subject.UserID, true); err != nil {
-				a.error(w, r, err)
-				return true
-			}
-			blocked = true
-			a.signal(ctx, "inbox", nil, p.UserID)
-		}
-		status := http.StatusOK
-		if created {
-			status = http.StatusCreated
-		}
-		a.write(w, r, status, map[string]any{"success": true, "data": map[string]any{"report": value, "duplicate": !created, "blocked": blocked}})
-	default:
-		return false
 	}
-	return true
+}
+
+func (a *API) myReports(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx := r.Context()
+	paged(a, w, r, p, "reports", func(pg page) ([]domain.Report, error) {
+		return a.Store.ListReports(ctx, p.UserID, pg.before, pg.id, pg.limit)
+	}, reportKey, nil)
+}
+
+func (a *API) createReport(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx := r.Context()
+	raw, err := decode(w, r)
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	data, _ := json.Marshal(raw)
+	report, err := domain.ParseReport(data)
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	if !a.reports.allow(p.UserID) {
+		w.Header().Set("Retry-After", "60")
+		a.failure(w, r, 429, "RATE_LIMITED", "You’ve sent a lot of reports. Try again in a minute.")
+		return
+	}
+	value, created, err := a.Store.CreateReport(ctx, p.UserID, report)
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	blocked := value.Blocked
+	if blocked {
+		a.signal(ctx, "inbox", nil, p.UserID)
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	a.write(w, r, status, map[string]any{"success": true, "data": map[string]any{"report": value, "duplicate": !created, "blocked": blocked}})
 }

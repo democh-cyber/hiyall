@@ -29,7 +29,7 @@ func TestDiscoverySearchSecurityAndPagination(t *testing.T) {
 	if err = db.Pool.QueryRow(ctx, "SELECT current_database()").Scan(&name); err != nil || name != "hiyall_test" {
 		t.Fatal("requires dedicated hiyall_test database")
 	}
-	if _, err = db.Pool.Exec(ctx, "TRUNCATE users,auth_identities,profiles,privacy_settings,sessions,blocks,outbox_events CASCADE"); err != nil {
+	if _, err = db.Pool.Exec(ctx, "TRUNCATE users,auth_identities,profiles,privacy_settings,sessions,blocks CASCADE"); err != nil {
 		t.Fatal(err)
 	}
 	if err = db.Seed(ctx); err != nil {

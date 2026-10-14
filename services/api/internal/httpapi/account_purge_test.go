@@ -108,6 +108,7 @@ func newPurgeWorld(t *testing.T) *purgeWorld {
 	h.exec(`INSERT INTO auth_identities(issuer,subject,user_id) VALUES('https://securetoken.google.com/test-project','sub-xan',$1)`, xan)
 	h.exec(`INSERT INTO discovery_eligibility(user_id,age_group,confirmed_at,valid_until) VALUES($1,'adult',now(),now()+interval '1 day')`, xan)
 	h.exec(`INSERT INTO notification_prefs(user_id,chat,social) VALUES($1,false,true)`, xan)
+	h.exec(`INSERT INTO idempotency_keys(user_id,key,scope,request_hash,ref_id) VALUES($1,gen_random_uuid(),'post','\x00',gen_random_uuid())`, xan)
 
 	// Spaces.
 	w.space1 = makeSpace(h.socialHarness, xan, "community", "public", 10, nil)
@@ -160,7 +161,6 @@ func newPurgeWorld(t *testing.T) *purgeWorld {
 	if err = h.db.ResolveReport(h.ctx, toXan, "op", "warn", "note"); err != nil {
 		t.Fatal(err)
 	}
-	h.exec(`INSERT INTO outbox_events(event_id,aggregate_type,aggregate_id,aggregate_version,event_type) VALUES(gen_random_uuid(),'user',$1,99,'profile.updated')`, xan)
 	return w
 }
 
@@ -203,7 +203,7 @@ var purgedColumns = []string{
 	"notifications.actor_id", "notifications.recipient_id", "conversation_members.user_id", "conversation_members.peer_id",
 	"user_controls.actor_id", "user_controls.target_id", "media_assets.owner_id", "posts.author_id", "post_reactions.user_id", "saved_posts.user_id",
 	"stories.author_id", "story_views.viewer_id", "spaces.owner_id", "space_members.user_id", "space_entries.author_id", "onboarding.user_id",
-	"user_locations.user_id", "nearby_prefs.user_id", "member_daily_counts.user_id", "member_ages.user_id", "profile_visits.profile_id", "profile_visits.visitor_id", "profile_visit_counts.profile_id",
+	"user_locations.user_id", "nearby_prefs.user_id", "member_daily_counts.user_id", "member_ages.user_id", "idempotency_keys.user_id", "profile_visits.profile_id", "profile_visits.visitor_id", "profile_visit_counts.profile_id",
 	"key_claims.claimer_id", "notification_prefs.user_id", "social_counters.user_id",
 }
 
