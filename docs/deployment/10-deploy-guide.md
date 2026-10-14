@@ -66,6 +66,7 @@ Authoritative list with every variable, default and rule: [`infrastructure/docke
 | `CURSOR_KEY` | **yes** | **yes** | `openssl rand -base64 32`, the same on every machine. Rotate with `CURSOR_KEY_PREVIOUS` (keep the old key for 15 minutes) |
 | `DB_MAX_CONNS`, `DB_STATEMENT_TIMEOUT`, `DB_LOCK_TIMEOUT`, `DB_IDLE_IN_TRANSACTION_TIMEOUT` | no | no | default pool 20 per machine; per-connection limits 5s, 3s, 15s (a `pool_max_conns` in `DATABASE_URL` wins over `DB_MAX_CONNS`) |
 | `MIN_CLIENT_VERSION_ANDROID`, `_IOS`, `_WEB` | no | no | empty (off). Set to retire an app version: older clients get 426 `UPGRADE_REQUIRED` |
+| `APP_CHECK_ENFORCE`, `FIREBASE_PROJECT_NUMBER` | no (recommended for launch) | no | `false` (default), `log`, then `true` once App Check is set up (see "App Check" below). `FIREBASE_PROJECT_NUMBER` is the numeric project number, required for `log` and `true` |
 | `LOG_FORMAT` | no | no | default `json` in production |
 | `GOMEMLIMIT` | recommended | no | about 80% of the machine's memory, `400MiB` on a 512 MB machine (see section 7, item 6) |
 | `METRICS_ADDR` | no | no | default is loopback `127.0.0.1:9090`, unreachable from outside the machine; leave it, or set `0.0.0.0:9090` **and** `METRICS_TOKEN` and keep the port private |
@@ -180,6 +181,16 @@ At startup the log says which mode is active (`client address: trusted proxies, 
 Then point the mobile build at the API (`--dart-define=API_BASE_URL=https://api.<your-domain>`) and run real sign-up and a two-device chat before inviting anyone: neither has been done yet.
 
 Metrics scraping: the first launch needs no scraper. Fly's own dashboards show machine CPU/memory and HTTP status; add an external uptime check on `/readyz` (free tiers of UptimeRobot, Better Stack and similar are enough) and alert on it. When you add Prometheus or Grafana Cloud later, scrape the private `:9090/metrics` with the bearer token. The metrics that matter are in section 7.
+
+### 4b. App Check (owner steps; the server side is built, the app side is not)
+
+App Check ties requests to the real app: the app sends a short-lived Firebase token (`X-Firebase-AppCheck`) that Firebase issues only after Play Integrity (Android) or App Attest (iOS) vouches for the install. It does not replace sign-in, and it stops a script that holds a stolen ID token. The API side is `internal/appcheck` and `httpapi/appcheck.go`: the JWT is verified with RS256 against `https://firebaseappcheck.googleapis.com/v1/jwks`, issuer `https://firebaseappcheck.googleapis.com/<project number>`, audience `projects/<project number>`.
+
+1. Firebase console, Project settings, General: copy the **project number** into `FIREBASE_PROJECT_NUMBER`.
+2. Console, App Check: register the Android app with Play Integrity (the Play Console app and the signing certificate fingerprint must match) and the iOS app with App Attest (DeviceCheck as the fallback). Leave enforcement **off** in the console: the API enforces.
+3. Add the Flutter plugin (`firebase_app_check`), activate it at start-up after `Firebase.initializeApp`, and send `await FirebaseAppCheck.instance.getToken()` as `X-Firebase-AppCheck` on every API request and on the realtime socket's upgrade request. (Not done: the app does not send the header yet.) Debug builds use the plugin's debug provider with a debug token registered in the console.
+4. Ship the app, set `APP_CHECK_ENFORCE=log`, and watch `hiyall_app_check_total{mode="log",result=...}`: `valid` should be nearly everything; `missing` is old app versions; `invalid` is worth a look.
+5. When `missing` and `invalid` are small, set `APP_CHECK_ENFORCE=true` (and raise `MIN_CLIENT_VERSION_*` past the versions that cannot send tokens). A request without a valid token then answers `401 APP_CHECK_REQUIRED`; if Firebase's keys cannot be fetched it is `503 APP_CHECK_UNAVAILABLE`, not a sign-out. Health probes, the legal documents and development login never need a token.
 
 ## 5. Migrations are a release step
 

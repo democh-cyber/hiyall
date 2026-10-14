@@ -448,11 +448,9 @@ func (s *Store) GetPrivacy(ctx context.Context, id string) (domain.Privacy, erro
 	return p, nil
 }
 
-// appendEvent used to stage an outbox event and bump users.aggregate_version in the caller's transaction.
-// Nothing ever consumed those rows, and each append wrote the hot users row, so it now does nothing
-// (audit D5); the remaining callers are in files owned by other features and go when they next change.
-// The outbox_events table and users.aggregate_version stay until a later release drops them (expand and
-// contract, docs/deployment/10-deploy-guide.md section 5); PurgeOutbox clears what was written before.
+// appendEvent does nothing. It staged an outbox event and bumped users.aggregate_version until audit D5
+// (migration 0038 dropped the table and the column). Only the chat device calls in chat.go remain; they go
+// with this when that file next changes.
 func appendEvent(context.Context, pgx.Tx, string, string, int64) error { return nil }
 
 // UpdateProfile applies a validated patch at the expected version and returns the profile as GetProfile does.
@@ -722,51 +720,51 @@ func (s *Store) SetBlock(ctx context.Context, actor, target string, blocked bool
 	if actor == target {
 		return &domain.ValidationError{Field: "userId", Message: "cannot block yourself"}
 	}
-	return s.inTx(ctx, func(tx pgx.Tx) error {
-		// Ordered user locks prevent deadlock on reciprocal blocks.
-		rows, err := tx.Query(ctx, `SELECT user_id::text,status FROM users WHERE user_id IN ($1,$2) ORDER BY user_id FOR NO KEY UPDATE`, actor, target)
-		if err != nil {
+	return s.inTx(ctx, func(tx pgx.Tx) error { return setBlockTx(ctx, tx, actor, target, blocked) })
+}
+
+// setBlockTx is SetBlock inside the caller's transaction (CreateReport blocks in the same one).
+func setBlockTx(ctx context.Context, tx pgx.Tx, actor, target string, blocked bool) error {
+	// Ordered user locks prevent deadlock on reciprocal blocks.
+	rows, err := tx.Query(ctx, `SELECT user_id::text,status FROM users WHERE user_id IN ($1,$2) ORDER BY user_id FOR NO KEY UPDATE`, actor, target)
+	if err != nil {
+		return err
+	}
+	statuses := map[string]string{}
+	for rows.Next() {
+		var id, status string
+		if err = rows.Scan(&id, &status); err != nil {
+			rows.Close()
 			return err
 		}
-		statuses := map[string]string{}
-		for rows.Next() {
-			var id, status string
-			if err = rows.Scan(&id, &status); err != nil {
-				rows.Close()
-				return err
-			}
-			statuses[id] = status
+		statuses[id] = status
+	}
+	rows.Close()
+	if rows.Err() != nil {
+		return rows.Err()
+	}
+	if statuses[actor] != "active" || statuses[target] == "" || (blocked && statuses[target] != "active") {
+		return domain.ErrNotFound
+	}
+	if !blocked {
+		_, err = tx.Exec(ctx, `DELETE FROM blocks WHERE blocker_id=$1 AND blocked_id=$2`, actor, target)
+		return err
+	}
+	for _, statement := range []string{
+		`INSERT INTO blocks(blocker_id,blocked_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
+		`UPDATE follows SET state='removed',removed_at=now() WHERE ((follower_id=$1 AND followee_id=$2) OR (follower_id=$2 AND followee_id=$1)) AND state<>'removed'`,
+		`UPDATE friendships SET status=CASE WHEN status='accepted' THEN 'removed' ELSE 'cancelled' END,updated_at=now() WHERE user_low_id=least($1::uuid,$2::uuid) AND user_high_id=greatest($1::uuid,$2::uuid) AND status IN ('pending','accepted')`,
+		`DELETE FROM notifications WHERE (recipient_id=$1 AND actor_id=$2) OR (recipient_id=$2 AND actor_id=$1)`,
+		`UPDATE conversations SET status='closed' WHERE user_low_id=least($1::uuid,$2::uuid) AND user_high_id=greatest($1::uuid,$2::uuid)`,
+		// The pair's encrypted attachments go too (evidence held for a report excepted); the clean-up job removes the objects.
+		`UPDATE chat_blobs SET state='deleted',deleted_at=now() WHERE state<>'deleted' AND held_report_id IS NULL AND conversation_id IN (SELECT conversation_id FROM conversations WHERE user_low_id=least($1::uuid,$2::uuid) AND user_high_id=greatest($1::uuid,$2::uuid))`,
+		`DELETE FROM message_envelopes e USING messages m, devices d WHERE e.message_id=m.message_id AND e.recipient_device_id=d.device_id AND e.delivered_at IS NULL AND ((m.sender_id=$1 AND d.user_id=$2) OR (m.sender_id=$2 AND d.user_id=$1))`,
+	} {
+		if _, err = tx.Exec(ctx, statement, actor, target); err != nil {
+			return err
 		}
-		rows.Close()
-		if rows.Err() != nil {
-			return rows.Err()
-		}
-		if statuses[actor] != "active" || statuses[target] == "" || (blocked && statuses[target] != "active") {
-			return domain.ErrNotFound
-		}
-		if !blocked {
-			_, err = tx.Exec(ctx, `DELETE FROM blocks WHERE blocker_id=$1 AND blocked_id=$2`, actor, target)
-			if err != nil {
-				return err
-			}
-			return nil
-		}
-		for _, statement := range []string{
-			`INSERT INTO blocks(blocker_id,blocked_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
-			`UPDATE follows SET state='removed',removed_at=now() WHERE ((follower_id=$1 AND followee_id=$2) OR (follower_id=$2 AND followee_id=$1)) AND state<>'removed'`,
-			`UPDATE friendships SET status=CASE WHEN status='accepted' THEN 'removed' ELSE 'cancelled' END,updated_at=now() WHERE user_low_id=least($1::uuid,$2::uuid) AND user_high_id=greatest($1::uuid,$2::uuid) AND status IN ('pending','accepted')`,
-			`DELETE FROM notifications WHERE (recipient_id=$1 AND actor_id=$2) OR (recipient_id=$2 AND actor_id=$1)`,
-			`UPDATE conversations SET status='closed' WHERE user_low_id=least($1::uuid,$2::uuid) AND user_high_id=greatest($1::uuid,$2::uuid)`,
-			// The pair's encrypted attachments go too (evidence held for a report excepted); the clean-up job removes the objects.
-			`UPDATE chat_blobs SET state='deleted',deleted_at=now() WHERE state<>'deleted' AND held_report_id IS NULL AND conversation_id IN (SELECT conversation_id FROM conversations WHERE user_low_id=least($1::uuid,$2::uuid) AND user_high_id=greatest($1::uuid,$2::uuid))`,
-			`DELETE FROM message_envelopes e USING messages m, devices d WHERE e.message_id=m.message_id AND e.recipient_device_id=d.device_id AND e.delivered_at IS NULL AND ((m.sender_id=$1 AND d.user_id=$2) OR (m.sender_id=$2 AND d.user_id=$1))`,
-		} {
-			if _, err = tx.Exec(ctx, statement, actor, target); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // SessionLive reports whether a session still authenticates: not revoked, not expired, and

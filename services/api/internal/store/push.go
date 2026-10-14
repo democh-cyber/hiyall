@@ -32,7 +32,7 @@ func (s *Store) PushAudience(ctx context.Context, recipient, actor, conversation
  WHERE p.user_id=$2 AND `+memberSQL("$1::uuid")+` AND `+memberSQL("$2::uuid")+`
  AND NOT `+barredBetween+`
  AND NOT `+quietFrom("$1::uuid", "$2::uuid")+` AND NOT `+restrictedPair("$1::uuid", "$2::uuid")+`
- AND CASE WHEN $3='chat' THEN coalesce(np.chat,true) ELSE coalesce(np.social,true) END
+ AND CASE WHEN $3='chat' THEN coalesce(np.chat,true) WHEN $3='security' THEN true ELSE coalesce(np.social,true) END
  AND ($4::uuid IS NULL OR EXISTS(SELECT 1 FROM conversation_members m JOIN conversations c ON c.conversation_id=m.conversation_id
   WHERE m.conversation_id=$4 AND m.user_id=$1 AND m.peer_id=$2 AND c.status='active' AND (m.muted_until IS NULL OR m.muted_until<=now())))`,
 		recipient, actor, category, conv).Scan(&name)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"time"
 
 	"hiyall/services/api/internal/media"
 )
@@ -119,11 +118,4 @@ func (s *Store) purgeMediaChunk(ctx context.Context, objects MediaObjects, skip 
 		return 0, failed, err
 	}
 	return int64(len(done)), failed, nil
-}
-
-// PurgeOutbox deletes at most batch outbox_events rows older than retain. Nothing writes the table any
-// more (audit D5); this clears what earlier releases wrote until the table is dropped.
-func (s *Store) PurgeOutbox(ctx context.Context, retain time.Duration, batch int) (int64, error) {
-	tag, err := s.Pool.Exec(ctx, `DELETE FROM outbox_events WHERE ctid IN (SELECT ctid FROM outbox_events WHERE occurred_at<now()-$1::interval LIMIT $2)`, retain, batch)
-	return tag.RowsAffected(), err
 }

@@ -4,7 +4,14 @@ import { api, type ContentCase } from '../api'
 import { useOperator } from '../auth'
 import { Chip, ErrorNote, formatBytes, ReasonDialog, Time, useLoad } from '../ui'
 
-type Pending = 'confirm' | 'clear' | 'reported' | 'view' | 'reveal' | null
+type Pending = 'confirm' | 'clear' | 'reported' | 'view' | 'reveal' | 'release' | null
+
+const blockerText: Record<string, string> = {
+  CASE_OPEN: 'Resolve the case first.',
+  LEGAL_HOLD: 'A legal hold keeps this evidence. It is lifted only on counsel’s instruction.',
+  REPORT_OPEN: 'An open report about this member references the evidence.',
+  OTHER_CASE_OPEN: 'Another open case of this member references the evidence.',
+}
 
 interface Detail {
   case: ContentCase
@@ -34,6 +41,13 @@ export function ContentCaseView() {
     await api('POST', `/content-cases/${id}/resolve`, { action, reason, reportReference: action === 'reported' ? reference : undefined })
     setPending(null)
     setNotice(action === 'confirm' ? 'Case confirmed and held as evidence.' : action === 'clear' ? 'Case cleared.' : 'Report reference recorded.')
+    await reload()
+  }
+
+  async function release(reason: string) {
+    await api('POST', `/holds/${id}/release`, { reason })
+    setPending(null)
+    setNotice('Hold released. The held files are removed once the retention date has passed.')
     await reload()
   }
 
@@ -76,6 +90,7 @@ export function ContentCaseView() {
         <dt>Original</dt><dd>{c.contentType}, {formatBytes(c.originalBytes)}, SHA-256 <code>{c.originalSha256}</code></dd>
         <dt>Detected</dt><dd><Time value={c.createdAt} /></dd>
         <dt>Held until</dt><dd><Time value={c.holdUntil} />{c.legalHold && ' (a legal hold keeps it longer)'}</dd>
+        {c.releasedAt && (<><dt>Hold released</dt><dd>{c.releasedBy} · <Time value={c.releasedAt} />{c.releaseReason && ` — ${c.releaseReason}`}{c.objectsPurgedAt ? <> · files removed <Time value={c.objectsPurgedAt} /></> : ' · files are removed after the held-until date'}</dd></>)}
         {c.reviewedBy && (<><dt>Last step</dt><dd>{c.reviewedBy} · <Time value={c.reviewedAt} />{c.resolutionNote && ` — ${c.resolutionNote}`}</dd></>)}
         {c.reportReference && (<><dt>Reported</dt><dd><code>{c.reportReference}</code> · <Time value={c.reportedAt} /></dd></>)}
       </dl>
@@ -119,6 +134,20 @@ export function ContentCaseView() {
       )}
       {!isAdmin && <p className="hint">Only administrators can decide a case.</p>}
 
+      {isAdmin && !c.releasedAt && (
+        <section aria-labelledby="release-title" className="actions-bar">
+          <h2 id="release-title">Evidence hold</h2>
+          {c.releaseBlocker ? (
+            <p className="hint" role="note">The hold cannot be released yet. {blockerText[c.releaseBlocker] ?? c.releaseBlocker}</p>
+          ) : (
+            <p className="hint">Releasing deletes nothing at once. The files under the hold are removed after the held-until date, and the case record stays.</p>
+          )}
+          <div className="actions">
+            <button type="button" className="secondary" disabled={!!c.releaseBlocker} onClick={() => setPending('release')}>Release hold…</button>
+          </div>
+        </section>
+      )}
+
       {pending === 'view' && (
         <ReasonDialog title="Load the quarantined image" confirmLabel="Load blurred image" danger
           intro={<p>The image loads blurred. You then choose whether to reveal it. Both steps are written to the audit log with your reason.</p>}
@@ -129,6 +158,11 @@ export function ContentCaseView() {
           confirmLabel={pending === 'confirm' ? 'Confirm case' : 'Clear case'} danger={pending === 'confirm'}
           intro={pending === 'clear' ? <p>The photo stays held until its date. Restoring the member, if they were suspended, is a separate step on their page.</p> : undefined}
           onSubmit={(reason) => step(pending, reason, '')} onClose={() => setPending(null)} />
+      )}
+      {pending === 'release' && (
+        <ReasonDialog title="Release the evidence hold" confirmLabel="Release hold" danger
+          intro={<p>Do this only when counsel, or your written retention rule, says the evidence is no longer needed. The files are removed once the held-until date has passed, and the removal is audited.</p>}
+          onSubmit={(reason) => release(reason)} onClose={() => setPending(null)} />
       )}
       {pending === 'reported' && (
         <ReasonDialog title="Record the report" confirmLabel="Record reference" referenceLabel="Report number or authority reference"

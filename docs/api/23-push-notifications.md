@@ -59,6 +59,7 @@ it is queued. Title is always `Hiyall`.
 | kind | when | body | data |
 | --- | --- | --- | --- |
 | `chat` | a message arrived | `New message` (never named) | `{kind: "chat", conversationId}` |
+| `device` | a chat device was added to your account for the first time | `New device added to your account` (never named) | `{kind: "device"}` |
 | `friend_request` | someone sent a friend request | `<name> sent you a friend request` | `{kind: "social", event}` |
 | `friend_accepted` | your request was accepted (also a crossing request) | `<name> accepted your friend request` | same |
 | `follow` | someone followed you | `<name> started following you` | same |
@@ -69,7 +70,9 @@ it is queued. Title is always `Hiyall`.
 Not pushed: reactions, comments, story activity, space moderation. They still
 appear in Activity and reach open apps over the socket.
 
-The app opens the conversation for `kind: chat`, and Activity for `kind: social`.
+The app opens the conversation for `kind: chat`, Activity for `kind: social` and the Chat devices screen (`/profile/devices`) for `kind: device`.
+
+`device` is a **security notice**: it has its own category, `security`, which the `chat` and `social` switches do not cover, so it cannot be turned off. It goes only to the account's other devices (the one that was just added is excluded by device id, and the actor is the recipient themselves), at most one a minute; it carries no device name. The other rules below (account state, a live socket on this node, daily cap) still apply. The realtime `device` event and the in-app banner cover devices that are connected.
 
 ## Privacy rules (server side)
 
@@ -90,7 +93,8 @@ The app opens the conversation for `kind: chat`, and Activity for `kind: social`
   (`GET`/`PATCH /v1/me/notifications`: `chat`, `social`; the social switch
   covers every kind except `chat`).
 * Pushes go to the recipient's active devices only, never to the sender's other
-  devices, and never to a revoked device.
+  devices, and never to a revoked device. (The `device` kind is the exception that
+  proves the rule: its actor is the recipient, and the new device is skipped.)
 * Coalescing: at most one `chat` push per (recipient, conversation) per 30
   seconds; social pushes at most one per (recipient, kind, actor) per 10
   minutes. The device also collapses them (`collapse_key`, `apns-collapse-id`:
@@ -131,6 +135,14 @@ worst case is a few extra nudges, never a lost message.
   token or the provider's message, and not retried.
 * The OAuth access token is obtained with a signed service-account JWT
   (RS256) and cached until 5 minutes before it expires.
+
+## Push tokens
+
+`PUT /v1/devices/{id}/push {provider, token}` attaches a token to one of the
+caller's devices. A token the same account holds on another of its devices (a
+reinstall) is moved. A token held by **another account** is never taken over: the
+answer is `409 PUSH_TOKEN_IN_USE` (the server logs the refusal without the token
+or the other account; the body names nobody). `DELETE` clears it.
 
 ## Preferences API
 

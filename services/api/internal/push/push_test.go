@@ -500,3 +500,64 @@ func TestLogSenderNeverFailsAndIsTheUnconfiguredDefault(t *testing.T) {
 		t.Fatal("log sender did not count as delivered")
 	}
 }
+
+func TestDeviceNoticeIsContentFreeSecurityPushToTheOtherDevices(t *testing.T) {
+	var asked []string
+	h := newHarness(t, func(c *Config) {
+		c.Targets = func(_ context.Context, users []string) ([]Target, error) {
+			return []Target{
+				{UserID: bob, DeviceID: "old-phone", Provider: "fcm", Token: "t1"},
+				{UserID: bob, DeviceID: "old-tablet", Provider: "apns", Token: "t2"},
+				{UserID: bob, DeviceID: "new-phone", Provider: "fcm", Token: "t3"},
+			}, nil
+		}
+		check := c.Check
+		c.Check = func(ctx context.Context, n Notice, category string) (Eligibility, error) {
+			asked = append(asked, category)
+			return check(ctx, n, category)
+		}
+	})
+	// The actor is the recipient: the notice is about the account itself.
+	h.d.Notify(Notice{Kind: "device", Actor: bob, Recipient: bob, Device: "new-phone"})
+	h.drain()
+	if len(asked) != 1 || asked[0] != CategorySecurity || CategoryOf("device") != CategorySecurity {
+		t.Fatalf("category %v", asked)
+	}
+	got := h.sender.delivered()
+	if len(got) != 2 {
+		t.Fatalf("sent %d, want the two other devices", len(got))
+	}
+	for _, m := range got {
+		if m.Title != "Hiyall" || m.Body != "New device added to your account" || m.CollapseKey != "device" {
+			t.Fatalf("message %+v", m)
+		}
+		if len(m.Data) != 1 || m.Data["kind"] != "device" {
+			t.Fatalf("data %v", m.Data)
+		}
+	}
+	if h.sender.count() != 2 {
+		t.Fatal("the new device was woken")
+	}
+	// Coalesced inside a minute, sent again after it.
+	h.d.Notify(Notice{Kind: "device", Actor: bob, Recipient: bob, Device: "new-phone"})
+	h.drain()
+	if h.sender.count() != 2 {
+		t.Fatal("a second notice inside the window went out")
+	}
+	h.now = h.now.Add(2 * time.Minute)
+	h.d.Notify(Notice{Kind: "device", Actor: bob, Recipient: bob, Device: "new-phone"})
+	h.drain()
+	if h.sender.count() != 4 {
+		t.Fatalf("sent %d after the window", h.sender.count())
+	}
+}
+
+func TestOtherKindsStillNeverNotifyTheirOwnActor(t *testing.T) {
+	h := newHarness(t, nil)
+	h.d.Notify(Notice{Kind: "follow", Actor: bob, Recipient: bob})
+	h.d.Notify(Notice{Kind: "chat", Actor: bob, Recipient: bob, Conversation: conv1})
+	h.drain()
+	if h.sender.count() != 0 {
+		t.Fatal("a notice went to its own actor")
+	}
+}

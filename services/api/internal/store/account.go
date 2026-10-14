@@ -439,7 +439,7 @@ func (s *Store) purgeContent(ctx context.Context, id string) error {
 		`DELETE FROM onboarding WHERE user_id=$1`,
 		`DELETE FROM member_ages WHERE user_id=$1`,
 		`DELETE FROM discovery_eligibility WHERE user_id=$1`,
-		`DELETE FROM outbox_events WHERE aggregate_id=$1`,
+		`DELETE FROM idempotency_keys WHERE user_id=$1`,
 	)
 }
 

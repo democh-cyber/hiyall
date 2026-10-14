@@ -234,15 +234,30 @@ func (s *Store) CreateReport(ctx context.Context, reporter string, r domain.NewR
  ON CONFLICT (reporter_id,target_type,target_id) WHERE status='open' DO NOTHING
  RETURNING report_id::text,created_at`, newID(), reporter, r.TargetType, r.TargetID, subject, r.ReasonCode, description, evidence, r.DisclosureConsent, r.Severity()).
 			Scan(&report.ReportID, &report.CreatedAt)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil // the earlier open report stands, with its own evidence
-		}
-		if err != nil {
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		created = true
-		// Shared images are held against deletion for as long as the report keeps them.
-		return holdEvidenceBlobs(ctx, tx, report.ReportID, conversation, r.Evidence)
+		// With no row the earlier open report stands, with its own evidence.
+		if err == nil {
+			created = true
+			// Shared images are held against deletion for as long as the report keeps them.
+			if err = holdEvidenceBlobs(ctx, tx, report.ReportID, conversation, r.Evidence); err != nil {
+				return err
+			}
+		}
+		if !r.Block {
+			return nil
+		}
+		// "Report and block" is one step: the report, its held evidence and the block commit together, so
+		// a failure leaves neither. The evidence is held first; the block then keeps what is held. A subject
+		// who can no longer be blocked (an account that is gone) is not an error: the report stands.
+		switch err = setBlockTx(ctx, tx, reporter, subject, true); {
+		case err == nil:
+			report.Blocked = true
+		case errors.Is(err, domain.ErrNotFound):
+			err = nil
+		}
+		return err
 	})
 	if err == nil && !created {
 		err = s.Pool.QueryRow(ctx, `SELECT report_id::text,reason_code,created_at FROM reports WHERE reporter_id=$1 AND target_type=$2 AND target_id=$3 AND status='open'`,

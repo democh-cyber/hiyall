@@ -813,36 +813,21 @@ func TestAccountPurgeIsNotDrainedWhileMediaObjectsRemain(t *testing.T) {
 	}
 }
 
-// ---- Outbox retention (D5) ---------------------------------------------------------------------------------
+// ---- Outbox removed (D5) -----------------------------------------------------------------------------------
 
-func TestOutboxIsNotWrittenAndOldRowsArePurged(t *testing.T) {
+// Migration 0038 dropped outbox_events and users.aggregate_version; ordinary writes must not need either.
+func TestOutboxTableAndAggregateVersionAreGone(t *testing.T) {
 	h := newSocialHarness(t)
-	count := func() int {
-		var n int
-		if err := h.db.Pool.QueryRow(h.ctx, `SELECT count(*) FROM outbox_events`).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
+	var tables, columns int
+	if err := h.db.Pool.QueryRow(h.ctx, `SELECT (SELECT count(*) FROM information_schema.tables WHERE table_name='outbox_events'),
+		(SELECT count(*) FROM information_schema.columns WHERE table_name='users' AND column_name='aggregate_version')`).Scan(&tables, &columns); err != nil {
+		t.Fatal(err)
 	}
-	var version int64
-	_ = h.db.Pool.QueryRow(h.ctx, `SELECT aggregate_version FROM users WHERE user_id=$1`, alice).Scan(&version)
+	if tables != 0 || columns != 0 {
+		t.Fatalf("outbox_events (%d) or users.aggregate_version (%d) still exists", tables, columns)
+	}
 	v := profileVersion(h, alice)
 	h.expect(h.patch(alice, "/v1/me/profile", v, `{"bio":"no event"}`), 200, "")
 	h.expect(h.send(alice, "POST", "/v1/users/"+cara+"/block", nil), 200, "")
 	h.expect(h.call(alice, "DELETE", "/v1/users/"+cara+"/block"), 200, "")
-	var after int64
-	_ = h.db.Pool.QueryRow(h.ctx, `SELECT aggregate_version FROM users WHERE user_id=$1`, alice).Scan(&after)
-	if count() != 0 || after != version {
-		t.Fatalf("profile and block writes produced %d outbox rows and moved aggregate_version %d -> %d", count(), version, after)
-	}
-	for i, age := range []string{"8 days", "6 days", "10 days"} {
-		h.exec(`INSERT INTO outbox_events(event_id,aggregate_type,aggregate_id,aggregate_version,event_type,occurred_at) VALUES(gen_random_uuid(),'user',$1,$2,'profile.updated',now()-$3::interval)`, alice, 100+i, age)
-	}
-	n, err := h.db.PurgeOutbox(h.ctx, 7*24*time.Hour, 1)
-	if err != nil || n != 1 || count() != 2 {
-		t.Fatalf("batch of 1: %d %v, %d left", n, err, count())
-	}
-	if n, err = h.db.PurgeOutbox(h.ctx, 7*24*time.Hour, 100); err != nil || n != 1 || count() != 1 {
-		t.Fatalf("rest: %d %v, %d left", n, err, count())
-	}
 }

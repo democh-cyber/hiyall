@@ -2,11 +2,9 @@ package httpapi
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,16 +22,14 @@ type peopleCursor struct {
 	Page  int    `json:"p"`
 }
 
-func (a *API) peopleSign(c peopleCursor) string {
-	data, _ := json.Marshal(c)
-	return base64.RawURLEncoding.EncodeToString(data) + "." + base64.RawURLEncoding.EncodeToString(a.cursorMAC("", data))
+func (a *API) peopleSign(c peopleCursor) string { return sealCursor(a, "", c) }
+
+func isUUID(value string) bool {
+	_, err := uuid.Parse(value)
+	return err == nil
 }
+
 func (a *API) searchPeople(w http.ResponseWriter, r *http.Request, p store.Principal) {
-	if !a.allowSearch(p.UserID) {
-		w.Header().Set("Retry-After", "2")
-		a.failure(w, r, 429, "RATE_LIMITED", "Try again shortly")
-		return
-	}
 	body, err := decode(w, r)
 	if err != nil {
 		a.error(w, r, err)
@@ -57,17 +53,8 @@ func (a *API) searchPeople(w http.ResponseWriter, r *http.Request, p store.Princ
 	after := uuid.Nil.String()
 	page := 0
 	if raw != "" {
-		parts := strings.Split(raw, ".")
-		valid := len(parts) == 2
 		var c peopleCursor
-		if valid {
-			bytes, e := base64.RawURLEncoding.DecodeString(parts[0])
-			sig, e2 := base64.RawURLEncoding.DecodeString(parts[1])
-			valid = e == nil && e2 == nil && a.cursorSigValid(sig, "", bytes) && json.Unmarshal(bytes, &c) == nil && c.User == p.UserID && c.Query == query && c.Exp > time.Now().Unix() && c.Page > 0 && c.Page < 10
-			_, e = uuid.Parse(c.After)
-			valid = valid && e == nil
-		}
-		if !valid {
+		if !openCursor(a, "", raw, &c) || c.User != p.UserID || c.Query != query || c.Exp <= time.Now().Unix() || c.Page <= 0 || c.Page >= 10 || !isUUID(c.After) {
 			a.failure(w, r, 422, "INVALID_CURSOR", "Start a new search")
 			return
 		}

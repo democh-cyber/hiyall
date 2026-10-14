@@ -3,12 +3,14 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"hiyall/services/api/internal/domain"
 	"hiyall/services/api/internal/media"
 	"hiyall/services/api/internal/store"
@@ -94,252 +96,317 @@ func (a *API) completeUpload(ctx context.Context, owner, id string) (map[string]
 	return map[string]any{"mediaId": id, "status": "ready", "width": out.Width, "height": out.Height, "url": sign(full), "thumbUrl": sign(thumb)}, nil
 }
 
-// pulseRoute serves media uploads, posts, the feed, reactions, comments,
-// saves and stories.
-func (a *API) pulseRoute(w http.ResponseWriter, r *http.Request, p store.Principal, parts []string) bool {
+// Media uploads, posts, the feed, reactions, comments, saves and stories. The per-account content and list
+// limits are taken by the route table before these run (router.go); uploads take theirs after the storage
+// check below, so a node without storage answers 503 first.
+
+func (a *API) respond(w http.ResponseWriter, r *http.Request, value any, err error) {
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	a.ok(w, r, value)
+}
+
+func (a *API) created(w http.ResponseWriter, r *http.Request, value any, err error) {
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	a.write(w, r, http.StatusCreated, map[string]any{"success": true, "data": value})
+}
+
+// jsonBody reads a JSON object body and returns it re-encoded for the strict domain parsers.
+func (a *API) jsonBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	raw, err := decode(w, r)
+	if err != nil {
+		a.error(w, r, err)
+		return nil, false
+	}
+	data, _ := json.Marshal(raw)
+	return data, true
+}
+
+// idempotencyHeader names the optional client key on creating a post, a story or a space entry (docs/api/16).
+const idempotencyHeader = "Idempotency-Key"
+
+// idempotency reads the optional Idempotency-Key: a UUID the client makes once per attempt and reuses on every
+// retry. body is what the request creates from; the same key with another body is refused by the store.
+func (a *API) idempotency(w http.ResponseWriter, r *http.Request, body []byte) (store.Idem, bool) {
+	raw := r.Header.Get(idempotencyHeader)
+	if raw == "" {
+		return store.Idem{}, true
+	}
+	key, err := uuid.Parse(raw)
+	if err != nil || len(raw) != 36 {
+		a.failure(w, r, 422, "VALIDATION", "Idempotency-Key must be a UUID")
+		return store.Idem{}, false
+	}
+	sum := sha256.Sum256(body)
+	return store.Idem{Key: key.String(), Hash: sum[:]}, true
+}
+
+// markReplay says on the response that it repeats an earlier one.
+func markReplay(w http.ResponseWriter, replayed bool) {
+	if replayed {
+		w.Header().Set("Idempotent-Replayed", "true")
+	}
+}
+
+func (a *API) needMedia(w http.ResponseWriter, r *http.Request) bool {
+	if a.Media != nil {
+		return true
+	}
+	a.failure(w, r, 503, "MEDIA_UNAVAILABLE", "Photo uploads aren’t available right now")
+	return false
+}
+
+func (a *API) uploadMedia(w http.ResponseWriter, r *http.Request, p store.Principal) {
 	ctx := r.Context()
-	n, method := len(parts), r.Method
-	if n < 2 || parts[0] != "v1" {
-		return false
+	if !a.needMedia(w, r) || !a.admit(w, r, p, limitUploads) {
+		return
+	}
+	raw, ok := a.jsonBody(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Purpose     string `json:"purpose"`
+		ContentType string `json:"contentType"`
+		SizeBytes   int64  `json:"sizeBytes"`
+	}
+	if strictDecode(raw, &in) != nil || !uploadPurposes[in.Purpose] {
+		a.failure(w, r, 422, "VALIDATION", "send purpose (post, story or avatar), contentType and sizeBytes")
+		return
+	}
+	if !media.ContentTypes[in.ContentType] {
+		a.failure(w, r, 415, "UNSUPPORTED_MEDIA", "Photos must be JPEG, PNG or WebP")
+		return
+	}
+	if in.SizeBytes < 1 || in.SizeBytes > media.MaxUploadBytes {
+		a.failure(w, r, 413, "TOO_LARGE", "Photos can be up to 15 MB")
+		return
+	}
+	id, key, err := a.Store.CreateUpload(ctx, p.UserID, in.Purpose, in.ContentType, in.SizeBytes, a.entitlementsFor(ctx, p.UserID))
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	url, headers, err := a.Media.PresignPut(ctx, key, in.ContentType, in.SizeBytes, uploadURLLifetime)
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	flat := map[string]string{}
+	for k := range headers {
+		flat[k] = headers.Get(k)
+	}
+	a.created(w, r, map[string]any{"mediaId": id, "uploadUrl": url, "method": "PUT", "headers": flat, "expiresAt": time.Now().Add(uploadURLLifetime).UTC()}, nil)
+}
+
+func (a *API) completeMedia(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	if !a.needMedia(w, r) {
+		return
+	}
+	value, err := a.completeUpload(r.Context(), p.UserID, r.PathValue("mediaId"))
+	a.respond(w, r, value, err)
+}
+
+func (a *API) feed(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx := r.Context()
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = "following"
+	}
+	if mode != "following" && mode != "everyone" {
+		a.failure(w, r, 422, "VALIDATION", "mode must be following or everyone")
+		return
 	}
 	sign := a.signer(ctx)
-	respond := func(value any, err error) {
-		if err != nil {
-			a.error(w, r, err)
-			return
-		}
-		a.ok(w, r, value)
-	}
-	created := func(value any, err error) {
-		if err != nil {
-			a.error(w, r, err)
-			return
-		}
-		a.write(w, r, http.StatusCreated, map[string]any{"success": true, "data": value})
-	}
-	body := func() ([]byte, bool) {
-		raw, err := decode(w, r)
-		if err != nil {
-			a.error(w, r, err)
-			return nil, false
-		}
-		data, _ := json.Marshal(raw)
-		return data, true
-	}
-	allow := func(l *keyedLimiter) bool {
-		if l.allow(p.UserID) {
-			return true
-		}
-		w.Header().Set("Retry-After", "5")
-		a.failure(w, r, 429, "RATE_LIMITED", "Slow down a little and try again")
-		return false
-	}
-	needMedia := func() bool {
-		if a.Media != nil {
-			return true
-		}
-		a.failure(w, r, 503, "MEDIA_UNAVAILABLE", "Photo uploads aren’t available right now")
-		return false
-	}
-	posts := func(fetch func(pg page) ([]domain.Post, error), kind string) {
-		paged(a, w, r, p, kind, fetch, postKey, nil)
-	}
+	paged(a, w, r, p, "feed:"+mode, func(pg page) ([]domain.Post, error) {
+		return a.Store.Feed(ctx, p.UserID, mode, pg.before, pg.id, pg.limit, sign)
+	}, postKey, nil)
+}
 
-	switch {
-	case n == 3 && parts[1] == "media" && parts[2] == "uploads" && method == "POST":
-		if !needMedia() || !allow(a.uploads) {
-			return true
-		}
-		raw, ok := body()
-		if !ok {
-			return true
-		}
-		var in struct {
-			Purpose     string `json:"purpose"`
-			ContentType string `json:"contentType"`
-			SizeBytes   int64  `json:"sizeBytes"`
-		}
-		if strictDecode(raw, &in) != nil || !uploadPurposes[in.Purpose] {
-			a.failure(w, r, 422, "VALIDATION", "send purpose (post, story or avatar), contentType and sizeBytes")
-			return true
-		}
-		if !media.ContentTypes[in.ContentType] {
-			a.failure(w, r, 415, "UNSUPPORTED_MEDIA", "Photos must be JPEG, PNG or WebP")
-			return true
-		}
-		if in.SizeBytes < 1 || in.SizeBytes > media.MaxUploadBytes {
-			a.failure(w, r, 413, "TOO_LARGE", "Photos can be up to 15 MB")
-			return true
-		}
-		id, key, err := a.Store.CreateUpload(ctx, p.UserID, in.Purpose, in.ContentType, in.SizeBytes, a.entitlementsFor(ctx, p.UserID))
-		if err != nil {
-			a.error(w, r, err)
-			return true
-		}
-		url, headers, err := a.Media.PresignPut(ctx, key, in.ContentType, in.SizeBytes, uploadURLLifetime)
-		if err != nil {
-			a.error(w, r, err)
-			return true
-		}
-		flat := map[string]string{}
-		for k := range headers {
-			flat[k] = headers.Get(k)
-		}
-		created(map[string]any{"mediaId": id, "uploadUrl": url, "method": "PUT", "headers": flat, "expiresAt": time.Now().Add(uploadURLLifetime).UTC()}, nil)
-	case n == 4 && parts[1] == "media" && isID(parts[2]) && parts[3] == "complete" && method == "POST":
-		if !needMedia() {
-			return true
-		}
-		respond(a.completeUpload(ctx, p.UserID, parts[2]))
-	case n == 2 && parts[1] == "feed" && method == "GET":
-		mode := r.URL.Query().Get("mode")
-		if mode == "" {
-			mode = "following"
-		}
-		if mode != "following" && mode != "everyone" {
-			a.failure(w, r, 422, "VALIDATION", "mode must be following or everyone")
-			return true
-		}
-		posts(func(pg page) ([]domain.Post, error) {
-			return a.Store.Feed(ctx, p.UserID, mode, pg.before, pg.id, pg.limit, sign)
-		}, "feed:"+mode)
-	case n == 2 && parts[1] == "posts" && method == "POST":
-		if !allow(a.content) {
-			return true
-		}
-		raw, ok := body()
-		if !ok {
-			return true
-		}
-		in, err := domain.ParsePost(raw)
-		if err != nil {
-			a.error(w, r, err)
-			return true
-		}
-		id, err := a.Store.CreatePost(ctx, p.UserID, in, a.entitlementsFor(ctx, p.UserID))
-		if err != nil {
-			a.error(w, r, err)
-			return true
-		}
-		created(a.Store.Post(ctx, p.UserID, id, sign))
-	case n == 3 && parts[1] == "posts" && isID(parts[2]) && method == "GET":
-		respond(a.Store.Post(ctx, p.UserID, parts[2], sign))
-	case n == 3 && parts[1] == "posts" && isID(parts[2]) && method == "DELETE":
-		respond(map[string]bool{"deleted": true}, a.Store.DeletePost(ctx, p.UserID, parts[2]))
-	case n == 4 && parts[1] == "posts" && isID(parts[2]) && parts[3] == "reaction" && method == "PUT":
-		if !allow(a.content) {
-			return true
-		}
-		raw, ok := body()
-		if !ok {
-			return true
-		}
-		var in struct {
-			Reaction string `json:"reaction"`
-		}
-		if strictDecode(raw, &in) != nil || !domain.Reactions[in.Reaction] {
-			a.failure(w, r, 422, "VALIDATION", "reaction must be heart, fire, laugh, wow or sad")
-			return true
-		}
-		author, err := a.Store.SetReaction(ctx, p.UserID, parts[2], in.Reaction)
-		if err != nil {
-			a.error(w, r, err)
-			return true
-		}
-		if author != p.UserID {
-			a.signal(ctx, "activity", nil, author)
-		}
-		a.ok(w, r, map[string]string{"reaction": in.Reaction})
-	case n == 4 && parts[1] == "posts" && isID(parts[2]) && parts[3] == "reaction" && method == "DELETE":
-		respond(map[string]any{"reaction": nil}, a.Store.RemoveReaction(ctx, p.UserID, parts[2]))
-	case n == 4 && parts[1] == "posts" && isID(parts[2]) && parts[3] == "save" && (method == "PUT" || method == "DELETE"):
-		respond(map[string]bool{"saved": method == "PUT"}, a.Store.SetSaved(ctx, p.UserID, parts[2], method == "PUT"))
-	case n == 4 && parts[1] == "posts" && isID(parts[2]) && parts[3] == "comments" && method == "GET":
-		paged(a, w, r, p, "comments:"+parts[2], func(pg page) ([]domain.Comment, error) {
-			return a.Store.Comments(ctx, p.UserID, parts[2], pg.before, pg.id, pg.limit, sign)
-		}, commentKey, nil)
-	case n == 4 && parts[1] == "posts" && isID(parts[2]) && parts[3] == "comments" && method == "POST":
-		if !allow(a.content) {
-			return true
-		}
-		raw, ok := body()
-		if !ok {
-			return true
-		}
-		in, err := domain.ParseComment(raw)
-		if err != nil {
-			a.error(w, r, err)
-			return true
-		}
-		comment, author, hidden, err := a.Store.AddComment(ctx, p.UserID, parts[2], in, sign, a.entitlementsFor(ctx, p.UserID))
-		if err != nil {
-			a.error(w, r, err)
-			return true
-		}
-		if author != p.UserID && !hidden {
-			a.signal(ctx, "activity", nil, author)
-		}
-		created(comment, nil)
-	case n == 3 && parts[1] == "comments" && isID(parts[2]) && method == "DELETE":
-		respond(map[string]bool{"deleted": true}, a.Store.DeleteComment(ctx, p.UserID, parts[2]))
-	case n == 4 && parts[1] == "users" && isID(parts[2]) && parts[3] == "posts" && method == "GET":
-		posts(func(pg page) ([]domain.Post, error) {
-			return a.Store.UserPosts(ctx, p.UserID, parts[2], pg.before, pg.id, pg.limit, sign)
-		}, "posts:"+parts[2])
-	case n == 3 && parts[1] == "me" && parts[2] == "saved" && method == "GET":
-		posts(func(pg page) ([]domain.Post, error) {
-			return a.Store.Saved(ctx, p.UserID, pg.before, pg.id, pg.limit, sign)
-		}, "saved")
-	case n == 2 && parts[1] == "stories" && method == "POST":
-		if !allow(a.content) {
-			return true
-		}
-		raw, ok := body()
-		if !ok {
-			return true
-		}
-		in, err := domain.ParseStory(raw)
-		if err != nil {
-			a.error(w, r, err)
-			return true
-		}
-		id, err := a.Store.CreateStory(ctx, p.UserID, in, a.entitlementsFor(ctx, p.UserID))
-		created(map[string]string{"storyId": id}, err)
-	case n == 3 && parts[1] == "stories" && parts[2] == "tray" && method == "GET":
-		groups, err := a.Store.StoryTray(ctx, p.UserID, sign)
-		respond(map[string]any{"items": groups}, err)
-	case n == 3 && parts[1] == "me" && parts[2] == "stories" && method == "GET":
-		if !allow(a.lists) {
-			return true
-		}
-		paged(a, w, r, p, "my_stories", func(pg page) ([]domain.Story, error) {
-			return a.Store.MyStories(ctx, p.UserID, pg.before, pg.id, pg.limit, sign)
-		}, func(s domain.Story) (time.Time, string) { return s.CreatedAt, s.StoryID }, nil)
-	case n == 4 && parts[1] == "users" && isID(parts[2]) && parts[3] == "stories" && method == "GET":
-		if !allow(a.lists) {
-			return true
-		}
-		paged(a, w, r, p, "stories:"+parts[2], func(pg page) ([]domain.Story, error) {
-			return a.Store.UserStories(ctx, p.UserID, parts[2], pg.before, pg.id, pg.limit, sign)
-		}, func(s domain.Story) (time.Time, string) { return s.CreatedAt, s.StoryID }, nil)
-	case n == 3 && parts[1] == "stories" && isID(parts[2]) && method == "DELETE":
-		if !allow(a.content) {
-			return true
-		}
-		respond(map[string]bool{"deleted": true}, a.Store.DeleteStory(ctx, p.UserID, parts[2]))
-	case n == 4 && parts[1] == "stories" && isID(parts[2]) && parts[3] == "view" && method == "POST":
-		respond(map[string]bool{"viewed": true}, a.Store.ViewStory(ctx, p.UserID, parts[2]))
-	case n == 4 && parts[1] == "stories" && isID(parts[2]) && parts[3] == "viewers" && method == "GET":
-		if !allow(a.lists) {
-			return true
-		}
-		paged(a, w, r, p, "viewers:"+parts[2], func(pg page) ([]domain.Connection, error) {
-			return a.Store.StoryViewers(ctx, p.UserID, parts[2], pg.before, pg.id, pg.limit, sign)
-		}, connectionKey, nil)
-	default:
-		return false
+func (a *API) createPost(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx := r.Context()
+	raw, ok := a.jsonBody(w, r)
+	if !ok {
+		return
 	}
-	return true
+	idem, ok := a.idempotency(w, r, raw)
+	if !ok {
+		return
+	}
+	in, err := domain.ParsePost(raw)
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	id, replayed, err := a.Store.CreatePostOnce(ctx, p.UserID, in, a.entitlementsFor(ctx, p.UserID), idem)
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	markReplay(w, replayed)
+	value, err := a.Store.Post(ctx, p.UserID, id, a.signer(ctx))
+	a.created(w, r, value, err)
+}
+
+func (a *API) getPost(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx := r.Context()
+	value, err := a.Store.Post(ctx, p.UserID, r.PathValue("postId"), a.signer(ctx))
+	a.respond(w, r, value, err)
+}
+
+func (a *API) deletePost(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	a.respond(w, r, map[string]bool{"deleted": true}, a.Store.DeletePost(r.Context(), p.UserID, r.PathValue("postId")))
+}
+
+func (a *API) setReaction(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx := r.Context()
+	raw, ok := a.jsonBody(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Reaction string `json:"reaction"`
+	}
+	if strictDecode(raw, &in) != nil || !domain.Reactions[in.Reaction] {
+		a.failure(w, r, 422, "VALIDATION", "reaction must be heart, fire, laugh, wow or sad")
+		return
+	}
+	author, err := a.Store.SetReaction(ctx, p.UserID, r.PathValue("postId"), in.Reaction)
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	if author != p.UserID {
+		a.signal(ctx, "activity", nil, author)
+	}
+	a.ok(w, r, map[string]string{"reaction": in.Reaction})
+}
+
+func (a *API) removeReaction(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	a.respond(w, r, map[string]any{"reaction": nil}, a.Store.RemoveReaction(r.Context(), p.UserID, r.PathValue("postId")))
+}
+
+// savePost is PUT (save) and DELETE (unsave) /v1/posts/{postId}/save.
+func (a *API) savePost(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	save := r.Method == http.MethodPut
+	a.respond(w, r, map[string]bool{"saved": save}, a.Store.SetSaved(r.Context(), p.UserID, r.PathValue("postId"), save))
+}
+
+func (a *API) postComments(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx, id := r.Context(), r.PathValue("postId")
+	sign := a.signer(ctx)
+	paged(a, w, r, p, "comments:"+id, func(pg page) ([]domain.Comment, error) {
+		return a.Store.Comments(ctx, p.UserID, id, pg.before, pg.id, pg.limit, sign)
+	}, commentKey, nil)
+}
+
+func (a *API) addComment(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx := r.Context()
+	raw, ok := a.jsonBody(w, r)
+	if !ok {
+		return
+	}
+	in, err := domain.ParseComment(raw)
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	comment, author, hidden, err := a.Store.AddComment(ctx, p.UserID, r.PathValue("postId"), in, a.signer(ctx), a.entitlementsFor(ctx, p.UserID))
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	if author != p.UserID && !hidden {
+		a.signal(ctx, "activity", nil, author)
+	}
+	a.created(w, r, comment, nil)
+}
+
+func (a *API) deleteComment(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	a.respond(w, r, map[string]bool{"deleted": true}, a.Store.DeleteComment(r.Context(), p.UserID, r.PathValue("commentId")))
+}
+
+func (a *API) userPosts(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx, id := r.Context(), r.PathValue("userId")
+	sign := a.signer(ctx)
+	paged(a, w, r, p, "posts:"+id, func(pg page) ([]domain.Post, error) {
+		return a.Store.UserPosts(ctx, p.UserID, id, pg.before, pg.id, pg.limit, sign)
+	}, postKey, nil)
+}
+
+func (a *API) savedPosts(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx := r.Context()
+	sign := a.signer(ctx)
+	paged(a, w, r, p, "saved", func(pg page) ([]domain.Post, error) {
+		return a.Store.Saved(ctx, p.UserID, pg.before, pg.id, pg.limit, sign)
+	}, postKey, nil)
+}
+
+func (a *API) createStory(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx := r.Context()
+	raw, ok := a.jsonBody(w, r)
+	if !ok {
+		return
+	}
+	idem, ok := a.idempotency(w, r, raw)
+	if !ok {
+		return
+	}
+	in, err := domain.ParseStory(raw)
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	id, replayed, err := a.Store.CreateStoryOnce(ctx, p.UserID, in, a.entitlementsFor(ctx, p.UserID), idem)
+	if err == nil {
+		markReplay(w, replayed)
+	}
+	a.created(w, r, map[string]string{"storyId": id}, err)
+}
+
+func (a *API) storyTray(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx := r.Context()
+	groups, err := a.Store.StoryTray(ctx, p.UserID, a.signer(ctx))
+	a.respond(w, r, map[string]any{"items": groups}, err)
+}
+
+func storyKey(s domain.Story) (time.Time, string) { return s.CreatedAt, s.StoryID }
+
+func (a *API) myStories(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx := r.Context()
+	sign := a.signer(ctx)
+	paged(a, w, r, p, "my_stories", func(pg page) ([]domain.Story, error) {
+		return a.Store.MyStories(ctx, p.UserID, pg.before, pg.id, pg.limit, sign)
+	}, storyKey, nil)
+}
+
+func (a *API) userStories(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx, id := r.Context(), r.PathValue("userId")
+	sign := a.signer(ctx)
+	paged(a, w, r, p, "stories:"+id, func(pg page) ([]domain.Story, error) {
+		return a.Store.UserStories(ctx, p.UserID, id, pg.before, pg.id, pg.limit, sign)
+	}, storyKey, nil)
+}
+
+func (a *API) deleteStory(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	a.respond(w, r, map[string]bool{"deleted": true}, a.Store.DeleteStory(r.Context(), p.UserID, r.PathValue("storyId")))
+}
+
+func (a *API) viewStory(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	a.respond(w, r, map[string]bool{"viewed": true}, a.Store.ViewStory(r.Context(), p.UserID, r.PathValue("storyId")))
+}
+
+func (a *API) storyViewers(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	ctx, id := r.Context(), r.PathValue("storyId")
+	sign := a.signer(ctx)
+	paged(a, w, r, p, "viewers:"+id, func(pg page) ([]domain.Connection, error) {
+		return a.Store.StoryViewers(ctx, p.UserID, id, pg.before, pg.id, pg.limit, sign)
+	}, connectionKey, nil)
 }
 
 func strictDecode(raw []byte, v any) error {

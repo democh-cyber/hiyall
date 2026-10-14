@@ -34,7 +34,7 @@ func TestAPIIntegration(t *testing.T) {
 	if err = db.Pool.QueryRow(ctx, "SELECT current_database()").Scan(&name); err != nil || name != "hiyall_test" {
 		t.Fatal("integration tests require database named hiyall_test")
 	}
-	if _, err = db.Pool.Exec(ctx, "TRUNCATE users,auth_identities,profiles,privacy_settings,sessions,blocks,outbox_events CASCADE"); err != nil {
+	if _, err = db.Pool.Exec(ctx, "TRUNCATE users,auth_identities,profiles,privacy_settings,sessions,blocks CASCADE"); err != nil {
 		t.Fatal(err)
 	}
 	if err = db.Seed(ctx); err != nil {
@@ -158,9 +158,7 @@ func TestAPIIntegration(t *testing.T) {
 	expect(status, 404)
 	status, _ = call("DELETE", "/v1/auth/sessions/"+sidB, tokenA, "", "")
 	expect(status, 404)
-	// Competing writes must commit once. Nothing writes outbox_events any more (audit D5).
-	var before, after int
-	_ = db.Pool.QueryRow(ctx, "SELECT count(*) FROM outbox_events").Scan(&before)
+	// Competing writes must commit once.
 	var wg sync.WaitGroup
 	statuses := make(chan int, 2)
 	for _, bio := range []string{"race-a", "race-b"} {
@@ -184,10 +182,6 @@ func TestAPIIntegration(t *testing.T) {
 	}
 	if wins != 1 || conflicts != 1 {
 		t.Fatalf("race outcomes %d/%d", wins, conflicts)
-	}
-	_ = db.Pool.QueryRow(ctx, "SELECT count(*) FROM outbox_events").Scan(&after)
-	if after != before {
-		t.Fatalf("profile edits wrote %d outbox events; nothing consumes them and the table is only purged", after-before)
 	}
 	status, _ = call("POST", "/v1/auth/logout", tokenB, "", "")
 	expect(status, 200)

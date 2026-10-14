@@ -27,7 +27,8 @@ const preview = {
 const contentCase = (over: Record<string, unknown> = {}) => ({
   caseId, mediaId: 'm-9', userId: 'u-1', username: 'bob', ageBand: 'minor', accountStatus: 'suspended', purpose: 'post', result: 'match', scanner: 'hashlist',
   signals: { label: 'list-1' }, originalSha256: 'abcdef0123456789', originalBytes: 2048, contentType: 'image/jpeg', suspendedUser: true, status: 'open',
-  createdAt: '2026-10-13T10:00:00Z', holdUntil: '2027-01-11T10:00:00Z', legalHold: false, reviewedBy: '', reviewedAt: null, resolutionNote: '', reportReference: '', reportedAt: null, ...over,
+  createdAt: '2026-10-13T10:00:00Z', holdUntil: '2027-01-11T10:00:00Z', legalHold: false, reviewedBy: '', reviewedAt: null, resolutionNote: '', reportReference: '', reportedAt: null,
+  releasedAt: null, releasedBy: '', releaseReason: '', objectsPurgedAt: null, releaseBlocker: '', ...over,
 })
 
 describe('reported content preview', () => {
@@ -158,5 +159,57 @@ describe('quarantined uploads', () => {
     await user.click(submit)
     await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true))
     expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ action: 'reported', reason: 'reported through the CyberTipline', reportReference: 'NCMEC-123456' })
+  })
+
+  it('releases an evidence hold only after a reason, and says why it cannot be released otherwise', async () => {
+    const user = userEvent.setup()
+    let released = false
+    const { calls } = mockApi({
+      ...signedIn('admin'),
+      [`GET /content-cases/${caseId}`]: () => ({
+        data: { case: contentCase({ status: 'cleared', ...(released ? { releasedAt: '2026-10-14T10:00:00Z', releasedBy: 'ada@example.test', releaseReason: 'counsel says the hold has ended' } : {}) }), mediaAvailable: false },
+      }),
+      [`POST /holds/${caseId}/release`]: () => {
+        released = true
+        return { data: { caseId, releasedAt: '2026-10-14T10:00:00Z', objectsRemovedAfter: '2027-01-11T10:00:00Z' } }
+      },
+    })
+    renderAt(`/content/${caseId}`)
+    await user.click(await screen.findByRole('button', { name: 'Release hold…' }))
+    const dialog = screen.getByRole('dialog', { name: 'Release the evidence hold' })
+    const submit = within(dialog).getByRole('button', { name: 'Release hold' })
+    expect(submit).toBeDisabled()
+    await user.type(within(dialog).getByLabelText(/Reason/), 'counsel says the hold has ended')
+    await user.click(submit)
+    await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.path === `/holds/${caseId}/release`)).toBe(true))
+    const post = calls.find((c) => c.path === `/holds/${caseId}/release`)!
+    expect(post.body).toEqual({ reason: 'counsel says the hold has ended' })
+    expect(post.headers['X-CSRF-Token']).toBe('csrf-123')
+    // Released: the record says so and the button is gone.
+    expect(await screen.findByText(/counsel says the hold has ended/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Release hold…' })).not.toBeInTheDocument()
+  })
+
+  it('disables the release and names the blocker while the case is open, under legal hold or referenced', async () => {
+    const cases: [string, string, RegExp][] = [
+      ['CASE_OPEN', 'open', /Resolve the case first/],
+      ['LEGAL_HOLD', 'confirmed', /legal hold keeps this evidence/],
+      ['REPORT_OPEN', 'cleared', /open report about this member/],
+      ['OTHER_CASE_OPEN', 'cleared', /Another open case of this member/],
+    ]
+    for (const [blocker, status, text] of cases) {
+      mockApi({ ...signedIn('admin'), [`GET /content-cases/${caseId}`]: () => ({ data: { case: contentCase({ status, releaseBlocker: blocker }), mediaAvailable: false } }) })
+      const { unmount } = renderAt(`/content/${caseId}`)
+      expect(await screen.findByText(text)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Release hold…' })).toBeDisabled()
+      unmount()
+    }
+  })
+
+  it('shows no release to a moderator', async () => {
+    mockApi({ ...signedIn('moderator'), [`GET /content-cases/${caseId}`]: () => ({ data: { case: contentCase({ status: 'cleared' }), mediaAvailable: false } }) })
+    renderAt(`/content/${caseId}`)
+    await screen.findByText(/Only administrators can decide a case/)
+    expect(screen.queryByRole('button', { name: 'Release hold…' })).not.toBeInTheDocument()
   })
 })

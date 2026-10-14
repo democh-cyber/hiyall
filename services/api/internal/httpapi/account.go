@@ -4,25 +4,11 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"hiyall/services/api/internal/domain"
 	"hiyall/services/api/internal/store"
 )
-
-// pendingDeletionAllowed is everything a member in the 30 day grace period may reach: the deletion status,
-// the cancel and the sign-out routes. Every other route answers as it does for any inactive account
-// (401 UNAUTHENTICATED), so such a member vanishes from the app's point of view but can still change their mind.
-func pendingDeletionAllowed(method, path string) bool {
-	switch path {
-	case "/v1/me/deletion":
-		return method == "GET" || method == "DELETE"
-	case "/v1/auth/logout", "/v1/auth/sessions/revoke-others":
-		return method == "POST"
-	}
-	return method == "DELETE" && strings.HasPrefix(path, "/v1/auth/sessions/")
-}
 
 // recentlyAuthenticated is whether the session's interactive sign-in (Firebase auth_time) is within
 // domain.ReauthWindow. A session without one is trusted only in development authentication.
@@ -37,54 +23,32 @@ func (a *API) recentlyAuthenticated(ctx context.Context, p store.Principal) (boo
 	return time.Since(at) <= domain.ReauthWindow, nil
 }
 
-// accountRoute serves account deletion and the data export (docs/api/22-account-deletion-and-export.md).
+// Account deletion and the data export (docs/api/22-account-deletion-and-export.md).
 //
 //	GET    /v1/me/deletion   -> {pending, scheduledAt, dueAt, canCancel}   (also for a member in the grace period)
 //	POST   /v1/me/deletion   {confirmUsername}    403 REAUTH_REQUIRED when the sign-in is older than 5 minutes
 //	DELETE /v1/me/deletion   cancels during the grace period (409 DELETION_WINDOW_CLOSED after it, 404 when none is scheduled)
 //	GET    /v1/me/export     a JSON download, once per 24 hours (429 RATE_LIMITED with Retry-After)
-func (a *API) accountRoute(w http.ResponseWriter, r *http.Request, p store.Principal, parts []string) bool {
-	if len(parts) != 3 || parts[0] != "v1" || parts[1] != "me" {
-		return false
+func (a *API) deletionStatus(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	state, err := a.Store.DeletionStatus(r.Context(), p.UserID)
+	if err != nil {
+		a.error(w, r, err)
+		return
 	}
-	ctx := r.Context()
-	switch {
-	case parts[2] == "deletion" && r.Method == "GET":
-		state, err := a.Store.DeletionStatus(ctx, p.UserID)
-		if err != nil {
-			a.error(w, r, err)
-			return true
-		}
-		a.ok(w, r, state)
-	case parts[2] == "deletion" && r.Method == "POST":
-		a.scheduleDeletion(w, r, p)
-	case parts[2] == "deletion" && r.Method == "DELETE":
-		if !a.graph.allow(p.UserID) {
-			w.Header().Set("Retry-After", "2")
-			a.failure(w, r, 429, "RATE_LIMITED", "Slow down a little and try again")
-			return true
-		}
-		state, err := a.Store.CancelDeletion(ctx, p.UserID)
-		if err != nil {
-			a.error(w, r, err)
-			return true
-		}
-		a.ok(w, r, state)
-	case parts[2] == "export" && r.Method == "GET":
-		a.export(w, r, p)
-	default:
-		return false
+	a.ok(w, r, state)
+}
+
+func (a *API) cancelDeletion(w http.ResponseWriter, r *http.Request, p store.Principal) {
+	state, err := a.Store.CancelDeletion(r.Context(), p.UserID)
+	if err != nil {
+		a.error(w, r, err)
+		return
 	}
-	return true
+	a.ok(w, r, state)
 }
 
 func (a *API) scheduleDeletion(w http.ResponseWriter, r *http.Request, p store.Principal) {
 	ctx := r.Context()
-	if !a.graph.allow(p.UserID) {
-		w.Header().Set("Retry-After", "2")
-		a.failure(w, r, 429, "RATE_LIMITED", "Slow down a little and try again")
-		return
-	}
 	body, err := decode(w, r)
 	var confirm, appleCode string
 	if err == nil {

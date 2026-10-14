@@ -49,7 +49,7 @@ func newSocialHarnessWith(t *testing.T, opts ...store.Option) *socialHarness {
 	if err = db.Pool.QueryRow(ctx, "SELECT current_database()").Scan(&name); err != nil || name != "hiyall_test" {
 		t.Fatal("integration tests require database named hiyall_test")
 	}
-	if _, err = db.Pool.Exec(ctx, "TRUNCATE users,auth_identities,profiles,privacy_settings,sessions,blocks,outbox_events,follows,friendships,notifications,discovery_eligibility CASCADE"); err != nil {
+	if _, err = db.Pool.Exec(ctx, "TRUNCATE users,auth_identities,profiles,privacy_settings,sessions,blocks,follows,friendships,notifications,discovery_eligibility CASCADE"); err != nil {
 		t.Fatal(err)
 	}
 	if err = db.Seed(ctx); err != nil {

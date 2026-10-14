@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/media"
 )
 
 // Quarantine records an upload the scanner matched or flagged (docs/security/16-csam-and-illegal-content.md).
@@ -88,4 +90,58 @@ func (s *Store) PendingAppleRevocation(ctx context.Context, issuer, subject stri
 func (s *Store) DoneAppleRevocation(ctx context.Context, issuer, subject string) error {
 	_, err := s.Pool.Exec(ctx, `DELETE FROM apple_revocations WHERE issuer=$1 AND subject=$2`, issuer, subject)
 	return err
+}
+
+// HeldObjects deletes objects under the hold prefix. media.Store satisfies it.
+type HeldObjects interface {
+	Delete(ctx context.Context, keys ...string) error
+}
+
+// PurgeReleasedHolds removes the held objects of released holds whose retention window (hold_until) is over, at
+// most batch cases per call, and records each as purged. The database decides what is due and re-checks every
+// condition (held_objects_due, mark_hold_purged: the API role has no other access to cases). Objects first,
+// the record after: a failed delete leaves the case due, and the next run tries again. Keys outside the hold
+// prefix are never deleted. It returns how many cases were finished.
+func (s *Store) PurgeReleasedHolds(ctx context.Context, objects HeldObjects, batch int) (int64, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT case_id::text,original_key,coalesce(full_key,'') FROM held_objects_due($1)`, batch)
+	if err != nil {
+		return 0, err
+	}
+	type due struct{ id, original, full string }
+	var work []due
+	for rows.Next() {
+		var d due
+		if err = rows.Scan(&d.id, &d.original, &d.full); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		work = append(work, d)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return 0, err
+	}
+	var done int64
+	for _, d := range work {
+		var keys []string
+		for _, k := range []string{d.original, d.full} {
+			if k != "" {
+				if !strings.HasPrefix(k, media.HoldPrefix) {
+					return done, errors.New("held object key outside the hold prefix")
+				}
+				keys = append(keys, k)
+			}
+		}
+		if err = objects.Delete(ctx, keys...); err != nil {
+			return done, err
+		}
+		var marked bool
+		if err = s.Pool.QueryRow(ctx, `SELECT mark_hold_purged($1)`, d.id).Scan(&marked); err != nil {
+			return done, err
+		}
+		if marked {
+			done++
+		}
+	}
+	return done, nil
 }

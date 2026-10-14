@@ -19,7 +19,7 @@ Bytes never pass through the API or live in Postgres.
    - **Scanning.** Before the variants are stored, the upload scanner (`SCAN_HASHLIST_FILE` and/or `SCAN_PROVIDER_URL`) inspects the exact upload and the re-encoded copy. `clean` continues. A flag or a match quarantines the photo (kept under `hold/`, never served, never attachable), opens a case in the admin console, and a match suspends the uploader; the member gets `422 UPLOAD_REJECTED` and nothing about why. A scanner that cannot answer gives `503 SCAN_UNAVAILABLE` and the upload stays pending (retry). See [illegal content runbook](../security/16-csam-and-illegal-content.md). Chat photos are end-to-end encrypted and cannot be scanned.
    - Processing is CPU-bound, so each node runs at most 4 at once. At scale this moves to a media worker behind a queue.
 
-Reads use signed GET URLs that last one hour. They are minted only after the viewer has been authorized for the post or story that uses the photo (profile photos follow the profile: see [Profile photos](20-profile-photos.md)). Unsigned reads are refused by storage. The app caches images by media id, so a refreshed URL doesn't refetch the bytes.
+Reads use signed GET URLs that last one hour (`readURLLifetime` in `httpapi/pulse.go`). Audit F24 asked for 15 minutes; that needs the app to fetch a photo again when its URL has expired (today a failed load shows a broken-image icon and the list is not reloaded), so the constant stays at one hour until the app does. Changing it is then the one line. They are minted only after the viewer has been authorized for the post or story that uses the photo (profile photos follow the profile: see [Profile photos](20-profile-photos.md)). Unsigned reads are refused by storage. The app caches images by media id, so a refreshed URL doesn't refetch the bytes.
 
 Clean-up runs hourly in the API's maintenance loop:
 - abandoned uploads after 1 hour
@@ -128,6 +128,10 @@ The daily limits send `Retry-After`: whole seconds until enough of the oldest co
 **Next step for 100M users:** a materialized `feed_items` table with fan-out on write for most authors and merge on read for very large accounts, behind the same endpoint.
 
 Reactions and comments notify the author as "X reacted to your post" or "X commented on your post". Repeats by the same person refresh one row, muted people's activity arrives already read, and nothing is pushed for them.
+
+### Idempotency (creating posts, stories and space entries)
+
+`POST /v1/posts`, `POST /v1/stories` and `POST /v1/spaces/{id}/entries` accept an optional `Idempotency-Key` header: a UUID the client makes once for a create and sends again unchanged on every retry (a lost response, a timeout). The key is claimed in the same transaction that creates the item, so the item is made once even if two retries race. A retry gets the **original status (201) and the same body** (the post as it is now, `{storyId}`, `{entryId}`) and the header `Idempotent-Replayed: true`; nothing is created and no quota is spent again. Keys are per member; reusing one for a different body, kind of item or space answers `422 IDEMPOTENCY_KEY_REUSED`; a value that is not a UUID is `422 VALIDATION`. A request that failed (quota, validation) leaves no key, so the retry is a fresh attempt. Without the header nothing changes. Keys are kept 24 hours (`idempotency_keys`, migration `0038`; the "idempotency key purge" maintenance job; deleted with the account). The app sends keys for these three creates only when it is changed to (not yet).
 
 ## Stories
 

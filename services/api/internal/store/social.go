@@ -208,7 +208,7 @@ func (s *Store) Follow(ctx context.Context, actor, target string, e domain.Entit
 		if err = notify(ctx, tx, target, actor, event, actor); err != nil {
 			return err
 		}
-		return appendEvent(ctx, tx, actor, "follow.changed", 0)
+		return nil
 	})
 	return state, err
 }
@@ -226,7 +226,7 @@ func (s *Store) Unfollow(ctx context.Context, actor, target string) error {
 		if err = unnotify(ctx, tx, target, actor, "follow.requested"); err != nil {
 			return err
 		}
-		return appendEvent(ctx, tx, actor, "follow.changed", 0)
+		return nil
 	})
 }
 
@@ -257,7 +257,7 @@ func (s *Store) RespondFollowRequest(ctx context.Context, owner, follower string
 				return err
 			}
 		}
-		return appendEvent(ctx, tx, owner, "follow.changed", 0)
+		return nil
 	})
 }
 
@@ -268,7 +268,7 @@ func (s *Store) RemoveFollower(ctx context.Context, owner, follower string) erro
 		if err != nil || tag.RowsAffected() == 0 {
 			return err
 		}
-		return appendEvent(ctx, tx, owner, "follow.changed", 0)
+		return nil
 	})
 }
 
@@ -297,7 +297,7 @@ func acceptFriend(ctx context.Context, tx pgx.Tx, id, recipient, requester strin
 	if err := notify(ctx, tx, requester, recipient, "friend.accepted", recipient); err != nil {
 		return err
 	}
-	return appendEvent(ctx, tx, recipient, "friendship.changed", 0)
+	return nil
 }
 
 // SendFriendRequest is idempotent, and accepts instead when the target already asked.
@@ -353,7 +353,7 @@ func (s *Store) SendFriendRequest(ctx context.Context, actor, target string, sig
 		if err = notify(ctx, tx, target, actor, "friend.requested", id); err != nil {
 			return err
 		}
-		return appendEvent(ctx, tx, actor, "friendship.changed", 0)
+		return nil
 	})
 	if err != nil {
 		return domain.FriendRequest{}, err
@@ -420,7 +420,7 @@ func (s *Store) Unfriend(ctx context.Context, actor, target string) error {
 		if err != nil || tag.RowsAffected() == 0 {
 			return err
 		}
-		return appendEvent(ctx, tx, actor, "friendship.changed", 0)
+		return nil
 	})
 }
 
@@ -435,7 +435,7 @@ func (s *Store) ListFriendRequests(ctx context.Context, actor string, incoming b
  JOIN users su ON su.user_id=s.user_id AND su.status='active'
  JOIN users ru ON ru.user_id=r.user_id AND ru.status='active'
  WHERE f.status='pending' AND f.`+side+`=$1 AND (f.requested_by=$1)=NOT $2
- AND NOT interaction_barred($1::uuid,CASE WHEN $2 THEN s.user_id ELSE r.user_id END)
+ AND `+notBarred("$1::uuid", "CASE WHEN $2 THEN s.user_id ELSE r.user_id END")+`
  AND ($3::timestamptz IS NULL OR (f.created_at,f.friendship_id)<($3,$4::uuid))
  ORDER BY f.created_at DESC,f.friendship_id DESC LIMIT $5`, actor, incoming, before, beforeID, limit)
 		if err != nil {
@@ -531,7 +531,7 @@ func (s *Store) ListConnections(ctx context.Context, kind, viewer, owner string,
  JOIN users u ON u.user_id=c.other AND u.status='active'
  JOIN profiles p ON p.user_id=c.other`+avatarJoin("av", "p")+`
  LEFT JOIN follows vf ON vf.follower_id=$2 AND vf.followee_id=c.other AND vf.state<>'removed'
- WHERE NOT interaction_barred($1::uuid,c.other) AND NOT interaction_barred($2::uuid,c.other)
+ WHERE `+notBarred("$1::uuid", "c.other")+` AND `+notBarred("$2::uuid", "c.other")+`
  AND ($3::timestamptz IS NULL OR (c.since,c.other)<($3,$4::uuid))
  ORDER BY c.since DESC,c.other DESC LIMIT $5`, owner, viewer, before, beforeID, limit)
 	if err != nil {
@@ -562,7 +562,7 @@ func (s *Store) ListVisitors(ctx context.Context, owner string, before *time.Tim
 	rows, err := s.Pool.Query(ctx, `WITH v AS (
   SELECT pv.visitor_id,pv.first_visited_at FROM profile_visits pv
   JOIN users u ON u.user_id=pv.visitor_id AND u.status='active'
-  WHERE pv.profile_id=$1 AND NOT interaction_barred($1::uuid,pv.visitor_id)
+  WHERE pv.profile_id=$1 AND `+notBarred("$1::uuid", "pv.visitor_id")+`
   ORDER BY pv.first_visited_at DESC,pv.visitor_id DESC LIMIT $2)
  SELECT p.user_id::text,p.username,coalesce(p.data->>'displayName',''),`+avatarThumbKey("av")+`,v.first_visited_at,coalesce(vf.state,'none') FROM v
  JOIN profiles p ON p.user_id=v.visitor_id`+avatarJoin("av", "p")+`
@@ -589,9 +589,10 @@ func (s *Store) ListVisitors(ctx context.Context, owner string, before *time.Tim
 const notificationsFrom = `FROM notifications n
  JOIN users u ON u.user_id=n.actor_id AND u.status='active'
  JOIN profiles p ON p.user_id=n.actor_id`
-const notificationsWhere = `
- WHERE n.recipient_id=$1 AND NOT interaction_barred($1::uuid,n.actor_id)`
-const visibleNotifications = notificationsFrom + notificationsWhere
+
+var notificationsWhere = `
+ WHERE n.recipient_id=$1 AND ` + notBarred("$1::uuid", "n.actor_id")
+var visibleNotifications = notificationsFrom + notificationsWhere
 
 func (s *Store) ListNotifications(ctx context.Context, recipient string, unreadOnly bool, before *time.Time, beforeID string, limit int, sign Signer) ([]domain.Notification, error) {
 	rows, err := s.Pool.Query(ctx, `SELECT n.notification_id::text,n.event,n.target_id::text,n.created_at,n.read_at,p.user_id::text,p.username,coalesce(p.data->>'displayName',''),`+avatarThumbKey("av")+` `+notificationsFrom+avatarJoin("av", "p")+notificationsWhere+`

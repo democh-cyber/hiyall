@@ -12,6 +12,7 @@ import (
 	"time"
 	_ "time/tzdata"
 
+	"hiyall/services/api/internal/appcheck"
 	"hiyall/services/api/internal/buildinfo"
 	"hiyall/services/api/internal/config"
 	"hiyall/services/api/internal/domain"
@@ -83,6 +84,15 @@ func run() error {
 		slog.Warn("CURSOR_KEY is not set: list cursors are signed with a random key that dies with this process (development only)")
 	}
 	api.SetMinClientVersions(cfg.MinClientVersion)
+	switch {
+	case cfg.AppCheckMode != appcheck.Off:
+		// Firebase App Check: tokens are verified against Firebase's keys (fetched on first use). In log mode
+		// missing and invalid tokens are only counted (hiyall_app_check_total); true refuses them.
+		api.AppCheck, api.AppCheckMode = appcheck.New(ctx, cfg.FirebaseProjectNumber), cfg.AppCheckMode
+		slog.Info("App Check is on", "mode", string(cfg.AppCheckMode))
+	case cfg.Env == "production" && cfg.FirebaseProjectID != "":
+		slog.Warn("App Check is off (APP_CHECK_ENFORCE=false); requests are not tied to the real app")
+	}
 	if cfg.SentryDSN != "" {
 		// Panics and unexpected 500s go to Sentry with a scrubbed message, the route pattern and the request id;
 		// never the URL, headers or body (internal/errreport). Unset SENTRY_DSN: errors are only logged.
@@ -300,14 +310,22 @@ func maintain(ctx context.Context, db *store.Store, objects, chatObjects media.S
 		}, 0},
 		{"daily count purge", func(ctx context.Context) (int64, error) { return db.PurgeDailyCounts(ctx, 3, 5000) }, 0},
 		{"age refusal purge", func(ctx context.Context) (int64, error) { return db.PurgeAgeRefusals(ctx, 30*24*time.Hour, 5000) }, 0},
-		// Rows older than 7 days that earlier releases wrote; nothing writes them now (audit D5).
-		{"outbox purge", func(ctx context.Context) (int64, error) { return db.PurgeOutbox(ctx, 7*24*time.Hour, 5000) }, 0},
+		{"idempotency key purge", func(ctx context.Context) (int64, error) {
+			return db.PurgeIdempotencyKeys(ctx, store.IdempotencyRetention, 5000)
+		}, 0},
 		// Objects first, rows after (store.PurgeMedia); a photo row is only finished once its objects are gone.
 		{"media cleanup", func(ctx context.Context) (int64, error) {
 			if objects == nil {
 				return 0, nil
 			}
 			return db.PurgeMedia(ctx, objects, 5000)
+		}, 20 * time.Minute},
+		// Held evidence (quarantined uploads) whose hold an administrator released and whose retention window is over.
+		{"released hold cleanup", func(ctx context.Context) (int64, error) {
+			if objects == nil {
+				return 0, nil
+			}
+			return db.PurgeReleasedHolds(ctx, objects, 50)
 		}, 20 * time.Minute},
 		{"chat blob cleanup", func(ctx context.Context) (int64, error) {
 			if chatObjects == nil {

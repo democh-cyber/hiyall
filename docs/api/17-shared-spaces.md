@@ -39,7 +39,7 @@ All routes require authentication and a completed onboarding. There is no age or
 | POST | `/v1/spaces/{id}/invitations` | Invite by username |
 | GET | `/v1/spaces/{id}/members` | Active, pending, invited or banned members |
 | PUT | `/v1/spaces/{id}/members/{userId}` | Approve, invite, remove, ban, unban or set role |
-| GET / POST | `/v1/spaces/{id}/entries` | Read / publish discussion |
+| GET / POST | `/v1/spaces/{id}/entries` | Read / publish discussion; the POST takes an optional `Idempotency-Key` header (see [Pulse: idempotency](16-pulse-and-media.md#idempotency-creating-posts-stories-and-space-entries)) and answers 201 |
 | DELETE | `/v1/spaces/{id}/entries/{entryId}` | Author/moderator removal |
 
 **Invitations by username reveal nothing.** Anyone can check whether a username is taken (`GET /v1/usernames/{name}/availability`), so `POST /v1/spaces/{id}/invitations` answers exactly the same, status and body, whether the name belongs to a member the host may invite, to someone in the other age band, blocked from (or blocking) the owner or the inviting host, not onboarded, or to nobody: the space as a successful invitation returns it, or the same refusal a real invitation would meet first (`403 SPACE_ROLE_REQUIRED`, `403 SPACE_MEMBER_REQUIRED` for a child space when the person is not in the parent community, `409 SPACE_CLOSED`, `409 SPACE_FULL` at 1000 outstanding). Only a member the host may reach is invited, notified, signalled and pushed. The invited-members list (`?state=invited`) still shows only real invitations, to moderators. `PUT /v1/spaces/{id}/members/{userId}` with `invite` takes an id, which the profile endpoint already answers 404 for, and keeps answering 404 for someone who cannot be invited.

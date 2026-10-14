@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -278,7 +279,14 @@ func (s *Store) PeerDevices(ctx context.Context, actor, target string) ([]domain
 			return nil, err
 		}
 	}
-	return s.devices(ctx, s.Pool, target)
+	list, err := s.devices(ctx, s.Pool, target)
+	if actor != target {
+		// A display name ("Aditya's iPhone") is for the owner only; a peer needs keys, not names.
+		for i := range list {
+			list[i].DisplayName = ""
+		}
+	}
+	return list, err
 }
 
 // Key claim caps, per rolling hour. A claimer may claim at most ClaimsPerPairHour keys of
@@ -654,12 +662,26 @@ func (s *Store) Unread(ctx context.Context, user string) (domain.UnreadSummary, 
 	return u, err
 }
 
+// ErrPushTokenInUse answers a token another account already holds. It names nobody.
+var ErrPushTokenInUse = &domain.PolicyError{Status: 409, Code: "PUSH_TOKEN_IN_USE", Message: "This push token cannot be used for this device."}
+
 // SetPushToken attaches a push token to one of the caller's devices. A token
-// moved from another device (reinstall) is detached from it first.
+// moved from another of the caller's own devices (reinstall) is detached from
+// it first. A token held by a different account is never taken over (that
+// would let one account silence another's pushes, or collect them): the call is
+// refused with 409 and logged without the token or the other account.
 func (s *Store) SetPushToken(ctx context.Context, user, deviceID, provider, token string) error {
 	return s.inTx(ctx, func(tx pgx.Tx) error {
 		if token != "" {
-			if _, err := tx.Exec(ctx, `UPDATE devices SET push_provider=NULL,push_token=NULL WHERE push_provider=$1 AND push_token=$2 AND device_id<>$3`, provider, token, deviceID); err != nil {
+			var foreign bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM devices WHERE push_provider=$1 AND push_token=$2 AND user_id<>$3 AND revoked_at IS NULL)`, provider, token, user).Scan(&foreign); err != nil {
+				return err
+			}
+			if foreign {
+				slog.Warn("push token held by another account; refused", "device", deviceID)
+				return ErrPushTokenInUse
+			}
+			if _, err := tx.Exec(ctx, `UPDATE devices SET push_provider=NULL,push_token=NULL WHERE push_provider=$1 AND push_token=$2 AND user_id=$4 AND device_id<>$3`, provider, token, deviceID, user); err != nil {
 				return err
 			}
 		}

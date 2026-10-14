@@ -37,6 +37,7 @@ func (s *Server) routeAPI() {
 	s.routeContent()
 
 	s.handle("GET", "/admin/v1/audit", RoleAdmin, s.listAudit)
+	s.handle("POST", "/admin/v1/audit/prune", RoleAdmin, s.pruneAudit)
 	s.handle("GET", "/admin/v1/operators", RoleAdmin, s.listOperators)
 	s.handle("POST", "/admin/v1/operators/{id}/disable", RoleAdmin, s.disableOperator)
 	s.handle("POST", "/admin/v1/operators/{id}/enable", RoleAdmin, s.enableOperator)
@@ -412,4 +413,37 @@ func (s *Server) setOperatorRole(w http.ResponseWriter, r *http.Request, p *Prin
 	s.operatorChange(w, r, p, body.Reason, func(a Actor, id, reason string) (Operator, error) {
 		return s.svc.SetRole(r.Context(), a, id, role, reason)
 	})
+}
+
+// pruneAudit deletes operator_audit rows older than a year (or olderThanDays, never fewer than 365). The log
+// stays append-only for every role: the database function prune_operator_audit (migration 0038) does the one
+// DELETE with the owner's rights and writes its own audit entry in the same transaction.
+func (s *Server) pruneAudit(w http.ResponseWriter, r *http.Request, p *Principal) {
+	var body struct {
+		Reason        string `json:"reason"`
+		OlderThanDays *int   `json:"olderThanDays"`
+	}
+	if err := decode(w, r, &body); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	reason, err := Reason(body.Reason)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	days := 365
+	if body.OlderThanDays != nil {
+		days = *body.OlderThanDays
+	}
+	if days < 365 || days > 36500 {
+		s.fail(w, r, &domain.ValidationError{Field: "olderThanDays", Message: "must be 365 or more: newer entries are never pruned"})
+		return
+	}
+	removed, err := s.svc.PruneAudit(r.Context(), p, reason, days)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.ok(w, r, map[string]any{"deleted": removed, "olderThanDays": days})
 }

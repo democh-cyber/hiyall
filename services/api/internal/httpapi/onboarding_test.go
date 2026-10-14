@@ -61,7 +61,7 @@ func connectTestDB(t *testing.T) (context.Context, *store.Store) {
 	if err = db.Pool.QueryRow(ctx, "SELECT current_database()").Scan(&name); err != nil || name != "hiyall_test" {
 		t.Fatal("integration tests require database named hiyall_test")
 	}
-	if _, err = db.Pool.Exec(ctx, "TRUNCATE users,auth_identities,profiles,privacy_settings,sessions,blocks,outbox_events CASCADE"); err != nil {
+	if _, err = db.Pool.Exec(ctx, "TRUNCATE users,auth_identities,profiles,privacy_settings,sessions,blocks CASCADE"); err != nil {
 		t.Fatal(err)
 	}
 	if err = db.Seed(ctx); err != nil {
@@ -391,8 +391,6 @@ func TestUnderageCompletionIsRefusedAndNothingIsStored(t *testing.T) {
 	h := newOnboardingHarness(t)
 	token := h.login(sam)
 	h.finishProfile(token, "sam_k", "Sam")
-	var outbox int
-	_ = h.db.Pool.QueryRow(h.ctx, `SELECT count(*) FROM outbox_events`).Scan(&outbox)
 	for _, birth := range []string{underageBirthDate(), time.Now().UTC().Format(time.DateOnly), turnsTomorrow(13)} {
 		got := h.expect(h.call("POST", "/v1/me/onboarding/complete", token, completeBody(birth, "2026-10-01")), 403, "AGE_REQUIREMENT_NOT_MET")
 		if got.message != "Hiyall is for people 13 and over." {
@@ -402,13 +400,6 @@ func TestUnderageCompletionIsRefusedAndNothingIsStored(t *testing.T) {
 	declared, accepted, completed, terms := h.onboardingRow(sam)
 	if declared != nil || accepted != nil || completed != nil || terms != nil {
 		t.Fatalf("a refused declaration left a trace: %v %v %v %v", declared, accepted, completed, terms)
-	}
-	var after int
-	_ = h.db.Pool.QueryRow(h.ctx, `SELECT count(*) FROM outbox_events`).Scan(&after)
-	var events int
-	_ = h.db.Pool.QueryRow(h.ctx, `SELECT count(*) FROM outbox_events WHERE event_type='onboarding.completed'`).Scan(&events)
-	if events != 0 || after != outbox {
-		t.Fatalf("refused completion wrote events: %d new, %d completion", after-outbox, events)
 	}
 	h.expect(h.call("GET", "/v1/feed", token, ""), 403, "ONBOARDING_REQUIRED")
 	// Age is the only thing checked: a date that makes the person 13 today for the same account then succeeds.
@@ -484,11 +475,6 @@ func TestHappyPathCompletionUnlocksTheAppAndKeepsTheBirthDatePrivate(t *testing.
 	}
 	if _, _, second, _ := h.onboardingRow(sam); !second.Equal(*completed) {
 		t.Fatal("completing twice moved completed_at")
-	}
-	var events int
-	// No outbox rows are written any more (audit D5).
-	if err = h.db.Pool.QueryRow(h.ctx, `SELECT count(*) FROM outbox_events WHERE event_type='onboarding.completed' AND aggregate_id=$1`, sam).Scan(&events); err != nil || events != 0 {
-		t.Fatalf("%d completion events (%v), want none", events, err)
 	}
 	// Even a repeat has to be a well-formed request, and an under-13 date is still refused for a completed account.
 	h.expect(h.call("POST", "/v1/me/onboarding/complete", token, `{}`), 422, "VALIDATION")

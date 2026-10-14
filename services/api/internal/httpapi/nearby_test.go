@@ -654,8 +654,6 @@ func TestLocationIsRoundedBeforeStorageAndNeverLeaks(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
 	const preciseLat, preciseLon = "12.971634", "77.594566"
-	var outbox int
-	_ = h.db.Pool.QueryRow(h.ctx, `SELECT count(*) FROM outbox_events`).Scan(&outbox)
 	status, _, put := h.full(alice, "PUT", "/v1/me/location", "application/json", `{"latitude":`+preciseLat+`,"longitude":`+preciseLon+`}`)
 	if status != 200 {
 		t.Fatalf("PUT %d %s", status, put)
@@ -708,12 +706,7 @@ func TestLocationIsRoundedBeforeStorageAndNeverLeaks(t *testing.T) {
 			}
 		}
 	}
-	// No event describes a location change, and the precise value is in no table.
-	var after int
-	_ = h.db.Pool.QueryRow(h.ctx, `SELECT count(*) FROM outbox_events`).Scan(&after)
-	if after != outbox {
-		t.Fatalf("location changes wrote %d outbox events", after-outbox)
-	}
+	// The precise value is in no table.
 	h.api.locations.reset(alice)
 	h.expect(h.send(alice, "PUT", "/v1/me/location", putLocation(12.971634, 77.594566)), 200, "")
 	tables, err := h.db.Pool.Query(h.ctx, `SELECT tablename FROM pg_tables WHERE schemaname='public'`)
