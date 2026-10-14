@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -53,17 +54,20 @@ func discoveryItem(id, username string, p domain.Profile, q domain.Privacy, avat
 // field is "everyone", so a hidden field can never be inferred by filtering (the age
 // filter needs fieldAudiences.age "everyone" too); it works on the private birth date (member_age(p.user_id) between the two ages,
 // written as bounds on birth_date so it is one key lookup per candidate rather than a function call)
-// and an unknown age never matches it. The online filter is the one exception to "everyone": see onlineFilterSQL. Within a
+// and an unknown age never matches it. The age and gender filters never narrow a candidate who is a minor (they pass those
+// two predicates), and are refused outright for a viewer who is a minor (domain.ErrFilterNotAvailable). The online filter is the one exception to "everyone": see onlineFilterSQL. Within a
 // collection any value may match; dimensions combine with AND.
 func peopleFilterSQL(n int) string {
 	return fmt.Sprintf(`AND ($%[1]d='' OR (q.data->'fieldAudiences'->>'location'='everyone' AND p.data->>'country'=$%[1]d))
  AND ($%[2]d='' OR (q.data->'fieldAudiences'->>'vibe'='everyone' AND lower(p.data->>'currentVibe')=lower($%[2]d)))
  AND (cardinality($%[3]d::text[])=0 OR (q.data->'fieldAudiences'->>'interests'='everyone' AND EXISTS(SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(p.data->'interests')='array' THEN p.data->'interests' ELSE '[]'::jsonb END) i WHERE lower(i)=ANY($%[3]d::text[]))))
  AND (cardinality($%[4]d::text[])=0 OR (q.data->'fieldAudiences'->>'languages'='everyone' AND EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.data->'languages')='array' THEN p.data->'languages' ELSE '[]'::jsonb END) l WHERE lower(CASE WHEN jsonb_typeof(l)='string' THEN l#>>'{}' ELSE l->>'code' END)=ANY($%[4]d::text[]))))
- AND ($%[5]d::int=0 AND $%[6]d::int=0 OR q.data->'fieldAudiences'->>'age'='everyone' AND EXISTS(SELECT 1 FROM member_ages ma WHERE ma.user_id=p.user_id
+ AND ($%[5]d::int=0 AND $%[6]d::int=0 OR EXISTS(SELECT 1 FROM member_ages mi WHERE mi.user_id=p.user_id AND mi.birth_date>(now() AT TIME ZONE 'UTC')::date-make_interval(years=>18))
+  OR q.data->'fieldAudiences'->>'age'='everyone' AND EXISTS(SELECT 1 FROM member_ages ma WHERE ma.user_id=p.user_id
   AND ($%[5]d::int=0 OR ma.birth_date<=(now() AT TIME ZONE 'UTC')::date-make_interval(years=>$%[5]d::int))
   AND ($%[6]d::int=0 OR ma.birth_date>(now() AT TIME ZONE 'UTC')::date-make_interval(years=>$%[6]d::int+1))))
- AND ($%[7]d::text='' OR (q.data->'fieldAudiences'->>'gender'='everyone' AND p.data->>'gender'=$%[7]d::text))
+ AND ($%[7]d::text='' OR EXISTS(SELECT 1 FROM member_ages mi WHERE mi.user_id=p.user_id AND mi.birth_date>(now() AT TIME ZONE 'UTC')::date-make_interval(years=>18))
+  OR (q.data->'fieldAudiences'->>'gender'='everyone' AND p.data->>'gender'=$%[7]d::text))
  AND (NOT $%[8]d::boolean OR `+onlineFilterSQL+`)`, n, n+1, n+2, n+3, n+4, n+5, n+6, n+7)
 }
 
@@ -132,18 +136,27 @@ func ageFilterCannotMatch(isolation, minorViewer bool, f domain.PeopleFilters) b
 	return (minorViewer && f.AgeMin != nil && *f.AgeMin >= domain.AdultAge) || (!minorViewer && f.AgeMax != nil && *f.AgeMax < domain.AdultAge)
 }
 
+// SearchCandidateCap is the most discoverable members one page of people search examines, in user id order,
+// before the filters and privacy checks narrow them (audit D8): a selective filter, or a viewer who is barred
+// from most of the table (a minor), can no longer make one request walk every member. The statement timeout
+// still bounds anything slower than that; a page that finds nothing within the cap simply ends the list.
+const SearchCandidateCap = 5000
+
 // SearchPeople lists discoverable members. Every active member who has finished
 // onboarding is eligible; what a member shows is decided by their own stored
 // settings, which are read in the same statement as the candidate predicates so
 // hidden fields cannot be inferred by changing search filters. A keyset page is
 // bounded and all privacy and block checks are repeated on every page.
 func (s *Store) SearchPeople(ctx context.Context, viewer string, f domain.PeopleFilters, after string, limit int, online Presence, sign Signer) ([]map[string]any, error) {
-	if s.AgeBandIsolation && (f.AgeMin != nil || f.AgeMax != nil) {
-		var minor bool
-		if err := s.Pool.QueryRow(ctx, `SELECT age_band($1)=$2`, viewer, domain.BandMinor).Scan(&minor); err != nil {
+	if f.UsesAgeOrGender() {
+		minor, err := s.IsMinor(ctx, viewer)
+		if err != nil {
 			return nil, err
 		}
-		if ageFilterCannotMatch(true, minor, f) {
+		if minor {
+			return nil, domain.ErrFilterNotAvailable
+		}
+		if ageFilterCannotMatch(s.AgeBandIsolation, minor, f) {
 			return []map[string]any{}, nil
 		}
 	}
@@ -153,7 +166,9 @@ func (s *Store) SearchPeople(ctx context.Context, viewer string, f domain.People
 	}
 	args := append([]any{viewer, after}, peopleFilterArgs(f).list()...)
 	rows, err := s.Pool.Query(ctx, `
- SELECT p.user_id::text,p.username,p.data,q.data,`+avatarThumbKey("av")+` FROM profiles p
+ WITH cand AS MATERIALIZED (SELECT q0.user_id FROM privacy_settings q0 WHERE q0.user_id>$2::uuid AND q0.user_id<>$1::uuid
+  AND q0.data->>'discoverable'='true' AND q0.data->>'profileAudience'='public' ORDER BY q0.user_id LIMIT `+strconv.Itoa(SearchCandidateCap)+`)
+ SELECT p.user_id::text,p.username,p.data,q.data,`+avatarThumbKey("av")+` FROM cand JOIN profiles p USING(user_id)
  JOIN users u USING(user_id) JOIN privacy_settings q USING(user_id)
  JOIN onboarding o ON o.user_id=p.user_id AND o.completed_at IS NOT NULL`+avatarJoin("av", "p")+`
  WHERE p.user_id<>$1 AND p.user_id>$2::uuid AND u.status='active'

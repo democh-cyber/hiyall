@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -26,7 +27,7 @@ const barredBetween = `interaction_barred($1::uuid,$2::uuid)`
 // Inactive accounts, accounts that have not finished onboarding (their profile is hidden too)
 // and barred pairs (blocked, or in different age bands) are indistinguishable from missing ones.
 func lockPair(ctx context.Context, tx pgx.Tx, a, b string) error {
-	rows, err := tx.Query(ctx, `SELECT u.user_id FROM users u JOIN onboarding o ON o.user_id=u.user_id AND o.completed_at IS NOT NULL WHERE u.user_id IN ($1,$2) AND u.status='active' ORDER BY u.user_id FOR UPDATE OF u`, a, b)
+	rows, err := tx.Query(ctx, `SELECT u.user_id FROM users u JOIN onboarding o ON o.user_id=u.user_id AND o.completed_at IS NOT NULL WHERE u.user_id IN ($1,$2) AND u.status='active' ORDER BY u.user_id FOR NO KEY UPDATE OF u`, a, b)
 	if err != nil {
 		return err
 	}
@@ -163,7 +164,7 @@ func noSelf(actor, target string) error {
 }
 
 // Follow returns the resulting state: active, or pending when the target approves followers.
-func (s *Store) Follow(ctx context.Context, actor, target string) (string, error) {
+func (s *Store) Follow(ctx context.Context, actor, target string, e domain.Entitlements) (string, error) {
 	if err := noSelf(actor, target); err != nil {
 		return "", err
 	}
@@ -192,6 +193,9 @@ func (s *Store) Follow(ctx context.Context, actor, target string) (string, error
 			if !rel.Friends() {
 				state = "pending"
 			}
+		}
+		if err = capDaily(ctx, tx, actor, domain.DailyFollows, e.FollowsPerDay); err != nil {
+			return err
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO follows(follower_id,followee_id,state) VALUES($1,$2,$3)
  ON CONFLICT (follower_id,followee_id) DO UPDATE SET state=excluded.state,created_at=now(),removed_at=NULL`, actor, target, state); err != nil {
@@ -297,7 +301,7 @@ func acceptFriend(ctx context.Context, tx pgx.Tx, id, recipient, requester strin
 }
 
 // SendFriendRequest is idempotent, and accepts instead when the target already asked.
-func (s *Store) SendFriendRequest(ctx context.Context, actor, target string, sign Signer) (domain.FriendRequest, error) {
+func (s *Store) SendFriendRequest(ctx context.Context, actor, target string, sign Signer, e domain.Entitlements) (domain.FriendRequest, error) {
 	if err := noSelf(actor, target); err != nil {
 		return domain.FriendRequest{}, err
 	}
@@ -335,6 +339,11 @@ func (s *Store) SendFriendRequest(ctx context.Context, actor, target string, sig
 		}
 		if !rel.CanFriendRequest {
 			return domain.ErrRequestNotAllowed
+		}
+		// Sending counts against the day whatever becomes of the request: cancelling it refunds nothing, so
+		// cancel-and-resend cannot be used to ask the same people again and again.
+		if err = capDaily(ctx, tx, actor, domain.DailyFriendRequests, e.FriendRequestsPerDay); err != nil {
+			return err
 		}
 		id = newID()
 		if _, err = tx.Exec(ctx, `INSERT INTO friendships(friendship_id,user_low_id,user_high_id,requested_by,status) VALUES($1,least($2::uuid,$3::uuid),greatest($2::uuid,$3::uuid),$2,'pending')
@@ -415,27 +424,46 @@ func (s *Store) Unfriend(ctx context.Context, actor, target string) error {
 	})
 }
 
+// ListFriendRequests pages pending requests, newest first. The friendship row stores its two members as
+// (user_low_id, user_high_id), so "requests I received" and "requests I sent" are each two sargable probes,
+// one per side, on the partial pending indexes (migration 0006); the two short pages are merged here.
 func (s *Store) ListFriendRequests(ctx context.Context, actor string, incoming bool, before *time.Time, beforeID string, limit int, sign Signer) ([]domain.FriendRequest, error) {
-	rows, err := s.Pool.Query(ctx, friendRequestSelect+`
+	result := []domain.FriendRequest{}
+	for _, side := range []string{"user_low_id", "user_high_id"} {
+		// incoming: the other member sent it (requested_by<>actor); outgoing: the actor did.
+		rows, err := s.Pool.Query(ctx, friendRequestSelect+`
  JOIN users su ON su.user_id=s.user_id AND su.status='active'
  JOIN users ru ON ru.user_id=r.user_id AND ru.status='active'
- WHERE f.status='pending' AND (CASE WHEN $2 THEN r.user_id=$1 ELSE s.user_id=$1 END)
+ WHERE f.status='pending' AND f.`+side+`=$1 AND (f.requested_by=$1)=NOT $2
  AND NOT interaction_barred($1::uuid,CASE WHEN $2 THEN s.user_id ELSE r.user_id END)
  AND ($3::timestamptz IS NULL OR (f.created_at,f.friendship_id)<($3,$4::uuid))
  ORDER BY f.created_at DESC,f.friendship_id DESC LIMIT $5`, actor, incoming, before, beforeID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	result := []domain.FriendRequest{}
-	for rows.Next() {
-		f, err := scanFriendRequest(rows, sign)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, f)
+		for rows.Next() {
+			f, err := scanFriendRequest(rows, sign)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			result = append(result, f)
+		}
+		rows.Close()
+		if err = rows.Err(); err != nil {
+			return nil, err
+		}
 	}
-	return result, rows.Err()
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.After(result[j].CreatedAt)
+		}
+		return result[i].RequestID > result[j].RequestID
+	})
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
 }
 
 var connectionSources = map[string]string{
@@ -593,9 +621,23 @@ func (s *Store) ListNotifications(ctx context.Context, recipient string, unreadO
 	return result, rows.Err()
 }
 
+// BadgeCap is the largest unread count the API reports: the badge shows "99+" beyond it, so counting
+// stops at BadgeCap+1 rows however many notifications are waiting.
+const BadgeCap = 99
+
+// UnreadBadge counts the recipient's unread, visible notifications up to BadgeCap+1 rows. The count it
+// returns never exceeds BadgeCap; more is true when there are more than that.
+func (s *Store) UnreadBadge(ctx context.Context, recipient string) (count int, more bool, err error) {
+	err = s.Pool.QueryRow(ctx, `SELECT count(*) FROM (SELECT 1 `+visibleNotifications+` AND n.read_at IS NULL LIMIT $2) x`, recipient, BadgeCap+1).Scan(&count)
+	if count > BadgeCap {
+		count, more = BadgeCap, true
+	}
+	return count, more, err
+}
+
+// UnreadNotifications is UnreadBadge without the "more" flag, capped at BadgeCap.
 func (s *Store) UnreadNotifications(ctx context.Context, recipient string) (int, error) {
-	var count int
-	err := s.Pool.QueryRow(ctx, `SELECT count(*) `+visibleNotifications+` AND n.read_at IS NULL`, recipient).Scan(&count)
+	count, _, err := s.UnreadBadge(ctx, recipient)
 	return count, err
 }
 

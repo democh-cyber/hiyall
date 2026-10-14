@@ -16,9 +16,15 @@ WORKDIR /src/services/api
 COPY services/api/go.mod services/api/go.sum ./
 RUN go mod download
 COPY services/api/ ./
+# The commit and version are stamped into the binary: the startup log, the hiyall_build_info metric and
+# the error tracker's release carry them. Pass them with --build-arg (CI does; a deploy command does:
+#   docker build --build-arg COMMIT=$(git rev-parse --short=12 HEAD) --build-arg VERSION=1.0.0 ...).
+ARG COMMIT=unknown
+ARG VERSION=dev
 # Static, stripped, no build paths or VCS stamps in the binary.
-RUN go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/api ./cmd/api \
- && go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/migrate ./cmd/migrate
+RUN LDFLAGS="-s -w -X hiyall/services/api/internal/buildinfo.Commit=${COMMIT} -X hiyall/services/api/internal/buildinfo.Version=${VERSION}" \
+ && go build -trimpath -buildvcs=false -ldflags="${LDFLAGS}" -o /out/api ./cmd/api \
+ && go build -trimpath -buildvcs=false -ldflags="${LDFLAGS}" -o /out/migrate ./cmd/migrate
 
 # distroless/static: CA certificates, tzdata and a non-root user, no shell and no package manager.
 FROM gcr.io/distroless/static-debian13:nonroot
@@ -28,6 +34,8 @@ COPY database/migrations /migrations
 # Listen on every interface inside the container; METRICS_ADDR keeps its loopback default (set it, with
 # METRICS_TOKEN, to scrape from outside). MIGRATIONS_DIR serves /migrate and the /readyz schema check.
 ENV LISTEN_ADDR=0.0.0.0:8080 MIGRATIONS_DIR=/migrations
+# GOMEMLIMIT is deliberately not set here: it must follow the machine's memory (about 80% of it, for
+# example 400MiB on a 512 MB machine). Set it in the platform's env; see docs/deployment/10-deploy-guide.md.
 USER nonroot:nonroot
 EXPOSE 8080
 # No shell, curl or wget in the image: the binary checks itself (liveness, no database involved).

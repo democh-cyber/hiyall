@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"hiyall/services/api/internal/config"
+	"hiyall/services/api/internal/logscrub"
 	"hiyall/services/api/internal/metrics"
 	"hiyall/services/api/internal/store"
 )
@@ -53,12 +54,12 @@ func startMetrics(cfg config.Config) func(context.Context) {
 	ln, err := net.Listen("tcp", cfg.MetricsAddr)
 	if err != nil {
 		// Metrics are never worth refusing to serve users over.
-		slog.Error("metrics listener failed to start; continuing without metrics", "address", cfg.MetricsAddr, "reason", err.Error())
+		slog.Error("metrics listener failed to start; continuing without metrics", "address", cfg.MetricsAddr, "reason", logscrub.Err(err))
 		return func(context.Context) {}
 	}
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("metrics listener stopped", "reason", err.Error())
+			slog.Error("metrics listener stopped", "reason", logscrub.Err(err))
 		}
 	}()
 	slog.Info("metrics listening", "address", cfg.MetricsAddr, "tokenRequired", cfg.MetricsToken != "")

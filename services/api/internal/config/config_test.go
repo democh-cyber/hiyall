@@ -6,6 +6,7 @@ import (
 )
 
 func TestProductionFailsClosed(t *testing.T) {
+	productionBasics(t)
 	t.Setenv("DATABASE_URL", "postgresql://localhost/app?sslmode=disable")
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("ENABLE_DEV_AUTH", "true")
@@ -54,6 +55,12 @@ func firebaseEnv(t *testing.T, project string) {
 	t.Setenv("OIDC_ISSUER", "")
 	t.Setenv("OIDC_AUDIENCE", "")
 	t.Setenv("FIREBASE_PROJECT_ID", project)
+	productionBasics(t)
+	file := ""
+	if project != "" {
+		file = serviceAccountFile(t)
+	}
+	t.Setenv("FIREBASE_SERVICE_ACCOUNT_FILE", file)
 }
 
 func TestFirebaseProjectDerivesIssuerAndAudience(t *testing.T) {
@@ -139,6 +146,7 @@ func TestAgeBandIsolationDefaultsOnAndParsesStrictly(t *testing.T) {
 	}
 	// Production keeps the safe default when the variable is not set.
 	t.Setenv("AGE_BAND_ISOLATION", "")
+	productionBasics(t)
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("ENABLE_DEV_AUTH", "false")
 	t.Setenv("OIDC_ISSUER", "https://identity.example")

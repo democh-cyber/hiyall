@@ -28,14 +28,14 @@ func TestJobsOnlyRunOnTheLeaderAndDrainBatches(t *testing.T) {
 	var calls atomic.Int64
 	remaining := []int64{5, 5, 2} // two full batches, then a short one ends the drain
 	jobs := []maintenance.Job{
-		{"drains", func() (int64, error) {
+		{Name: "drains", Run: func(context.Context) (int64, error) {
 			n := remaining[0]
 			remaining = remaining[1:]
 			calls.Add(1)
 			return n, nil
 		}},
-		{"fails", func() (int64, error) { return 0, errors.New("boom") }},
-		{"after failure", func() (int64, error) { calls.Add(100); return 0, nil }},
+		{Name: "fails", Run: func(context.Context) (int64, error) { return 0, errors.New("boom") }},
+		{Name: "after failure", Run: func(context.Context) (int64, error) { calls.Add(100); return 0, nil }},
 	}
 	follower := &fakeElector{lead: false}
 	if maintenance.RunOnce(context.Background(), follower, jobs, 5) || calls.Load() != 0 {
@@ -103,8 +103,8 @@ func TestOnlyOneStoreInstanceRunsTheJobs(t *testing.T) {
 	// A lock key of its own: a development API against this database must not compete with the test.
 	const key int64 = 4917398
 	var ranA, ranB atomic.Int64
-	jobsA := []maintenance.Job{{"leader-test", func() (int64, error) { ranA.Add(1); return 0, nil }}}
-	jobsB := []maintenance.Job{{"leader-test", func() (int64, error) { ranB.Add(1); return 0, nil }}}
+	jobsA := []maintenance.Job{{Name: "leader-test", Run: func(context.Context) (int64, error) { ranA.Add(1); return 0, nil }}}
+	jobsB := []maintenance.Job{{Name: "leader-test", Run: func(context.Context) (int64, error) { ranB.Add(1); return 0, nil }}}
 	la, lb := a.NewLeader(key), b.NewLeader(key)
 	defer la.Release(ctx)
 	defer lb.Release(ctx)
@@ -132,5 +132,28 @@ func TestOnlyOneStoreInstanceRunsTheJobs(t *testing.T) {
 	}
 	if !maintenance.RunOnce(ctx, follower, followerJobs, 5000) || followerRan.Load() != before+1 {
 		t.Fatal("the other instance did not take over")
+	}
+}
+
+func TestJobTimeoutCutsOffASlowJobAndTheNextOneStillRuns(t *testing.T) {
+	var after atomic.Int64
+	jobs := []maintenance.Job{
+		{Name: "slow", Timeout: 50 * time.Millisecond, Run: func(ctx context.Context) (int64, error) {
+			<-ctx.Done()
+			return 0, ctx.Err()
+		}},
+		{Name: "next", Run: func(context.Context) (int64, error) { after.Add(1); return 0, nil }},
+	}
+	start := time.Now()
+	if !maintenance.RunOnce(context.Background(), &fakeElector{lead: true}, jobs, 5) {
+		t.Fatal("leader did not run")
+	}
+	if time.Since(start) > 2*time.Second || after.Load() != 1 {
+		t.Fatalf("slow job not cut off (%v) or next job skipped (%d)", time.Since(start), after.Load())
+	}
+	var sb strings.Builder
+	metrics.Default.WriteTo(&sb)
+	if !strings.Contains(sb.String(), `hiyall_maintenance_job_runs_total{job="slow",result="timeout"} 1`) {
+		t.Fatalf("timeout not counted:\n%s", sb.String())
 	}
 }

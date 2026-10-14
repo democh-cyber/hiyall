@@ -50,7 +50,7 @@ func scanSpace(row pgx.Row, sign Signer) (domain.Space, error) {
 // reads membership/roles in a fresh READ COMMITTED statement after the wait.
 func lockedSpace(ctx context.Context, tx pgx.Tx, user, id string, sign Signer) (domain.Space, error) {
 	var locked string
-	if err := tx.QueryRow(ctx, `SELECT space_id::text FROM spaces WHERE space_id=$1 FOR UPDATE`, id).Scan(&locked); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT space_id::text FROM spaces WHERE space_id=$1 FOR NO KEY UPDATE`, id).Scan(&locked); err != nil {
 		return domain.Space{}, mapped(err)
 	}
 	x, err := scanSpace(tx.QueryRow(ctx, spaceSelect+` WHERE s.space_id=$2 AND `+spaceVisible(), user, id), sign)
@@ -75,14 +75,14 @@ func (s *Store) Spaces(ctx context.Context, user, kind, parent string, mine bool
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (domain.Space, error) { return scanSpace(r, sign) })
 }
-func (s *Store) CreateSpace(ctx context.Context, user string, in domain.NewSpace, sign Signer) (domain.Space, error) {
+func (s *Store) CreateSpace(ctx context.Context, user string, in domain.NewSpace, sign Signer, e domain.Entitlements) (domain.Space, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return domain.Space{}, err
 	}
 	defer tx.Rollback(ctx)
 	// Serialize per-host limits without locking other hosts.
-	if _, err = tx.Exec(ctx, `SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE`, user); err != nil {
+	if _, err = tx.Exec(ctx, `SELECT user_id FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, user); err != nil {
 		return domain.Space{}, err
 	}
 	var member bool
@@ -113,6 +113,9 @@ func (s *Store) CreateSpace(ctx context.Context, user string, in domain.NewSpace
 		if parent.Visibility != "public" && in.Visibility == "public" {
 			return domain.Space{}, &domain.ValidationError{Field: "visibility", Message: "children of private communities cannot be public"}
 		}
+	}
+	if err = capDaily(ctx, tx, user, domain.DailySpaces, e.SpacesPerDay); err != nil {
+		return domain.Space{}, err
 	}
 	id := newID()
 	_, err = tx.Exec(ctx, `INSERT INTO spaces(space_id,owner_id,parent_id,kind,title,description,rules,visibility,capacity,starts_at,ends_at,timezone,location) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, id, user, in.ParentID, in.Kind, in.Title, in.Description, in.Rules, in.Visibility, in.Capacity, in.StartsAt, in.EndsAt, in.Timezone, in.Location)
@@ -415,8 +418,8 @@ func (s *Store) SpaceEntries(ctx context.Context, user, id string, before *time.
 		return e, err
 	})
 }
-func (s *Store) CreateSpaceEntry(ctx context.Context, user, id, body string) (string, error) {
-	body = strings.TrimSpace(body)
+func (s *Store) CreateSpaceEntry(ctx context.Context, user, id, body string, e domain.Entitlements) (string, error) {
+	body = domain.Normalize(strings.TrimSpace(body))
 	if !domain.SpaceText(body, 1, 2000) {
 		return "", &domain.ValidationError{Field: "body", Message: "write 1–2000 characters"}
 	}
@@ -434,6 +437,9 @@ func (s *Store) CreateSpaceEntry(ctx context.Context, user, id, body string) (st
 	}
 	if !x.CanDiscuss {
 		return "", ErrSpaceClosed
+	}
+	if err = capDaily(ctx, tx, user, domain.DailySpaceEntries, e.SpaceEntriesPerDay); err != nil {
+		return "", err
 	}
 	entry := newID()
 	if _, err = tx.Exec(ctx, `INSERT INTO space_entries(entry_id,space_id,author_id,body) VALUES($1,$2,$3,$4)`, entry, id, user, body); err != nil {

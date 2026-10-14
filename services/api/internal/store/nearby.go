@@ -16,16 +16,72 @@ import (
 // event. A row updated within the last 24 hours means the member is sharing; the
 // maintenance job deletes rows after 7 days.
 
-// SetLocation stores the member's point at the precision of their age band, rounding
-// again as a safety net, and returns when it was stored. The band is read in the same
-// statement as the write.
-func (s *Store) SetLocation(ctx context.Context, userID string, in domain.LocationInput) (time.Time, error) {
-	fine, coarse := domain.RoundLocationTo(in.Fine, domain.LocationDecimals), domain.RoundLocationTo(in.Coarse, domain.MinorLocationDecimals)
+// SetLocation stores the member's point and returns when it was stored. The member must have turned on
+// "Show me in Nearby" (ErrNearbyOff otherwise). The submitted point is moved by the member's daily random
+// offset (rotated when the stored offset is not from today, UTC), then rounded to the precision of the
+// member's age band at write time, so neither a precise position nor the member's true grid cell is ever
+// stored. A write that lands in the cell already stored only refreshes its time. Any other write counts as
+// a location change against e.LocationChangesPerDay and is refused when it is faster than
+// domain.MaxTravelKmh from the last stored point (domain.ErrLocationJump): together they stop a script from
+// walking spoofed centres around a member to find them.
+func (s *Store) SetLocation(ctx context.Context, userID string, in domain.LocationInput, e domain.Entitlements) (time.Time, error) {
 	var updated time.Time
-	err := s.Pool.QueryRow(ctx, `INSERT INTO user_locations(user_id,latitude,longitude,updated_at)
- SELECT user_id,CASE WHEN age_band(user_id)=$6 THEN $2::float8 ELSE $4::float8 END,CASE WHEN age_band(user_id)=$6 THEN $3::float8 ELSE $5::float8 END,now() FROM users WHERE user_id=$1 AND status='active'
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := lockQuota(ctx, tx, "location", userID); err != nil {
+			return err
+		}
+		var visible, minor bool
+		var day *time.Time
+		var north, east float64
+		err := tx.QueryRow(ctx, `SELECT p.visible,p.offset_day,p.offset_north_km,p.offset_east_km,age_band(u.user_id)=$2
+ FROM nearby_prefs p JOIN users u USING(user_id) WHERE p.user_id=$1 AND u.status='active' FOR UPDATE OF p`, userID, domain.BandMinor).Scan(&visible, &day, &north, &east, &minor)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNearbyOff
+		}
+		if err != nil {
+			return err
+		}
+		if !visible {
+			return domain.ErrNearbyOff
+		}
+		now := time.Now().UTC()
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+		if day == nil || !day.UTC().Equal(today) {
+			radius := domain.NearbyOffsetKm
+			if minor {
+				radius = domain.MinorNearbyOffsetKm
+			}
+			off := randomOffset(radius)
+			north, east = off.NorthKm, off.EastKm
+			if _, err = tx.Exec(ctx, `UPDATE nearby_prefs SET offset_day=$2::date,offset_north_km=$3,offset_east_km=$4 WHERE user_id=$1`, userID, today.Format(time.DateOnly), north, east); err != nil {
+				return err
+			}
+		}
+		decimals := domain.LocationDecimals
+		if minor {
+			decimals = domain.MinorLocationDecimals
+		}
+		point := domain.RoundLocationTo(in.For(minor).Shift(domain.Offset{NorthKm: north, EastKm: east}), decimals)
+		var prev domain.Location
+		var prevAt time.Time
+		err = tx.QueryRow(ctx, `SELECT latitude,longitude,updated_at FROM user_locations WHERE user_id=$1 FOR UPDATE`, userID).Scan(&prev.Latitude, &prev.Longitude, &prevAt)
+		had := err == nil
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		fresh := had && now.Sub(prevAt) < domain.LocationFreshHours*time.Hour
+		if !(fresh && prev == point) {
+			if had && domain.ImplausibleJump(prev, point, now.Sub(prevAt)) {
+				return domain.ErrLocationJump
+			}
+			if err = bumpDaily(ctx, tx, userID, domain.DailyLocationChanges, e.LocationChangesPerDay); err != nil {
+				return err
+			}
+		}
+		return tx.QueryRow(ctx, `INSERT INTO user_locations(user_id,latitude,longitude,updated_at) VALUES($1,$2,$3,now())
  ON CONFLICT(user_id) DO UPDATE SET latitude=excluded.latitude,longitude=excluded.longitude,updated_at=excluded.updated_at
- RETURNING updated_at`, userID, coarse.Latitude, coarse.Longitude, fine.Latitude, fine.Longitude, domain.BandMinor).Scan(&updated)
+ RETURNING updated_at`, userID, point.Latitude, point.Longitude).Scan(&updated)
+	})
 	if err != nil {
 		return time.Time{}, mapped(err)
 	}
@@ -53,15 +109,30 @@ func (s *Store) StopSharingLocation(ctx context.Context, userID string) error {
 	return err
 }
 
-// OwnLocation is the caller's fresh stored point, used only as the centre of a
-// Nearby search, and whether the caller is a minor (which decides their distance
-// buckets). It is ErrLocationNotShared when none is stored or it has expired.
+// OwnLocation is the caller's fresh stored point, used only as the centre of a Nearby search, and whether
+// the caller is a minor (which decides their distance buckets). A member who is not visible cannot search
+// (domain.ErrNearbyOff: you must be in Nearby to see Nearby); it is ErrLocationNotShared when none is
+// stored or it has expired.
 func (s *Store) OwnLocation(ctx context.Context, userID string) (loc domain.Location, minor bool, err error) {
-	err = s.Pool.QueryRow(ctx, `SELECT l.latitude,l.longitude,age_band(l.user_id)=$3 FROM user_locations l JOIN users u USING(user_id) WHERE l.user_id=$1 AND u.status='active' AND l.updated_at>now()-make_interval(hours=>$2::int)`, userID, domain.LocationFreshHours, domain.BandMinor).Scan(&loc.Latitude, &loc.Longitude, &minor)
+	var visible bool
+	var lat, lon *float64
+	err = s.Pool.QueryRow(ctx, `SELECT coalesce(np.visible,false),l.latitude,l.longitude,age_band(u.user_id)=$3
+ FROM users u LEFT JOIN nearby_prefs np ON np.user_id=u.user_id
+ LEFT JOIN user_locations l ON l.user_id=u.user_id AND l.updated_at>now()-make_interval(hours=>$2::int)
+ WHERE u.user_id=$1 AND u.status='active'`, userID, domain.LocationFreshHours, domain.BandMinor).Scan(&visible, &lat, &lon, &minor)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return loc, false, domain.ErrLocationNotShared
+		return loc, false, domain.ErrNotFound
 	}
-	return loc, minor, err
+	if err != nil {
+		return loc, false, err
+	}
+	if !visible {
+		return loc, minor, domain.ErrNearbyOff
+	}
+	if lat == nil || lon == nil {
+		return loc, minor, domain.ErrLocationNotShared
+	}
+	return domain.Location{Latitude: *lat, Longitude: *lon}, minor, nil
 }
 
 // PurgeLocations deletes stored locations not refreshed within retain, at most
@@ -83,7 +154,7 @@ type NearbyAfter struct {
 // nearbySQL uses the same sphere (6371.0 km) as domain.EarthRadiusKm; tests compare
 // the two against a reference implementation.
 const nearbyBucketSQL = `CASE WHEN $23::boolean THEN CASE WHEN km<=10 THEN 10 WHEN km<=25 THEN 25 WHEN km<=50 THEN 50 ELSE 100 END
- ELSE CASE WHEN km<=1 THEN 1 WHEN km<=2 THEN 2 WHEN km<=3 THEN 3 WHEN km<=5 THEN 5 WHEN km<=10 THEN 10 WHEN km<=15 THEN 15 WHEN km<=25 THEN 25 WHEN km<=50 THEN 50 ELSE 100 END END`
+ ELSE CASE WHEN km<=5 THEN 5 WHEN km<=10 THEN 10 WHEN km<=15 THEN 15 WHEN km<=25 THEN 25 WHEN km<=50 THEN 50 ELSE 100 END END`
 
 // nearbySQL finds members whose fresh stored point lies within the radius of the
 // caller's. The bounding box on (latitude, longitude) bounds the rows the exact
@@ -111,6 +182,7 @@ WITH within AS MATERIALIZED (
    2*6371.0*asin(least(1,sqrt(power(sin(radians(l.latitude-$2::float8)/2),2)+cos(radians($2::float8))*cos(radians(l.latitude))*power(sin(radians(l.longitude-$3::float8)/2),2)))) AS km
   FROM user_locations l
   WHERE l.user_id<>$1::uuid AND l.updated_at>now()-make_interval(hours=>$14::int)
+  AND EXISTS(SELECT 1 FROM nearby_prefs np WHERE np.user_id=l.user_id AND np.visible)
   AND l.latitude BETWEEN $5::float8 AND $6::float8
   AND (NOT $7::boolean OR CASE WHEN $8::boolean THEN (l.longitude>=$9::float8 OR l.longitude<=$10::float8) ELSE l.longitude BETWEEN $9::float8 AND $10::float8 END)
  ) c WHERE c.km<=$4::float8 AND NOT interaction_barred($1::uuid,c.user_id)
@@ -136,6 +208,9 @@ var nearbySQL = nearbySQLBase + peopleFilterSQL(15) + ` ORDER BY w.bucket,w.user
 // and nothing finer: no coordinates, grid cells or exact distances leave this
 // function.
 func (s *Store) NearbyPeople(ctx context.Context, viewer string, centre domain.Location, minorViewer bool, radiusKm int, f domain.PeopleFilters, after NearbyAfter, limit int, online Presence, sign Signer) ([]map[string]any, error) {
+	if minorViewer && f.UsesAgeOrGender() {
+		return nil, domain.ErrFilterNotAvailable
+	}
 	if ageFilterCannotMatch(s.AgeBandIsolation, minorViewer, f) {
 		return []map[string]any{}, nil
 	}

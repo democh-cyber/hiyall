@@ -314,8 +314,12 @@ func fcmError(resp *http.Response, body []byte) error {
 	label := fmt.Sprintf("FCM refused the push (HTTP %d %s)", resp.StatusCode, code)
 	switch {
 	// A bare 404 NOT_FOUND is not enough: a wrong project id answers that too, and must not wipe every token.
-	case code == "UNREGISTERED" || code == "SENDER_ID_MISMATCH":
+	case code == "UNREGISTERED":
 		return fmt.Errorf("%w: %s", ErrUnregistered, label)
+	// The credentials and the device token belong to different Firebase projects: that is this server's
+	// configuration, and it would wipe every token if it were treated as a dead one.
+	case code == "SENDER_ID_MISMATCH":
+		return fmt.Errorf("%w: %s", ErrConfig, label)
 	case code == "INVALID_ARGUMENT" && (badToken || strings.Contains(strings.ToLower(e.Error.Message), "registration token")):
 		return fmt.Errorf("%w: %s", ErrUnregistered, label)
 	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 || resp.StatusCode == http.StatusUnauthorized:
