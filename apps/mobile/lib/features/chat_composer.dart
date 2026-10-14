@@ -22,6 +22,10 @@ class ChatComposer extends StatefulWidget {
   /// Shown above the dock inside the same column: the "Replying to" bar and a
   /// notice. Null or an empty box adds nothing.
   final Widget? above;
+
+  /// Set to the peer's name while they have not replied and the first-contact
+  /// cap is used up: the composer is disabled and says whom it waits for.
+  final String? waitingFor;
   const ChatComposer({
     super.key,
     required this.controller,
@@ -34,6 +38,7 @@ class ChatComposer extends StatefulWidget {
     required this.onSend,
     required this.onAttach,
     this.above,
+    this.waitingFor,
   });
   @override
   State<ChatComposer> createState() => _ChatComposerState();
@@ -136,7 +141,9 @@ class _ChatComposerState extends State<ChatComposer> {
                 key: const Key('chat-attach'),
                 icon: Icons.add_photo_alternate_outlined,
                 tooltip: 'Attach photo',
-                onTap: widget.canAttach ? widget.onAttach : null,
+                onTap: widget.canAttach && widget.waitingFor == null
+                    ? widget.onAttach
+                    : null,
                 color: t.textSecondary,
               )
             else
@@ -144,6 +151,7 @@ class _ChatComposerState extends State<ChatComposer> {
             Expanded(
               child: TextField(
                 key: const Key('chat-input'),
+                enabled: widget.waitingFor == null,
                 controller: widget.controller,
                 focusNode: widget.focus,
                 minLines: 1,
@@ -156,7 +164,9 @@ class _ChatComposerState extends State<ChatComposer> {
                 cursorColor: t.accent,
                 style: TextStyle(fontSize: 16, height: 1.3, color: t.text),
                 decoration: InputDecoration(
-                  hintText: 'Message…',
+                  hintText: widget.waitingFor == null
+                      ? 'Message…'
+                      : 'Waiting for ${widget.waitingFor} to reply',
                   hintStyle: TextStyle(color: t.textSecondary, fontSize: 16),
                   counterText: '',
                   filled: false,
@@ -174,7 +184,10 @@ class _ChatComposerState extends State<ChatComposer> {
             ValueListenableBuilder<TextEditingValue>(
               valueListenable: widget.controller,
               builder: (context, value, _) {
-                final ready = value.text.trim().isNotEmpty && widget.canSend;
+                final ready =
+                    value.text.trim().isNotEmpty &&
+                    widget.canSend &&
+                    widget.waitingFor == null;
                 return Tooltip(
                   message: 'Send',
                   child: PressScale(

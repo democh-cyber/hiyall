@@ -170,7 +170,7 @@ String messageTimeLabel(BuildContext context, ChatMessage m) =>
       SendStatus.sending => 'Sending…',
       SendStatus.failed => 'Not sent',
       SendStatus.sent => TimeOfDay.fromDateTime(
-        m.sentAt.toLocal(),
+        m.shownAt.toLocal(),
       ).format(context),
     };
 
@@ -182,7 +182,7 @@ String describeMessage(
   required bool seen,
 }) {
   final who = m.mine ? 'You' : peerName;
-  final time = TimeOfDay.fromDateTime(m.sentAt.toLocal()).format(context);
+  final time = TimeOfDay.fromDateTime(m.shownAt.toLocal()).format(context);
   final state = switch (m.status) {
     SendStatus.sending => ', sending',
     SendStatus.failed => ', not sent',

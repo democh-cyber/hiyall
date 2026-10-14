@@ -50,7 +50,7 @@ class ChatRow extends StatelessWidget {
     final unread = c.unreadCount > 0;
     final when = c.last == null || c.last!.notice
         ? null
-        : chatListTime(c.last!.sentAt, now);
+        : chatListTime(c.last!.shownAt, now);
     final preview = previewFor(c.last, username: c.peerUsername);
     final label = [
       c.peerName,

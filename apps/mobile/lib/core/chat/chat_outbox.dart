@@ -557,11 +557,19 @@ class PhotoOutbox {
     // the cached copy, so our own photo opens without downloading it.
     try {
       await cache.adopt(
-        sent.full.blobId!,
+        blobCacheKey(
+          entry.conversationId,
+          sent.full.blobId!,
+          sent.full.ctSha256,
+        ),
         File('${dir.path}/${entry.full.file}'),
       );
       await cache.adopt(
-        sent.thumb.blobId!,
+        blobCacheKey(
+          entry.conversationId,
+          sent.thumb.blobId!,
+          sent.thumb.ctSha256,
+        ),
         File('${dir.path}/${entry.thumb.file}'),
       );
     } catch (_) {

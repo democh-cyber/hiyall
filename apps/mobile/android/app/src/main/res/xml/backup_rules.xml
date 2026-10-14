@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and older (android:fullBackupContent). Nothing of the app is backed up: the chat
+     keys, ratchet state, history and cached photos must stay on this phone. allowBackup is also
+     false in the manifest; these rules keep that true if it is ever switched on. -->
+<full-backup-content>
+    <exclude domain="root" path="."/>
+    <exclude domain="file" path="."/>
+    <exclude domain="database" path="."/>
+    <exclude domain="sharedpref" path="."/>
+    <exclude domain="external" path="."/>
+</full-backup-content>

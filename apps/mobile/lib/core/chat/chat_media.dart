@@ -115,14 +115,21 @@ class ChatMedia {
       ciphertext: ciphertext,
     );
 
-    final cached = await cache.read(id);
+    final key = blobCacheKey(conversationId, id, part.ctSha256);
+    final cached = await cache.read(key);
     if (cached != null) {
-      try {
-        if (_matches(cached, part)) return await open(cached);
-      } catch (_) {
-        // Fall through: a damaged cache file is replaced from the network.
+      if (_matches(cached, part)) {
+        // A file that verifies against its own descriptor is never deleted
+        // because of what a message says: if it will not decrypt, the
+        // descriptor is the problem, and the same bytes would come again.
+        try {
+          return await open(cached);
+        } catch (_) {
+          throw const ChatMediaFailure(MediaProblem.corrupt);
+        }
       }
-      await cache.delete(id);
+      // Damaged on disk: replaced from the network.
+      await cache.delete(key);
     }
     await _slot();
     try {
@@ -153,7 +160,7 @@ class ChatMedia {
         throw const ChatMediaFailure(MediaProblem.corrupt);
       }
       try {
-        await cache.put(id, ciphertext);
+        await cache.put(key, ciphertext);
       } catch (_) {
         // A full disk costs a later download, not the photo.
       }
@@ -197,8 +204,9 @@ class ChatMedia {
     return MediaProblem.other;
   }
 
-  /// Forgets cached ciphertext of these blobs (their message was deleted).
-  Future<void> forget(Iterable<String> blobIds) => cache.deleteAll(blobIds);
+  /// Forgets cached ciphertext of these entries (their message was deleted);
+  /// see [blobCacheKey].
+  Future<void> forget(Iterable<String> keys) => cache.deleteAll(keys);
 }
 
 class _Fetch {
