@@ -40,6 +40,12 @@ abstract class OlmAccount implements RustOpaqueInterface {
     required String oneTimeKey,
   });
 
+  /// Forgets the previous fallback key (the one the last [`generate_fallback_key`]
+  /// replaced); true if there was one. Call it once enough time has passed that no
+  /// pre-key message made for the old key can still be in flight. The account must
+  /// be pickled afterwards.
+  bool forgetOldFallbackKey();
+
   /// Rotates the fallback key and returns the unpublished one.
   PublicKeyEntry? generateFallbackKey();
 
@@ -63,6 +69,9 @@ abstract class OlmAccount implements RustOpaqueInterface {
   String sign({required String message});
 
   String signingKey();
+
+  /// The fallback key that was generated but not yet marked as published, if any.
+  PublicKeyEntry? unpublishedFallbackKey();
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OlmSession>>

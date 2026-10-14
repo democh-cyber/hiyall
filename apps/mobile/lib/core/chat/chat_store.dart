@@ -7,6 +7,11 @@ abstract class ChatStore {
 
   /// Every key held, for wiping by prefix (sign-out, a fresh install).
   Future<List<String>> keys();
+
+  /// Runs [work]; a store that can make several writes land together (see
+  /// SnapshotChatStore) commits everything [work] wrote as one unit, or none
+  /// of it. Others just run it.
+  Future<T> batch<T>(Future<T> Function() work);
 }
 
 /// Deletes every key that starts with [prefix] and returns how many went.
@@ -31,4 +36,6 @@ class MemoryChatStore implements ChatStore {
   Future<void> delete(String key) async => values.remove(key);
   @override
   Future<List<String>> keys() async => values.keys.toList();
+  @override
+  Future<T> batch<T>(Future<T> Function() work) => work();
 }

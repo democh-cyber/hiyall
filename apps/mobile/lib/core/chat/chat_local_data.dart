@@ -33,7 +33,7 @@ class ChatLocalData {
   static String pendingRevokeKey(String userId) => 'hiyall.chatrevoke.$userId';
 
   static const markerName = 'chat_install_marker';
-  static const folders = ['chat_blobs', 'chat_outbox'];
+  static const folders = ['chat_blobs', 'chat_outbox', 'chat_state'];
 
   /// Records the device id of [userId] to remove on the server later.
   static Future<void> rememberRevoke(

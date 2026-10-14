@@ -15,6 +15,7 @@ import 'chat_engine.dart';
 import 'chat_history.dart';
 import 'chat_reactions.dart';
 import 'chat_store.dart';
+import 'chat_text.dart';
 
 /// Sends the message through the end-to-end encrypted path (the engine's
 /// Olm envelopes) and returns the relay's timestamp. Retrying the same
@@ -258,7 +259,7 @@ class PhotoOutbox {
         ctSha256: thumb.ctSha256,
       ),
       preview: photo.preview,
-      caption: caption.trim(),
+      caption: sanitizeText(caption).trim(),
     );
     final folder = _folder(messageId);
     await folder.create(recursive: true);

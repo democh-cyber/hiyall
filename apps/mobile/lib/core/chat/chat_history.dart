@@ -43,11 +43,33 @@ class ChatHistory {
   final _lists = <String, List<ChatMessage>>{};
   Future<void> _queue = Future.value();
 
+  static final Object _lockZone = Object();
+
   Future<T> _serial<T>(Future<T> Function() work) {
+    // Inside [transaction] the lock is already held by the caller.
+    if (identical(Zone.current[_lockZone], this)) return work();
     final result = _queue.then((_) => work());
     _queue = result.then((_) {}, onError: (_) {});
     return result;
   }
+
+  /// Runs [work] with the history locked and the store's writes committed as
+  /// one (see [ChatStore.batch]): what [work] changes in the history and
+  /// anywhere else in the store lands together or not at all. Everything the
+  /// history does inside [work] joins the transaction without waiting for its
+  /// own lock. If it fails the cached lists are dropped, so the next read
+  /// shows what the store holds.
+  Future<T> transaction<T>(Future<T> Function() work) => _serial(() async {
+    try {
+      return await store.batch(
+        () => Zone.current.fork(zoneValues: {_lockZone: this}).run(work),
+      );
+    } catch (_) {
+      _lists.clear();
+      _pending.clear();
+      rethrow;
+    }
+  });
 
   Future<List<ChatMessage>> _load(String conversationId) async {
     final cached = _lists[conversationId];

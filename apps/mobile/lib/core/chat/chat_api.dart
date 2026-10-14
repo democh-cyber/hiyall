@@ -48,6 +48,15 @@ class ChatApi {
   /// Called after the relay accepted a message the member sent (push
   /// notifications ask for permission at that meaningful moment).
   void Function()? onSent;
+
+  /// Sent on every request as `X-Client-Version` and `X-Client-Platform`, like
+  /// the main API client does (this file stays free of Flutter, so the app
+  /// passes them in). Left out when null.
+  final String? clientVersion, clientPlatform;
+
+  /// Called when the relay refuses this app version (426 UPGRADE_REQUIRED);
+  /// the app then shows only its "Update Hiyall" screen.
+  final void Function()? onUpgradeRequired;
   ChatApi(
     String baseUrl,
     this.token, {
@@ -55,6 +64,9 @@ class ChatApi {
     this.tokenRefresher,
     this.onUnauthorized,
     this.onSent,
+    this.clientVersion,
+    this.clientPlatform,
+    this.onUpgradeRequired,
     Dio? dio,
   }) : _dio =
            dio ??
@@ -80,7 +92,11 @@ class ChatApi {
         data: body,
         options: Options(
           method: method,
-          headers: {'Authorization': 'Bearer $sent'},
+          headers: {
+            'Authorization': 'Bearer $sent',
+            'X-Client-Version': ?clientVersion,
+            'X-Client-Platform': ?clientPlatform,
+          },
         ),
       );
       return response.data!['data'];
@@ -102,6 +118,16 @@ class ChatApi {
       }
       final data = error.response?.data;
       final failure = data is Map ? data['error'] : null;
+      if (status == 426 &&
+          failure is Map &&
+          failure['code'] == 'UPGRADE_REQUIRED') {
+        onUpgradeRequired?.call();
+        throw const ChatFailure(
+          'UPGRADE_REQUIRED',
+          'This version of Hiyall is no longer supported. Update to keep going.',
+          426,
+        );
+      }
       throw ChatFailure(
         failure is Map ? '${failure['code']}' : 'NETWORK',
         failure is Map

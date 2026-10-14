@@ -5,6 +5,7 @@
 
 import 'api/blob.dart';
 import 'api/e2ee.dart';
+import 'api/seal.dart';
 
 import 'dart:async';
 import 'dart:convert';
