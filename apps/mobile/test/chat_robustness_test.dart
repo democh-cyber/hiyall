@@ -25,6 +25,13 @@ class Api extends RelayApi {
   final unknown = <String>{};
   Object? failRevoke;
 
+  /// What the relay's `removed` list holds for this account (removals by another session).
+  final removed = <Map<String, dynamic>>[];
+  @override
+  Future<List<Map<String, dynamic>>> removedDevices() async => [
+    for (final r in removed) {...r},
+  ];
+
   @override
   Future<int> uploadKeys(
     String deviceId,
@@ -64,6 +71,8 @@ class Api extends RelayApi {
     final failure = failRevoke;
     if (failure != null) throw failure;
     revoked.add(deviceId);
+    // A removed device is no longer on the relay's list.
+    relay.devices[user]?.remove(deviceId);
   }
 
   @override
@@ -1159,7 +1168,12 @@ void main() {
             Api(relay, meId),
             MemoryChatStore(),
           );
-          expect(second.ownDeviceNotices, isEmpty);
+          // Never announced as an "added" device; it does find the first one and asks the person to review
+          // (nothing is pinned silently on a phone that knew nothing of the account).
+          expect(second.ownDeviceNotices.map((n) => n.kind), [
+            DeviceNoticeKind.review,
+          ]);
+          expect(second.ownDeviceNotices.single.deviceId, isEmpty);
         },
       );
     });

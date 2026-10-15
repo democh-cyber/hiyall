@@ -31,6 +31,12 @@ class ChatBlobCache {
   final int maxBytes;
   ChatBlobCache(this.root, {this.maxBytes = 200 * 1024 * 1024});
 
+  bool _closed = false;
+
+  /// After this nothing is written any more ([put] and [adopt] throw): the account that owns the cache is
+  /// being wiped, and a download that finishes late must not put its file back.
+  void close() => _closed = true;
+
   File _file(String key) {
     // Keys are digests; this is the check before one becomes part of a path.
     if (!_keyShape.hasMatch(key)) throw ArgumentError('not a cache key');
@@ -53,6 +59,7 @@ class ChatBlobCache {
 
   /// Stores ciphertext the caller has already verified.
   Future<void> put(String key, Uint8List bytes) async {
+    if (_closed) throw StateError('the photo cache is closed');
     await root.create(recursive: true);
     final file = _file(key);
     final temp = File('${file.path}.part');
@@ -63,6 +70,7 @@ class ChatBlobCache {
 
   /// Takes over a file already on disk (an upload's ciphertext) without copying.
   Future<void> adopt(String key, File source) async {
+    if (_closed) throw StateError('the photo cache is closed');
     await root.create(recursive: true);
     final file = _file(key);
     try {

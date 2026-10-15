@@ -100,10 +100,17 @@ impl OlmAccount {
         self.account.sign(message.as_bytes()).to_base64()
     }
 
-    /// Generates keys and returns every unpublished one-time key.
+    /// Makes sure `count` (at most 50) one-time keys are waiting to be published, generating only the
+    /// shortfall, and returns every unpublished one-time key. Keys left by an upload that failed are
+    /// therefore reused, never added to: the unpublished set stays as small as the biggest `count` asked
+    /// for, so a retry can never exceed the 50 keys the relay takes per request. `count: 0` makes none.
     #[frb(sync)]
     pub fn generate_one_time_keys(&mut self, count: u32) -> Vec<PublicKeyEntry> {
-        self.account.generate_one_time_keys(count.min(50) as usize);
+        let wanted = count.min(50) as usize;
+        let pending = self.account.one_time_keys().len();
+        if wanted > pending {
+            self.account.generate_one_time_keys(wanted - pending);
+        }
         let mut keys: Vec<PublicKeyEntry> = self
             .account
             .one_time_keys()
@@ -322,6 +329,31 @@ mod tests {
         bob.mark_keys_as_published();
         assert_eq!(bob.generate_one_time_keys(0).len(), 0);
         assert!(bob.generate_fallback_key().is_some());
+    }
+
+    /// Re-audit CHAT-1: the unpublished one-time keys stay bounded however many times keys are asked for
+    /// without publishing (an upload that keeps failing), so a retry never has more than the relay's
+    /// 50 per request. Before this, every call added `count` more and the pending set grew without bound.
+    #[test]
+    fn unpublished_one_time_keys_stay_bounded() {
+        let mut account = OlmAccount::create();
+        for _ in 0..8 {
+            assert_eq!(account.generate_one_time_keys(40).len(), 40);
+        }
+        // Asking for more raises the set to that many, to at most 50, never beyond.
+        assert_eq!(account.generate_one_time_keys(500).len(), 50);
+        assert_eq!(account.generate_one_time_keys(500).len(), 50);
+        // Fewer asked for than are waiting: all waiting ones come back (the caller takes what it needs).
+        let waiting = account.generate_one_time_keys(0);
+        assert_eq!(waiting.len(), 50);
+        // The same keys on every call, so a retry offers exactly what the failed attempt offered.
+        let ids = |keys: &[PublicKeyEntry]| keys.iter().map(|k| k.key_id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&waiting), ids(&account.generate_one_time_keys(50)));
+        // Publishing empties the set; the next request makes exactly what it asks for.
+        account.mark_keys_as_published();
+        assert!(account.generate_one_time_keys(0).is_empty());
+        assert_eq!(account.generate_one_time_keys(7).len(), 7);
+        assert_eq!(account.generate_one_time_keys(7).len(), 7);
     }
 
     #[test]

@@ -59,8 +59,20 @@ class RelayApi extends ChatApi {
     List<Map<String, String>> oneTimeKeys,
     Map<String, String>? fallbackKey,
   ) async {
-    (relay.keys[user] ??= {})[deviceId] = [...oneTimeKeys];
-    return oneTimeKeys.length;
+    // As the relay does: at most 50 keys a request and 100 held, merged by key id.
+    if (oneTimeKeys.length > 50) {
+      throw const ChatFailure('VALIDATION', 'send at most 50 keys', 422);
+    }
+    final held = (relay.keys[user] ??= {})[deviceId] ??= [];
+    for (final k in oneTimeKeys) {
+      if (held.every((h) => h['keyId'] != k['keyId'])) {
+        if (held.length >= 100) {
+          throw const ChatFailure('VALIDATION', 'at most 100 keys', 422);
+        }
+        held.add(k);
+      }
+    }
+    return held.length;
   }
 
   @override
@@ -131,6 +143,7 @@ class RelayApi extends ChatApi {
         'senderIdentityKey': senderIdentity,
         'type': e['type'],
         'ciphertext': e['ciphertext'],
+        if (aux) 'aux': true,
         'createdAt': at.toIso8601String(),
       });
     }

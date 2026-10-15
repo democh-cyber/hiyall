@@ -35,6 +35,19 @@ class ChatLocalData {
   static const markerName = 'chat_install_marker';
   static const folders = ['chat_blobs', 'chat_outbox', 'chat_state'];
 
+  static final _drains = <String, Future<void> Function()>{};
+
+  /// A running engine of [userId] registers how to stop it (see [ChatEngine.dispose]), so that a wipe of that
+  /// account, whoever starts it, first stops the engine and waits for the work it had in flight: nothing it
+  /// was doing can write a file or an entry back afterwards.
+  static void registerDrain(String userId, Future<void> Function() drain) =>
+      _drains[userId] = drain;
+
+  /// Forgets a registration, if it is still [drain] (not another engine's).
+  static void unregisterDrain(String userId, Future<void> Function() drain) {
+    if (_drains[userId] == drain) _drains.remove(userId);
+  }
+
   /// Records the device id of [userId] to remove on the server later.
   static Future<void> rememberRevoke(
     ChatStore store,
@@ -58,6 +71,15 @@ class ChatLocalData {
     required String userId,
     Future<void> Function(String deviceId)? revoke,
   }) async {
+    // Stop the account's engine first and wait for what it was doing (a poll, a send, an upload).
+    final drain = _drains.remove(userId);
+    if (drain != null) {
+      try {
+        await drain();
+      } catch (_) {
+        // Whatever could not be waited for can no longer write.
+      }
+    }
     final deviceId = await store.read('${prefix(userId)}deviceId');
     if (deviceId != null) {
       var removed = false;
