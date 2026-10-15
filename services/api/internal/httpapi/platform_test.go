@@ -246,7 +246,7 @@ func TestPhotoCompletionHasItsOwnDeadlineAndLimiter(t *testing.T) {
 			t.Errorf("%s %s: %v, want %v", tc.method, tc.path, got, tc.want)
 		}
 	}
-	if media.MaxPixels != 20_000_000 {
+	if media.MaxPixels != 12_000_000 {
 		t.Fatalf("MaxPixels = %d", media.MaxPixels)
 	}
 	h := newSocialHarness(t)

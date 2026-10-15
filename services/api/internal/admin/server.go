@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
 
+	"hiyall/services/api/internal/clientip"
 	"hiyall/services/api/internal/domain"
 	"hiyall/services/api/internal/logscrub"
 )
@@ -38,6 +39,8 @@ type Server struct {
 
 	limitMu  sync.Mutex
 	limiters map[string]*rate.Limiter
+	// ips resolves the client address behind the trusted proxies (ADMIN_TRUSTED_PROXY_CIDRS).
+	ips *clientip.Resolver
 }
 
 // Route describes one JSON route and the lowest role that may call it. Public routes need no session.
@@ -62,6 +65,9 @@ const (
 // NewServer wires the routes. The static directory may be missing; the API still works and the root says why.
 func NewServer(svc *Service, cfg Config) *Server {
 	s := &Server{svc: svc, cfg: cfg, mux: http.NewServeMux(), limiters: map[string]*rate.Limiter{}}
+	if cfg.TrustProxy {
+		s.ips = clientip.New(cfg.TrustedProxies, cfg.ClientIPHeader)
+	}
 	s.routeAPI()
 	return s
 }
@@ -129,13 +135,13 @@ func lastForwarded(v string) string {
 	return strings.TrimSpace(parts[len(parts)-1])
 }
 
-// clientIP is the direct peer, or, behind the trusted proxy, the last X-Forwarded-For entry: the one the
-// proxy itself appended. Earlier entries are whatever the client claimed.
+// clientIP is the direct peer, or, behind trusted proxies (ADMIN_TRUST_PROXY=true with
+// ADMIN_TRUSTED_PROXY_CIDRS), the address clientip finds: the proxy's single-address header, else the rightmost
+// X-Forwarded-For hop that is not one of the proxies. Forwarded headers from any other peer are ignored, so
+// nobody can choose the address their lockout and audit entries are recorded under.
 func (s *Server) clientIP(r *http.Request) string {
-	if s.cfg.TrustProxy {
-		if ip := net.ParseIP(lastForwarded(r.Header.Get("X-Forwarded-For"))); ip != nil {
-			return ip.String()
-		}
+	if s.ips != nil {
+		return s.ips.ClientIP(r)
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

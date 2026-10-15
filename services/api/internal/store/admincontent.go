@@ -204,12 +204,14 @@ func (s *Store) HeldCaseKey(ctx context.Context, caseID string) (mediaID, key st
 // ErrCaseClosed is answered when a content case does not allow the requested step.
 var ErrCaseClosed = &domain.PolicyError{Status: 409, Code: "CASE_STATE", Message: "This case is not in a state that allows that"}
 
-// ContentCaseStep moves a quarantine case: confirm and clear need an open case, reported needs an open or
-// confirmed one and a report reference (the NCMEC CyberTipline number or the authority's reference).
-// legalHold, when not nil, sets the legal hold flag (which keeps the evidence past hold_until). hook runs in
-// the same transaction, where the console writes its audit entry.
+// ContentCaseStep moves a quarantine case: confirm needs an open case, reported needs an open or confirmed one
+// and a report reference (the NCMEC CyberTipline number or the authority's reference). A case is cleared only
+// by a proposal a second administrator approves (ProposeEvidenceStep), so Action "clear" is refused here.
+// legalHold, when not nil, can only be true: a legal hold is lifted by the same two-person route, and a
+// reported or confirmed case always carries one. hook runs in the same transaction, where the console writes
+// its audit entry.
 type ContentCaseStep struct {
-	Action          string // confirm, clear or reported
+	Action          string // confirm or reported
 	Operator        string
 	Note            string
 	ReportReference string
@@ -217,6 +219,14 @@ type ContentCaseStep struct {
 }
 
 func (s *Store) ResolveContentCase(ctx context.Context, caseID string, step ContentCaseStep, hook ModerationHook) error {
+	// Clearing a case and lifting a legal hold are two-person decisions (evidenceapprovals.go): neither can
+	// happen through a plain resolution, whatever the case looks like.
+	if step.Action == "clear" {
+		return ErrApprovalRequired
+	}
+	if step.LegalHold != nil && !*step.LegalHold {
+		return ErrLegalHoldLiftRequiresApproval
+	}
 	return s.inTx(ctx, func(tx pgx.Tx) error {
 		var status, user string
 		if err := tx.QueryRow(ctx, `SELECT status,user_id::text FROM content_cases WHERE case_id=$1 FOR UPDATE`, caseID).Scan(&status, &user); err != nil {
@@ -226,8 +236,6 @@ func (s *Store) ResolveContentCase(ctx context.Context, caseID string, step Cont
 		switch {
 		case step.Action == "confirm" && status == "open":
 			next = "confirmed"
-		case step.Action == "clear" && status == "open":
-			next = "cleared"
 		case step.Action == "reported" && (status == "open" || status == "confirmed") && step.ReportReference != "":
 			next = "reported"
 		default:
@@ -248,7 +256,7 @@ func (s *Store) ResolveContentCase(ctx context.Context, caseID string, step Cont
 	})
 }
 
-// ErrHoldBlocked is 409 HOLD_BLOCKED: the hold may not be released. The code names the reason.
+// errHoldBlocked is 409 HOLD_<blocker>: the hold may not be released. The code names the reason.
 func errHoldBlocked(blocker string) error {
 	messages := map[string]string{
 		"CASE_OPEN":       "Resolve the case before releasing its hold",
@@ -261,34 +269,3 @@ func errHoldBlocked(blocker string) error {
 
 // ErrHoldReleased is answered for a hold already released.
 var ErrHoldReleased = &domain.PolicyError{Status: 409, Code: "HOLD_ALREADY_RELEASED", Message: "This hold was already released"}
-
-// ReleaseHold marks the case's hold released. Allowed only when hold_release_blocker says nothing stands in the
-// way: the case is not open, there is no legal hold, no open member report or other open case is about the same
-// uploader. It deletes nothing: PurgeReleasedHolds removes the objects once hold_until has passed. hook runs in
-// the same transaction, where the console writes its audit entry.
-func (s *Store) ReleaseHold(ctx context.Context, caseID, operator, reason string, hook ModerationHook) error {
-	return s.inTx(ctx, func(tx pgx.Tx) error {
-		var user string
-		var released *time.Time
-		if err := tx.QueryRow(ctx, `SELECT user_id::text,released_at FROM content_cases WHERE case_id=$1 FOR UPDATE`, caseID).Scan(&user, &released); err != nil {
-			return mapped(err)
-		}
-		if released != nil {
-			return ErrHoldReleased
-		}
-		var blocker *string
-		if err := tx.QueryRow(ctx, `SELECT hold_release_blocker($1)`, caseID).Scan(&blocker); err != nil {
-			return err
-		}
-		if blocker != nil {
-			return errHoldBlocked(*blocker)
-		}
-		if _, err := tx.Exec(ctx, `UPDATE content_cases SET released_at=now(),released_by=$2,release_reason=$3 WHERE case_id=$1`, caseID, operator, reason); err != nil {
-			return err
-		}
-		if hook != nil {
-			return hook(ctx, tx, user)
-		}
-		return nil
-	})
-}

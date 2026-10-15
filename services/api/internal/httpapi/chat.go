@@ -82,14 +82,31 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 			return true
 		}
 		items, err := a.Store.MyDevices(ctx, p.UserID)
-		respond(map[string]any{"items": items}, err)
+		if err != nil {
+			a.error(w, r, err)
+			return true
+		}
+		// removed: devices of this account that another session took out in the last 30 days, so a device
+		// that missed the realtime signal still learns of it (re-audit CHAT-2).
+		removed, err := a.Store.RemovedDevices(ctx, p.UserID)
+		respond(map[string]any{"items": items, "removed": removed}, err)
 	case n == 3 && parts[1] == "devices" && isID(parts[2]) && method == "DELETE":
 		if limited(a.chatDevices) {
 			return true
 		}
-		err := a.Store.RevokeDevice(ctx, p.UserID, parts[2])
+		byOther, err := a.Store.RevokeDevice(ctx, p.UserID, parts[2], sessionIDOrEmpty(p.SessionID))
 		if err == nil {
-			a.signal(ctx, "device", map[string]string{"deviceId": parts[2], "change": "revoked"}, p.UserID)
+			by := "self"
+			if byOther {
+				by = "other"
+			}
+			a.signal(ctx, "device", map[string]string{"deviceId": parts[2], "change": "revoked", "by": by}, p.UserID)
+			if byOther {
+				// A removal by a session that is not the device's own (another phone, or a stolen credential)
+				// is a security notice too: content-free, to the account's remaining devices, never
+				// silenced by a live socket (an attacker can hold one open) or the chat caps.
+				a.wake(push.Notice{Kind: "device-revoked", Actor: p.UserID, Recipient: p.UserID, Device: parts[2]})
+			}
 		}
 		respond(map[string]bool{"revoked": true}, err)
 	case n == 4 && parts[1] == "devices" && isID(parts[2]) && parts[3] == "keys":
@@ -292,4 +309,12 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		return false
 	}
 	return true
+}
+
+// sessionIDOrEmpty is the session id when it is a canonical id, otherwise "" (an unknown session).
+func sessionIDOrEmpty(id string) string {
+	if isID(id) {
+		return id
+	}
+	return ""
 }

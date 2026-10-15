@@ -3,6 +3,7 @@ import { Link, NavLink, Route, Routes } from 'react-router'
 import { AuthProvider, useAuth } from './auth'
 import type { Role } from './api'
 import { Account } from './pages/Account'
+import { Approvals } from './pages/Approvals'
 import { Audit } from './pages/Audit'
 import { Case } from './pages/Case'
 import { ContentCases } from './pages/ContentCases'
@@ -48,6 +49,7 @@ function Shell() {
         <nav aria-label="Main">
           <NavLink to="/" end>Reports</NavLink>
           {op.role !== 'viewer' && <NavLink to="/content">Quarantine</NavLink>}
+          {op.role === 'admin' && <NavLink to="/approvals">Approvals</NavLink>}
           {op.role === 'admin' && <NavLink to="/audit">Audit log</NavLink>}
           {op.role === 'admin' && <NavLink to="/operators">Operators</NavLink>}
           <NavLink to="/account">Account</NavLink>
@@ -62,6 +64,7 @@ function Shell() {
           <Route path="/users/:id" element={<User />} />
           <Route path="/content" element={<MinRole min="moderator"><ContentCases /></MinRole>} />
           <Route path="/content/:id" element={<MinRole min="moderator"><ContentCaseView /></MinRole>} />
+          <Route path="/approvals" element={<Guard role="admin"><Approvals /></Guard>} />
           <Route path="/audit" element={<Guard role="admin"><Audit /></Guard>} />
           <Route path="/operators" element={<Guard role="admin"><Operators /></Guard>} />
           <Route path="/account" element={<Account />} />

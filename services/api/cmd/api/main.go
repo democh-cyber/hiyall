@@ -56,6 +56,9 @@ func run() error {
 		return errors.New("database connection failed; check configuration without logging credentials")
 	}
 	defer db.Pool.Close()
+	if err = enforceDBRole(ctx, db, cfg.Env); err != nil {
+		return err
+	}
 	if !cfg.AgeBandIsolation {
 		slog.Warn("age-band isolation is OFF: minors and adults can see and reach each other (AGE_BAND_ISOLATION=false)")
 	}
@@ -100,7 +103,11 @@ func run() error {
 	if cfg.SentryDSN != "" {
 		// Panics and unexpected 500s go to Sentry with a scrubbed message, the route pattern and the request id;
 		// never the URL, headers or body (internal/errreport). Unset SENTRY_DSN: errors are only logged.
-		reporter, err := errreport.New(errreport.Options{DSN: cfg.SentryDSN, Environment: cfg.SentryEnvironment, Release: cfg.SentryRelease})
+		release := cfg.SentryRelease
+		if release == "" && buildinfo.Version != "dev" {
+			release = buildinfo.Version // stamped into the image by the release build (SENTRY_RELEASE overrides it)
+		}
+		reporter, err := errreport.New(errreport.Options{DSN: cfg.SentryDSN, Environment: cfg.SentryEnvironment, Release: release})
 		if err != nil {
 			return errors.New("SENTRY_DSN is not a valid DSN")
 		}
@@ -155,6 +162,10 @@ func run() error {
 	} else {
 		slog.Warn("media storage not configured; photo uploads are off")
 	}
+	heldObjects, err := wireSafety(ctx, cfg, api)
+	if err != nil {
+		return err
+	}
 	if cfg.ChatMediaEndpoint != "" {
 		// A token scoped to the one chat bucket cannot create buckets, so it is never asked to.
 		objects, err := media.NewS3(ctx, media.S3Config{Endpoint: cfg.ChatMediaEndpoint, AccessKey: cfg.ChatMediaAccessKey, SecretKey: cfg.ChatMediaSecretKey, Bucket: cfg.ChatMediaBucket, Region: cfg.ChatMediaRegion, Secure: cfg.ChatMediaSecure, NoCreate: true})
@@ -193,7 +204,7 @@ func run() error {
 	maintenanceDone := make(chan struct{})
 	go func() {
 		defer close(maintenanceDone)
-		maintain(background, maintDB, api.Media, api.ChatMedia, identities)
+		maintain(background, maintDB, api.Media, heldObjects, api.ChatMedia, identities)
 	}()
 	defer func() {
 		stopBackground()
@@ -272,9 +283,14 @@ func logClientIPMode(cfg config.Config) {
 		slog.Info("client address: trusted proxies, header", "trustedProxies", len(cfg.TrustedProxies), "header", cfg.ClientIPHeader)
 	case cfg.ClientIPResolver().Enabled():
 		slog.Info("client address: trusted proxies, rightmost untrusted X-Forwarded-For hop", "trustedProxies", len(cfg.TrustedProxies))
+	case cfg.DirectListener:
+		slog.Info("client address: direct peer (DIRECT_LISTENER=true: no proxy in front, forwarding headers are ignored)")
 	default:
 		slog.Info("client address: direct peer (TRUSTED_PROXY_CIDRS unset; behind a proxy every client shares one rate-limit bucket)")
 	}
+	// A start cannot see the proxy: the peer is only known when traffic arrives. Say so, and where it will show.
+	slog.Info("client address self-test: the observed peer is unknown until the first request; it is logged then (\"client address: first request\"), and a forwarding header from an untrusted peer warns once a minute and counts in hiyall_untrusted_forwarding_total",
+		"debugLogPeer", cfg.DebugLogPeer, "hint", "set DEBUG_LOG_PEER=true temporarily to log the peer and forwarding headers of the first 20 requests")
 }
 
 // backoff waits 1s, 2s, 4s … up to 30s, with jitter, between bus reconnects.
@@ -282,6 +298,12 @@ func backoff(attempt int) time.Duration {
 	delay := min(time.Second<<min(attempt, 5), 30*time.Second)
 	return delay/2 + time.Duration(rand.Int64N(int64(delay/2)+1))
 }
+
+// jobOption changes how maintenanceJobs builds the list.
+type jobOption struct{ held media.Store }
+
+// onlyHeldObjects limits the released-hold cleanup to held (nil: the API never deletes held evidence).
+func onlyHeldObjects(held media.Store) jobOption { return jobOption{held: held} }
 
 // maintain runs hourly cleanup in small batches so it never holds long locks:
 // delivered envelope rows after 7 days, undelivered ciphertext after 30,
@@ -291,7 +313,21 @@ func backoff(attempt int) time.Duration {
 // (they stop counting as shared after 24 hours). Encrypted chat attachments are removed from the chat
 // bucket 30 days after their message (an hour when never sent), and when deleted or their chat was blocked;
 // blobs held as report evidence are kept.
-func maintain(ctx context.Context, db *store.Store, objects, chatObjects media.Store, identities store.IdentityDeleter) {
+func maintain(ctx context.Context, db *store.Store, objects, heldObjects, chatObjects media.Store, identities store.IdentityDeleter) {
+	// Every instance runs this loop but only the one holding the advisory lock runs the jobs; the
+	// lock is given up on shutdown so another instance takes over at its next tick.
+	maintenance.Run(ctx, db.NewLeader(store.MaintenanceLockKey), maintenanceJobs(db, objects, chatObjects, identities, onlyHeldObjects(heldObjects)), time.Hour, 5000)
+}
+
+// maintenanceJobs is every hourly job (the list is also what the restricted role test runs).
+//
+// The hold cleanup deletes held evidence with objects (the media bucket) unless onlyHeldObjects says where it may
+// delete: nil when evidence has its own bucket, whose delete credential only the console holds.
+func maintenanceJobs(db *store.Store, objects, chatObjects media.Store, identities store.IdentityDeleter, opts ...jobOption) []maintenance.Job {
+	heldObjects := objects
+	for _, o := range opts {
+		heldObjects = o.held
+	}
 	// Each job gets its own context, which ends at its timeout (maintenance.Job.Timeout; ten minutes
 	// unless set), and runs on db: the maintenance pool, whose statement timeout is longer than a request's.
 	type job struct {
@@ -325,12 +361,15 @@ func maintain(ctx context.Context, db *store.Store, objects, chatObjects media.S
 			return db.PurgeMedia(ctx, objects, 5000)
 		}, 20 * time.Minute},
 		// Held evidence (quarantined uploads) whose hold an administrator released and whose retention window is over.
+		// Only with evidence kept in the media bucket (EVIDENCE_ALLOW_SHARED_BUCKET, development): the API's token
+		// there can delete. With an evidence bucket the API cannot, and the console's `admin purge-holds` does it.
 		{"released hold cleanup", func(ctx context.Context) (int64, error) {
-			if objects == nil {
+			if heldObjects == nil {
 				return 0, nil
 			}
-			return db.PurgeReleasedHolds(ctx, objects, 50)
+			return db.PurgeReleasedHolds(ctx, heldObjects, 50)
 		}, 20 * time.Minute},
+		{"nearby probe purge", func(ctx context.Context) (int64, error) { return db.PurgeNearbyProbes(ctx, 3, 5000) }, 0},
 		{"chat blob cleanup", func(ctx context.Context) (int64, error) {
 			if chatObjects == nil {
 				return 0, nil
@@ -344,12 +383,9 @@ func maintain(ctx context.Context, db *store.Store, objects, chatObjects media.S
 		{"deleted identity purge", func(ctx context.Context) (int64, error) { return db.PurgeDeletedIdentities(ctx, 24*time.Hour, 5000) }, 0},
 		{"rate limit purge", func(ctx context.Context) (int64, error) { return ratelimit.Purge(ctx, db.Pool, 5000) }, 0},
 	}
-	// Every instance runs this loop but only the one holding the advisory lock runs the jobs; the
-	// lock is given up on shutdown so another instance takes over at its next tick.
 	list := make([]maintenance.Job, len(jobs))
 	for i, j := range jobs {
 		list[i] = maintenance.Job{Name: j.name, Run: j.run, Timeout: j.timeout}
 	}
-	list = append(list, retentionJobs(db)...)
-	maintenance.Run(ctx, db.NewLeader(store.MaintenanceLockKey), list, time.Hour, 5000)
+	return append(list, retentionJobs(db)...)
 }

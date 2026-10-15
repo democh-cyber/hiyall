@@ -1,6 +1,9 @@
 package domain
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"math"
 	"time"
@@ -35,6 +38,7 @@ var dailyLimitErrors = map[string]*PolicyError{
 	DailyProfileViews:    {429, "DAILY_LIMIT", "You’ve opened a lot of profiles today. Try again tomorrow."},
 	DailyNearbyQueries:   {429, "DAILY_LIMIT", "You’ve looked at Nearby a lot today. Try again tomorrow."},
 	DailyLocationChanges: {429, "DAILY_LIMIT", "Your Nearby area has changed a lot today. Try again tomorrow."},
+	DailyNearbyCentres:   {429, "DAILY_LIMIT", "You’ve looked at Nearby from a lot of places today. Try again tomorrow."},
 }
 
 // DailyLimitError is the refusal for kind, lifting after wait.
@@ -107,19 +111,35 @@ func ValidateMinorPrivacyPatch(patch map[string]json.RawMessage) error {
 
 // Nearby location hardening.
 const (
-	// NearbyOffsetKm and MinorNearbyOffsetKm are the radius of the per-member daily random offset added to
-	// a shared point before it is rounded and stored. It changes every UTC day, so the stored point is
-	// not the member's grid cell and an attacker who narrows it down learns only that day's offset point.
+	// NearbyOffsetKm and MinorNearbyOffsetKm are the radius of the per-member offset added to a shared
+	// point before it is rounded and stored. The offset is STABLE: it is derived from the member's id and a
+	// server secret (StableOffset), so every update of the same member moves by the same vector. Averaging
+	// many days of searches therefore converges on the stored point (the rounded true position plus the
+	// secret offset) and no further: the sub-cell position and the offset itself stay hidden, which a daily
+	// random offset could not promise (it averages out). The stored point is still a real, rounded cell:
+	// anyone who finds it knows the member is within the offset radius plus a cell of it.
 	NearbyOffsetKm      = 2.0
 	MinorNearbyOffsetKm = 5.0
 	// MaxTravelKmh is the fastest a member's shared point may move between two writes. JumpToleranceKm
-	// absorbs the grid and the offset (which changes daily).
+	// absorbs the grid and the offset.
 	MaxTravelKmh    = 1000.0
 	JumpToleranceKm = 30.0
 )
 
 // Offset is a displacement on the ground, in km.
 type Offset struct{ NorthKm, EastKm float64 }
+
+// StableOffset is the member's fixed displacement: a point uniformly distributed in a disc of radiusKm,
+// derived as HMAC-SHA256(key, user id). The same key and member always give the same offset, a different
+// member (or key) an unrelated one, and without the key the offset cannot be predicted or removed.
+func StableOffset(key []byte, userID string, radiusKm float64) Offset {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("nearby-offset\x00" + userID))
+	sum := mac.Sum(nil)
+	u := float64(binary.BigEndian.Uint64(sum[:8])>>11) / (1 << 53)
+	v := float64(binary.BigEndian.Uint64(sum[8:16])>>11) / (1 << 53)
+	return RandomOffset(radiusKm, u, v)
+}
 
 // RandomOffset is a point uniformly distributed in a disc of radiusKm, from two uniform values in [0,1).
 func RandomOffset(radiusKm, u, v float64) Offset {
@@ -147,7 +167,8 @@ func (l Location) Shift(o Offset) Location {
 }
 
 // ImplausibleJump reports whether moving from prev to next in elapsed is faster than MaxTravelKmh,
-// after allowing JumpToleranceKm for the grid and the offset.
+// after allowing JumpToleranceKm for the grid and the offset (a stable offset cancels out between two
+// writes of one member).
 func ImplausibleJump(prev, next Location, elapsed time.Duration) bool {
 	km := HaversineKm(prev, next) - JumpToleranceKm
 	if km <= 0 {

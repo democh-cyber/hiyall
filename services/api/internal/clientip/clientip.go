@@ -16,22 +16,65 @@ package clientip
 
 import (
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"hiyall/services/api/internal/metrics"
 )
+
+// untrustedForwarding counts requests that carry a forwarding header (X-Forwarded-For, Forwarded, the
+// configured CLIENT_IP_HEADER, or the well-known single-address headers) from a peer that is NOT a trusted
+// proxy. Behind a real proxy with a wrong TRUSTED_PROXY_CIDRS this is every request: all clients then
+// share the proxy's rate-limit bucket. A direct listener sees the odd client that sends the header itself.
+var untrustedForwarding = metrics.NewCounter("hiyall_untrusted_forwarding_total", "Requests with a forwarding header from a peer that is not a trusted proxy (a wrong TRUSTED_PROXY_CIDRS looks like this).")
+
+// WarnEvery is how often the untrusted-forwarding warning is logged: once a minute, however many requests.
+const WarnEvery = time.Minute
+
+// DebugRequests is how many requests DEBUG_LOG_PEER logs before it stops.
+const DebugRequests = 20
+
+// forwardingHeaders are looked for besides the configured header, to notice a proxy in front.
+var forwardingHeaders = []string{"X-Forwarded-For", "Forwarded", "X-Real-Ip", "Fly-Client-Ip", "Cf-Connecting-Ip", "True-Client-Ip"}
 
 // Resolver picks the client address for a request. The zero value (and nil) trusts nobody and always
 // answers the direct peer.
 type Resolver struct {
 	trusted []netip.Prefix
 	header  string
+	diag    *diagnostics
+}
+
+// diagnostics is the state of the operator-facing log lines (shared by copies of a Resolver).
+type diagnostics struct {
+	debug     bool
+	debugLeft atomic.Int32
+	first     sync.Once
+	lastWarn  atomic.Int64 // unix nanoseconds of the last warning
+	now       func() time.Time
 }
 
 // New builds a resolver. header may be empty.
 func New(trusted []netip.Prefix, header string) *Resolver {
-	return &Resolver{trusted: append([]netip.Prefix(nil), trusted...), header: http.CanonicalHeaderKey(strings.TrimSpace(header))}
+	d := &diagnostics{now: time.Now}
+	return &Resolver{trusted: append([]netip.Prefix(nil), trusted...), header: http.CanonicalHeaderKey(strings.TrimSpace(header)), diag: d}
+}
+
+// WithDebug turns DEBUG_LOG_PEER on: the peer and the forwarding headers of the first DebugRequests requests
+// are logged, so an operator can read the proxy's address from the log and set TRUSTED_PROXY_CIDRS. It is a
+// temporary aid, not a setting to leave on. It returns r.
+func (r *Resolver) WithDebug(on bool) *Resolver {
+	if r != nil && r.diag != nil {
+		r.diag.debug = on
+		r.diag.debugLeft.Store(DebugRequests)
+	}
+	return r
 }
 
 // ParseCIDRs reads a comma-separated list of CIDR blocks; a bare address is a single-host block.
@@ -89,6 +132,12 @@ func (r *Resolver) ClientIP(req *http.Request) string {
 	if !ok {
 		return req.RemoteAddr
 	}
+	client := r.resolve(req, peer)
+	r.observe(req, peer, client)
+	return client
+}
+
+func (r *Resolver) resolve(req *http.Request, peer netip.Addr) string {
 	if !r.Trusted(peer) {
 		return peer.String()
 	}
@@ -142,4 +191,57 @@ func parseHop(s string) (netip.Addr, bool) {
 		return ap.Addr().Unmap(), true
 	}
 	return netip.Addr{}, false
+}
+
+// forwarded lists which forwarding headers the request carries (names only, never values).
+func (r *Resolver) forwarded(req *http.Request) []string {
+	var names []string
+	seen := map[string]bool{}
+	add := func(name string) {
+		name = http.CanonicalHeaderKey(name)
+		if name != "" && !seen[name] && len(req.Header.Values(name)) > 0 {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	if r != nil {
+		add(r.header)
+	}
+	for _, h := range forwardingHeaders {
+		add(h)
+	}
+	return names
+}
+
+// observe writes the operator-facing diagnostics for one request: the first request after start (peer and
+// resolved client), a warning at most once a minute when forwarding headers arrive from an untrusted peer,
+// and, with DEBUG_LOG_PEER, the peer and forwarding header names and values of the first requests. Header
+// values are only ever logged under DEBUG_LOG_PEER and are limited to the forwarding headers.
+func (r *Resolver) observe(req *http.Request, peer netip.Addr, client string) {
+	if r == nil || r.diag == nil {
+		return
+	}
+	d := r.diag
+	trusted := r.Trusted(peer)
+	names := r.forwarded(req)
+	d.first.Do(func() {
+		slog.Info("client address: first request", "peer", peer.String(), "peerTrusted", trusted, "client", client, "forwardingHeaders", names,
+			"hint", "if peerTrusted is false and forwardingHeaders is not empty, add the peer to TRUSTED_PROXY_CIDRS")
+	})
+	if !trusted && len(names) > 0 {
+		untrustedForwarding.Inc()
+		now := d.now().UnixNano()
+		last := d.lastWarn.Load()
+		if (last == 0 || now-last >= int64(WarnEvery)) && d.lastWarn.CompareAndSwap(last, now) {
+			slog.Warn("forwarding header from a peer that is not a trusted proxy: the header is ignored and the peer is used as the client; behind a proxy this puts every client in one rate-limit bucket (set TRUSTED_PROXY_CIDRS to the proxy's addresses)",
+				"peer", peer.String(), "forwardingHeaders", names)
+		}
+	}
+	if d.debug && d.debugLeft.Add(-1) >= 0 {
+		values := map[string][]string{}
+		for _, n := range names {
+			values[n] = req.Header.Values(n)
+		}
+		slog.Info("DEBUG_LOG_PEER", "peer", peer.String(), "peerTrusted", trusted, "client", client, "headers", values)
+	}
 }

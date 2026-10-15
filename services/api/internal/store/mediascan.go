@@ -21,7 +21,13 @@ type Quarantine struct {
 	OriginalBytes           int64
 	ContentType             string
 	OriginalKey, FullKey    string // the hold/ keys the objects were written to
+	// RetentionDays is how long the evidence is held (EVIDENCE_RETENTION_DAYS); 0 means DefaultEvidenceRetentionDays.
+	RetentionDays int
 }
+
+// DefaultEvidenceRetentionDays is one year, pending counsel (audit LEGAL-2). Migration 0041 makes it the
+// column default of content_cases.hold_until too; existing cases keep the hold_until they have.
+const DefaultEvidenceRetentionDays = 365
 
 // ScannerActor is the actor recorded for what the scanner did on its own.
 const ScannerActor = "system:upload-scanner"
@@ -36,9 +42,13 @@ func (s *Store) QuarantineMedia(ctx context.Context, q Quarantine) (string, erro
 	if q.Signals == nil {
 		signals = []byte(`{}`)
 	}
+	days := q.RetentionDays
+	if days <= 0 {
+		days = DefaultEvidenceRetentionDays
+	}
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE media_assets SET status='quarantined',scan_result=$3,scanned_at=now(),attached=false,variants=NULL,upload_key=$4,expires_at=now()+interval '90 days'
- WHERE media_id=$1 AND owner_id=$2 AND status='pending'`, q.MediaID, q.Owner, q.Result, q.OriginalKey)
+		tag, err := tx.Exec(ctx, `UPDATE media_assets SET status='quarantined',scan_result=$3,scanned_at=now(),attached=false,variants=NULL,upload_key=$4,expires_at=now()+make_interval(days=>$5::int)
+ WHERE media_id=$1 AND owner_id=$2 AND status='pending'`, q.MediaID, q.Owner, q.Result, q.OriginalKey, days)
 		if err != nil {
 			return err
 		}
@@ -46,9 +56,9 @@ func (s *Store) QuarantineMedia(ctx context.Context, q Quarantine) (string, erro
 			return domain.ErrNotFound
 		}
 		suspended := q.Result == "match"
-		if _, err = tx.Exec(ctx, `INSERT INTO content_cases(case_id,media_id,user_id,purpose,result,scanner,signals,original_sha256,original_bytes,content_type,original_key,full_key,suspended_user)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,nullif($12,''),$13)`,
-			caseID, q.MediaID, q.Owner, q.Purpose, q.Result, q.Scanner, signals, q.OriginalSHA256, q.OriginalBytes, q.ContentType, q.OriginalKey, q.FullKey, suspended); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO content_cases(case_id,media_id,user_id,purpose,result,scanner,signals,original_sha256,original_bytes,content_type,original_key,full_key,suspended_user,hold_until)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,nullif($12,''),$13,now()+make_interval(days=>$14::int))`,
+			caseID, q.MediaID, q.Owner, q.Purpose, q.Result, q.Scanner, signals, q.OriginalSHA256, q.OriginalBytes, q.ContentType, q.OriginalKey, q.FullKey, suspended, days); err != nil {
 			return err
 		}
 		if !suspended {
@@ -144,4 +154,23 @@ func (s *Store) PurgeReleasedHolds(ctx context.Context, objects HeldObjects, bat
 		}
 	}
 	return done, nil
+}
+
+// RecordSignInProvider stores how the person signed in (Firebase's sign_in_provider claim, such as apple.com or
+// google.com) and whether Apple is linked to the Firebase user, on the identity row. Account deletion needs it:
+// Sign in with Apple must be revoked with a fresh authorization code (audit API-8). A write only when the value
+// changed, so a settled identity costs one cheap read-free UPDATE that touches no row.
+func (s *Store) RecordSignInProvider(ctx context.Context, issuer, subject, provider string, appleLinked bool) error {
+	_, err := s.Pool.Exec(ctx, `UPDATE auth_identities SET sign_in_provider=$3,apple_linked=$4
+ WHERE issuer=$1 AND subject=$2 AND (sign_in_provider IS DISTINCT FROM $3 OR apple_linked IS DISTINCT FROM $4)`, issuer, subject, provider, appleLinked)
+	return err
+}
+
+// HasAppleAuthorization says whether the member holds a Sign in with Apple authorization that deleting the
+// account must revoke: any of their identities signed in with apple.com or has Apple linked. Identities not
+// seen since the release have neither flag yet and count as not Apple until their next sign-in.
+func (s *Store) HasAppleAuthorization(ctx context.Context, user string) (bool, error) {
+	var has bool
+	err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM auth_identities WHERE user_id=$1 AND (sign_in_provider='apple.com' OR apple_linked))`, user).Scan(&has)
+	return has, err
 }

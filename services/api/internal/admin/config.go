@@ -4,9 +4,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
+
+	"hiyall/services/api/internal/clientip"
 )
 
 // Config is the admin console's process configuration. It is read from the environment and shares
@@ -30,12 +33,27 @@ type Config struct {
 	// TrustProxy (ADMIN_TRUST_PROXY=true) says a reverse proxy that terminates TLS and that you control
 	// is in front. The console then takes the client address from the last X-Forwarded-For entry,
 	// refuses any request that did not arrive as X-Forwarded-Proto: https, and marks cookies Secure.
-	TrustProxy      bool
-	TLSCert, TLSKey string
-	AllowedHosts    []string // ADMIN_ALLOWED_HOSTS: Host header values (without port) the console answers to
-	DataKey         []byte   // ADMIN_DATA_KEY or ADMIN_DATA_KEY_FILE: 32 random bytes, base64
-	SecureCookies   bool     // derived: cookies carry Secure and the __Host- prefix
-	TLSInFront      bool     // derived: native TLS or a trusted proxy
+	TrustProxy bool
+	// TrustedProxies (ADMIN_TRUSTED_PROXY_CIDRS) are the proxies whose X-Forwarded-For the console believes,
+	// and ClientIPHeader (ADMIN_CLIENT_IP_HEADER) an optional single-address header they set. A request from
+	// any other peer is keyed by the peer, so nobody can pick their own lockout bucket or audit address by
+	// sending a header (audit, admin clientIP). Production needs them with ADMIN_TRUST_PROXY=true.
+	TrustedProxies []netip.Prefix
+	ClientIPHeader string
+	// Evidence (ADMIN_EVIDENCE_*) is the READ-ONLY token for the evidence bucket that holds quarantined
+	// originals, apart from the media bucket. EvidenceDeleteAccessKey and EvidenceDeleteSecretKey
+	// (ADMIN_EVIDENCE_DELETE_*) are a different credential for the same bucket that may delete: only the hold
+	// purge job (admin purge-holds, or the hourly loop in serve) uses it, never a request. Without
+	// ADMIN_EVIDENCE_ENDPOINT, cases are read from the media bucket (development, or
+	// EVIDENCE_ALLOW_SHARED_BUCKET=true).
+	EvidenceEndpoint, EvidenceAccessKey, EvidenceSecretKey, EvidenceBucket, EvidenceRegion string
+	EvidenceSecure                                                                         bool
+	EvidenceDeleteAccessKey, EvidenceDeleteSecretKey                                       string
+	TLSCert, TLSKey                                                                        string
+	AllowedHosts                                                                           []string // ADMIN_ALLOWED_HOSTS: Host header values (without port) the console answers to
+	DataKey                                                                                []byte   // ADMIN_DATA_KEY or ADMIN_DATA_KEY_FILE: 32 random bytes, base64
+	SecureCookies                                                                          bool     // derived: cookies carry Secure and the __Host- prefix
+	TLSInFront                                                                             bool     // derived: native TLS or a trusted proxy
 }
 
 // LoadConfig reads and validates the configuration. getenv is os.Getenv in production.
@@ -62,13 +80,48 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if c.Env == "production" && c.MediaEndpoint != "" && !c.MediaSecure {
 		return c, errors.New("production media storage requires ADMIN_MEDIA_SECURE=true")
 	}
+	c.EvidenceEndpoint, c.EvidenceAccessKey, c.EvidenceSecretKey = getenv("ADMIN_EVIDENCE_ENDPOINT"), getenv("ADMIN_EVIDENCE_ACCESS_KEY"), getenv("ADMIN_EVIDENCE_SECRET_KEY")
+	c.EvidenceBucket, c.EvidenceRegion, c.EvidenceSecure = getenv("ADMIN_EVIDENCE_BUCKET"), getenv("ADMIN_EVIDENCE_REGION"), getenv("ADMIN_EVIDENCE_SECURE") == "true"
+	c.EvidenceDeleteAccessKey, c.EvidenceDeleteSecretKey = getenv("ADMIN_EVIDENCE_DELETE_ACCESS_KEY"), getenv("ADMIN_EVIDENCE_DELETE_SECRET_KEY")
+	if c.EvidenceBucket == "" {
+		c.EvidenceBucket = "hiyall-evidence"
+	}
+	if c.EvidenceRegion == "" {
+		c.EvidenceRegion = "us-east-1"
+	}
+	if c.EvidenceEndpoint != "" {
+		if c.EvidenceAccessKey == "" || c.EvidenceSecretKey == "" {
+			return c, errors.New("ADMIN_EVIDENCE_ACCESS_KEY and ADMIN_EVIDENCE_SECRET_KEY (a read-only token) are required with ADMIN_EVIDENCE_ENDPOINT")
+		}
+		if c.EvidenceEndpoint == c.MediaEndpoint && c.EvidenceBucket == c.MediaBucket {
+			return c, errors.New("ADMIN_EVIDENCE_BUCKET must not be the media bucket")
+		}
+		if (c.EvidenceDeleteAccessKey == "") != (c.EvidenceDeleteSecretKey == "") {
+			return c, errors.New("ADMIN_EVIDENCE_DELETE_ACCESS_KEY and ADMIN_EVIDENCE_DELETE_SECRET_KEY go together")
+		}
+		if c.EvidenceDeleteAccessKey != "" && c.EvidenceDeleteAccessKey == c.EvidenceAccessKey {
+			return c, errors.New("ADMIN_EVIDENCE_DELETE_* must be a different credential from the read-only ADMIN_EVIDENCE_ACCESS_KEY")
+		}
+		if c.Env == "production" && !c.EvidenceSecure {
+			return c, errors.New("production evidence storage requires ADMIN_EVIDENCE_SECURE=true")
+		}
+	} else if c.EvidenceAccessKey != "" || c.EvidenceDeleteAccessKey != "" || c.EvidenceSecretKey != "" || c.EvidenceDeleteSecretKey != "" {
+		return c, errors.New("ADMIN_EVIDENCE_* credentials need ADMIN_EVIDENCE_ENDPOINT")
+	}
 	if c.Addr == "" {
 		c.Addr = "127.0.0.1:8081"
 	}
 	if c.StaticDir == "" {
 		c.StaticDir = "apps/admin/dist"
 	}
-	for _, name := range []string{"ADMIN_ALLOW_REMOTE", "ADMIN_TRUST_PROXY", "ADMIN_ALLOW_SHARED_DB", "ADMIN_MEDIA_SECURE"} {
+	var err error
+	if c.TrustedProxies, err = clientip.ParseCIDRs(getenv("ADMIN_TRUSTED_PROXY_CIDRS")); err != nil {
+		return c, errors.New("ADMIN_TRUSTED_PROXY_CIDRS: " + err.Error())
+	}
+	if c.ClientIPHeader = strings.TrimSpace(getenv("ADMIN_CLIENT_IP_HEADER")); c.ClientIPHeader != "" && len(c.TrustedProxies) == 0 {
+		return c, errors.New("ADMIN_CLIENT_IP_HEADER needs ADMIN_TRUSTED_PROXY_CIDRS: the header is only believed from a trusted proxy")
+	}
+	for _, name := range []string{"ADMIN_ALLOW_REMOTE", "ADMIN_TRUST_PROXY", "ADMIN_ALLOW_SHARED_DB", "ADMIN_MEDIA_SECURE", "ADMIN_EVIDENCE_SECURE", "EVIDENCE_ALLOW_SHARED_BUCKET"} {
 		if v := getenv(name); v != "" && v != "true" && v != "false" {
 			return c, errors.New(name + " must be true or false")
 		}
@@ -83,6 +136,12 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		db, err := url.Parse(c.DatabaseURL)
 		if err != nil || db.Query().Get("sslmode") != "verify-full" {
 			return c, errors.New("production database requires sslmode=verify-full")
+		}
+		if c.TrustProxy && len(c.TrustedProxies) == 0 {
+			return c, errors.New("ADMIN_TRUST_PROXY=true needs ADMIN_TRUSTED_PROXY_CIDRS in production: without the proxy's address every operator would share one lockout bucket and one audit address")
+		}
+		if c.MediaEndpoint != "" && c.EvidenceEndpoint == "" && getenv("EVIDENCE_ALLOW_SHARED_BUCKET") != "true" {
+			return c, errors.New("production console needs ADMIN_EVIDENCE_ENDPOINT (the evidence bucket, read-only token), or EVIDENCE_ALLOW_SHARED_BUCKET=true to read quarantined photos from the media bucket")
 		}
 		if c.SharedDatabase && getenv("ADMIN_ALLOW_SHARED_DB") != "true" {
 			return c, errors.New("production console needs its own database role: set ADMIN_DATABASE_URL (the hiyall_admin role, database/roles/roles.sql), or ADMIN_ALLOW_SHARED_DB=true to accept the API's role")

@@ -79,23 +79,73 @@ func TestHashListPerceptualMatchSurvivesReencodingAndFlagsNearHashes(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The same picture, smaller and at another quality, is still a match.
+	// The same picture, smaller and at another quality, is recognised, but a perceptual hash alone is never
+	// a Match: it is Flagged (quarantine and a case, no suspension).
 	small, _ := Process(known)
 	r, err := list.Scan(context.Background(), ScanInput{Original: []byte("not the same bytes"), Full: small.Thumb})
-	if err != nil || r.Verdict != Match || r.Signals["label"] != "known-1" {
+	if err != nil || r.Verdict != Flagged || r.Signals["label"] != "known-1" || r.Signals["strength"] != "perceptual" {
 		t.Fatalf("re-encoded copy: %+v %v", r, err)
 	}
 	// Distances between the thresholds are flagged, beyond them clean.
 	for _, c := range []struct {
 		flip int
 		want Verdict
-	}{{3, Match}, {6, Flagged}, {20, Clean}} {
+	}{{0, Flagged}, {3, Flagged}, {6, Flagged}, {20, Clean}} {
 		// flip sets the number of differing bits: the low `flip` bits of the listed hash are inverted.
 		l, _ := NewHashList(writeList(t, "phash:"+hex16(hash^(1<<uint(c.flip)-1))))
 		got, _ := l.Scan(context.Background(), ScanInput{Full: known})
 		if got.Verdict != c.want {
 			t.Fatalf("flip %d bits: %s want %s (%v)", c.flip, got.Verdict, c.want, got.Signals)
 		}
+	}
+}
+
+// Whatever the distance, only an exact SHA-256 hit or a provider match reaches the verdict that suspends.
+func TestOnlyStrongMatchesAreMatches(t *testing.T) {
+	known := gradient(256, 192, 0)
+	hash, _ := PerceptualHash(known)
+	list, err := NewHashList(writeList(t, "phash:"+hex16(hash), SHA256Hex(known)+" exact"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := list.Scan(context.Background(), ScanInput{Full: known}); r.Verdict != Flagged {
+		// The exact digest is checked against the bytes handed in: the processed copy here is `known` itself.
+		if r.Verdict != Match || r.Signals["strength"] != "exact" {
+			t.Fatalf("%+v", r)
+		}
+	}
+	if r, _ := list.Scan(context.Background(), ScanInput{Original: known, Full: gradient(50, 50, 7)}); r.Verdict != Match || r.Signals["strength"] != "exact" {
+		t.Fatalf("an exact digest is a strong match: %+v", r)
+	}
+	other, _ := NewHashList(writeList(t, "phash:"+hex16(hash)))
+	if r, _ := other.Scan(context.Background(), ScanInput{Original: []byte("different bytes"), Full: known}); r.Verdict != Flagged {
+		t.Fatalf("a perceptual-only hit must not be a Match: %+v", r)
+	}
+}
+
+// Flat images make all-zero or all-one hashes; one such entry would flag a large share of ordinary photos.
+func TestHashListRejectsLowEntropyPerceptualEntries(t *testing.T) {
+	good := uint64(0x0f0f_3c3c_a5a5_c3c3) // 32 bits set
+	path := writeList(t,
+		"phash:0000000000000000 flat-black",
+		"phash:ffffffffffffffff flat-white",
+		"phash:0000000000000007 few-bits",
+		"phash:"+hex16(good)+" fine",
+		SHA256Hex([]byte("x")),
+	)
+	list, err := NewHashList(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list.Rejected() != 3 || list.Len() != 2 {
+		t.Fatalf("rejected %d, len %d (want 3 rejected, 1 phash + 1 digest)", list.Rejected(), list.Len())
+	}
+	// The rejected entries can never flag anything: a flat grey photo is clean.
+	flat := image.NewGray(image.Rect(0, 0, 64, 64))
+	var buf bytes.Buffer
+	_ = jpeg.Encode(&buf, flat, nil)
+	if r, _ := list.Scan(context.Background(), ScanInput{Full: buf.Bytes()}); r.Verdict != Clean {
+		t.Fatalf("a flat photo matched a rejected entry: %+v", r)
 	}
 }
 

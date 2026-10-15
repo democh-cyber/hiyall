@@ -14,21 +14,24 @@ import (
 
 // checkConfig is `api check-config [-release]`: it loads the environment exactly as a start does
 // (config.Load, then the same pushSender, uploadScanner, appleRevoker and Firebase deleter construction, which
-// read and parse the key files) and reports what a start would refuse, without opening the database or the
+// read and parse the key files) and reports what a start would refuse, without opening the database (unless -db) or the
 // network. It never prints a value, only the variable name and the rule.
 //
 // With -release it also applies the V1 release requirements that a start tolerates (push, error reporting, a
 // minimum client version, Apple revocation and real media buckets), because a server that starts is not
-// necessarily one that is fit to ship. Exit 0: nothing to fix (warnings may print). 1: problems. 2: usage.
+// necessarily one that is fit to ship. With -db it also connects to DATABASE_URL and checks the database role
+// and the grants of database/roles/grants.sql (dbrole.go). Exit 0: nothing to fix (warnings may print). 1: problems. 2: usage.
 // config.Load stops at its first complaint, so fix and rerun until it is clean.
 func checkConfig(args []string, stdout, stderr io.Writer) int {
-	release := false
+	release, database := false, false
 	for _, a := range args {
 		switch a {
 		case "-release", "--release":
 			release = true
+		case "-db", "--db":
+			database = true
 		default:
-			fmt.Fprintln(stderr, "usage: api check-config [-release]")
+			fmt.Fprintln(stderr, "usage: api check-config [-release] [-db]")
 			return 2
 		}
 	}
@@ -38,6 +41,11 @@ func checkConfig(args []string, stdout, stderr io.Writer) int {
 	defer slog.SetDefault(previous)
 
 	problems, warnings := reviewConfig(release)
+	if database {
+		// -db opens DATABASE_URL (read only): the role's shape and the grants of database/roles/grants.sql.
+		p, w := reviewDatabase()
+		problems, warnings = append(problems, p...), append(warnings, w...)
+	}
 	for _, w := range warnings {
 		fmt.Fprintln(stdout, "warning:", w)
 	}
@@ -93,8 +101,14 @@ func advisories(cfg config.Config) []string {
 	if cfg.AppCheckMode == appcheck.Off {
 		w = append(w, "APP_CHECK_ENFORCE=false: requests are not tied to the real app (the app does not send App Check tokens yet; see the deploy guide, App Check)")
 	}
-	if !cfg.BehindProxy {
-		w = append(w, "BEHIND_PROXY is not true: if the API is reached through a proxy, every client shares one rate-limit bucket")
+	if !cfg.BehindProxy && !cfg.DirectListener {
+		w = append(w, "neither BEHIND_PROXY=true nor DIRECT_LISTENER=true is set: if the API is reached through a proxy, every client shares one rate-limit bucket")
+	}
+	if cfg.BehindProxy && cfg.ClientIPHeader == "" {
+		w = append(w, "CLIENT_IP_HEADER is not set: the rightmost untrusted X-Forwarded-For hop is used; a proxy that sets one header (Fly-Client-IP, CF-Connecting-IP) is more robust")
+	}
+	if cfg.DebugLogPeer {
+		w = append(w, "DEBUG_LOG_PEER=true logs forwarding headers of the first requests; unset it once TRUSTED_PROXY_CIDRS is right")
 	}
 	if cfg.SentryDSN == "" {
 		w = append(w, "SENTRY_DSN is not set: panics and 500s are only logged")
@@ -126,6 +140,16 @@ func releaseProblems(cfg config.Config, sender push.Sender) []string {
 	}
 	if cfg.DevAuth {
 		add("ENABLE_DEV_AUTH must not be set for a release")
+	}
+	// How clients reach the API must be a decision, not an absence (audit API-1).
+	if !(cfg.BehindProxy && len(cfg.TrustedProxies) > 0) && !cfg.DirectListener {
+		add("set BEHIND_PROXY=true with TRUSTED_PROXY_CIDRS (and CLIENT_IP_HEADER), or DIRECT_LISTENER=true: the client address must be known to be right")
+	}
+	if cfg.DebugLogPeer {
+		add("DEBUG_LOG_PEER must be unset for a release: it is a temporary aid for finding the proxy address")
+	}
+	if cfg.MediaEndpoint != "" && !cfg.EvidenceSeparate() {
+		add("EVIDENCE_BUCKET (and its write-only token) is required: quarantined originals must not sit where the API's token can delete them")
 	}
 	if cfg.FirebaseProjectID == "" {
 		add("FIREBASE_PROJECT_ID is required: the apps sign in with Firebase")

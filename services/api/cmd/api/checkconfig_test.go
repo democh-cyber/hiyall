@@ -36,7 +36,7 @@ func productionEnv(t *testing.T) string {
 	dir := t.TempDir()
 	for _, k := range []string{"APPLE_SIGN_IN_ENABLED", "APPLE_TEAM_ID", "APPLE_KEY_ID", "APPLE_CLIENT_ID", "APPLE_PRIVATE_KEY_FILE",
 		"SCAN_PROVIDER_URL", "SCAN_PROVIDER_KEY_FILE", "SCAN_ALLOW_NONE", "APP_CHECK_ENFORCE", "WEB_ORIGIN", "OIDC_ISSUER", "OIDC_AUDIENCE",
-		"ENABLE_DEV_AUTH", "CLIENT_IP_HEADER", "AGE_BAND_ISOLATION", "METRICS_ADDR", "FCM_PROJECT_ID"} {
+		"ENABLE_DEV_AUTH", "CLIENT_IP_HEADER", "AGE_BAND_ISOLATION", "METRICS_ADDR", "FCM_PROJECT_ID", "DIRECT_LISTENER", "DEBUG_LOG_PEER", "EVIDENCE_ALLOW_SHARED_BUCKET", "EVIDENCE_ENDPOINT"} {
 		t.Setenv(k, "")
 	}
 	hash := filepath.Join(dir, "hashes.txt")
@@ -50,6 +50,7 @@ func productionEnv(t *testing.T) string {
 		"RATE_LIMIT_BACKEND":       "postgres", "BEHIND_PROXY": "true", "TRUSTED_PROXY_CIDRS": "10.0.0.0/8",
 		"MEDIA_ENDPOINT": "acct.r2.cloudflarestorage.com", "MEDIA_ACCESS_KEY": "a", "MEDIA_SECRET_KEY": "b", "MEDIA_SECURE": "true", "MEDIA_BUCKET": "hiyall-prod",
 		"CHAT_MEDIA_ENDPOINT": "acct.r2.cloudflarestorage.com", "CHAT_MEDIA_ACCESS_KEY": "a", "CHAT_MEDIA_SECRET_KEY": "b", "CHAT_MEDIA_SECURE": "true", "CHAT_MEDIA_BUCKET": "hiyall-chat-prod",
+		"NEARBY_OFFSET_KEY": "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", "EVIDENCE_BUCKET": "hiyall-evidence-prod", "EVIDENCE_ACCESS_KEY": "w", "EVIDENCE_SECRET_KEY": "w",
 		"SCAN_HASHLIST_FILE": hash, "SENTRY_DSN": "https://key@o1.ingest.sentry.io/1",
 		"MIN_CLIENT_VERSION_ANDROID": "1.0.0", "MIN_CLIENT_VERSION_IOS": "1.0.0",
 	} {
@@ -141,5 +142,36 @@ func TestCheckConfigNeverPrintsASecret(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgresql://hiyall:s3cretpassw0rd@db.internal:5432/hiyall?sslmode=disable")
 	if _, out := runCheck(t); strings.Contains(out, "s3cretpassw0rd") {
 		t.Fatal("the database password was printed")
+	}
+}
+
+// How clients arrive and where evidence goes are release decisions (audit API-1, SAFE-1).
+func TestReleaseRequiresAClientAddressDecisionAndEvidenceBucket(t *testing.T) {
+	productionEnv(t)
+	t.Setenv("BEHIND_PROXY", "")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "")
+	t.Setenv("DIRECT_LISTENER", "")
+	if code, out := runCheck(t); code != 1 || !strings.Contains(out, "DIRECT_LISTENER") {
+		t.Fatalf("a start must refuse an undecided client address: %d %s", code, out)
+	}
+	t.Setenv("DIRECT_LISTENER", "true")
+	if code, out := runCheck(t); code != 0 {
+		t.Fatalf("direct listener refused: %d %s", code, out)
+	}
+	productionEnv(t)
+	t.Setenv("DEBUG_LOG_PEER", "true")
+	if _, out := runCheck(t, "-release"); !strings.Contains(out, "DEBUG_LOG_PEER must be unset") {
+		t.Fatalf("debug peer logging passed the release check: %s", out)
+	}
+	productionEnv(t)
+	t.Setenv("EVIDENCE_BUCKET", "")
+	t.Setenv("EVIDENCE_ACCESS_KEY", "")
+	t.Setenv("EVIDENCE_SECRET_KEY", "")
+	if code, out := runCheck(t); code != 1 || !strings.Contains(out, "EVIDENCE_BUCKET") {
+		t.Fatalf("a start must refuse evidence in the media bucket: %d %s", code, out)
+	}
+	t.Setenv("EVIDENCE_ALLOW_SHARED_BUCKET", "true")
+	if _, out := runCheck(t, "-release"); !strings.Contains(out, "EVIDENCE_BUCKET (and its write-only token) is required") {
+		t.Fatalf("a shared evidence bucket passed the release check: %s", out)
 	}
 }

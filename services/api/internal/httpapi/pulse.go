@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"hiyall/services/api/internal/domain"
 	"hiyall/services/api/internal/media"
+	"hiyall/services/api/internal/metrics"
 	"hiyall/services/api/internal/store"
 )
 
@@ -43,17 +44,41 @@ func (a *API) signer(ctx context.Context) store.Signer {
 func postKey(p domain.Post) (time.Time, string)       { return p.SortAt, p.PostID }
 func commentKey(c domain.Comment) (time.Time, string) { return c.CreatedAt, c.CommentID }
 
+// mediaSlotWait is how long an upload waits for a processing slot before it is told to retry.
+const mediaSlotWait = 4 * time.Second
+
+// errMediaBusy is answered as 503 MEDIA_BUSY with Retry-After when every processing slot stayed busy.
+var errMediaBusy = errors.New("media processing busy")
+
+var mediaBusy = metrics.NewCounter("hiyall_media_busy_total", "Photo uploads refused with 503 because every processing slot stayed busy.")
+
+// SetMediaSlots sets how many uploads this node decodes at once (MEDIA_PROCESS_SLOTS, default 2). Decode
+// memory is about media.ProcessHeapBudget per slot. Call it before serving.
+func (a *API) SetMediaSlots(n int) {
+	if n < 1 {
+		n = 1
+	}
+	a.mediaSlots = make(chan struct{}, n)
+}
+
 // completeUpload turns an uploaded object into stored variants. Decoding is
-// CPU-heavy, so at most len(a.mediaSlots) run at once per node; at scale this
+// CPU-heavy and memory-heavy, so at most cap(a.mediaSlots) run at once per node; at scale this
 // moves to a media worker behind a queue.
 func (a *API) completeUpload(ctx context.Context, owner, id string) (map[string]any, error) {
 	upload, err := a.Store.PendingUpload(ctx, owner, id)
 	if err != nil {
 		return nil, err
 	}
+	slots := a.mediaSlots
+	wait := time.NewTimer(mediaSlotWait)
+	defer wait.Stop()
 	select {
-	case a.mediaSlots <- struct{}{}:
-		defer func() { <-a.mediaSlots }()
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	case <-wait.C:
+		// Every slot has been busy for the whole wait: say so and let the app retry (the photo stays pending).
+		mediaBusy.Inc()
+		return nil, errMediaBusy
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -209,6 +234,11 @@ func (a *API) completeMedia(w http.ResponseWriter, r *http.Request, p store.Prin
 		return
 	}
 	value, err := a.completeUpload(r.Context(), p.UserID, r.PathValue("mediaId"))
+	if errors.Is(err, errMediaBusy) {
+		w.Header().Set("Retry-After", "5")
+		a.failure(w, r, 503, "MEDIA_BUSY", "We’re processing a lot of photos right now. Try again in a few seconds.")
+		return
+	}
 	a.respond(w, r, value, err)
 }
 
@@ -427,20 +457,24 @@ func strictDecode(raw []byte, v any) error {
 // anywhere. The member gets a plain refusal that does not say what was found.
 func (a *API) quarantineUpload(ctx context.Context, owner, id string, upload store.PendingUpload, original []byte, out media.Processed, res media.ScanResult) error {
 	originalKey, fullKey := media.HoldKeys(id)
-	if err := a.Media.Put(ctx, originalKey, original, upload.ContentType); err != nil {
+	// The evidence bucket's token can write but not read or delete, so the API cannot be made to destroy
+	// what it just kept. In development it is the media bucket under hold/.
+	evidence := a.evidenceStore()
+	if err := evidence.Put(ctx, originalKey, original, upload.ContentType); err != nil {
 		return err
 	}
-	if err := a.Media.Put(ctx, fullKey, out.Full, "image/jpeg"); err != nil {
+	if err := evidence.Put(ctx, fullKey, out.Full, "image/jpeg"); err != nil {
 		return err
 	}
 	caseID, err := a.Store.QuarantineMedia(ctx, store.Quarantine{
 		MediaID: id, Owner: owner, Purpose: upload.Purpose, Result: string(res.Verdict), Scanner: res.Scanner, Signals: res.Signals,
 		OriginalSHA256: media.SHA256Hex(original), OriginalBytes: int64(len(original)), ContentType: upload.ContentType, OriginalKey: originalKey, FullKey: fullKey,
+		RetentionDays: a.safe.retentionDays,
 	})
 	if err != nil {
 		return err
 	}
-	slog.Warn("upload quarantined", "caseId", caseID, "mediaId", id, "result", string(res.Verdict), "scanner", res.Scanner)
+	a.quarantineAlert(ctx, caseID, id, string(res.Verdict))
 	if err = a.Media.Delete(ctx, upload.Key); err != nil {
 		slog.Warn("quarantined upload not removed from the upload prefix", "mediaId", id, "reason", err.Error())
 	}

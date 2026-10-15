@@ -7300,7 +7300,7 @@
         "tags": [
           "Chat"
         ],
-        "summary": "Your active devices",
+        "summary": "Your active devices, plus removed: devices of the account that another session (another phone, or a stolen credential) took out in the last 30 days, newest first, so a device that missed the realtime event still learns of it",
         "security": [
           {
             "bearerAuth": []
@@ -8643,7 +8643,7 @@
         "tags": [
           "Chat"
         ],
-        "summary": "Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId; 403 AWAITING_REPLY once you have sent 3 messages (not reactions) in a conversation and the peer has sent none",
+        "summary": "Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId; 403 AWAITING_REPLY once you have sent 3 messages (reactions and the noop count too: the relay cannot tell kinds) in a conversation and the peer has sent no non-aux message; 429 RECIPIENT_BACKLOG (Retry-After 60) when a device that must receive it already holds 2000 undelivered envelopes; 429 CHAT_DAILY_LIMIT (Retry-After) after 2000 messages from you in this conversation in 24 hours",
         "security": [
           {
             "bearerAuth": []
@@ -8811,7 +8811,7 @@
         "tags": [
           "Chat"
         ],
-        "summary": "Undelivered ciphertext for your device, oldest first",
+        "summary": "Undelivered ciphertext for your device, oldest first; each item says aux:true when the sender marked it a reaction or noop, and the app drops it when the decrypted kind disagrees",
         "security": [
           {
             "bearerAuth": []
@@ -12111,7 +12111,7 @@
             }
           },
           "503": {
-            "description": "Error 503 SCAN_UNAVAILABLE: the upload scanner could not answer. The upload stays pending and unseen; retry in a moment.",
+            "description": "Error 503 SCAN_UNAVAILABLE (the upload scanner could not answer) or MEDIA_BUSY (every photo processing slot on the machine stayed busy for 4 seconds; Retry-After says when). Either way the upload stays pending and unseen; retry in a moment.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18218,7 +18218,7 @@
             }
           },
           "422": {
-            "description": "Error 422 VALIDATION: confirmUsername is missing, extra keys were sent, or it is not your username.",
+            "description": "Error 422 VALIDATION: confirmUsername is missing, extra keys were sent, or it is not your username. Error 422 APPLE_CODE_REQUIRED: the account signs in with Apple (or has Apple linked) and appleAuthorizationCode was not sent; sign in with Apple again and retry with the code.",
             "content": {
               "application/json": {
                 "schema": {
@@ -18477,6 +18477,16 @@
           },
           "429": {
             "description": "Error 429 RATE_LIMITED: already exported in the last 24 hours; Retry-After is the seconds until the next one.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error 503 EXPORT_BUSY: every export slot on the machine is taken; Retry-After says when to retry. Today's export was not used up.",
             "content": {
               "application/json": {
                 "schema": {
@@ -21128,10 +21138,34 @@
             "items": {
               "$ref": "#/components/schemas/Device"
             }
+          },
+          "removed": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "deviceId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "removedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "deviceId",
+                "removedAt"
+              ]
+            }
           }
         },
         "required": [
-          "items"
+          "items",
+          "removed"
         ]
       },
       "SignedKey": {
@@ -21536,6 +21570,10 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "aux": {
+            "type": "boolean",
+            "description": "Present (true) only when the sender marked the message auxiliary (a reaction or the quiet noop)."
           }
         },
         "required": [
@@ -24953,7 +24991,7 @@
           "appleAuthorizationCode": {
             "type": "string",
             "maxLength": 2048,
-            "description": "Members who sign in with Apple only: the one-time authorization code from signing in with Apple again during deletion. The server exchanges it for a refresh token and revokes it at Apple (App Store guideline 5.1.1(v)) before the deletion is scheduled; 503 APPLE_REVOKE_FAILED when Apple cannot be reached or the code is stale, in which case nothing changed and the member signs in with Apple again to retry. Ignored with a warning when Apple revocation is not configured on the server."
+            "description": "Members who sign in with Apple only: the one-time authorization code from signing in with Apple again during deletion. The server exchanges it for a refresh token and revokes it at Apple (App Store guideline 5.1.1(v)) before the deletion is scheduled; 503 APPLE_REVOKE_FAILED when Apple cannot be reached or the code is stale, in which case nothing changed and the member signs in with Apple again to retry. Ignored with a warning when Apple revocation is not configured on the server. Required, as 422 APPLE_CODE_REQUIRED, when the server knows the account signs in with Apple (or has Apple linked) and revocation is configured."
           }
         },
         "required": [

@@ -25,6 +25,14 @@ type Platform struct {
 	TrustedProxies []netip.Prefix
 	ClientIPHeader string
 	BehindProxy    bool
+	// DirectListener (DIRECT_LISTENER=true) is the operator's statement that clients reach this process
+	// directly, with no proxy in front: the peer address is the client. Production needs exactly one of
+	// BEHIND_PROXY=true (with TRUSTED_PROXY_CIDRS) and DIRECT_LISTENER=true, so a forgotten proxy setting
+	// can no longer pass for a deliberate one (audit API-1).
+	DirectListener bool
+	// DebugLogPeer (DEBUG_LOG_PEER=true) logs the peer and the forwarding headers of the first 20 requests so
+	// the proxy's address can be read from the log. Temporary: unset it once TRUSTED_PROXY_CIDRS is set.
+	DebugLogPeer bool
 
 	// CursorKey (CURSOR_KEY, standard or URL-safe base64 of 32 bytes) signs list cursors, so a cursor works
 	// on every node and across deploys. Required in production; development uses a random key per process
@@ -57,7 +65,7 @@ const (
 
 // ClientIPResolver builds the resolver the HTTP layer uses for per-address limits.
 func (p Platform) ClientIPResolver() *clientip.Resolver {
-	return clientip.New(p.TrustedProxies, p.ClientIPHeader)
+	return clientip.New(p.TrustedProxies, p.ClientIPHeader).WithDebug(p.DebugLogPeer)
 }
 
 // loadPlatform reads the platform settings and applies the production start checks that span several
@@ -81,6 +89,15 @@ func (c *Config) loadPlatform() error {
 		p.BehindProxy = true
 	default:
 		return errors.New("BEHIND_PROXY must be true or false")
+	}
+	if p.DirectListener, err = boolEnv("DIRECT_LISTENER"); err != nil {
+		return err
+	}
+	if p.DebugLogPeer, err = boolEnv("DEBUG_LOG_PEER"); err != nil {
+		return err
+	}
+	if p.DirectListener && (p.BehindProxy || len(p.TrustedProxies) > 0) {
+		return errors.New("DIRECT_LISTENER=true cannot be combined with BEHIND_PROXY or TRUSTED_PROXY_CIDRS: either a proxy is in front or it is not")
 	}
 
 	if p.CursorKey, err = cursorKey("CURSOR_KEY"); err != nil {
@@ -157,6 +174,9 @@ func (c *Config) productionChecks() error {
 	p := c.Platform
 	if p.BehindProxy && len(p.TrustedProxies) == 0 {
 		return errors.New("BEHIND_PROXY=true needs TRUSTED_PROXY_CIDRS in production: without it every client shares the proxy's rate-limit bucket")
+	}
+	if !p.BehindProxy && !p.DirectListener {
+		return errors.New("production needs BEHIND_PROXY=true with TRUSTED_PROXY_CIDRS (the API is behind a proxy), or DIRECT_LISTENER=true (clients reach it directly): without one of them the client address cannot be trusted")
 	}
 	if p.CursorKey == nil {
 		return errors.New("CURSOR_KEY (base64 of 32 random bytes: openssl rand -base64 32) is required in production")

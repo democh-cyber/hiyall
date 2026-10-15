@@ -168,6 +168,36 @@ export interface ContentCase {
   releaseBlocker: '' | 'CASE_OPEN' | 'LEGAL_HOLD' | 'REPORT_OPEN' | 'OTHER_CASE_OPEN'
 }
 
+/** One proposal of the two-person control over evidence: a second administrator must approve it (docs/security/15). */
+export interface EvidenceApproval {
+  approvalId: string
+  caseId: string
+  kind: 'clear' | 'release' | 'legal_hold_lift'
+  status: 'pending' | 'approved' | 'rejected' | 'expired' | 'withdrawn'
+  proposedBy: string
+  proposedByEmail: string
+  proposedAt: string
+  reason: string
+  counselReference: string
+  expiresAt: string
+  decidedBy: string
+  decidedByEmail: string
+  decidedAt: string | null
+  decisionReason: string
+}
+
+export interface ApprovalList {
+  items: EvidenceApproval[]
+  /** The signed-in operator, so the page can tell "mine" from "waiting for me". */
+  operatorId: string
+}
+
+export const approvalKindText: Record<EvidenceApproval['kind'], string> = {
+  clear: 'Clear the case (false positive)',
+  release: 'Release the evidence hold',
+  legal_hold_lift: 'Lift the legal hold',
+}
+
 export interface Page<T> {
   items: T[]
   nextCursor: string | null

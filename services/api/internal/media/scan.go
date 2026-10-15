@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"log/slog"
 	"math/bits"
 	"net/http"
 	"net/url"
@@ -38,7 +39,10 @@ const (
 	// Flagged: possible but not certain (a near hash, a provider score). Quarantined for a person to
 	// look at, the uploader is not suspended.
 	Flagged Verdict = "flagged"
-	// Match: a known-bad hash or a provider match. Quarantined, uploader suspended pending review.
+	// Match: a STRONG match only: the SHA-256 of the exact file is on the list, or the provider says match.
+	// Quarantined, uploader suspended pending review. A perceptual hash alone is never a Match: it is a
+	// 64-bit fingerprint that unrelated photos (flat skies, screenshots, dark rooms) can come close to, so
+	// suspending an account on it would punish the innocent (audit SAFE-1).
 	Match Verdict = "match"
 )
 
@@ -121,20 +125,30 @@ func (c Chain) Scan(ctx context.Context, in ScanInput) (ScanResult, error) {
 //	sha256:<64 hex>   [label]       or a bare 64 hex digits
 //	phash:<16 hex>    [label]       or a bare 16 hex digits
 //
-// A perceptual hash within MatchDistance is a Match; within FlagDistance a Flagged. The list is re-read
-// when the file changes (checked at most every 30 seconds), so an update needs no restart.
+// An exact SHA-256 hit is a Match (strong). A perceptual hash within FlagDistance is only Flagged, however
+// close (signal strength=perceptual): the photo is quarantined and a case opened for a person, nobody is
+// suspended. Perceptual entries need entropy (MinPerceptualBits to MaxPerceptualBits set bits): an all-zero
+// or all-one hash is what a flat image produces and would flag half the internet, so such entries are
+// rejected at load and counted in the log. The list is re-read when the file changes (checked at most every
+// 30 seconds), so an update needs no restart.
 type HashList struct {
-	Path          string
-	MatchDistance int // default 4
-	FlagDistance  int // default 8
+	Path         string
+	FlagDistance int // default 8
 
-	mu      sync.Mutex
-	checked time.Time
-	mtime   time.Time
-	sha     map[string]string
-	phash   []phashEntry
-	now     func() time.Time
+	mu       sync.Mutex
+	checked  time.Time
+	mtime    time.Time
+	sha      map[string]string
+	phash    []phashEntry
+	rejected int
+	now      func() time.Time
 }
+
+// A perceptual entry must have between MinPerceptualBits and MaxPerceptualBits bits set (of 64).
+const (
+	MinPerceptualBits = 12
+	MaxPerceptualBits = 52
+)
 
 type phashEntry struct {
 	hash  uint64
@@ -144,7 +158,7 @@ type phashEntry struct {
 // NewHashList loads the file once; an unreadable or malformed list is an error, so a bad path stops the
 // server at start instead of silently scanning nothing.
 func NewHashList(path string) (*HashList, error) {
-	h := &HashList{Path: path, MatchDistance: 4, FlagDistance: 8, now: time.Now}
+	h := &HashList{Path: path, FlagDistance: 8, now: time.Now}
 	if err := h.load(); err != nil {
 		return nil, err
 	}
@@ -160,6 +174,13 @@ func (h *HashList) Len() int {
 	return len(h.sha) + len(h.phash)
 }
 
+// Rejected is how many perceptual entries the last load refused for too little entropy.
+func (h *HashList) Rejected() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.rejected
+}
+
 func (h *HashList) load() error {
 	f, err := os.Open(h.Path)
 	if err != nil {
@@ -172,6 +193,7 @@ func (h *HashList) load() error {
 	}
 	sha := map[string]string{}
 	var ph []phashEntry
+	rejected := 0
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for line := 1; scanner.Scan(); line++ {
@@ -195,6 +217,10 @@ func (h *HashList) load() error {
 			for _, b := range raw {
 				n = n<<8 | uint64(b)
 			}
+			if ones := bits.OnesCount64(n); ones < MinPerceptualBits || ones > MaxPerceptualBits {
+				rejected++
+				continue
+			}
 			ph = append(ph, phashEntry{hash: n, label: label})
 		default:
 			return fmt.Errorf("SCAN_HASHLIST_FILE line %d is not a sha256 or phash entry", line)
@@ -204,8 +230,11 @@ func (h *HashList) load() error {
 		return errors.New("SCAN_HASHLIST_FILE cannot be read")
 	}
 	h.mu.Lock()
-	h.sha, h.phash, h.mtime, h.checked = sha, ph, info.ModTime(), h.now()
+	h.sha, h.phash, h.mtime, h.checked, h.rejected = sha, ph, info.ModTime(), h.now(), rejected
 	h.mu.Unlock()
+	if rejected > 0 {
+		slog.Warn("hash list: perceptual entries rejected for too little entropy (flat or near-flat hashes match unrelated photos)", "rejected", rejected, "kept", len(ph), "minBits", MinPerceptualBits, "maxBits", MaxPerceptualBits)
+	}
 	return nil
 }
 
@@ -237,7 +266,7 @@ func (h *HashList) Scan(_ context.Context, in ScanInput) (ScanResult, error) {
 		}
 		sum := sha256.Sum256(data)
 		if label, ok := sha[hex.EncodeToString(sum[:])]; ok {
-			return ScanResult{Verdict: Match, Scanner: h.Name(), Signals: map[string]string{"kind": "sha256", "label": label}}, nil
+			return ScanResult{Verdict: Match, Scanner: h.Name(), Signals: map[string]string{"kind": "sha256", "strength": "exact", "label": label}}, nil
 		}
 	}
 	if len(phash) == 0 || len(in.Full) == 0 {
@@ -253,11 +282,9 @@ func (h *HashList) Scan(_ context.Context, in ScanInput) (ScanResult, error) {
 			best, label = d, e.label
 		}
 	}
-	signals := map[string]string{"kind": "phash", "distance": strconv.Itoa(best), "label": label}
-	switch {
-	case best <= h.MatchDistance:
-		return ScanResult{Verdict: Match, Scanner: h.Name(), Signals: signals}, nil
-	case best <= h.FlagDistance:
+	signals := map[string]string{"kind": "phash", "strength": "perceptual", "distance": strconv.Itoa(best), "label": label}
+	if best <= h.FlagDistance {
+		// Never a Match, however close: see the Match constant.
 		return ScanResult{Verdict: Flagged, Scanner: h.Name(), Signals: signals}, nil
 	}
 	return ScanResult{Verdict: Clean, Scanner: h.Name()}, nil

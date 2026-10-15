@@ -24,6 +24,7 @@ func (a *API) authFailure(w http.ResponseWriter, r *http.Request, err error) {
 		a.failure(w, r, 401, "UNAUTHENTICATED", "Sign in to continue")
 	case errors.As(err, &policy):
 		a.failure(w, r, policy.Status, policy.Code, policy.Message)
+	case a.contended(w, r, err):
 	default:
 		a.failure(w, r, 503, "AUTH_UNAVAILABLE", "Authentication is temporarily unavailable")
 	}

@@ -50,6 +50,14 @@ func openReportAgainst(alias, col string) string {
 	return `NOT EXISTS(SELECT 1 FROM reports rp WHERE rp.target_id=` + alias + `.` + col + ` AND rp.status='open')`
 }
 
+// messageNotReported is true when no report names message row alias (its id column message_id) as its target or in
+// its evidence list (reports.evidence is an array of objects with a messageId). The account purge uses it per row;
+// PurgeMessageMetadata reads the evidence list once per statement instead, because it looks at many rows.
+func messageNotReported(alias string) string {
+	return `NOT EXISTS(SELECT 1 FROM reports er WHERE er.target_type='message' AND er.target_id=` + alias + `.message_id)
+ AND NOT EXISTS(SELECT 1 FROM reports er WHERE jsonb_typeof(er.evidence)='array' AND er.evidence @> jsonb_build_array(jsonb_build_object('messageId',` + alias + `.message_id::text)))`
+}
+
 // PurgeNotifications deletes notifications older than retain.
 func (s *Store) PurgeNotifications(ctx context.Context, retain time.Duration) (int64, error) {
 	return drain(ctx, func() (int64, error) {
@@ -266,22 +274,68 @@ func (s *Store) scanStep(ctx context.Context, sql, after string, size int) (stri
 
 // ReconcileSocialCounters recomputes followers, following and friends of every member from the follow and
 // friendship rows (the profile_social_counts view) and repairs any counter that drifted. Once a week.
+//
+// A recount is only right if nobody changes the counters between reading the rows and writing the result, or the
+// repair overwrites a bump that committed in between (and makes drift instead of fixing it). So each chunk is one
+// transaction: it makes sure the counter rows exist (an uncommitted insert by a concurrent follow is waited for
+// here), locks them in user id order, and only then, in a statement with a fresh snapshot, recounts and writes.
+// A transaction that changed an edge and has not committed holds its counter rows, so the lock waits for it; one
+// whose counter bump has not run yet is behind this lock, and its bump lands on top of the repaired value. A
+// deadlock with such a transaction is retried once by inTx.
 func (s *Store) ReconcileSocialCounters(ctx context.Context, every time.Duration) (int64, error) {
 	return s.reconcile(ctx, "social_counters", every, func(ctx context.Context, after string, size int) (string, int, int64, error) {
-		return s.scanStep(ctx, `WITH b AS (SELECT user_id FROM users WHERE user_id>$1::uuid ORDER BY user_id LIMIT $2),
- fix AS (INSERT INTO social_counters(user_id,followers,following,friends)
-  SELECT v.user_id,v.followers,v.following,v.friends FROM profile_social_counts v LEFT JOIN social_counters c ON c.user_id=v.user_id
-  WHERE v.user_id IN (SELECT user_id FROM b) AND (coalesce(c.followers,0)<>v.followers OR coalesce(c.following,0)<>v.following OR coalesce(c.friends,0)<>v.friends)
-  ON CONFLICT (user_id) DO UPDATE SET followers=excluded.followers,following=excluded.following,friends=excluded.friends,updated_at=now() RETURNING 1)
- SELECT (SELECT user_id::text FROM b ORDER BY user_id DESC LIMIT 1),(SELECT count(*) FROM b)::int,(SELECT count(*) FROM fix)`, after, size)
+		var last *string
+		var seen int
+		var repaired int64
+		err := s.inTx(ctx, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `INSERT INTO social_counters(user_id) SELECT user_id FROM (SELECT user_id FROM users WHERE user_id>$1::uuid ORDER BY user_id LIMIT $2) b ORDER BY user_id ON CONFLICT (user_id) DO NOTHING`, after, size); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `SELECT 1 FROM social_counters WHERE user_id IN (SELECT user_id FROM users WHERE user_id>$1::uuid ORDER BY user_id LIMIT $2) ORDER BY user_id FOR UPDATE`, after, size); err != nil {
+				return err
+			}
+			return tx.QueryRow(ctx, `WITH b AS (SELECT user_id FROM users WHERE user_id>$1::uuid ORDER BY user_id LIMIT $2),
+ fix AS (UPDATE social_counters c SET followers=v.followers,following=v.following,friends=v.friends,updated_at=now()
+  FROM profile_social_counts v WHERE v.user_id=c.user_id AND c.user_id IN (SELECT user_id FROM b)
+  AND (c.followers<>v.followers OR c.following<>v.following OR c.friends<>v.friends) RETURNING 1)
+ SELECT (SELECT user_id::text FROM b ORDER BY user_id DESC LIMIT 1),(SELECT count(*) FROM b)::int,(SELECT count(*) FROM fix)`, after, size).Scan(&last, &seen, &repaired)
+		})
+		if err != nil {
+			return "", 0, 0, err
+		}
+		if last == nil {
+			return after, seen, repaired, nil
+		}
+		return *last, seen, repaired, nil
 	})
+}
+
+// scanStepLocked is scanStep in one transaction that first runs lock (a SELECT ... FOR UPDATE over the chunk's
+// counter rows, same parameters) so the recount cannot overwrite a bump that commits in between; see
+// ReconcileSocialCounters. inTx retries it once after a deadlock.
+func (s *Store) scanStepLocked(ctx context.Context, lock, sql, after string, size int) (last string, seen int, repaired int64, err error) {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, lock, after, size); err != nil {
+			return err
+		}
+		var l *string
+		if err := tx.QueryRow(ctx, sql, after, size).Scan(&l, &seen, &repaired); err != nil {
+			return err
+		}
+		last = after
+		if l != nil {
+			last = *l
+		}
+		return nil
+	})
+	return last, seen, repaired, err
 }
 
 // ReconcilePostCounters recomputes every post's reaction and comment counts from the reactions and comments
 // themselves and repairs a drifted counter by adjusting slot 0 (the other slots are left as they are). Once a week.
 func (s *Store) ReconcilePostCounters(ctx context.Context, every time.Duration) (int64, error) {
 	return s.reconcile(ctx, "post_counters", every, func(ctx context.Context, after string, size int) (string, int, int64, error) {
-		return s.scanStep(ctx, `WITH b AS (SELECT post_id FROM posts WHERE post_id>$1::uuid ORDER BY post_id LIMIT $2),
+		return s.scanStepLocked(ctx, `SELECT 1 FROM post_counters WHERE post_id IN (SELECT post_id FROM posts WHERE post_id>$1::uuid ORDER BY post_id LIMIT $2) ORDER BY post_id,slot FOR UPDATE`, `WITH b AS (SELECT post_id FROM posts WHERE post_id>$1::uuid ORDER BY post_id LIMIT $2),
  a AS (SELECT b.post_id,
    (SELECT count(*) FROM post_reactions r WHERE r.post_id=b.post_id) AS reactions,
    (SELECT count(*) FROM comments c WHERE c.post_id=b.post_id AND NOT c.hidden AND c.deleted_at IS NULL) AS comments FROM b),

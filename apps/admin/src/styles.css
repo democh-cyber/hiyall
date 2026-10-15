@@ -133,9 +133,12 @@ blockquote { margin: 0.5rem 0; padding: 0.5rem 1rem; border-left: 4px solid var(
   button, a { transition: background-color 0.1s; }
 }
 
-/* Reported content and quarantined photos. A quarantined photo is blurred until an administrator reveals it. */
+/* Reported content and quarantined photos. A quarantined photo arrives blurred BY THE SERVER (a small, heavily
+   blurred copy); the original is fetched only after the audited reveal. There is no CSS blur: it would leave the
+   original pixels in the page. */
 .content-text { white-space: pre-wrap; border-left: 3px solid var(--line); padding-left: 0.75rem; margin: 0.5rem 0; }
 .photos { display: flex; flex-wrap: wrap; gap: 0.75rem; }
 .photos img { max-width: min(100%, 360px); max-height: 360px; border: 1px solid var(--line); border-radius: 4px; }
-img.blurred { filter: blur(28px); }
+.proposals { list-style: none; padding: 0; margin: 0 0 0.5rem; }
+.proposals li { border-top: 1px solid var(--line); padding: 0.5rem 0; }
 .sensitive { background: var(--danger-bg); color: var(--danger); padding: 0.5rem 0.75rem; border-radius: 4px; }

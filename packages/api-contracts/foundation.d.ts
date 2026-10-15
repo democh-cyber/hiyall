@@ -716,7 +716,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Your active devices */
+        /** Your active devices, plus removed: devices of the account that another session (another phone, or a stolen credential) took out in the last 30 days, newest first, so a device that missed the realtime event still learns of it */
         get: operations["getDeviceList_v1_me_devices"];
         put?: never;
         post?: never;
@@ -839,7 +839,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId; 403 AWAITING_REPLY once you have sent 3 messages (not reactions) in a conversation and the peer has sent none */
+        /** Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId; 403 AWAITING_REPLY once you have sent 3 messages (reactions and the noop count too: the relay cannot tell kinds) in a conversation and the peer has sent no non-aux message; 429 RECIPIENT_BACKLOG (Retry-After 60) when a device that must receive it already holds 2000 undelivered envelopes; 429 CHAT_DAILY_LIMIT (Retry-After) after 2000 messages from you in this conversation in 24 hours */
         post: operations["postMessageAccepted_v1_conversations_conversationId_messages"];
         delete?: never;
         options?: never;
@@ -854,7 +854,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Undelivered ciphertext for your device, oldest first */
+        /** Undelivered ciphertext for your device, oldest first; each item says aux:true when the sender marked it a reaction or noop, and the app drops it when the decrypted kind disagrees */
         get: operations["getInbox_v1_devices_deviceId_inbox"];
         put?: never;
         post?: never;
@@ -2418,6 +2418,12 @@ export interface components {
         };
         DeviceList: {
             items: components["schemas"]["Device"][];
+            removed: {
+                /** Format: uuid */
+                deviceId: string;
+                /** Format: date-time */
+                removedAt: string;
+            }[];
         };
         SignedKey: {
             keyId: string;
@@ -2552,6 +2558,8 @@ export interface components {
             ciphertext: string;
             /** Format: date-time */
             createdAt: string;
+            /** @description Present (true) only when the sender marked the message auxiliary (a reaction or the quiet noop). */
+            aux?: boolean;
         };
         Inbox: {
             items: components["schemas"]["InboxItem"][];
@@ -3506,7 +3514,7 @@ export interface components {
         DeletionRequest: {
             /** @description The member's own username, typed to confirm; compared without case and without a leading @. */
             confirmUsername: string;
-            /** @description Members who sign in with Apple only: the one-time authorization code from signing in with Apple again during deletion. The server exchanges it for a refresh token and revokes it at Apple (App Store guideline 5.1.1(v)) before the deletion is scheduled; 503 APPLE_REVOKE_FAILED when Apple cannot be reached or the code is stale, in which case nothing changed and the member signs in with Apple again to retry. Ignored with a warning when Apple revocation is not configured on the server. */
+            /** @description Members who sign in with Apple only: the one-time authorization code from signing in with Apple again during deletion. The server exchanges it for a refresh token and revokes it at Apple (App Store guideline 5.1.1(v)) before the deletion is scheduled; 503 APPLE_REVOKE_FAILED when Apple cannot be reached or the code is stale, in which case nothing changed and the member signs in with Apple again to retry. Ignored with a warning when Apple revocation is not configured on the server. Required, as 422 APPLE_CODE_REQUIRED, when the server knows the account signs in with Apple (or has Apple linked) and revocation is configured. */
             appleAuthorizationCode?: string;
         };
         DeletionState: {
@@ -13444,7 +13452,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 503 SCAN_UNAVAILABLE: the upload scanner could not answer. The upload stays pending and unseen; retry in a moment. */
+            /** @description Error 503 SCAN_UNAVAILABLE (the upload scanner could not answer) or MEDIA_BUSY (every photo processing slot on the machine stayed busy for 4 seconds; Retry-After says when). Either way the upload stays pending and unseen; retry in a moment. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -18240,7 +18248,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 422 VALIDATION: confirmUsername is missing, extra keys were sent, or it is not your username. */
+            /** @description Error 422 VALIDATION: confirmUsername is missing, extra keys were sent, or it is not your username. Error 422 APPLE_CODE_REQUIRED: the account signs in with Apple (or has Apple linked) and appleAuthorizationCode was not sent; sign in with Apple again and retry with the code. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -18455,6 +18463,15 @@ export interface operations {
             };
             /** @description Error 429 RATE_LIMITED: already exported in the last 24 hours; Retry-After is the seconds until the next one. */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503 EXPORT_BUSY: every export slot on the machine is taken; Retry-After says when to retry. Today's export was not used up. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

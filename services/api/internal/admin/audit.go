@@ -104,10 +104,28 @@ func (s *Service) ListAudit(ctx context.Context, f AuditFilter) ([]AuditRecord, 
 	return recs, err
 }
 
+// pruneBatch is how many entries prune_operator_audit removes per call (migration 0041).
+const pruneBatch = 5000
+
+// maxPruneBatches bounds one request: 20 batches of 5000, so a request never runs for minutes. The answer says
+// whether more remain.
+const maxPruneBatches = 20
+
 // PruneAudit deletes audit entries older than days (at least 365) through prune_operator_audit, which also
-// records the prune. It is the only way an entry is ever removed.
-func (s *Service) PruneAudit(ctx context.Context, p *Principal, reason string, days int) (int64, error) {
-	var removed int64
-	err := s.Pool.QueryRow(ctx, `SELECT prune_operator_audit($1,$2,$3,$4)`, p.Operator.ID, p.Operator.Email, reason, days).Scan(&removed)
-	return removed, err
+// records the prune. It is the only way an entry is ever removed. The function removes one batch of at most
+// 5000 per call, each call its own transaction, so the table lock that switching the append-only trigger off
+// needs lasts milliseconds and audited reads (which insert an audit row first) are never held up for long.
+// It returns how many were removed and whether older entries remain (call again).
+func (s *Service) PruneAudit(ctx context.Context, p *Principal, reason string, days int) (removed int64, more bool, err error) {
+	for i := 0; i < maxPruneBatches; i++ {
+		var n int64
+		if err = s.Pool.QueryRow(ctx, `SELECT prune_operator_audit($1,$2,$3,$4)`, p.Operator.ID, p.Operator.Email, reason, days).Scan(&n); err != nil {
+			return removed, false, err
+		}
+		removed += n
+		if n < pruneBatch {
+			return removed, false, nil
+		}
+	}
+	return removed, true, nil
 }

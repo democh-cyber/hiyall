@@ -291,6 +291,29 @@ func (s *Store) PurgeDeletedIdentities(ctx context.Context, retain time.Duration
 	return tag.RowsAffected(), err
 }
 
+// deleteEdges is one batch of the purge's delete of a member's follows or friendships. Each deleted row fires the
+// counter trigger, which reads the other member's status and bumps both members' counter rows. Two things have to
+// hold for those counters to stay right, and neither does by itself:
+//
+//  1. The other members' user rows are locked first (FOR NO KEY UPDATE, in id order, the lock a status change takes).
+//     Otherwise a neighbour restored from a suspension while this batch runs counts the edge as present (its trigger
+//     scanned before this batch committed) while this batch's trigger counts it against a neighbour it still sees
+//     suspended: the member being deleted keeps a follower that no row backs. With the lock one of the two runs
+//     entirely first, and the second sees the first's result.
+//  2. Then every counter row the batch touches is locked once, in id order, so a thousand rows do not take them
+//     pair by pair in row order and deadlock with a transaction that takes the same rows the other way round.
+//
+// The user rows come before the counter rows everywhere (a status change holds its user row while its trigger takes
+// counter rows), and the CTEs are MATERIALIZED and chained so they run in that order before the triggers fire,
+// which happens when the statement ends.
+func deleteEdges(table, a, b string) string {
+	return `WITH picked AS MATERIALIZED (SELECT ctid AS tid,` + a + ` AS a,` + b + ` AS b FROM ` + table + ` WHERE ` + a + `=$1 OR ` + b + `=$1 LIMIT $2),
+ people AS MATERIALIZED (SELECT u.user_id FROM users u WHERE u.user_id<>$1 AND u.user_id IN (SELECT a FROM picked UNION SELECT b FROM picked) ORDER BY u.user_id FOR NO KEY UPDATE),
+ locked AS MATERIALIZED (SELECT c.user_id FROM social_counters c WHERE c.user_id IN (SELECT a FROM picked UNION SELECT b FROM picked) AND (SELECT count(*) FROM people)>=0 ORDER BY c.user_id FOR UPDATE),
+ del AS (DELETE FROM ` + table + ` WHERE ctid IN (SELECT tid FROM picked) RETURNING 1)
+ SELECT (SELECT count(*) FROM locked)*0+(SELECT count(*) FROM del)`
+}
+
 // memberConversations selects the conversations account $1 is in.
 const memberConversations = `SELECT conversation_id FROM conversations WHERE $1::uuid IN (user_low_id,user_high_id)`
 
@@ -373,8 +396,8 @@ func (s *Store) purgeContent(ctx context.Context, id string) error {
 	// member's counters through the triggers of migration 0033; the member's own counter row goes last.
 	if err := run(
 		`DELETE FROM notifications WHERE recipient_id=$1 OR actor_id=$1`,
-		`DELETE FROM follows WHERE follower_id=$1 OR followee_id=$1`,
-		`DELETE FROM friendships WHERE user_low_id=$1 OR user_high_id=$1`,
+		deleteEdges("follows", "follower_id", "followee_id"),
+		deleteEdges("friendships", "user_low_id", "user_high_id"),
 		`DELETE FROM social_counters WHERE user_id=$1`,
 		`DELETE FROM blocks WHERE blocker_id=$1 OR blocked_id=$1`,
 		`DELETE FROM user_controls WHERE actor_id=$1 OR target_id=$1`,
@@ -412,14 +435,18 @@ func (s *Store) purgeContent(ctx context.Context, id string) error {
 		return err
 	}
 	if err := run(
-		`DELETE FROM message_envelopes WHERE message_id IN (SELECT message_id FROM messages WHERE conversation_id IN (`+memberConversations+`))
- OR recipient_device_id IN (SELECT device_id FROM devices WHERE user_id=$1)`,
+		// Two statements and not one with OR: each is answered by an index (the primary key, and
+		// message_envelopes_recipient from migration 0039); the OR made it a scan of the whole table.
+		`DELETE FROM message_envelopes WHERE message_id IN (SELECT message_id FROM messages WHERE conversation_id IN (`+memberConversations+`))`,
+		`DELETE FROM message_envelopes WHERE recipient_device_id IN (SELECT device_id FROM devices WHERE user_id=$1)`,
 		// The other member's attachments in these conversations go too; their rows stay until the objects
 		// are gone and the two days they count towards that member's daily quota have passed.
 		`UPDATE chat_blobs SET state='deleted',deleted_at=now() WHERE state<>'deleted' AND held_report_id IS NULL AND conversation_id IN (`+memberConversations+`)`,
 		`DELETE FROM chat_blobs WHERE held_report_id IS NULL AND state='deleted' AND object_key IS NULL
  AND (uploader_id=$1 OR (conversation_id IN (`+memberConversations+`) AND created_at<now()-interval '2 days'))`,
-		`DELETE FROM messages m WHERE m.conversation_id IN (`+memberConversations+`) AND NOT EXISTS(SELECT 1 FROM chat_blobs b WHERE b.message_id=m.message_id)`,
+		// A message a report names (as its target or in its evidence) keeps its metadata row, like one with a held attachment.
+		`DELETE FROM messages m WHERE m.conversation_id IN (`+memberConversations+`) AND NOT EXISTS(SELECT 1 FROM chat_blobs b WHERE b.message_id=m.message_id)
+ AND `+messageNotReported("m"),
 		`DELETE FROM conversation_members WHERE user_id=$1 OR peer_id=$1`,
 		`DELETE FROM conversations c WHERE $1::uuid IN (c.user_low_id,c.user_high_id)
  AND NOT EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.conversation_id) AND NOT EXISTS(SELECT 1 FROM chat_blobs b WHERE b.conversation_id=c.conversation_id)`,

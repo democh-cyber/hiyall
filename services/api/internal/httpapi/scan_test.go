@@ -90,7 +90,7 @@ func TestScannerMatchQuarantinesSuspendsAndKeepsTheEvidence(t *testing.T) {
 	if err := h.db.Pool.QueryRow(h.ctx, `SELECT original_sha256,result,status,suspended_user,extract(epoch FROM hold_until-created_at)/86400 FROM content_cases WHERE media_id=$1`, id).Scan(&sha, &result, &caseStatus, &suspended, &holdDays); err != nil {
 		t.Fatal(err)
 	}
-	if sha != media.SHA256Hex(pic) || result != "match" || caseStatus != "open" || !suspended || holdDays < 89.9 || holdDays > 90.1 {
+	if sha != media.SHA256Hex(pic) || result != "match" || caseStatus != "open" || !suspended || holdDays < 364.9 || holdDays > 365.1 {
 		t.Fatalf("case %s %s %s %v %.1f", sha, result, caseStatus, suspended, holdDays)
 	}
 	// The uploader is suspended pending review, with a record of who did it.

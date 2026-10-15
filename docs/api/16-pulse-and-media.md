@@ -13,11 +13,11 @@ Bytes never pass through the API or live in Postgres.
 2. The app PUTs the bytes straight to storage.
 3. `POST /v1/media/{id}/complete` processes the photo:
    - The API reads at most the declared size.
-   - It rejects anything that isn't a JPEG, PNG or WebP image (415), and any image over 40 megapixels, so a small file can't declare a huge canvas.
+   - It rejects anything that isn't a JPEG, PNG or WebP image (415), and any image over 12 megapixels, so a small file can't declare a huge canvas.
    - It applies EXIF orientation and re-encodes a 2048 px "full" and a 640 px "thumb" JPEG.
    - Re-encoding from pixels drops all metadata, including GPS. The original upload is deleted.
-   - **Scanning.** Before the variants are stored, the upload scanner (`SCAN_HASHLIST_FILE` and/or `SCAN_PROVIDER_URL`) inspects the exact upload and the re-encoded copy. `clean` continues. A flag or a match quarantines the photo (kept under `hold/`, never served, never attachable), opens a case in the admin console, and a match suspends the uploader; the member gets `422 UPLOAD_REJECTED` and nothing about why. A scanner that cannot answer gives `503 SCAN_UNAVAILABLE` and the upload stays pending (retry). See [illegal content runbook](../security/16-csam-and-illegal-content.md). Chat photos are end-to-end encrypted and cannot be scanned.
-   - Processing is CPU-bound, so each node runs at most 4 at once. At scale this moves to a media worker behind a queue.
+   - **Scanning.** Before the variants are stored, the upload scanner (`SCAN_HASHLIST_FILE` and/or `SCAN_PROVIDER_URL`) inspects the exact upload and the re-encoded copy. `clean` continues. A flag or a match quarantines the photo (the original and the re-encoded copy are written under `hold/` in the **evidence bucket** (`EVIDENCE_BUCKET`, a write-only token; the media bucket when `EVIDENCE_ALLOW_SHARED_BUCKET`), never served, never attachable), opens a case in the admin console (held for `EVIDENCE_RETENTION_DAYS`, default 365, for new cases), counts in `hiyall_quarantine_cases_total{result}` and reports to the error tracker, and **only a strong match suspends the uploader** (an exact SHA-256 hit or the provider's `match`; a perceptual-hash hit is only a flag); the member gets `422 UPLOAD_REJECTED` and nothing about why. A scanner that cannot answer gives `503 SCAN_UNAVAILABLE` and the upload stays pending (retry). See [illegal content runbook](../security/16-csam-and-illegal-content.md). Chat photos are end-to-end encrypted and cannot be scanned.
+   - Processing is CPU- and memory-bound, so each node runs at most `MEDIA_PROCESS_SLOTS` at once (default 2); a busy node answers `503 MEDIA_BUSY` with `Retry-After`. At scale this moves to a media worker behind a queue.
 
 Reads use signed GET URLs that last one hour (`readURLLifetime` in `httpapi/pulse.go`). Audit F24 asked for 15 minutes; that needs the app to fetch a photo again when its URL has expired (today a failed load shows a broken-image icon and the list is not reloaded), so the constant stays at one hour until the app does. Changing it is then the one line. They are minted only after the viewer has been authorized for the post or story that uses the photo (profile photos follow the profile: see [Profile photos](20-profile-photos.md)). Unsigned reads are refused by storage. The app caches images by media id, so a refreshed URL doesn't refetch the bytes.
 
@@ -30,7 +30,7 @@ Clean-up runs hourly in the API's maintenance loop:
 
 **Objects first, then rows.** The "media cleanup" job (`store.PurgeMedia`) claims photo rows 50 at a time with `FOR UPDATE SKIP LOCKED` (two nodes never take the same ones), deletes each row's objects from storage, and only then marks the rows whose objects are all gone as finished (status `deleted`, keys cleared). A failed delete leaves its row untouched for the next run and does not hold back the others; the job reports an error so `hiyall_maintenance_job_runs_total{job="media cleanup",result="error"}` shows it. A row is therefore never finished while an object remains, which is what lets the account purge treat "no `media_assets` rows left" as "no photo objects left". Every job has its own timeout (10 minutes; 20 for the cleanups and the account purge) and runs on a separate small database pool with longer statement limits than a request. `outbox_events` older than 7 days are deleted by the "outbox purge" job (nothing writes the table any more).
 
-**Finishing an upload** (`POST /v1/media/{id}/complete`) downloads, decodes and re-encodes the photo, so it has its own 30 second deadline (every other request: 10) and its own per-account limiter (burst 30, then one every 2 seconds, 429 `RATE_LIMITED`). At most 4 photos are processed at once per node, and a photo may be at most 20 megapixels (15 MB, checked before decoding). Set `GOMEMLIMIT` on the machine (deploy guide, section 7).
+**Finishing an upload** (`POST /v1/media/{id}/complete`) downloads, decodes and re-encodes the photo, so it has its own 30 second deadline (every other request: 10) and its own per-account limiter (burst 30, then one every 2 seconds, 429 `RATE_LIMITED`). At most `MEDIA_PROCESS_SLOTS` photos (default 2) are processed at once per node: an upload that finds every slot busy for 4 seconds gets `503 MEDIA_BUSY` with `Retry-After: 5`, stays pending, and the app retries. A photo may be at most 12 megapixels (15 MB, checked before decoding): a measured 12 MP decode peaks at about 135 MB of heap for a PNG and 105 MB for a JPEG (`TestProcessPeakHeapStaysUnderBudget` asserts a 160 MB budget per photo; the audit measured 178 MB for the old 20 MP cap, twice the documented figure). Set `GOMEMLIMIT` on the machine (deploy guide, section 7, which has the memory table).
 
 Encrypted chat photos do not use this pipeline or this bucket: see [encrypted chat attachments](21-chat-attachments.md). Development uses SeaweedFS (`scripts/dev-storage.sh`, S3 on `127.0.0.1:8333`, credentials generated into `.runtime/storage/`). Production sets `MEDIA_ENDPOINT`, `MEDIA_ACCESS_KEY`, `MEDIA_SECRET_KEY`, `MEDIA_BUCKET` and `MEDIA_SECURE=true` for S3, R2 or similar, behind a CDN. Video is not accepted yet: it needs a transcoding worker that also strips metadata.
 
@@ -47,7 +47,7 @@ Every number below is enforced by the server. The per-member limits are `domain.
 | Live photo storage | 2 GiB per member | `429 QUOTA`, no `Retry-After` |
 | Pending (not completed, unexpired) uploads | 50 per member | `429 RATE_LIMITED`, `Retry-After` until the oldest expires |
 | Size of one photo upload | 15 MB (15 MiB) | `413 TOO_LARGE` |
-| Decoded image size | 40 megapixels | `415 UNSUPPORTED_MEDIA` at complete |
+| Decoded image size | 12 megapixels | `415 UNSUPPORTED_MEDIA` at complete |
 | Photo types | JPEG, PNG, WebP | `415 UNSUPPORTED_MEDIA` |
 | Photos per post | 10 | `422 VALIDATION` |
 | Post text | 2200 characters | `422 VALIDATION` |
@@ -91,7 +91,7 @@ The daily limits send `Retry-After`: whole seconds until enough of the oldest co
 | Upload slots, declared bytes, storage, posts, stories, pending uploads, rates | Yes, per member, in the database transaction |
 | Size of a photo | Yes: declared size checked at the slot (15 MB), stored size pinned by the signed URL (403 otherwise) |
 | Content type and real image format | Yes: signed content type, then decoding and re-encoding at complete (415) |
-| Decoded pixels | Yes: 20 MP checked before decoding (a decoded 20 MP image is about 80 MB; four are processed at a time per node) |
+| Decoded pixels | Yes: 12 MP checked before decoding (measured peak about 135 MB per photo; two are processed at a time per node, `MEDIA_PROCESS_SLOTS`) |
 | Text lengths, photos per post | Yes |
 | Retention, expiry, who may see what | Yes |
 | Chat photos: byte sizes, counts, quotas, rates, retention, who may send | Yes, see [chat attachments](21-chat-attachments.md) |

@@ -83,8 +83,6 @@ func TestFirstContactCapUntilThePeerReplies(t *testing.T) {
 	for i := 0; i < store.FirstContactMessages; i++ {
 		h.expect(h.send(alice, "POST", path+"/messages", message(phone, bobPhone)), 200, "")
 	}
-	// A reaction is not a message: it neither counts toward the cap nor is blocked by it.
-	h.expect(h.send(alice, "POST", path+"/messages", auxMessage(phone, bobPhone)), 200, "")
 	over := message(phone, bobPhone)
 	r := h.expect(h.send(alice, "POST", path+"/messages", over), 403, "AWAITING_REPLY")
 	if r.status != 403 {

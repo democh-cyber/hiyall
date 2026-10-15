@@ -55,6 +55,12 @@ type Entitlements struct {
 	ProfileViewsPerDay    int
 	NearbyQueriesPerDay   int
 	LocationChangesPerDay int
+	// Encrypted chat relay (re-audit CHAT-4). ChatMessagesPerConversationPerDay caps what one member may send
+	// in one conversation per rolling 24 hours (every message, reactions included, counted by creation time and
+	// never refunded). ChatBacklogPerDevice caps the undelivered envelopes one device may hold on the relay;
+	// a send that would push any recipient device past it is refused with 429 RECIPIENT_BACKLOG.
+	ChatMessagesPerConversationPerDay int
+	ChatBacklogPerDevice              int
 }
 
 // EntitlementsFor returns the limits of a plan. An unknown plan gets Free, so a bad value can only
@@ -83,6 +89,9 @@ func EntitlementsFor(plan Plan) Entitlements {
 		ProfileViewsPerDay:     500,
 		NearbyQueriesPerDay:    200,
 		LocationChangesPerDay:  5,
+
+		ChatMessagesPerConversationPerDay: 2000,
+		ChatBacklogPerDevice:              2000,
 	}
 	switch plan {
 	case PlanFree:

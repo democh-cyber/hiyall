@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"hiyall/services/api/internal/clientip"
 )
 
 func TestTOTPMatchesRFC6238Vectors(t *testing.T) {
@@ -261,6 +263,8 @@ func TestTrustedProxyMustTerminateTLS(t *testing.T) {
 	if rec.Code != 401 || rec.Header().Get("Strict-Transport-Security") == "" {
 		t.Fatal(rec.Code, rec.Header())
 	}
+	// The proxy's address is configured: only its X-Forwarded-For is believed (audit, admin clientIP).
+	cfg.TrustedProxies, _ = clientip.ParseCIDRs("10.0.0.0/8")
 	s := NewServer(nil, cfg)
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "10.0.0.1:1"
@@ -268,7 +272,29 @@ func TestTrustedProxyMustTerminateTLS(t *testing.T) {
 	if s.clientIP(r) != "198.51.100.4" {
 		t.Fatal("must use the address the proxy appended")
 	}
-	s.cfg.TrustProxy = false
+	// A client that reaches the console directly cannot choose its address by sending the header.
+	direct := httptest.NewRequest("GET", "/", nil)
+	direct.RemoteAddr = "203.0.113.50:9999"
+	direct.Header.Set("X-Forwarded-For", "198.51.100.4")
+	if got := s.clientIP(direct); got != "203.0.113.50" {
+		t.Fatalf("a forwarded header from an untrusted peer was believed: %q", got)
+	}
+	// The proxy's single-address header, when configured, is preferred.
+	cfg.ClientIPHeader = "Fly-Client-IP"
+	s = NewServer(nil, cfg)
+	r.Header.Set("Fly-Client-IP", "192.0.2.77")
+	if s.clientIP(r) != "192.0.2.77" {
+		t.Fatal("the proxy's client address header was ignored")
+	}
+	// TrustProxy without the proxy's address believes nobody.
+	cfg.TrustedProxies, cfg.ClientIPHeader = nil, ""
+	s = NewServer(nil, cfg)
+	if s.clientIP(r) != "10.0.0.1" {
+		t.Fatal("without ADMIN_TRUSTED_PROXY_CIDRS the peer is the client")
+	}
+	cfg.TrustProxy = false
+	cfg.TrustedProxies, _ = clientip.ParseCIDRs("10.0.0.0/8")
+	s = NewServer(nil, cfg)
 	if s.clientIP(r) != "10.0.0.1" {
 		t.Fatal("forwarded headers are not trusted without a proxy")
 	}

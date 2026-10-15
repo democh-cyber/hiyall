@@ -28,10 +28,17 @@ var ContentTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image
 
 const (
 	MaxUploadBytes = 15 << 20
-	// MaxPixels bounds decode memory: a small file can declare a huge canvas.
-	MaxPixels = 20_000_000
-	FullEdge  = 2048
-	ThumbEdge = 640
+	// MaxPixels bounds decode memory: a small file can declare a huge canvas. 12 MP covers every phone
+	// camera's default photo (12 MP, 4000x3000); a 20 MP PNG measured about 178 MB of heap per decode
+	// (audit API-5), so with the process slots (MEDIA_PROCESS_SLOTS, default 2) the worst case is bounded by
+	// ProcessHeapBudget below. TestProcessPeakHeapStaysUnderBudget asserts it.
+	MaxPixels = 12_000_000
+	// ProcessHeapBudget is the most extra heap one Process call may hold at its peak for a MaxPixels image
+	// (measured with runtime.MemStats; see the test and docs/deployment/10-deploy-guide.md). The deploy
+	// guide's memory table is slots x this, plus the baseline.
+	ProcessHeapBudget = 160 << 20
+	FullEdge          = 2048
+	ThumbEdge         = 640
 )
 
 var ErrUnsupported = errors.New("unsupported image")
@@ -322,4 +329,36 @@ func (m *Memory) Keys() []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// Blur preview of a quarantined photo (docs/security/16-csam-and-illegal-content.md). The console proxies THIS
+// by default, never the original: the picture is shrunk to BlurEdge on its long side and blurred hard, in the
+// server, so the browser never holds the unblurred pixels unless an administrator takes the audited reveal
+// step. A CSS filter would leave the original in the page.
+const (
+	// BlurEdge is the long side of the preview, in pixels.
+	BlurEdge = 240
+	// BlurSigma is the Gaussian blur radius applied after the shrink: strong enough that faces, text and
+	// the shape of a body are gone, while a person can still tell a photo of a room from a screenshot.
+	BlurSigma = 9.0
+)
+
+// BlurredPreview returns a small, heavily blurred JPEG of data (the processed copy of a quarantined upload,
+// which is at most FullEdge on a side). Metadata is dropped like in Process.
+func BlurredPreview(data []byte) ([]byte, error) {
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || (format != "jpeg" && format != "png" && format != "webp") || config.Width <= 0 || config.Height <= 0 || config.Width*config.Height > MaxPixels {
+		return nil, ErrUnsupported
+	}
+	img, err := imaging.Decode(bytes.NewReader(data), imaging.AutoOrientation(true))
+	if err != nil {
+		return nil, ErrUnsupported
+	}
+	small := imaging.Fit(img, BlurEdge, BlurEdge, imaging.Box)
+	blurred := imaging.Blur(small, BlurSigma)
+	var buf bytes.Buffer
+	if err = jpeg.Encode(&buf, blurred, &jpeg.Options{Quality: 55}); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

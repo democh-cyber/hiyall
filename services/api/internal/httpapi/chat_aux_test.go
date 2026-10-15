@@ -192,6 +192,8 @@ func TestAuxMessagesHaveTheirOwnBoundaryAndStillUseTheSendLimiter(t *testing.T) 
 		h := newSocialHarness(t)
 		h.api.messages = newKeyedLimiter(rate.Limit(10000), 10000, 16) // isolate the aux limiter
 		path, phone, bobPhone := friendsWithChat(h)
+		// Bob has written, so the first-contact cap (which counts reactions too) no longer applies.
+		h.expect(h.send(bob, "POST", path+"/messages", message(bobPhone, phone)), 200, "")
 		for i := 0; i < 60; i++ {
 			h.expect(h.send(alice, "POST", path+"/messages", auxMessage(phone, bobPhone)), 200, "")
 		}
@@ -209,6 +211,7 @@ func TestAuxMessagesHaveTheirOwnBoundaryAndStillUseTheSendLimiter(t *testing.T) 
 	t.Run("a reaction also spends the normal send limiter", func(t *testing.T) {
 		h := newSocialHarness(t)
 		path, phone, bobPhone := friendsWithChat(h)
+		h.expect(h.send(bob, "POST", path+"/messages", message(bobPhone, phone)), 200, "")
 		ok := 0
 		for i := 0; i < 55; i++ {
 			if h.send(alice, "POST", path+"/messages", auxMessage(phone, bobPhone)).status == 200 {

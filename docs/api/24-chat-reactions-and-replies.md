@@ -37,7 +37,7 @@ The relay cannot read message kinds, so this is a hint set by the sender. It is 
 
 An idempotent replay of a stored reaction is answered from the stored row and stays quiet whatever the replay's own `aux` says.
 
-The limiter is the shared `ratelimit` package: in memory per node by default, one bucket per key through the database with `RATE_LIMIT_BACKEND=postgres`. The key is `<userId>:<conversationId>`. Counting is by token bucket: from a full bucket a sender can send 60 at once and then one every ten seconds. There is no per-day message quota in the API today (only new conversations per day), so there is nothing else for a reaction to count against beyond the send limiter above.
+The limiter is the shared `ratelimit` package: in memory per node by default, one bucket per key through the database with `RATE_LIMIT_BACKEND=postgres`. The key is `<userId>:<conversationId>`. Counting is by token bucket: from a full bucket a sender can send 60 at once and then one every ten seconds. A reaction also counts toward the per-conversation daily message quota below (2000 per sender per conversation per rolling 24 hours, `429 CHAT_DAILY_LIMIT`), as every message does.
 
 ## Storage
 
@@ -49,4 +49,15 @@ Migration `0032_message_aux.sql`: `ALTER TABLE messages ADD COLUMN aux boolean N
 
 ## First-contact cap and `noop` (13 October 2026)
 
-`aux: "reaction"` is also used for the app's quiet `noop` message (an empty payload that starts a fresh Olm session when a peer's messages stopped decrypting; see [the implementation record](../security/13-encrypted-chat-implementation.md#hardening-after-the-13-october-audit)). Both are auxiliary: they never count toward the first-contact cap below. For an ordinary message: until the peer has sent a non-auxiliary message in the conversation, a sender may send 3; the fourth is refused with `403 AWAITING_REPLY` (a replay of a stored message id is still answered from the stored row). The peer can always write back, which lifts the cap for good.
+`aux: "reaction"` is also used for the app's quiet `noop` message (an empty payload that starts a fresh Olm session when a peer's messages stopped decrypting; see [the implementation record](../security/13-encrypted-chat-implementation.md#hardening-after-the-13-october-audit)). Both are auxiliary, and **both count toward the first-contact cap** (changed in the second audit, CHAT-3: the relay cannot tell a reaction from text, so exempting `aux` let a stranger send 2 KiB texts as "quiet" messages past the cap). Until the peer has sent a non-auxiliary message in the conversation, a sender may send 3 messages of any kind, aux included; the fourth is refused with `403 AWAITING_REPLY` (a replay of a stored message id is still answered from the stored row). The peer's own reaction or noop is not a reply. The peer can always write back, which lifts the cap for good. A reaction is only meaningful once the peer has written, so the one visible effect is that a reaction to your own message before they reply can be refused.
+
+**The receiver cross-checks the hint.** The inbox item (`GET /v1/devices/{id}/inbox`) carries `aux: true` when the sender marked the message. A client drops any such message whose decrypted `kind` is not `reaction` or `noop`: no bubble, no notice, acknowledged. So the hint cannot deliver a message.
+
+## Stored-ciphertext limits (second audit, CHAT-4)
+
+Two limits apply to every send, aux messages included, and a replay of a stored message id is answered before either:
+
+- **`429 RECIPIENT_BACKLOG`** (with `Retry-After: 60`): a device that must receive the message (the peer's, or the sender's own other device) already holds 2000 undelivered envelopes (`Entitlements.ChatBacklogPerDevice`). The recipient draining its inbox frees room at once.
+- **`429 CHAT_DAILY_LIMIT`** (with `Retry-After` until the oldest counted message ages out): the sender already sent 2000 messages in this conversation in the last 24 hours (`Entitlements.ChatMessagesPerConversationPerDay`), reactions included.
+
+The app keeps such a message as "Not sent" with a retry (both are 429s) and says why.

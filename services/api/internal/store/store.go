@@ -347,7 +347,15 @@ func (s *Store) resolveOIDCSlow(ctx context.Context, issuer, subject, sid string
 	// A member who asked to delete their account signs in like anyone else; the API then serves them
 	// only the deletion routes (Principal.PendingDeletion). Any other state is refused.
 	var status string
-	if err = tx.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, id).Scan(&status); err != nil || (status != "active" && status != "pending_deletion") {
+	// A database error here (lock timeout, deadlock, connection lost) is the server's, and reaches the caller as
+	// such (a 503 the app retries); only a missing or inactive account is a refusal.
+	if err = tx.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, id).Scan(&status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Principal{}, domain.ErrUnauthorized
+		}
+		return Principal{}, err
+	}
+	if status != "active" && status != "pending_deletion" {
 		return Principal{}, domain.ErrUnauthorized
 	}
 	// A Firebase sign-in from before "sign out everywhere else" never gets a session row it
