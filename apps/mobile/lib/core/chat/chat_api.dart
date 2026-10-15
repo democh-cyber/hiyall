@@ -297,6 +297,19 @@ class ChatApi {
           as int;
   Future<List<Map<String, dynamic>>> myDevices() async =>
       _items(await _call('GET', '/v1/me/devices'));
+
+  /// Devices of this account that another session removed in the last 30 days (`removed` of the same
+  /// route as [myDevices]): `{deviceId, removedAt}`, newest first.
+  Future<List<Map<String, dynamic>>> removedDevices() async {
+    final data = await _call('GET', '/v1/me/devices');
+    final raw = data is Map ? data['removed'] : null;
+    return [
+      if (raw is List)
+        for (final item in raw)
+          if (item is Map) Map<String, dynamic>.from(item),
+    ];
+  }
+
   Future<void> revokeDevice(String deviceId) =>
       _call('DELETE', '/v1/devices/$deviceId');
   Future<void> setPushToken(String deviceId, String provider, String token) =>

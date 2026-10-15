@@ -179,6 +179,20 @@ class PhotoOutbox {
     }
   }
 
+  /// Completes when every upload that was running has stopped (after [dispose] cancelled them).
+  Future<void> drain() async {
+    await Future.wait([
+      ..._preparing,
+      for (final run in _runs.values) run.then<void>((_) {}, onError: (_) {}),
+    ]);
+  }
+
+  void _open() {
+    if (_disposed) {
+      throw const ChatFailure('DISPOSED', 'The chat was closed.');
+    }
+  }
+
   /// Entries still waiting to be sent (a failed or interrupted photo).
   List<OutboxEntry> get pending => List.unmodifiable(_entries.values);
   bool isRunning(String messageId) => _running.containsKey(messageId);
@@ -198,7 +212,29 @@ class PhotoOutbox {
     Uint8List input, {
     String caption = '',
     ChatMessage? replyTo,
-  }) async {
+  }) =>
+      _tracked(() => _enqueue(conversationId, peerId, input, caption, replyTo));
+
+  final _preparing = <Future<void>>{};
+
+  /// Runs [work] so that [drain] can wait for it: preparing a photo writes files, which must not go on
+  /// after the account's data was wiped.
+  Future<T> _tracked<T>(Future<T> Function() work) {
+    _open();
+    final run = work();
+    final done = run.then<void>((_) {}, onError: (_) {});
+    _preparing.add(done);
+    done.whenComplete(() => _preparing.remove(done));
+    return run;
+  }
+
+  Future<ChatMessage> _enqueue(
+    String conversationId,
+    String peerId,
+    Uint8List input,
+    String caption,
+    ChatMessage? replyTo,
+  ) async {
     await load();
     if (input.length > maxPhotoInput) {
       throw const ChatFailure(
@@ -261,6 +297,7 @@ class PhotoOutbox {
       preview: photo.preview,
       caption: sanitizeText(caption).trim(),
     );
+    _open(); // disposed while the photo was being encrypted: nothing is written
     final folder = _folder(messageId);
     await folder.create(recursive: true);
     await File('${folder.path}/full.bin')
@@ -300,6 +337,7 @@ class PhotoOutbox {
 
   /// Resumes a failed photo from the step it stopped at.
   Future<void> retry(String conversationId, String messageId) async {
+    _open();
     await load();
     final entry = _entries[messageId];
     if (entry == null) {

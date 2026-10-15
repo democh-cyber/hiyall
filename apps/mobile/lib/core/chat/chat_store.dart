@@ -39,3 +39,60 @@ class MemoryChatStore implements ChatStore {
   @override
   Future<T> batch<T>(Future<T> Function() work) => work();
 }
+
+/// A [ChatStore] that stops accepting writes once [closed] says so, and can wait for the writes that were
+/// already running. The engine hands it to everything that writes (history, outbox, its own notes), so a
+/// late write from work that was in flight when the engine was disposed can never put a file or an entry
+/// back after the account's data was wiped. Reads stay open.
+class GuardedChatStore implements ChatStore {
+  final ChatStore inner;
+  final bool Function() closed;
+  GuardedChatStore(this.inner, this.closed);
+
+  final _running = <Future<void>>{};
+
+  /// Completes when every write that had started has finished (or failed).
+  Future<void> drain() async {
+    while (_running.isNotEmpty) {
+      await Future.wait(_running.toList());
+    }
+  }
+
+  Never _refuse() => throw const ChatStoreClosed();
+
+  Future<T> _track<T>(Future<T> work) {
+    final done = work.then<void>((_) {}, onError: (_) {});
+    _running.add(done);
+    done.whenComplete(() => _running.remove(done));
+    return work;
+  }
+
+  @override
+  Future<String?> read(String key) => inner.read(key);
+  @override
+  Future<List<String>> keys() => inner.keys();
+  @override
+  Future<void> write(String key, String value) {
+    if (closed()) _refuse();
+    return _track(inner.write(key, value));
+  }
+
+  @override
+  Future<void> delete(String key) {
+    if (closed()) _refuse();
+    return _track(inner.delete(key));
+  }
+
+  @override
+  Future<T> batch<T>(Future<T> Function() work) {
+    if (closed()) _refuse();
+    return _track(inner.batch(work));
+  }
+}
+
+/// A write was refused because the engine it belongs to was disposed (sign-out).
+class ChatStoreClosed implements Exception {
+  const ChatStoreClosed();
+  @override
+  String toString() => 'The chat was closed.';
+}

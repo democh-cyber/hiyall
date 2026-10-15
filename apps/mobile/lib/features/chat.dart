@@ -15,6 +15,7 @@ import '../core/app_info.dart';
 import '../core/avatar_upload.dart';
 import '../core/chat/chat_api.dart';
 import '../core/chat/chat_attachment.dart';
+import '../core/chat/chat_backup_exclusion.dart';
 import '../core/chat/chat_engine.dart';
 import '../core/chat/chat_local_data.dart';
 import '../core/chat/chat_reactions.dart';
@@ -72,6 +73,10 @@ Future<void>? _rust;
 /// another account) removes the first account's cache and unsent uploads.
 String? _mediaOwner;
 
+/// The previous engine's shutdown (see [ChatEngine.dispose]): the next build waits for it before it wipes
+/// anything, so work that was in flight cannot write after the wipe.
+Future<void> _previousEngine = Future.value();
+
 /// The chat API for the signed-in account without an engine: the device list
 /// and removing a device work even when the engine could not start (for
 /// example because the account already has ten devices).
@@ -115,6 +120,7 @@ final chatEngineProvider = FutureProvider<ChatEngine?>((ref) async {
     if (previous == null) return null;
   }
   final root = await getApplicationSupportDirectory();
+  await _previousEngine;
   if (previous != null && previous != session?.userId) {
     _mediaOwner = null;
     await ChatLocalData.wipeAccount(
@@ -126,6 +132,8 @@ final chatEngineProvider = FutureProvider<ChatEngine?>((ref) async {
   if (session == null) return null;
   _mediaOwner = session.userId;
   await ChatLocalData.eraseAfterReinstall(root: root, store: secure);
+  // iOS: the chat folders are flagged out of backups before anything is written to them.
+  await ChatBackupExclusion.apply(root);
   await (_rust ??= RustLib.init());
   // Everything the engine keeps lives in one encrypted file per account,
   // committed atomically (see SnapshotChatStore); entries an earlier build
@@ -175,7 +183,7 @@ final chatEngineProvider = FutureProvider<ChatEngine?>((ref) async {
   ref.onDispose(() {
     notifier.signOutHooks.remove(removeDevice);
     lifecycle.dispose();
-    engine.dispose();
+    _previousEngine = engine.dispose();
   });
   await engine.start();
   if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused) {
@@ -218,6 +226,10 @@ String chatError(Object error) =>
       ChatFailure(code: 'TOO_MANY_DEVICES') => 'This account has too many chat devices. Remove one in Profile, Chat devices.',
       ChatFailure(code: 'RATE_LIMITED') =>
         'You’re sending a lot. Wait a moment.',
+      ChatFailure(code: 'RECIPIENT_BACKLOG') =>
+        'They haven’t picked up their earlier messages yet. Try again later.',
+      ChatFailure(code: 'CHAT_DAILY_LIMIT') =>
+        'You’ve sent a lot of messages in this chat today. Try again later.',
       ChatFailure(:final message) => message,
       _ => 'Something went wrong with encryption on this device.',
     };
@@ -494,9 +506,57 @@ class _ChatNotice extends StatelessWidget {
   );
 }
 
-/// Tells the person that a device was added to their account, with a way to
-/// look at the devices. Nothing else about chat is hidden because of it: it is
-/// a heads-up, since a device that is not yours can read new messages.
+/// What the new-device banner says for the most pressing notice in [notices]: this phone's own data could
+/// not be unlocked, this phone was reset, a device was added, one was removed, or the devices were never
+/// reviewed on this phone. Returns the title, the body and the label of the button.
+({String title, String body, String action}) deviceBannerText(
+  List<DeviceNotice> notices,
+) {
+  final kind =
+      [
+        DeviceNoticeKind.locked,
+        DeviceNoticeKind.reset,
+        DeviceNoticeKind.added,
+        DeviceNoticeKind.removed,
+        DeviceNoticeKind.review,
+      ].firstWhere(
+        (k) => notices.any((n) => n.kind == k),
+        orElse: () => DeviceNoticeKind.added,
+      );
+  return switch (kind) {
+    DeviceNoticeKind.locked => (
+      title:
+          'Couldn’t unlock your encrypted data on this device. Starting fresh.',
+      body: 'Chats you had on this phone are gone, and earlier encrypted messages can’t be opened here. New chats work as usual.',
+      action: 'Manage devices',
+    ),
+    DeviceNoticeKind.reset => (
+      title: 'This phone started a new secure chat identity',
+      body: 'It was removed from your account, or went unused for a long time, so its chat keys were replaced. If that wasn’t you, review your devices and sign in again.',
+      action: 'Review devices',
+    ),
+    DeviceNoticeKind.removed => (
+      title: 'A device was removed from your account',
+      body: 'If it wasn’t you, someone else may have your sign-in. Review your devices and sign in again.',
+      action: 'Review devices',
+    ),
+    DeviceNoticeKind.review => (
+      title: 'Review your devices',
+      body: 'Other devices are signed in to your account. They can read your new chats. If one isn’t yours, remove it and sign in again.',
+      action: 'Review devices',
+    ),
+    DeviceNoticeKind.added => (
+      title: 'A new device was added to your account',
+      body: 'It can read your new chats. If it wasn’t you, remove it and sign in again.',
+      action: 'Manage devices',
+    ),
+  };
+}
+
+/// Tells the person that something changed about their account's devices (one was added or removed, this
+/// phone was reset, or there are devices to review), with a way to look at them. It stays until dismissed.
+/// Nothing else about chat is hidden because of it: it is a heads-up, since a device that is not yours can
+/// read new messages.
 class NewDeviceBanner extends StatefulWidget {
   final ChatEngine engine;
   const NewDeviceBanner({super.key, required this.engine});
@@ -536,6 +596,7 @@ class _NewDeviceBannerState extends State<NewDeviceBanner> {
   Widget build(BuildContext context) {
     if (widget.engine.ownDeviceNotices.isEmpty) return const SizedBox.shrink();
     final t = ChatTokens.of(context);
+    final words = deviceBannerText(widget.engine.ownDeviceNotices);
     return Padding(
       padding: const EdgeInsets.fromLTRB(
         ChatMetrics.pagePadding,
@@ -564,7 +625,7 @@ class _NewDeviceBannerState extends State<NewDeviceBanner> {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      'A new device was added to your account',
+                      words.title,
                       style: TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.w700,
@@ -577,7 +638,7 @@ class _NewDeviceBannerState extends State<NewDeviceBanner> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(30, 4, 8, 0),
                 child: Text(
-                  'It can read your new chats. If it wasn’t you, remove it and sign in again.',
+                  words.body,
                   style: TextStyle(
                     fontSize: 13,
                     height: 1.35,
@@ -597,7 +658,7 @@ class _NewDeviceBannerState extends State<NewDeviceBanner> {
                   FilledButton(
                     key: const Key('new-device-manage'),
                     onPressed: () => context.go('/profile/devices'),
-                    child: const Text('Manage devices'),
+                    child: Text(words.action),
                   ),
                 ],
               ),

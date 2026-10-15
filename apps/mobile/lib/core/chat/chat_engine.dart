@@ -273,24 +273,59 @@ class ChatConversation {
   bool get muted => mutedUntil?.isAfter(DateTime.now()) ?? false;
 }
 
+/// The saved account cannot be opened; see [ChatEngine._loadIdentity].
+class _StateLocked implements Exception {
+  const _StateLocked();
+}
+
 class _Device {
   final String id, identityKey, signingKey;
   const _Device(this.id, this.identityKey, this.signingKey);
 }
 
-/// A device that was added to an account, noticed by this one.
+/// What a [DeviceNotice] says happened.
+enum DeviceNoticeKind {
+  /// A device was added to this account since this phone last looked.
+  added,
+
+  /// This phone had no record of the account's devices (a new install, a sign-in, a reset) and found
+  /// others on the relay: the person is asked to look at them, nothing is pinned silently.
+  review,
+
+  /// A device this phone knew of was removed by another session (the relay's record, or it vanished).
+  removed,
+
+  /// This phone's own chat identity was replaced because the relay no longer knew it (removed from the
+  /// account, or unused for a long time).
+  reset,
+
+  /// This phone's encrypted data could not be unlocked, so it started again with a new identity.
+  locked,
+}
+
+/// Something about this account's devices that the person should see, noticed by this phone. Kept until
+/// dismissed, across restarts.
 class DeviceNotice {
+  /// The device it is about; empty for [DeviceNoticeKind.review], [reset] and [locked].
   final String deviceId;
   final DateTime at;
-  const DeviceNotice(this.deviceId, this.at);
+  final DeviceNoticeKind kind;
+  const DeviceNotice(
+    this.deviceId,
+    this.at, [
+    this.kind = DeviceNoticeKind.added,
+  ]);
   Map<String, dynamic> toJson() => {
     'id': deviceId,
     'at': at.toUtc().toIso8601String(),
+    if (kind != DeviceNoticeKind.added) 'k': kind.name,
   };
   static DeviceNotice? fromJson(Object? raw) {
     if (raw is! Map) return null;
     final id = raw['id'], at = DateTime.tryParse('${raw['at']}');
-    return id is String && at != null ? DeviceNotice(id, at) : null;
+    final kind =
+        DeviceNoticeKind.values.asNameMap()[raw['k']] ?? DeviceNoticeKind.added;
+    return id is String && at != null ? DeviceNotice(id, at, kind) : null;
   }
 }
 
@@ -369,6 +404,18 @@ class ChatEngine {
   Timer? _timer;
   bool _started = false;
 
+  /// Set by [dispose]: nothing new starts, and no write reaches the store any more.
+  bool _disposed = false;
+  Future<void>? _drained;
+
+  /// How long [dispose] waits for work that was in flight (a poll, a send, an upload) before it lets the
+  /// caller go on; whatever is still running after that can no longer write anything.
+  static const drainTimeout = Duration(seconds: 5);
+
+  /// Every write the engine and what it owns (history, outbox) make goes through this, so [dispose] can
+  /// close it and wait for what already started.
+  late final GuardedChatStore _store = GuardedChatStore(store, () => _disposed);
+
   /// The app is in the background: the inbox timer is stopped (see [pause]).
   bool _paused = false;
   Duration _pollEvery = Duration.zero;
@@ -436,7 +483,7 @@ class ChatEngine {
     // Tests may stand in for the downloader.
     _media = media ?? _media;
     _log = ChatHistory(
-      store,
+      _store,
       (id) => _k('history.$id'),
       clock: _clock,
       onChange: (id) {
@@ -471,7 +518,7 @@ class ChatEngine {
         api: api,
         transport: blobTransport,
         codec: blobCodec,
-        store: store,
+        store: _store,
         history: _log,
         cache: cache!,
         dir: Directory('${root.path}/chat_outbox'),
@@ -503,6 +550,7 @@ class ChatEngine {
   String _k(String name) => 'hiyall.chat.$userId.$name';
 
   Future<T> _locked<T>(Future<T> Function() work) {
+    if (_disposed) return Future.error(const ChatStoreClosed());
     final result = _queue.then((_) => work());
     _queue = result.then((_) {}, onError: (_) {});
     return result;
@@ -511,8 +559,15 @@ class ChatEngine {
   Future<void> start({Duration poll = const Duration(seconds: 2)}) =>
       _locked(() async {
         if (_started) return;
-        await _loadIdentity();
         await _loadNotes();
+        try {
+          await _loadIdentity();
+        } on _StateLocked {
+          // The saved account cannot be opened (its key is gone or unusable, or the entry is damaged). Nothing
+          // here can be recovered: start again with a new identity and say so (re-audit CHAT-5).
+          await _resetIdentity(because: DeviceNoticeKind.locked);
+          await _loadIdentity();
+        }
         try {
           await _register();
         } on ChatFailure catch (failure) {
@@ -520,12 +575,14 @@ class ChatEngine {
           // was revoked (removed from the device list, signed out elsewhere,
           // unused for 90 days). The old identity is of no use: make a new one.
           if (failure.code != 'DEVICE_CONFLICT') rethrow;
-          await _resetIdentity();
+          await _resetIdentity(because: DeviceNoticeKind.reset);
           await _loadIdentity();
           await _register();
         }
         _started = true;
-        await ChatLocalData.markOwner(store, userId);
+        // A wipe (sign-out) closes this engine first and waits for what it was doing.
+        ChatLocalData.registerDrain(userId, dispose);
+        await ChatLocalData.markOwner(_store, userId);
         await _afterStart();
         if (poll > Duration.zero) {
           _pollEvery = poll;
@@ -556,14 +613,32 @@ class ChatEngine {
     try {
       // Pin this account's own devices, so a later one is noticed.
       await _devices(userId);
+      await _noticeRemoved();
     } catch (_) {}
   }
 
-  void dispose() {
+  /// Stops the engine for good: the inbox timer and uploads stop, nothing new starts, and no write reaches the
+  /// store from now on. The returned future completes when the work that was in flight has finished (at most
+  /// [drainTimeout]), so a caller that wipes the account's files next can be sure nothing writes them again.
+  /// Safe to call twice and to ignore.
+  Future<void> dispose() => _drained ??= _dispose();
+
+  Future<void> _dispose() async {
+    _disposed = true;
     _timer?.cancel();
-    _outbox?.dispose();
+    _timer = null;
+    final outbox = _outbox;
+    outbox?.dispose();
+    _media?.cache.close();
     _changes.close();
     _ownDeviceChanges.close();
+    ChatLocalData.unregisterDrain(userId, dispose);
+    try {
+      await Future.wait<void>([_queue, ?outbox?.drain(), _store.drain()])
+          .timeout(drainTimeout);
+    } catch (_) {
+      // Whatever is still running can no longer write.
+    }
   }
 
   /// Opens (or creates) the key, account, sessions and device id from the
@@ -572,37 +647,51 @@ class ChatEngine {
   /// builds (`account`, `sessions`) are read once and moved.
   Future<void> _loadIdentity() async {
     final savedKey = await store.read(_k('pickleKey'));
-    _pickleKey = savedKey == null
-        ? List<int>.generate(32, (_) => _random.nextInt(256))
-        : base64Decode(savedKey);
+    try {
+      _pickleKey = savedKey == null
+          ? List<int>.generate(32, (_) => _random.nextInt(256))
+          : base64Decode(savedKey);
+    } on FormatException {
+      throw const _StateLocked();
+    }
     if (savedKey == null) {
-      await store.write(_k('pickleKey'), base64Encode(_pickleKey));
+      await _store.write(_k('pickleKey'), base64Encode(_pickleKey));
     }
     _sessions.clear();
     _fbRotated = _fbForgetAt = null;
     final combined = await store.read(_k('state'));
     var legacy = false;
     Object? sessionData;
-    if (combined != null) {
-      final j = jsonDecode(combined) as Map;
-      _account = OlmAccount.restore(
-        pickle: j['account'] as String,
-        pickleKey: _pickleKey,
-      );
-      sessionData = j['sessions'];
-      final fb = j['fb'];
-      if (fb is Map) {
-        _fbRotated = DateTime.tryParse('${fb['rot']}');
-        _fbForgetAt = DateTime.tryParse('${fb['forget']}');
+    // Storage reads come first and may fail on their own (a keystore that is not ready): that is an error
+    // to retry later, never a reason to throw an identity away. Only bytes that were read and cannot be
+    // opened (a missing or different pickle key, a damaged entry) make [_StateLocked]; a device with no
+    // account at all simply makes one.
+    final savedAccount = combined == null
+        ? await store.read(_k('account'))
+        : null;
+    final old = combined == null ? await store.read(_k('sessions')) : null;
+    try {
+      if (combined != null) {
+        final j = jsonDecode(combined) as Map;
+        _account = OlmAccount.restore(
+          pickle: j['account'] as String,
+          pickleKey: _pickleKey,
+        );
+        sessionData = j['sessions'];
+        final fb = j['fb'];
+        if (fb is Map) {
+          _fbRotated = DateTime.tryParse('${fb['rot']}');
+          _fbForgetAt = DateTime.tryParse('${fb['forget']}');
+        }
+      } else {
+        _account = savedAccount == null
+            ? OlmAccount.create()
+            : OlmAccount.restore(pickle: savedAccount, pickleKey: _pickleKey);
+        sessionData = old == null ? null : jsonDecode(old);
+        legacy = savedAccount != null || old != null;
       }
-    } else {
-      final savedAccount = await store.read(_k('account'));
-      _account = savedAccount == null
-          ? OlmAccount.create()
-          : OlmAccount.restore(pickle: savedAccount, pickleKey: _pickleKey);
-      final old = await store.read(_k('sessions'));
-      sessionData = old == null ? null : jsonDecode(old);
-      legacy = savedAccount != null || old != null;
+    } catch (_) {
+      throw const _StateLocked();
     }
     if (sessionData is Map) {
       sessionData.forEach((device, value) {
@@ -625,10 +714,10 @@ class ChatEngine {
     }
     deviceId = await store.read(_k('deviceId')) ?? newUuid4(_random);
     await _saveState();
-    await store.write(_k('deviceId'), deviceId);
+    await _store.write(_k('deviceId'), deviceId);
     if (legacy) {
-      await store.delete(_k('account'));
-      await store.delete(_k('sessions'));
+      await _store.delete(_k('account'));
+      await _store.delete(_k('sessions'));
     }
   }
 
@@ -651,32 +740,66 @@ class ChatEngine {
   }
 
   /// Forgets this device's identity (account, sessions, id) so a new one is
-  /// made. History and what is pinned about other people stay; this account's
-  /// own pinned devices and every verification go, because both depend on the
-  /// identity that is being replaced.
-  Future<void> _resetIdentity() async {
+  /// made, and says why with [because] (a notice the person sees until they
+  /// dismiss it). Only this device's own state goes, plus the verification
+  /// marks, which depend on the identity being replaced. History stays, and so
+  /// does every pin: other people's devices, and this account's OTHER devices.
+  /// Keeping those is what lets the relay's list be compared afterwards, so a
+  /// device added by someone else while this one was being reset is announced,
+  /// never pinned silently (re-audit CHAT-2).
+  ///
+  /// The order matters and survives a kill between any two steps: the account
+  /// state goes first and the key that opens it last, so a stop in the middle
+  /// leaves at worst a key with nothing to open, never state with no key
+  /// (which would be a lock-out on the next start).
+  Future<void> _resetIdentity({DeviceNoticeKind? because}) async {
+    final oldDevice = await store.read(_k('deviceId'));
+    // The old identity may still be listed on the relay (its keys are lost here, so nothing can use it):
+    // ask for it to be removed at the next start, so it does not stay among the account's devices.
+    if (oldDevice != null) {
+      await ChatLocalData.rememberRevoke(_store, userId, oldDevice);
+    }
     for (final name in [
-      'pickleKey',
-      'account',
       'state',
+      'account',
       'sessions',
       'deviceId',
+      'pickleKey',
     ]) {
-      await store.delete(_k(name));
+      await _store.delete(_k(name));
     }
     _sessions.clear();
     _fbRotated = _fbForgetAt = null;
     _unwedged.clear();
-    _trust.remove(userId);
-    await store.write(_k('trust'), jsonEncode(_trust));
-    _ownNotices = [];
+    final own = _trust[userId];
+    if (own != null && oldDevice != null) {
+      own.remove(oldDevice);
+      if (own.isEmpty) _trust.remove(userId);
+    }
+    await _store.write(_k('trust'), jsonEncode(_trust));
     _verified.clear();
     _verifyChanged.clear();
+    if (because != null) {
+      _addOwnNotice(DeviceNotice('', _clock().toUtc(), because));
+    }
     await _saveNotes();
+    if (because != null && !_ownDeviceChanges.isClosed) {
+      _ownDeviceChanges.add(null);
+    }
+  }
+
+  /// Adds a notice for the person to see; one about the same thing is not added twice.
+  void _addOwnNotice(DeviceNotice notice) {
+    final exists = _ownNotices.any(
+      (n) => n.kind == notice.kind && n.deviceId == notice.deviceId,
+    );
+    if (exists) return;
+    final all = [..._ownNotices, notice];
+    _ownNotices = all.length > 10 ? all.sublist(all.length - 10) : all;
   }
 
   /// Account and every session in one write.
-  Future<void> _saveState() => store.write(
+  Future<void> _saveState() => _store.write(
     _k('state'),
     jsonEncode({
       'v': 2,
@@ -742,15 +865,15 @@ class ChatEngine {
   }
 
   /// The three note entries as one commit.
-  Future<void> _saveNotes() => store.batch(() async {
-    await store.write(
+  Future<void> _saveNotes() => _store.batch(() async {
+    await _store.write(
       _k('unwedge'),
       jsonEncode({
         for (final e in _unwedged.entries)
           e.key: e.value.toUtc().toIso8601String(),
       }),
     );
-    await store.write(
+    await _store.write(
       _k('devnotes'),
       jsonEncode({
         'own': [for (final n in _ownNotices) n.toJson()],
@@ -760,7 +883,7 @@ class ChatEngine {
         },
       }),
     );
-    await store.write(
+    await _store.write(
       _k('verified'),
       jsonEncode({'ok': _verified, 'changed': _verifyChanged.toList()}),
     );
@@ -775,15 +898,29 @@ class ChatEngine {
         _clock().toUtc().difference(rotated) >= fallbackRotateEvery;
   }
 
-  /// Tops up one-time keys when the relay holds fewer than 20, and replaces
-  /// the fallback key when it is due. The new keys are saved before they
+  /// The relay is topped up when it holds fewer than [oneTimeLow] of this
+  /// device's one-time keys, back to [oneTimeTarget]; it takes at most
+  /// [uploadChunk] keys per request and holds at most 100.
+  static const oneTimeLow = 20, oneTimeTarget = 60, uploadChunk = 50;
+
+  /// Tops up one-time keys when the relay holds few, and replaces the fallback
+  /// key when it is due. The private halves are saved before the public halves
   /// become claimable, and the rotation is only recorded once the relay has the
   /// new fallback key (the old one keeps working until then).
+  ///
+  /// Keys go up in chunks of at most [uploadChunk], one generate-upload-publish
+  /// cycle each. The core makes only the shortfall, so after any failure the
+  /// unpublished keys are those of the one chunk that did not arrive, and the
+  /// retry sends exactly them: it can never exceed what the relay accepts, so
+  /// a failed upload (offline, a refusal) cannot wedge every later start
+  /// (re-audit CHAT-1). A chunk is marked published only after the relay has
+  /// it. The fallback key travels with the first request, so it is not held
+  /// back by the one-time keys, and when only the fallback is due it goes alone.
   Future<void> _replenishKeys() async {
     final count = await api.keyCount(deviceId);
     final rotate = _fallbackDue;
-    if (count >= 20 && !rotate) return;
-    final keys = _account.generateOneTimeKeys(count: count >= 20 ? 0 : 40);
+    if (count >= oneTimeLow && !rotate) return;
+    var want = count >= oneTimeLow ? 0 : max(0, oneTimeTarget - count);
     // A fallback key made by an attempt that did not reach the relay is
     // offered again; making another would push the published one out.
     final fallback = rotate
@@ -796,20 +933,32 @@ class ChatEngine {
         message: oneTimeKeyStatement(userId, deviceId, k.keyId, k.publicKey),
       ),
     };
-    // Persist the private halves before the public halves become claimable.
-    await _saveState();
-    await api.uploadKeys(
-      deviceId,
-      keys.map(signed).toList(),
-      fallback == null ? null : signed(fallback),
-    );
-    _account.markKeysAsPublished();
-    if (fallback != null) {
-      final now = _clock().toUtc();
-      _fbRotated = now;
-      _fbForgetAt = now.add(fallbackGrace);
-    }
-    await _saveState();
+    var first = true;
+    do {
+      // Never more than one request's worth, whatever an older build left unpublished.
+      final keys = _account
+          .generateOneTimeKeys(count: min(want, uploadChunk))
+          .take(uploadChunk)
+          .toList();
+      final withFallback = first ? fallback : null;
+      if (keys.isEmpty && withFallback == null) break;
+      // Persist the private halves before the public halves become claimable.
+      await _saveState();
+      await api.uploadKeys(
+        deviceId,
+        keys.map(signed).toList(),
+        withFallback == null ? null : signed(withFallback),
+      );
+      _account.markKeysAsPublished();
+      if (withFallback != null) {
+        final now = _clock().toUtc();
+        _fbRotated = now;
+        _fbForgetAt = now.add(fallbackGrace);
+      }
+      await _saveState();
+      first = false;
+      want = max(0, want - keys.length);
+    } while (want > 0);
   }
 
   /// Rotates the fallback key if it is due and forgets the previous one once
@@ -887,6 +1036,18 @@ class ChatEngine {
     final firstContact = known.isEmpty;
     final fetched = await _fetchDevices(user);
     var notes = false;
+    // This phone knows of none of this account's devices (a new install, a sign-in, a reset) and the relay
+    // lists others: they are pinned (they have to be, to send to them) but never silently. The person is asked
+    // to review them, and the notice stays until dismissed (re-audit CHAT-2).
+    if (user == userId &&
+        firstContact &&
+        fetched.list.any((d) => d.id != deviceId)) {
+      _addOwnNotice(
+        DeviceNotice('', _clock().toUtc(), DeviceNoticeKind.review),
+      );
+      notes = true;
+      if (!_ownDeviceChanges.isClosed) _ownDeviceChanges.add(null);
+    }
     for (final d in fetched.list) {
       if (!fetched.unpinned.contains(d.id)) continue;
       known[d.id] = {'identityKey': d.identityKey, 'signingKey': d.signingKey};
@@ -894,8 +1055,7 @@ class ChatEngine {
       final notice = DeviceNotice(d.id, _clock().toUtc());
       notes = true;
       if (user == userId) {
-        final all = [..._ownNotices, notice];
-        _ownNotices = all.length > 10 ? all.sublist(all.length - 10) : all;
+        _addOwnNotice(notice);
         if (!_ownDeviceChanges.isClosed) _ownDeviceChanges.add(null);
       } else {
         final kept = [...?_peerNotices[user], notice];
@@ -910,7 +1070,7 @@ class ChatEngine {
     _trust[user] = known;
     // Nothing new to pin is the usual case: do not rewrite the store for it.
     if (!wasKnown || fetched.unpinned.isNotEmpty) {
-      await store.write(_k('trust'), jsonEncode(_trust));
+      await _store.write(_k('trust'), jsonEncode(_trust));
     }
     await _checkVerified(user, fetched.list, saveNotes: notes);
     return fetched.list;
@@ -944,12 +1104,57 @@ class ChatEngine {
   /// Emits when [ownDeviceNotices] changes.
   Stream<void> get ownDeviceChanges => _ownDeviceChanges.stream;
 
-  /// Looks at this account's devices again (a realtime signal said one was
-  /// added or removed).
-  Future<void> refreshOwnDevices() => _locked(() async {
-    if (!_started) return;
-    await _devices(userId);
-  });
+  DateTime? _ownRefreshed;
+
+  /// Looks at this account's devices again: on a realtime signal (one was added or removed), when the socket
+  /// is ready or resynchronises, and when the app comes back to the foreground, so a signal that was missed
+  /// is still found. New devices raise a notice, and so does a device this phone knew of that another
+  /// session removed (the relay keeps that record for 30 days). With [minAge], a look that was made less
+  /// than that ago is not repeated.
+  Future<void> refreshOwnDevices({Duration minAge = Duration.zero}) =>
+      _locked(() async {
+        if (!_started) return;
+        final last = _ownRefreshed;
+        if (minAge > Duration.zero &&
+            last != null &&
+            _clock().difference(last) < minAge) {
+          return;
+        }
+        await _devices(userId);
+        _ownRefreshed = _clock();
+        await _noticeRemoved();
+      });
+
+  /// The relay's record of devices of this account that another session removed: each one this phone had
+  /// pinned becomes a notice (and its pin goes). Best effort; a failure is tried again next time.
+  Future<void> _noticeRemoved() async {
+    final List<Map<String, dynamic>> removed;
+    try {
+      removed = await api.removedDevices();
+    } catch (_) {
+      return;
+    }
+    final pins = _trust[userId];
+    if (pins == null) return;
+    var changed = false;
+    for (final r in removed) {
+      final id = r['deviceId'];
+      if (id is! String || id == deviceId || pins[id] == null) continue;
+      pins.remove(id);
+      _addOwnNotice(
+        DeviceNotice(
+          id,
+          DateTime.tryParse('${r['removedAt']}') ?? _clock().toUtc(),
+          DeviceNoticeKind.removed,
+        ),
+      );
+      changed = true;
+    }
+    if (!changed) return;
+    await _store.write(_k('trust'), jsonEncode(_trust));
+    await _saveNotes();
+    if (!_ownDeviceChanges.isClosed) _ownDeviceChanges.add(null);
+  }
 
   /// The person saw the "new device" banner.
   Future<void> dismissOwnDeviceNotices() async {
@@ -1530,9 +1735,15 @@ class ChatEngine {
       // This device was removed on the relay (revoked, unused for 90 days):
       // start over with a new identity.
       if (failure.status == 404 && failure.code == 'NOT_FOUND') {
-        await _resetIdentity();
+        await _resetIdentity(because: DeviceNoticeKind.reset);
         await _loadIdentity();
         await _register();
+        try {
+          // The account's other devices, compared with the pins this phone kept: whatever appeared while
+          // it was away is announced now.
+          await _devices(userId);
+          await _noticeRemoved();
+        } catch (_) {}
         return 0;
       }
       rethrow;
@@ -1625,6 +1836,7 @@ class ChatEngine {
             serverAt: DateTime.tryParse(item['createdAt'] as String? ?? ''),
             me: userId,
             members: members,
+            aux: item['aux'] == true,
           );
         } catch (_) {
           // Decrypted, but not a message this app understands. The ratchet has
@@ -1780,13 +1992,24 @@ class ChatEngine {
       throw const ChatFailure('THIS_DEVICE', 'Sign out to remove this phone.');
     }
     await api.revokeDevice(id);
+    // Removed by this person from this phone: not something to announce later as a removal.
+    await _locked(() async {
+      final pins = _trust[userId];
+      if (pins != null && pins.remove(id) != null) {
+        await _store.write(_k('trust'), jsonEncode(_trust));
+      }
+    });
   }
 
   /// Removes this phone's chat device on the server (sign-out). The local
   /// copy of the id goes too, so nothing retries it.
   Future<void> revokeThisDevice() async {
     await api.revokeDevice(deviceId);
-    await store.delete(_k('deviceId'));
+    try {
+      await _store.delete(_k('deviceId'));
+    } on ChatStoreClosed {
+      // The account was wiped meanwhile, id included.
+    }
   }
 
   Future<List<ChatMessage>> history(String conversationId) =>
@@ -1928,6 +2151,11 @@ ChatReply resolveReply(ChatReply reply, ChatMessage original, String me) {
 ///   ignored too, so nobody can pin their own reaction in the future.
 /// * `noop` (the quiet message that sets up a fresh session) and any other
 ///   kind: ignored.
+///
+/// [aux] is the relay's flag that the sender marked the message auxiliary. A
+/// message carrying it whose kind is not `reaction` or `noop` is ignored, so
+/// the hint cannot be used to deliver text or photos the first-contact cap
+/// would have stopped.
 Incoming parseIncoming(
   Map<String, dynamic> body, {
   required String messageId,
@@ -1936,6 +2164,7 @@ Incoming parseIncoming(
   required String me,
   DateTime? serverAt,
   Set<String>? members,
+  bool aux = false,
 }) {
   if (body['v'] != 1 ||
       body['conversationId'] != conversationId ||
@@ -1947,6 +2176,12 @@ Incoming parseIncoming(
   }
   final sentAt = DateTime.tryParse(body['sentAt'] as String? ?? '');
   final kind = body['kind'];
+  // The relay says the sender marked this message auxiliary (quiet: not unread, not pushed). Only a reaction
+  // or the noop is that; anything else carrying the mark is a message dressed up to skip the relay's
+  // first-contact cap, and is dropped without a trace (re-audit CHAT-3).
+  if (aux && kind != 'reaction' && kind != 'noop') {
+    return const IncomingIgnored();
+  }
   if (kind == 'reaction') {
     final to = body['to'], emoji = body['emoji'], op = body['op'];
     if (to is! String ||
