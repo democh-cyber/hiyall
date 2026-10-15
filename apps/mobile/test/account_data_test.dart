@@ -12,6 +12,7 @@ import 'package:hiyall/features/account_data.dart';
 
 import 'auth_test.dart' show AuthApi, FakeGateway, launch, location;
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 /// An API whose account routes can be scripted.
 class AccountFake extends FakeApi {

@@ -1,10 +1,11 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/core/api.dart';
-import 'package:hiyall/core/state.dart' show anjaliId, apiProvider;
+import 'package:hiyall/core/state.dart' show apiProvider;
 import 'package:hiyall/features/spaces/spaces_actions.dart';
 
 import 'spaces_test.dart' show SpacesFake;
+import 'support/fixtures.dart';
 
 /// Records the arguments each Spaces call receives.
 class _Recording extends SpacesFake {

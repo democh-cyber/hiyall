@@ -8,6 +8,7 @@ import 'package:hiyall/core/state.dart';
 import 'package:hiyall/features/settings.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 class SettingsApi extends FakeApi {
   final sessionList = <Map<String, dynamic>>[

@@ -3,13 +3,13 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:hiyall/core/api.dart';
-import 'package:hiyall/core/state.dart';
 import 'package:hiyall/features/chat.dart' show chatEngineProvider;
 import 'package:hiyall/features/people_lists.dart';
 import 'package:hiyall/shared/story_canvas.dart';
 import 'package:hiyall/features/pulse.dart';
 
 import 'widget_test.dart' show FakeApi, launch;
+import 'support/fixtures.dart';
 
 const mira = Person('u-mira', 'mira', 'Mira');
 const jun = Person('u-jun', 'jun_k', 'Jun');

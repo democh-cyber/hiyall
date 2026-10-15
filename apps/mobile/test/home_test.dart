@@ -21,6 +21,7 @@ import 'package:hiyall/shared/person_avatar.dart';
 import 'package:hiyall/shared/press_scale.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 const miraId = '019a4000-0000-7000-8000-0000000000b1';
 const niko = Person(nikoId, 'niko', 'Niko');

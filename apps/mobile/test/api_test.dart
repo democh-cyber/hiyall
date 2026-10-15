@@ -74,11 +74,7 @@ void main() {
     });
 
     test('Plain http to any other host is refused', () async {
-      // Dev login adds its own wording for the same refusal.
-      final refusal = anyOf(
-        'The service is not configured yet.',
-        'Development login requires a local service.',
-      );
+      const refusal = 'The service is not configured yet.';
       expect(await call('http://api.example.com'), refusal);
       expect(await call('http://192.168.1.20:8080'), refusal);
     });

@@ -4,7 +4,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/app.dart' show routerProvider;
-import 'package:hiyall/core/state.dart' show anjaliId;
 import 'package:hiyall/features/discover_person.dart';
 import 'package:hiyall/features/screens.dart' show PersonScreen;
 import 'package:hiyall/features/say_hi_ui.dart' show SayHiProfileButton;
@@ -12,6 +11,7 @@ import 'package:hiyall/shared/press_scale.dart';
 
 import 'discover_helpers.dart';
 import 'say_hi_test.dart' show confirmedStore, mount, pathOf;
+import 'support/fixtures.dart';
 
 /// Every background colour and border painted inside [of], as a comparable list.
 List<String> paints(WidgetTester tester, Finder of) => [

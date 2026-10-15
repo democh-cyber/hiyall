@@ -7,6 +7,8 @@ import 'package:hiyall/core/api.dart';
 import 'package:hiyall/core/pending_revoke.dart';
 import 'package:hiyall/core/state.dart';
 
+import 'support/fixtures.dart';
+
 class SignedIn extends SessionController {
   @override
   AsyncValue<Session?> build() =>

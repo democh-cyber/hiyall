@@ -6,6 +6,7 @@ import 'package:hiyall/core/api.dart';
 import 'package:hiyall/core/state.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 /// A server stand-in that keeps one relationship and applies each action to it.
 class GraphApi extends FakeApi {

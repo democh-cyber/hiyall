@@ -15,6 +15,7 @@ import 'package:image_picker/image_picker.dart';
 
 import 'pulse_test.dart' as pt;
 import 'widget_test.dart' show SignedIn;
+import 'support/fixtures.dart';
 
 /// A 1x1 PNG: a photo the story composer can decode, upload and draw.
 final png = base64Decode(

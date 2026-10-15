@@ -6,6 +6,7 @@ import 'package:hiyall/core/state.dart';
 
 import 'discover_helpers.dart';
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 /// Right-to-left layouts. The app has no RTL language yet; the direction is
 /// forced through [textDirectionOverrideProvider] so the day one is added the

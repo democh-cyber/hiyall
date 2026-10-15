@@ -10,6 +10,7 @@ import 'package:hiyall/core/state.dart';
 import 'package:hiyall/features/safety.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 class SafetyApi extends FakeApi {
   bool muted = false, restricted = false;

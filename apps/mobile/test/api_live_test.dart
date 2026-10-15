@@ -1,13 +1,15 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/core/api.dart';
-import 'package:hiyall/core/state.dart';
+
+import 'support/fixtures.dart';
+import 'support/live_dev_session.dart';
 
 void main() {
   test(
     'Flutter client reads the live API and logout invalidates its token',
     () async {
       final api = ApiClient();
-      final session = await api.signInDevelopment(anjaliId);
+      final session = await liveDevSession(anjaliId);
       try {
         final profile = await api.profile(session);
         final privacy = await api.privacy(session);

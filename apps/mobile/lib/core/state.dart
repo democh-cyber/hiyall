@@ -10,12 +10,6 @@ import 'auth/firebase_gateway.dart';
 import 'location_service.dart';
 import 'pending_revoke.dart';
 
-const anjaliId = '019a4000-0000-7000-8000-000000000001';
-const nikoId = '019a4000-0000-7000-8000-000000000002';
-
-/// Development fixture that has not finished onboarding, for trying that flow.
-const samId = '019a4000-0000-7000-8000-0000000000a1';
-
 /// The identity provider. Real Firebase when its keys were supplied to the
 /// build; otherwise a stand-in whose actions say sign-in isn't set up.
 final authGatewayProvider = Provider<AuthGateway>((ref) {
@@ -83,7 +77,6 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
   /// is signed in, and again while a provider account is being connected to
   /// the API, so the router shows a splash instead of flashing Welcome.
   bool booting = false;
-  bool _devSession = false;
   int _generation = 0;
 
   /// Bumped when signing out. A position read before then must not be sent
@@ -138,7 +131,6 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
     final generation = ++_generation;
     final awaiting = ref.read(awaitingVerificationProvider.notifier);
     if (user == null) {
-      if (_devSession) return;
       awaiting.set(null);
       booting = false;
       state = const AsyncData(null);
@@ -197,7 +189,7 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
   /// email, and reconnects the app to it.
   Future<void> refreshAuth() async {
     final gateway = ref.read(authGatewayProvider);
-    if (!gateway.configured || _devSession) return;
+    if (!gateway.configured) return;
     final AuthUser? user;
     try {
       user = await gateway.reload();
@@ -211,30 +203,6 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
       rethrow;
     }
     await _onUser(user);
-  }
-
-  Future<void> login(String id) async {
-    if (state.isLoading) return;
-    ref.read(sessionExpiredProvider.notifier).set(false);
-    state = const AsyncLoading();
-    state = await AsyncValue.guard(() async {
-      final api = ref.read(apiProvider);
-      final session = await api.signInDevelopment(id);
-      _devSession = true;
-      final OnboardingStatus status;
-      try {
-        status = await api.onboarding(session);
-      } on ApiFailure catch (error) {
-        final pending = error.status == 401
-            ? await pendingDeletionOf(api, session)
-            : null;
-        if (pending == null) rethrow;
-        ref.read(pendingAccountProvider.notifier).set(pending);
-        return null;
-      }
-      ref.read(pendingAccountProvider.notifier).set(null);
-      return session.copyWith(onboarded: status.completed);
-    });
   }
 
   /// The member kept their account (it was pending deletion): reconnect to the API as an ordinary one.
@@ -268,7 +236,6 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
   void expire() {
     if (state.asData?.value == null) return;
     ref.read(sessionExpiredProvider.notifier).set(true);
-    _devSession = false;
     unawaited(ref.read(authGatewayProvider).signOut());
     state = const AsyncData(null);
   }
@@ -310,7 +277,6 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
         await ref.read(revokeQueueProvider).add(session.token);
       }
     }
-    _devSession = false;
     try {
       await ref.read(authGatewayProvider).signOut();
     } catch (_) {

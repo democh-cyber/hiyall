@@ -15,6 +15,7 @@ import 'package:hiyall/core/theme.dart';
 import 'package:hiyall/features/people_filters.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 class DiscoveryTestApi extends FakeApi {
   final queries = <Map<String, dynamic>>[];

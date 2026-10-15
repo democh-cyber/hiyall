@@ -8,6 +8,7 @@ import 'package:hiyall/core/feed_state.dart';
 import 'package:hiyall/core/state.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 /// The second page waits on [gate], so tests can change state meanwhile.
 class RaceApi extends FakeApi {

@@ -7,6 +7,7 @@ import 'package:hiyall/core/state.dart';
 import 'package:hiyall/features/spaces.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 SocialSpace circle({
   String state = '',

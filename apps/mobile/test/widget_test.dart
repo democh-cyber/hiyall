@@ -10,6 +10,8 @@ import 'package:hiyall/core/realtime/realtime_client.dart';
 import 'package:hiyall/core/state.dart';
 import 'package:hiyall/shared/navigation_dock.dart';
 
+import 'support/fixtures.dart';
+
 class SignedIn extends SessionController {
   @override
   AsyncValue<Session?> build() =>
@@ -265,25 +267,8 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     final api = FakeApi();
     await launch(tester, api);
-    await tester.tap(find.widgetWithText(DockDestination, 'Discover'));
-    await tester.pumpAndSettle();
-    final results = find
-        .descendant(
-          of: find.byKey(const Key('discovery-results-scroll')),
-          matching: find.byType(Scrollable),
-        )
-        .first;
-    final internal = find.text('Internal profile preview');
-    await tester.scrollUntilVisible(internal, 300, scrollable: results);
-    await tester.pumpAndSettle();
-    await tester.tap(internal);
-    await tester.pumpAndSettle();
-    final view = find.text('View Niko’s profile');
-    await tester.scrollUntilVisible(view, 300, scrollable: results);
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(view);
-    await tester.pumpAndSettle();
-    await tester.tap(view);
+    GoRouter.of(tester.element(find.byType(Scaffold).first))
+        .go('/discover/person/$nikoId');
     await tester.pumpAndSettle();
     expect(find.text('This profile is unavailable.'), findsOneWidget);
     final beforeUnblock = api.profileReads;
@@ -295,7 +280,7 @@ void main() {
     expect(api.profileReads, greaterThan(beforeUnblock));
     expect(find.text('Niko'), findsAtLeastNWidgets(1));
     expect(tester.takeException(), isNull);
-  }, skip: !devLoginEnabled);
+  });
   testWidgets('Home remains scrollable at double text size', (tester) async {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);

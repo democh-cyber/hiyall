@@ -7,8 +7,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/core/chat/chat_api.dart';
 import 'package:hiyall/core/chat/chat_engine.dart';
 import 'package:hiyall/core/chat/chat_store.dart';
-import 'package:hiyall/core/state.dart';
 import 'package:hiyall/src/rust/frb_generated.dart';
+
+import 'support/fixtures.dart';
 
 const base = String.fromEnvironment(
   'API_BASE_URL',
