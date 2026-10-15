@@ -14,6 +14,8 @@
 #            APP_VERSION (MAJOR.MINOR.PATCH; defaults to the v-tag in GITHUB_REF_NAME, then pubspec.yaml)
 #            APP_BUILD_NUMBER (integer; defaults to GITHUB_RUN_NUMBER)
 # Warned if missing: SENTRY_DSN (the build has no crash reporting without it), APP_STORE_URL, PLAY_STORE_URL.
+#            WEB_CANONICAL_URL (web only: the public https address of the site, ending in "/"; written into
+#            build/web/index.html for the canonical and Open Graph tags)
 # Optional:  FIREBASE_API_KEY_ANDROID / _IOS / _WEB (per platform keys), FIREBASE_AUTH_DOMAIN,
 #            FIREBASE_STORAGE_BUCKET, FIREBASE_IOS_BUNDLE_ID (default app.hiyall.hiyall), APP_ENV,
 #            ENABLE_EVENTS, APPLE_SIGN_IN_WEB.
@@ -62,7 +64,14 @@ case "$platform" in
 esac
 [[ -n "$app_id" ]] || errors+=("the Firebase $platform app id is not set (FIREBASE_$(echo "$platform" | tr a-z A-Z)_APP_ID)")
 [[ -n "$api_key" ]] || errors+=("the Firebase API key is not set (FIREBASE_API_KEY)")
-if [[ "$platform" == web ]]; then need FIREBASE_AUTH_DOMAIN "the web app's <project>.firebaseapp.com"; fi
+if [[ "$platform" == web ]]; then
+  need FIREBASE_AUTH_DOMAIN "the web app's <project>.firebaseapp.com"
+  need WEB_CANONICAL_URL "the public https address of the web build, ending in /"
+  canonical_re='^https://[^/<> ]+(/[^<> ]*)?/$'
+  if [[ -n "${WEB_CANONICAL_URL:-}" && ! "$WEB_CANONICAL_URL" =~ $canonical_re ]]; then
+    errors+=("WEB_CANONICAL_URL must be an https URL ending in / (got '${WEB_CANONICAL_URL}')")
+  fi
+fi
 [[ "${ENABLE_DEV_LOGIN:-}" == true ]] && errors+=("ENABLE_DEV_LOGIN must not be set for a release")
 
 # Contacts shown in Help & Safety.
@@ -153,4 +162,15 @@ if ! command -v flutter >/dev/null 2>&1 && [[ -f "$root/scripts/env.sh" ]]; then
 cd "$root/apps/mobile"
 mkdir -p build/symbols
 "${cmd[@]}"
+if [[ "$platform" == web ]]; then
+  # Fill the canonical / Open Graph markers in web/index.html (Flutter only substitutes the base href).
+  python3 - build/web/index.html "$WEB_CANONICAL_URL" <<'PY'
+import sys
+path, url = sys.argv[1], sys.argv[2]
+html = open(path, encoding="utf-8").read().replace("%WEB_CANONICAL_URL%", url)
+if "%WEB_" in html:
+    sys.exit("build/web/index.html still has an unfilled %WEB_...% marker")
+open(path, "w", encoding="utf-8").write(html)
+PY
+fi
 echo "Built $platform $version ($build). Keep apps/mobile/build/symbols for crash reports."

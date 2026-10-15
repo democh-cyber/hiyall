@@ -6,11 +6,24 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Release signing. android/key.properties (git-ignored; CI writes it from secrets) must name a private upload
+// keystore: storeFile, storePassword, keyAlias, keyPassword. A release task without a complete file fails here,
+// at configuration time, with the reason. There is no fallback to the debug key, ever.
 val signingFile = rootProject.file("key.properties")
 val signingValues = Properties()
 if (signingFile.exists()) signingFile.inputStream().use { signingValues.load(it) }
-if (gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) } && !signingFile.exists()) {
-    throw GradleException("Release signing is not configured. Supply android/key.properties and a private release keystore. Debug keys are never used for release.")
+val releaseRequested = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
+if (releaseRequested) {
+    if (!signingFile.exists()) {
+        throw GradleException("Release signing is not configured: android/key.properties is missing. See docs/mobile/16-release-and-reliability.md (Android signing). Debug keys are never used for release.")
+    }
+    val missing = listOf("storeFile", "storePassword", "keyAlias", "keyPassword").filter { signingValues.getProperty(it).isNullOrBlank() }
+    if (missing.isNotEmpty()) {
+        throw GradleException("android/key.properties is missing: ${missing.joinToString(", ")}")
+    }
+    if (!file(signingValues.getProperty("storeFile")).isFile) {
+        throw GradleException("android/key.properties: storeFile does not point at an existing keystore file")
+    }
 }
 
 android {
@@ -24,16 +37,17 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
+        // Final and permanent once the app is on Play: it must equal the namespace above, the MainActivity package,
+        // iOS PRODUCT_BUNDLE_IDENTIFIER and the Android app registered in Firebase (scripts/release-preflight.sh checks).
         applicationId = "app.hiyall.hiyall"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
+        // The Flutter SDK pins these (3.47.6: minSdk 24, compileSdk and targetSdk 36 = Android 16, which is what
+        // Google Play requires of new apps and updates from 31 August 2026). Re-check the Play requirement and the
+        // Flutter default before every release; docs/mobile/16-release-and-reliability.md, "Android".
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
-        // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
-        // is added automatically by Flutter. (https://developer.android.com/studio/build/configure-apk-splits#configure-APK-versions)
-        // You can force using the value of versionCode by specifying the `-P force-version-code-ignoring-abi=true`
-        // flag during build.
+        // versionName and versionCode come from pubspec.yaml (`version: 1.0.0+1`) or from
+        // `flutter build --build-name --build-number`, which scripts/build-release.sh passes. Play rejects a
+        // versionCode it has seen before, so the build number must grow on every upload.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }
@@ -48,7 +62,14 @@ android {
     }
     buildTypes {
         release {
+            // Only ever the release config; with no key.properties the release tasks have already failed above.
             if (signingFile.exists()) signingConfig = signingConfigs.getByName("release")
+            // R8 shrinking and obfuscation, with the keep rules (each explained) in proguard-rules.pro.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Ship a symbol table for the Rust library in the bundle so Play and Sentry can name native frames.
+            ndk { debugSymbolLevel = "SYMBOL_TABLE" }
         }
     }
 }

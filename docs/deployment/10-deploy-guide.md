@@ -78,6 +78,8 @@ Authoritative list with every variable, default and rule: [`infrastructure/docke
 | `MIGRATIONS_DIR` | no | no | image sets `/migrations` |
 | `ENABLE_DEV_AUTH` | **never** | | production refuses it |
 
+**Check an environment before deploying it:** `/api check-config` (the image's entrypoint; `fly ssh console -C "/api check-config -release"`, or `go run ./cmd/api check-config -release` with the variables exported) loads the environment exactly as a start does, parses the key files, and prints every problem by variable name without printing any value; `-release` adds the V1 requirements (FCM, Sentry, Apple revocation, minimum client versions, real buckets). Exit 1 on any problem. `config.Load` reports its first refusal only, so rerun until it passes. The ordered release procedure is [the release runbook](12-release-runbook.md).
+
 Rules: secrets live only in the platform's secret store (`fly secrets set`), never in the repository, the image, `fly.toml` or CI logs. The image contains no secrets. Rotate R2 tokens and `DATABASE_URL` by setting the new value and redeploying.
 
 ## 4. First deployment on Fly.io (owner runs these)
@@ -241,7 +243,7 @@ Baseline alerts to create on day one: `/readyz` failing for 2 minutes; `rate(hiy
 
 ## 8b. Release pipeline (tags)
 
-Pushing a tag `vX.Y.Z` runs `.github/workflows/release.yml`: the Go tests, then the API image is built and pushed to GHCR **by digest** (only that job has `packages: write`), an SBOM is generated, the Android bundle and the iOS IPA are built through `scripts/build-release.sh` when the signing secrets exist (otherwise those jobs say they were skipped), everything is attached to a **draft** GitHub release, and finally the migration job waits for a reviewer to approve the `production` environment before it runs `/migrate` from the image against the production database. Nothing deploys the API: after the migration you roll out the digest yourself (`fly deploy --image ghcr.io/<owner>/<repo>/api@sha256:...`). One-time owner setup is in [11-environments.md](11-environments.md). The workflow has never run.
+Pushing a tag `vX.Y.Z` runs `.github/workflows/release.yml`: the Go tests, then the API image is built and pushed to GHCR **by digest** (only that job has `packages: write`), an SBOM is generated, the Android bundle and the iOS IPA are built through `scripts/build-release.sh` when the signing secrets exist (otherwise those jobs say they were skipped), everything is attached to a **draft** GitHub release, and finally the migration job waits for a reviewer to approve the `production` environment before it runs `/migrate` from the image against the production database. Nothing deploys the API: after the migration you roll out the digest yourself (`fly deploy --image ghcr.io/<owner>/<repo>/api@sha256:...`). One-time owner setup is in [11-environments.md](11-environments.md). The workflow has never run. Its first job, `release-preflight`, runs `scripts/release-preflight.sh` (every release gate; the production-environment gate is run by hand, see [the release runbook](12-release-runbook.md)).
 
 ## 9. Local smoke test of the deploy mechanics (no cloud, no real secrets)
 

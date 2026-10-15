@@ -5,6 +5,35 @@ what the code sends. Re-derive them whenever a feature adds or changes data; the
 source of truth. **Everything marked "decide" or "uncertain" needs the owner or counsel; none of this is
 legal advice.** The same facts are declared in `ios/Runner/PrivacyInfo.xcprivacy`.
 
+## Listing fields (owner completes; preflight gate i fails while a field is unfinished)
+
+Draft copy is offered where the code makes it checkable; the owner approves or rewrites it. Store limits: Apple name 30
+characters, subtitle 30, keywords 100, promotional text 170; Play title 30, short description 80, full description 4000.
+
+Unfinished fields are marked with the word in capitals that gate i searches for; replace each with the value.
+
+| Field | Value |
+| --- | --- |
+| App name (both stores) | Hiyall |
+| Apple subtitle (30) | Say hi to y'all |
+| Play short description (80) | Meet people near you and everywhere. Private chats. Ages 13+. |
+| Full description (draft; no claim that is not built) | Hiyall is a social app for meeting people. Find people in Discover, follow friends, share photos and stories, join spaces, and chat one to one with end-to-end encrypted messages and photos. Nearby is opt-in and only ever shows a rounded distance. Block and report on every profile and chat. For ages 13 and up. |
+| Apple keywords (100) | TODO: owner |
+| Primary category | Social Networking (Apple) / Social (Play) |
+| Support URL | TODO: https page with a working contact (Apple tests it) |
+| Marketing URL (optional) | TODO: URL or write "none" |
+| Privacy policy URL | TODO: hosted copy of `assets/legal/privacy-policy.md` |
+| Terms URL | TODO: hosted copy of `assets/legal/terms-of-service.md` |
+| Account deletion URL (Play) | TODO: see "Web account-deletion URL" below |
+| Contact email for the stores | TODO: monitored mailbox (same as `SUPPORT_EMAIL`) |
+| Age rating answers | TODO: record the answers given (UGC yes, unrestricted web access no, location yes, no gambling) and the resulting ratings |
+| Reviewer account (both stores) | TODO: record where the credentials are kept; see the runbook, "Reviewer account" |
+| Export compliance answers | TODO: record the App Store Connect encryption answers and the classification used |
+| Privacy label and Data safety reviewed against an Xcode privacy report and the real build | TODO: date and reviewer |
+| Screenshots (phone; iPhone 6.9 in and 6.5 in; iPad only if iPad is supported) | TODO: captured from the release build on real devices |
+| Feature graphic 1024x500 and 512x512 icon (Play) | TODO: owner-supplied artwork |
+| Crisis resources verified for every launch country | TODO: date and reviewer |
+
 ## What the app sends, by feature
 
 | Data | Sent when | Server keeps it | Code |

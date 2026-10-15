@@ -44,11 +44,20 @@ Rules: no credential is valid in more than one column; a staging build can never
 
 **GitHub** (repository settings, needed by `.github/workflows/release.yml`)
 8. Environments: create `production` and add **required reviewers** (yourself and one other person if there is one; enable "prevent self-review" when you have a second reviewer) and restrict it to tags `v*`. Add the secret `PRODUCTION_DATABASE_URL` (direct URL, `sslmode=verify-full`) to that environment only. Optionally create `staging` the same way for a staging migration job.
-9. Repository variables: `API_BASE_URL`, `FIREBASE_PROJECT_ID`, `FIREBASE_MESSAGING_SENDER_ID`, `FIREBASE_ANDROID_APP_ID`, `FIREBASE_IOS_APP_ID`, `SUPPORT_EMAIL`, `SAFETY_EMAIL`, `PRIVACY_EMAIL` (the Help & Safety contacts; `scripts/build-release.sh` fails on a missing or placeholder address). Secrets: `FIREBASE_API_KEY`, `SENTRY_DSN`, `ANDROID_KEYSTORE_BASE64`, `ANDROID_STORE_PASSWORD`, `ANDROID_KEY_PASSWORD`, `ANDROID_KEY_ALIAS`, `IOS_CERTIFICATE_BASE64`, `IOS_CERTIFICATE_PASSWORD`, `IOS_PROVISIONING_PROFILE_BASE64`. Without the signing secrets the mobile jobs report "skipped". The workflow currently reads one set of release variables, so a staging build is made locally with `scripts/build-release.sh` and the staging file; add environment-scoped variables if you want staging builds from CI.
+9. Repository variables: `API_BASE_URL`, `FIREBASE_PROJECT_ID`, `FIREBASE_MESSAGING_SENDER_ID`, `FIREBASE_ANDROID_APP_ID`, `FIREBASE_IOS_APP_ID`, `SUPPORT_EMAIL`, `SAFETY_EMAIL`, `PRIVACY_EMAIL` (the Help & Safety contacts; `scripts/build-release.sh` fails on a missing or placeholder address), `APP_STORE_URL`, `PLAY_STORE_URL` (the Update screen; `scripts/release-preflight.sh` rejects missing or placeholder values). Secrets: `FIREBASE_API_KEY`, `SENTRY_DSN`, `ANDROID_KEYSTORE_BASE64`, `ANDROID_STORE_PASSWORD`, `ANDROID_KEY_PASSWORD`, `ANDROID_KEY_ALIAS`, `IOS_CERTIFICATE_BASE64`, `IOS_CERTIFICATE_PASSWORD`, `IOS_PROVISIONING_PROFILE_BASE64`. Without the signing secrets the mobile jobs report "skipped". The workflow currently reads one set of release variables, so a staging build is made locally with `scripts/build-release.sh` and the staging file; add environment-scoped variables if you want staging builds from CI.
 10. Settings > Actions: restrict allowed actions to those pinned in the workflows, set the default workflow token to read-only, and turn on branch protection for `main` requiring the "Foundation checks" jobs and one review (`CODEOWNERS` is in `.github/`).
 11. Replace the owner placeholder in `SECURITY.md` and `.github/CODEOWNERS`.
 
 **Stores** (not environment-specific, listed so they are not forgotten): an Apple Developer account and App Store Connect app, a Google Play Console app and upload key, the privacy label / Data safety form, and a web page for account deletion.
+
+## Local files for the release preflight (git-ignored)
+
+`scripts/release-preflight.sh` reads `config/mobile-release.production.local.env` (from `config/mobile-release.example.env`;
+`HIYALL_RELEASE_ENV=<env>` picks another) and, for gate d, `config/api.production.env` (from
+`config/api.production.example.env` plus the secret values) with the key files it names under `/secrets/` placed in
+`config/secrets/` (`PREFLIGHT_SECRETS_DIR` changes the directory). `HIYALL_API_ENV_FILE` points at another file. None of
+these are committed; delete them from your machine when done if it is shared. The same check runs against the real
+environment with `api check-config -release` on the deployed machine ([release runbook](12-release-runbook.md)).
 
 ## Smoke order for a new environment
 

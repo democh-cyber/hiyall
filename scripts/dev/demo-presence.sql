@@ -1,6 +1,6 @@
 -- Presence fixtures for the LOCAL development databases only: makes some demo people look online and others
 -- recently active, so the green dots (Discover, Nearby, Chats list) and "last seen ..." (conversation header)
--- have something to show. Run through scripts/seed-demo-presence.sh. Safe to re-run.
+-- have something to show. Run through scripts/dev/seed-demo-presence.sh. Safe to re-run.
 --
 -- Presence is real server data: online means session activity within the last 2 minutes (or a live
 -- realtime connection), and last seen is the latest session activity rounded down to 5 minutes. So this

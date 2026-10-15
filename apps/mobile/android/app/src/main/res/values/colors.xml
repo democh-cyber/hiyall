@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand lime (VibeColors.lime). -->
+    <color name="ic_launcher_background">#D2F65A</color>
+    <!-- Tint of the notification small icon in the shade. -->
+    <color name="notification_accent">#20231F</color>
+    <!-- Splash background: light and dark (values-night overrides). -->
+    <color name="splash_background">#F7F8F2</color>
+</resources>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive icon foreground: the Hiyall star (same path as web/hiyall.svg and drawable/hiyall_mark.xml) on a
+     transparent layer. The launcher crops to a 72dp window of this 108dp canvas and masks it to the device's
+     icon shape, so the star is scaled to 0.85 to stay inside the 66dp safe circle. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <group android:scaleX="0.85" android:scaleY="0.85" android:pivotX="54" android:pivotY="54">
+        <path android:fillColor="#20231F" android:pathData="M88.70,49.46L67.52,57.64L81.75,75.33L60.99,66.13L58.54,88.70L50.36,67.52L32.67,81.75L41.87,60.99L19.30,58.54L40.48,50.36L26.25,32.67L47.01,41.87L49.46,19.30L57.64,40.48L75.33,26.25L66.13,47.01Z"/>
+    </group>
+</vector>

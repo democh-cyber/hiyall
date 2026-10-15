@@ -32,6 +32,10 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		os.Exit(healthcheck(os.Args[2:], os.Stderr))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "check-config" {
+		// `api check-config [-release]`: validate the environment like a start would, without starting (checkconfig.go).
+		os.Exit(checkConfig(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	if err := run(); err != nil {
 		slog.Error("startup failed", "reason", logscrub.Err(err))
 		os.Exit(1)

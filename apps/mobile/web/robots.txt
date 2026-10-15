@@ -1,0 +1,3 @@
+# The web build is a companion to the apps and is not meant to be indexed (see the robots meta tag in index.html).
+User-agent: *
+Disallow: /

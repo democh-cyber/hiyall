@@ -17,23 +17,44 @@
   <base href="$FLUTTER_BASE_HREF">
 
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#D2F65A">
   <style>html,body { background:#F7F8F2; margin:0; }</style>
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="Hiyall — say hi to y’all. Meet people everywhere.">
+  <title>Hiyall: say hi to y’all</title>
+  <meta name="description" content="Hiyall helps you meet people near you and everywhere, follow friends, join spaces and chat privately with end-to-end encryption. For ages 13 and up.">
+  <!-- The web build is a companion to the phone apps, not a landing page: keep it out of search results. Remove
+       these two lines and the Disallow in robots.txt only when a public marketing page is served from here. -->
+  <meta name="robots" content="noindex, nofollow">
+
+  <!--
+    %WEB_CANONICAL_URL% is the public address of this site ending in "/" (for example https://app.example.com/).
+    scripts/build-release.sh web requires WEB_CANONICAL_URL (an https URL) and writes it into build/web/index.html
+    after the build; it refuses to finish while a %WEB_...% marker is left. In `flutter run` the markers stay
+    as they are, which is harmless.
+  -->
+  <link rel="canonical" href="%WEB_CANONICAL_URL%">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Hiyall">
+  <meta property="og:title" content="Hiyall: say hi to y’all">
+  <meta property="og:description" content="Meet people near you and everywhere. Chats are end-to-end encrypted. Ages 13 and up.">
+  <meta property="og:url" content="%WEB_CANONICAL_URL%">
+  <meta property="og:image" content="%WEB_CANONICAL_URL%icons/Icon-512.png">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Hiyall: say hi to y’all">
+  <meta name="twitter:image" content="%WEB_CANONICAL_URL%icons/Icon-512.png">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Hiyall">
-
 
   <!-- Favicon -->
   <link rel="icon" type="image/svg+xml" href="hiyall.svg"/>
   <link rel="icon" type="image/png" sizes="32x32" href="favicon.png"/>
   <link rel="apple-touch-icon" href="icons/Icon-192.png"/>
 
-  <title>Hiyall</title>
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
