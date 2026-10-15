@@ -33,3 +33,7 @@ infrastructure/docker/*.env
 !infrastructure/docker/*.example.env
 # Per-environment release build inputs
 config/mobile-release.*.local.env
+# Production/staging API environment used by scripts/release-preflight.sh, and the key files it names under /secrets/
+config/api.production.env
+config/api.staging.env
+config/secrets/

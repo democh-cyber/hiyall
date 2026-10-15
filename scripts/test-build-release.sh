@@ -9,7 +9,7 @@ good=(
   API_BASE_URL=https://api.hiyall.example.com FIREBASE_PROJECT_ID=p FIREBASE_MESSAGING_SENDER_ID=1 FIREBASE_API_KEY=k
   FIREBASE_ANDROID_APP_ID=1:1:android:a FIREBASE_IOS_APP_ID=1:1:ios:a FIREBASE_WEB_APP_ID=1:1:web:a FIREBASE_AUTH_DOMAIN=p.firebaseapp.com
   SUPPORT_EMAIL=help@hiyall.app SAFETY_EMAIL=safety@hiyall.app PRIVACY_EMAIL=privacy@hiyall.app
-  APP_VERSION=1.2.3 APP_BUILD_NUMBER=7 SENTRY_DSN=https://k@s.example/1 HIYALL_RELEASE_ENV=nonexistent
+  WEB_CANONICAL_URL=https://app.hiyall.example.com/ APP_VERSION=1.2.3 APP_BUILD_NUMBER=7 SENTRY_DSN=https://k@s.example/1 HIYALL_RELEASE_ENV=nonexistent
 )
 run() { env -i PATH="$PATH" HOME="$HOME" "${good[@]}" "$@" "$script" "${PLATFORM:-android}" --check 2>&1; }
 expect() { # name, want (ok|fail), grep pattern, then env overrides
@@ -23,6 +23,9 @@ expect() { # name, want (ok|fail), grep pattern, then env overrides
 expect "complete android config" ok "flutter build appbundle.*--dart-define-from-file.*--obfuscate --split-debug-info=build/symbols"
 PLATFORM=ios expect "complete ios config" ok "flutter build ipa.*--obfuscate"
 PLATFORM=web expect "complete web config" ok "flutter build web"
+PLATFORM=web expect "missing canonical URL refused for web" fail "WEB_CANONICAL_URL is not set" WEB_CANONICAL_URL=
+PLATFORM=web expect "canonical URL without trailing slash refused" fail "must be an https URL ending in /" WEB_CANONICAL_URL=https://app.hiyall.example.com
+expect "canonical URL not needed for android" ok "flutter build appbundle" WEB_CANONICAL_URL=
 expect "http API refused" fail "must start with https" API_BASE_URL=http://api.example.com
 expect "localhost API refused" fail "points at this machine" API_BASE_URL=https://localhost
 expect "missing API refused" fail "API_BASE_URL is not set" API_BASE_URL=

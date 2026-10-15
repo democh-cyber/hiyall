@@ -1,12 +1,18 @@
 {
+  "id": "/",
   "name": "Hiyall",
   "short_name": "Hiyall",
   "start_url": ".",
+  "scope": ".",
   "display": "standalone",
+  "lang": "en",
+  "dir": "auto",
+  "categories": [
+    "social"
+  ],
   "background_color": "#F7F8F2",
   "theme_color": "#D2F65A",
-  "description": "Say hi to y’all. Meet people everywhere.",
-  "orientation": "portrait-primary",
+  "description": "Meet people near you and everywhere. Chats are end-to-end encrypted. Ages 13 and up.",
   "prefer_related_applications": false,
   "icons": [
     {

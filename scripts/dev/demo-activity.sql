@@ -1,6 +1,6 @@
 -- Demo activity from other people for one member, written the way the API writes it (rows, counters and
 -- notifications), so the Activity tab, Visitors, Followers, Friends and Pulse numbers all agree.
--- Local development database only. Safe to re-run. Driven by scripts/seed-demo-activity.sh (-v target=<username>).
+-- Local development database only. Safe to re-run. Driven by scripts/dev/seed-demo-activity.sh (-v target=<username>).
 \set ON_ERROR_STOP on
 BEGIN;
 

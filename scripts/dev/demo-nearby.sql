@@ -1,7 +1,7 @@
 -- Nearby fixtures for the LOCAL development database only. Run through
--- scripts/seed-demo-nearby.sh, which passes the centre as :lat and :lon.
+-- scripts/dev/seed-demo-nearby.sh, which passes the centre as :lat and :lon.
 --
--- Places Anjali, Niko, Kai and the demo_ people (scripts/demo-people.sql, including the two
+-- Places Anjali, Niko, Kai and the demo_ people (scripts/dev/demo-people.sql, including the two
 -- demo_minor_ ones) 0.5 to 40 km from the centre, spread around the compass by the golden angle,
 -- nearest first by name. Coordinates are rounded to the grid the API itself stores (2 decimals
 -- for adults, 1 for minors), and updated_at is now, so every point counts as shared for the next

@@ -27,8 +27,7 @@ iOS app id) when it is missing. `scripts/build-release.sh <platform> --check` va
 plan without building; `scripts/test-build-release.sh` exercises the refusals.
 
 Compile-time switches, all `--dart-define`s: `ENABLE_EVENTS` (Events and Moments; default off),
-`ENABLE_FACEBOOK_LOGIN`, `APPLE_SIGN_IN_WEB`, `APP_ENV`, and in development only `ENABLE_DEV_LOGIN`
-(the release script refuses it).
+`ENABLE_FACEBOOK_LOGIN`, `APPLE_SIGN_IN_WEB` and `APP_ENV`. There is no development-login switch: the app has no such code.
 
 ## Startup that cannot blank the screen
 
@@ -126,3 +125,106 @@ instead of full size; people lists and the Spaces list build rows lazily (`Slive
 live-sync fallback poll and presence timers stop when the app is paused and restart on resume; the
 verify-email page re-checks after 5, 15, then every 30 seconds and not at all in the background. The chat
 list and the chat engine's own inbox timer belong to the chat code and were not changed here.
+
+## Release preflight
+
+`scripts/release-preflight.sh` is the single command that says whether the repository is fit to tag. It lists every
+unmet gate with a one-line fix and exits non-zero; it does not build or run tests (`scripts/check.sh` does). Gates:
+(a) git tree clean and tag-able, (b) legal text final, copies equal, one terms version, (c) mobile release inputs,
+(d) production API environment, validated by the server itself (`api check-config -release`), (e) Android signing,
+(f) versions and bundle ids, (g) icons and launch assets, (h) owner placeholders, (i) store-listing fields, (j)
+migrations, (k) OpenAPI contract, (l) `go vet` and `govulncheck`, (m) the release workflow touches no dev script.
+The ordered release procedure is [the release runbook](../deployment/12-release-runbook.md).
+
+## Versions and bumping
+
+The only place a version is written is `version:` in `apps/mobile/pubspec.yaml` (`1.0.0+1`: name `1.0.0`, build
+number `1`). Flutter feeds it to Android (`versionName`, `versionCode` through `flutter.versionName` and
+`flutter.versionCode` in `build.gradle.kts`) and to iOS (`CFBundleShortVersionString` is `$(FLUTTER_BUILD_NAME)`,
+`CFBundleVersion` is `$(FLUTTER_BUILD_NUMBER)`). `scripts/build-release.sh` passes `--build-name` and
+`--build-number` explicitly, so CI overrides the file: name from the `vX.Y.Z` tag, number from the workflow run
+number. To release:
+
+1. Edit `version:` (patch for fixes, minor for features; the build number only ever grows: both stores reject a
+   build number they have seen, Play also rejects a lower `versionCode` than any previous upload).
+2. Commit, then `git tag vX.Y.Z` (it must equal the name in `pubspec.yaml`; preflight gate a checks) and push the tag.
+3. Raise `MIN_CLIENT_VERSION_ANDROID`/`_IOS` on the API only to retire an old version on purpose (426 screen).
+
+The API's own version is `buildinfo.Version`, set at image build from the tag; `info.version` in the OpenAPI file is
+the contract revision and is unrelated to the app version.
+
+## Android release readiness
+
+- **Identity.** `applicationId` and `namespace` are `app.hiyall.hiyall`, equal to the `MainActivity` package, the
+  iOS bundle id and the Android app registered in Firebase (`FIREBASE_ANDROID_APP_ID`). It cannot change after the
+  first Play upload; gate f checks all of them agree.
+- **Signing.** Release tasks fail at configuration time unless `android/key.properties` (git-ignored) exists with
+  `storeFile`, `storePassword`, `keyAlias`, `keyPassword` and the keystore file is present; there is no debug-key
+  fallback. Create the upload key once and keep it, and its passwords, in a password manager and a second safe place:
+  `keytool -genkeypair -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload`.
+  Enrol in Play App Signing when creating the app, so Google holds the app signing key and you hold a resettable
+  upload key. CI writes `key.properties` from the `ANDROID_*` secrets (see the workflow).
+- **Shrinking.** R8 minification and resource shrinking are on for release; `app/proguard-rules.pro` explains every
+  keep rule. Upload `build/app/outputs/mapping/release/mapping.txt` and `build/symbols` to Sentry with each release,
+  and test the minified bundle on a device (R8 mistakes appear at run time). Native debug symbols for the Rust library
+  ship in the bundle (`debugSymbolLevel = SYMBOL_TABLE`).
+- **Icons and splash.** Adaptive launcher icon (`mipmap-anydpi-v26/ic_launcher.xml`: lime background colour, star
+  foreground inside the safe zone, monochrome layer for themed icons), legacy PNGs for API 24 and 25, a monochrome
+  notification icon (`drawable/ic_stat_hiyall.xml`, named by the FCM `default_notification_icon` meta-data with the
+  `notification_accent` tint) and the Android 12 splash (`values-v31/styles.xml`: brand background, star on a lime
+  disc; older versions use `drawable/launch_background.xml`). The star path is the one in `web/hiyall.svg`; the PNGs
+  come from `flutter test tool/export_brand_assets_test.dart`. Not verified: no Gradle build or device run was
+  possible where this was written (no Android SDK), so install a release build and look at the icon, splash and a
+  push on a real Android 12+ phone.
+- **Permissions.** Declared by the app: `INTERNET`, `ACCESS_COARSE_LOCATION` (Nearby asks for
+  `LocationAccuracy.low`), `POST_NOTIFICATIONS`. Added by `firebase_messaging`: `WAKE_LOCK`, `ACCESS_NETWORK_STATE`.
+  Removed from the merged manifest on purpose: `ACCESS_FINE_LOCATION`, `CAMERA` (image_picker uses the system camera
+  app, and a declared `CAMERA` permission would make that intent crash without a runtime grant) and geolocator's
+  location foreground service (no Play foreground-service declaration needed). After the first release build run
+  `aapt2 dump permissions app-release.aab` (or inspect the merged manifest under `build/app/intermediates`) and
+  compare with this list.
+- **Network and backup.** Cleartext is off in release (`network_security_config.xml`, system CAs only); the debug
+  build alone allows loopback and `10.0.2.2`. `allowBackup=false` plus `fullBackupContent` and `dataExtractionRules`
+  exclude everything, because chat keys must not leave the phone.
+- **SDK levels.** The Flutter 3.47.6 defaults are minSdk 24, compileSdk and targetSdk 36 (Android 16). Google Play
+  requires new apps and updates to target API 36 from 31 August 2026 (Play Console help, "Target API level
+  requirements"; re-check it before each release, it moves every August). Native libraries must also support 16 KB
+  memory pages: the NDK in use (28.2) aligns them by default; verify with Google's `check_elf_alignment.sh` on the
+  release APK, or Play Console warns.
+- **Play Console.** App content: privacy policy URL, Data safety (`store-listing.md`), account-deletion URL, target
+  audience (13+ with teens: complete the teen and families questions), ads declaration (none), content rating
+  questionnaire, news app (no), government app (no), financial features (none), health (none).
+
+## iOS release readiness (file level; no Xcode was available where this was written)
+
+Already in the repo: `CFBundleDisplayName` `Hiyall`; version keys from Flutter; usage strings for location (when in
+use; approximate), photo library and camera, each stating the real purpose, and none for things the app does not do
+(no microphone, contacts, Bluetooth, tracking, or saving to the library, so no `NSPhotoLibraryAddUsageDescription`);
+no ATS exceptions (HTTPS only); `UIBackgroundModes` is only `remote-notification`;
+`ITSAppUsesNonExemptEncryption` is `true` (see Export compliance); `PrivacyInfo.xcprivacy`; the full AppIcon set (opaque,
+generated from the brand mark) and a launch storyboard with the brand background and mark; `aps-environment` in
+`Runner.entitlements` is `development`, and Xcode writes `production` into the signed archive when it is exported
+with an App Store distribution profile, so leave it. The things only Xcode and an Apple account can do, in order:
+
+1. Apple Developer Program membership; create the App ID `app.hiyall.hiyall` with the capabilities **Push
+   Notifications** and **Sign in with Apple** (the entitlements file already lists the latter). Create an APNs auth
+   key (`.p8`) and upload it to Firebase, Cloud Messaging; create a Sign in with Apple key for the API's `APPLE_*`
+   settings.
+2. Open `ios/Runner.xcworkspace`, select Runner, Signing & Capabilities: choose the team, leave Automatic signing for
+   local work, and confirm the two capabilities show without errors. The deployment target is iOS 15.
+3. App Store Connect: create the app (bundle id above, SKU free text), fill the listing from `store-listing.md`,
+   answer App Privacy and the encryption questions, set the age rating, add the reviewer notes and an account.
+4. Build the archive with `scripts/build-release.sh ios` (the CI job does, after importing the certificate and
+   profile), or Product > Archive in Xcode. Run Product > Archive > Generate Privacy Report and compare it with
+   `PrivacyInfo.xcprivacy` (store-listing.md explains why this matters). Upload through Xcode Organizer or Transporter.
+5. TestFlight: install on a real iPhone, sign up with a real email, send a chat photo and receive a push before
+   submitting for review.
+
+## Web build
+
+The web app is a companion to the phones. `web/index.html` carries the title, description, theme colour, Open Graph
+and Twitter tags, a `noindex` robots tag and `robots.txt` (`Disallow: /`), because it is not a landing page; change both
+when a public page is served from the same site. The canonical and Open Graph URLs are filled by
+`scripts/build-release.sh web` from `WEB_CANONICAL_URL` (an https URL ending in `/`; the build refuses without it).
+`manifest.json` has name, short name, theme and background colours, standard and maskable icons, and a start URL.
+Release web builds show no debug banner (`debugShowCheckedModeBanner: false`). Serve with SPA fallback and HTTPS.
