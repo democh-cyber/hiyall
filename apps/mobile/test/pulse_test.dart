@@ -11,6 +11,7 @@ import 'package:hiyall/core/state.dart';
 import 'package:hiyall/features/pulse.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 const niko = Person(nikoId, 'niko', 'Niko');
 const me = Person(anjaliId, 'anjali', 'Anjali');

@@ -20,6 +20,7 @@ import 'package:hiyall/core/avatar_upload.dart';
 
 import 'avatar_helpers.dart';
 import 'widget_test.dart' show FakeApi;
+import 'support/fixtures.dart';
 
 /// An identity provider that behaves like Firebase: it reports the signed-in
 /// account when listened to, then every change.

@@ -6,6 +6,7 @@ import 'package:hiyall/core/state.dart';
 
 import 'spaces_test.dart' show SpacesFake;
 import 'widget_test.dart' show SignedIn;
+import 'support/fixtures.dart';
 
 /// Every main page on the smallest common phone, at normal and double text.
 void main() {

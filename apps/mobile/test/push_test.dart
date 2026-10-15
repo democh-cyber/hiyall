@@ -16,6 +16,7 @@ import 'package:hiyall/core/app_bindings.dart';
 import 'package:hiyall/features/notification_settings.dart';
 
 import 'widget_test.dart' show SignedIn;
+import 'support/fixtures.dart';
 
 const conversation = '019a4000-0000-7000-8000-0000000000c1';
 

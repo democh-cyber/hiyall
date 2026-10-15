@@ -16,6 +16,7 @@ import 'package:hiyall/features/activity.dart';
 import 'package:hiyall/shared/navigation_dock.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 // Contract-shaped fixtures exist only in tests; no app or database is seeded.
 final now = DateTime(2026, 10, 7, 12);

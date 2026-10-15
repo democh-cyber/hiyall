@@ -8,6 +8,7 @@ import 'package:hiyall/features/pulse/pulse_actions.dart';
 
 import 'pulse_test.dart' show PulseApi;
 import 'widget_test.dart' show SignedIn;
+import 'support/fixtures.dart';
 
 class SignedOut extends SessionController {
   @override

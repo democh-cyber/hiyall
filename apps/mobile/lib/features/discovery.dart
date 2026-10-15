@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../core/api.dart';
 import '../core/discovery.dart';
@@ -588,10 +587,6 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
                               onTap: () => search(more: true),
                             ),
                           ),
-                        if (devLoginEnabled)
-                          const SliverToBoxAdapter(
-                            child: InternalProfilePreview(),
-                          ),
                         const SliverToBoxAdapter(child: SizedBox(height: 32)),
                       ],
                     ),
@@ -611,42 +606,6 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
       ),
     );
   }
-}
-
-/// Development-only shortcut to the other fixture account's profile.
-class InternalProfilePreview extends ConsumerWidget {
-  const InternalProfilePreview({super.key});
-  @override
-  Widget build(BuildContext context, WidgetRef ref) => Padding(
-    padding: const EdgeInsets.fromLTRB(20, 24, 20, 0),
-    child: ExpansionTile(
-      key: const Key('internal-profile-preview'),
-      tilePadding: EdgeInsets.zero,
-      title: Text(
-        'Internal profile preview',
-        style: TextStyle(
-          fontSize: 12,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
-      ),
-      children: [
-        TextButton.icon(
-          onPressed: () {
-            final ownId = ref.read(sessionProvider).asData!.value!.userId;
-            context.go(
-              '/discover/person/${ownId == anjaliId ? nikoId : anjaliId}',
-            );
-          },
-          icon: const Icon(Icons.person_outline_rounded, size: 18),
-          label: Text(
-            ref.watch(sessionProvider).asData?.value?.userId == anjaliId
-                ? 'View Niko’s profile'
-                : 'View Anjali’s profile',
-          ),
-        ),
-      ],
-    ),
-  );
 }
 
 /// Shown instead of results when "My surroundings" is on but the device

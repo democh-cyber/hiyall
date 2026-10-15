@@ -12,6 +12,7 @@ import 'package:hiyall/core/app_info.dart';
 import 'package:hiyall/core/state.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 class SimpleDiscoverApi extends FakeApi {
   final searches = <Map<String, dynamic>>[];

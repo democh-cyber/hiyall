@@ -10,7 +10,7 @@ abstract class Reauthenticator {
   const Reauthenticator();
 
   /// How the account signs in, or null when the person cannot be asked (no
-  /// identity provider: development sessions).
+  /// identity provider is connected).
   AuthMethod? get method;
 
   /// Signs in again with the same provider and renews the ID token so its

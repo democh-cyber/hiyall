@@ -11,6 +11,7 @@ import 'package:hiyall/features/spaces.dart';
 
 import 'spaces_test.dart' show SpacesFake, circle, pump;
 import 'widget_test.dart' show SignedIn;
+import 'support/fixtures.dart';
 
 /// A joined space whose reads can go offline, page, or wait on a gate.
 class LiveSpace extends SpacesFake {

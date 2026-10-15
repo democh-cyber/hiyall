@@ -12,11 +12,11 @@ import 'package:hiyall/app.dart' show routerProvider;
 import 'package:hiyall/core/api.dart';
 import 'package:hiyall/core/chat/chat_api.dart';
 import 'package:hiyall/core/say_hi_prefs.dart';
-import 'package:hiyall/core/state.dart' show anjaliId;
 import 'package:hiyall/shared/person_avatar.dart';
 
 import 'chat_preview_test.dart' show gradientPng, palettes;
 import 'discover_helpers.dart';
+import 'support/fixtures.dart';
 
 /// Writes 2x PNGs of Discover to `.runtime/discover-previews-v5/`. Skipped
 /// unless run with `--dart-define=CAPTURE_DISCOVER=true`.

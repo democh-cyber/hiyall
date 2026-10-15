@@ -13,6 +13,7 @@ import 'package:hiyall/features/profile_editor.dart';
 import 'package:hiyall/shared/profile_space.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 const expressive = Profile(
   userId: anjaliId,

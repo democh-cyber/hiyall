@@ -24,7 +24,6 @@ const clientVersionHeader = 'X-Client-Version';
 
 /// With HTTP 426, the server's answer to a version it no longer accepts.
 const upgradeRequiredCode = 'UPGRADE_REQUIRED';
-const devLoginEnabled = kDebugMode && bool.fromEnvironment('ENABLE_DEV_LOGIN');
 
 /// Plain http is accepted only by debug builds and only for the machine's own API
 /// (the host, the Android emulator's alias for it). Release builds require https.
@@ -456,11 +455,7 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
       throw const ApiFailure('The service is not configured yet.');
     }
     if (url.scheme != 'https' && !(kDebugMode && _isLocalHttp(url))) {
-      throw ApiFailure(
-        devLoginEnabled && url.scheme == 'http'
-            ? 'Development login requires a local service.'
-            : 'The service is not configured yet.',
-      );
+      throw const ApiFailure('The service is not configured yet.');
     }
     try {
       final response = await _dio.request<Map<String, dynamic>>(
@@ -590,18 +585,6 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
       429 => 'Please wait a moment and try again.',
       _ => 'That didn’t work. Try again.',
     };
-  }
-
-  Future<Session> signInDevelopment(String userId) async {
-    if (!devLoginEnabled) {
-      throw const ApiFailure('Development login is disabled.');
-    }
-    final data = await _request(
-      'POST',
-      '/dev/session',
-      body: {'userId': userId},
-    ) as Map<String, dynamic>;
-    return Session(data['accessToken'] as String, data['userId'] as String);
   }
 
   Future<Profile> profile(Session s) async => Profile.fromJson(

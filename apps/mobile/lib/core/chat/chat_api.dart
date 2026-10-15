@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 
 /// A chat API failure with the server's stable error code.
 class ChatFailure implements Exception {
@@ -238,18 +239,19 @@ class ChatApi {
         url = data['uploadUrl'],
         headers = data['headers'];
     final uri = url is String ? Uri.tryParse(url) : null;
-    // Ciphertext may travel over plain http only in development builds.
+    // Ciphertext may travel over plain http only in a debug build, to this machine's own storage.
     final secure =
         uri?.scheme == 'https' ||
         (uri?.scheme == 'http' &&
-            !const bool.fromEnvironment('dart.vm.product'));
+            kDebugMode &&
+            const ['localhost', '127.0.0.1', '10.0.2.2'].contains(uri?.host));
     if (id is! String ||
         headers is! Map ||
         !secure ||
         (data['method'] ?? 'PUT') != 'PUT') {
       throw const ChatFailure(
         'BAD_SLOT',
-        'The chat service sent an unusable upload.',
+        'The photo couldn’t be uploaded. Try again.',
       );
     }
     return BlobSlot(id, url as String, {
@@ -275,7 +277,7 @@ class ChatApi {
     if (uri == null || !(uri.scheme == 'https' || uri.scheme == 'http')) {
       throw const ChatFailure(
         'BAD_SLOT',
-        'The chat service sent an unusable link.',
+        'The photo couldn’t be opened. Try again.',
       );
     }
     return (url: url as String, sizeBytes: data['sizeBytes'] as int?);

@@ -11,7 +11,6 @@ import '../../core/theme.dart';
 import '../../shared/widgets.dart';
 import '../legal_screens.dart' show LegalFooter;
 import 'auth_widgets.dart';
-import '../../core/user_error.dart';
 
 /// Shown while the app restores a sign-in, or when it could not reach the
 /// service to finish one.
@@ -90,7 +89,6 @@ class WelcomeScreen extends ConsumerWidget {
   const WelcomeScreen({super.key});
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final session = ref.watch(sessionProvider);
     final scheme = Theme.of(context).colorScheme;
     Widget actions({required bool compact}) {
       final content = Column(
@@ -126,44 +124,6 @@ class WelcomeScreen extends ConsumerWidget {
           ),
           const SizedBox(height: 18),
           const LegalFooter(),
-          if (devLoginEnabled) ...[
-            const SizedBox(height: 28),
-            const Divider(),
-            const SizedBox(height: 16),
-            const Text(
-              'Development accounts',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Local fixtures, available only in debug builds.',
-              style: TextStyle(
-                fontSize: 13,
-                height: 1.6,
-                color: scheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: 14),
-            for (final (id, label) in const [
-              (anjaliId, 'Continue as Anjali'),
-              (nikoId, 'Continue as Niko'),
-              (samId, 'Continue as Sam (new member)'),
-            ])
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: OutlinedButton(
-                  onPressed: session.isLoading
-                      ? null
-                      : () => ref.read(sessionProvider.notifier).login(id),
-                  child: Text(session.isLoading ? 'Connecting…' : label),
-                ),
-              ),
-            if (session.hasError)
-              Text(
-                friendlyError(session.error),
-                style: TextStyle(color: scheme.error),
-              ),
-          ],
         ],
       );
       return compact

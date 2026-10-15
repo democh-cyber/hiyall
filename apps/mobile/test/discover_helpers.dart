@@ -13,6 +13,7 @@ import 'package:hiyall/core/state.dart';
 import 'package:hiyall/features/say_hi.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 /// One person of the fake people list, as the server would send it.
 Map<String, dynamic> person(

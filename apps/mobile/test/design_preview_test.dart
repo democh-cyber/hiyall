@@ -11,6 +11,7 @@ import 'package:hiyall/core/api.dart';
 import 'package:hiyall/core/state.dart';
 
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 class DesignApi extends FakeApi {
   @override

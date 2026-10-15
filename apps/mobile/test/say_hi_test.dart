@@ -8,7 +8,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/app.dart';
 import 'package:hiyall/core/chat/chat_api.dart';
 import 'package:hiyall/core/say_hi_prefs.dart';
-import 'package:hiyall/core/state.dart' show anjaliId;
 import 'package:hiyall/features/chat_format.dart'
     show contrastRatio, isEmojiOnly;
 import 'package:hiyall/features/discover_person.dart';
@@ -17,6 +16,7 @@ import 'package:hiyall/features/say_hi.dart';
 import 'package:hiyall/shared/chat_tokens.dart';
 
 import 'discover_helpers.dart';
+import 'support/fixtures.dart';
 
 String pathOf(ProviderContainer c) => c
     .read(routerProvider)

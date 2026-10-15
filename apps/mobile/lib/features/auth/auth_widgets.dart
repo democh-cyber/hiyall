@@ -13,7 +13,6 @@ import '../../shared/widgets.dart';
 import '../legal_screens.dart';
 
 /// True when this build can sign someone in with email or a social provider.
-/// (Debug-only development accounts are separate and always labelled.)
 bool signInAvailable(WidgetRef ref) =>
     ref.watch(authGatewayProvider).configured;
 

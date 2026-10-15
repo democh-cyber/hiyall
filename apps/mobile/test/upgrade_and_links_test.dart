@@ -13,6 +13,7 @@ import 'package:hiyall/core/state.dart';
 import 'package:hiyall/features/system_screens.dart';
 
 import 'spaces_test.dart' show SpacesFake;
+import 'support/fixtures.dart';
 
 class _Capture implements HttpClientAdapter {
   _Capture(this.status, [this.body = const {}]);

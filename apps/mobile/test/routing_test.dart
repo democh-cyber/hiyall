@@ -9,6 +9,7 @@ import 'package:hiyall/features/screens.dart';
 
 import 'spaces_test.dart' show SpacesFake, circle;
 import 'widget_test.dart' show SignedIn;
+import 'support/fixtures.dart';
 
 Future<GoRouter> launchApp(WidgetTester tester, SpacesFake api) async {
   tester.view.physicalSize = const Size(400, 900);

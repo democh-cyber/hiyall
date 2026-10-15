@@ -20,7 +20,7 @@ The script is safe to re-run. It:
 3. turns on **Email/Password** and **Google** sign-in (`firebase deploy --only auth`). The consent screen's support email defaults to the CLI account; change it with `--support-email`;
 4. writes two git-ignored files: `config/firebase.local.json` (every `FIREBASE_*` value, per platform) and `apps/mobile/ios/Flutter/Firebase.xcconfig` (the URL scheme below).
 
-`scripts/dev-api.sh` reads `FIREBASE_PROJECT_ID` from that file and starts the API in Firebase mode, accepting browser requests from `http://localhost:49321` only. `scripts/dev-mobile.sh` passes the file with `--dart-define-from-file` and serves the web app on that address. The API verifies either Firebase tokens or the local fixture accounts, never both, so once the config file exists the fixture accounts are off; set `HIYALL_DEV_LOGIN=1` for both scripts to bring them back. For any other build, pass the same file:
+`scripts/dev-api.sh` reads `FIREBASE_PROJECT_ID` from that file and starts the API in Firebase mode, accepting browser requests from `http://localhost:49321` only. `scripts/dev-mobile.sh` passes the file with `--dart-define-from-file` and serves the web app on that address. The API verifies either Firebase tokens or the local fixture accounts, never both. The app can only sign in with Firebase, so local development needs the config file. `HIYALL_DEV_LOGIN=1` starts the API in fixture mode for the live tests and the chat peer tool only. For any other build, pass the same file:
 
 ```bash
 flutter build apk --dart-define-from-file=../../config/firebase.local.json \
@@ -95,9 +95,9 @@ On finishing, the app saves the profile, then completes onboarding. Each call is
 
 ## Development
 
-Debug builds started with `ENABLE_DEV_LOGIN=true` show three local accounts on Welcome: Anjali and Niko (already onboarded) and Sam, who has not finished onboarding, for trying that flow against the local API. They are removed from release builds at compile time.
+The app has no development or fixture login in any build, so there is nothing to strip from a release: local runs sign in through Firebase like users do (`config/firebase.local.json`, above). The server's `POST /dev/session` remains for Go tests and for the live tests, which sign in through `test/support/live_dev_session.dart`. Fixture identities used by widget tests (Anjali, Niko, Sam) are in `test/support/fixtures.dart`. `test/no_dev_code_test.dart` fails if `lib/` mentions the dev login, its flag or those identities.
 
-Tests use a fake provider (`test/auth_test.dart`): sign-in states and redirects, form validation, verification, restoring a session, token refresh and retry, and every onboarding step including server refusals. Run `flutter test`.
+Tests use a fake provider (`test/auth_test.dart`): sign-in states and redirects, form validation, verification, restoring a session, token refresh and retry, and every onboarding step including server refusals. Run `flutter test`; it needs no `--dart-define`.
 
 ## Legal documents
 

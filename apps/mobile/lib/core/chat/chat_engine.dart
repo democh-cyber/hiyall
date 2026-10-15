@@ -1046,7 +1046,10 @@ class ChatEngine {
       message: oneTimeKeyStatement(user, device.id, keyId, key),
       signature: claim['signature'] as String,
     )) {
-      throw const ChatFailure('BAD_KEY', 'A device key failed verification.');
+      throw const ChatFailure(
+        'BAD_KEY',
+        'Couldn’t verify a chat key. Try again.',
+      );
     }
     final session = _account.createOutbound(
       identityKey: device.identityKey,
@@ -1110,7 +1113,7 @@ class ChatEngine {
       }
     }
     if (failure != null) throw failure;
-    throw const ChatFailure('NO_SESSION', 'Missing session.');
+    throw const ChatFailure('NO_SESSION', 'Sign in to continue.');
   }
 
   /// Puts [session] back to the state it was pickled in, at its old place.
@@ -1940,7 +1943,7 @@ Incoming parseIncoming(
       body['messageId'] != messageId ||
       body['text'] is! String ||
       !isValidPad(body['pad'])) {
-    throw const ChatFailure('MISMATCH', 'Message metadata did not match.');
+    throw const ChatFailure('MISMATCH', 'That message couldn’t be read.');
   }
   final sentAt = DateTime.tryParse(body['sentAt'] as String? ?? '');
   final kind = body['kind'];
@@ -2018,7 +2021,7 @@ ChatMessage messageFromBody(
     serverAt: serverAt,
   );
   if (incoming is IncomingMessage) return incoming.message;
-  throw const ChatFailure('NOT_A_MESSAGE', 'That payload is not a message.');
+  throw const ChatFailure('NOT_A_MESSAGE', 'That message couldn’t be read.');
 }
 
 /// Safety number in the style of Signal's: each side hashes its user id and

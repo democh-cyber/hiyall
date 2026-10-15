@@ -15,6 +15,7 @@ import 'package:hiyall/shared/person_avatar.dart';
 
 import 'avatar_helpers.dart';
 import 'widget_test.dart' show FakeApi, SignedIn;
+import 'support/fixtures.dart';
 
 const photoUrl = 'https://cdn.test/avatars/anjali/a.webp?sig=1';
 

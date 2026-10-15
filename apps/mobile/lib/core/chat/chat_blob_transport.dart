@@ -125,14 +125,17 @@ class DioBlobTransport implements ChatBlobTransport {
     final out = BytesBuilder(copy: false);
     final declared = response.data!.contentLength;
     if (declared > maxBytes) {
-      throw const ChatFailure('CORRUPT', 'The photo is not the expected size.');
+      throw const ChatFailure(
+        'CORRUPT',
+        'The photo didn’t arrive intact. Try again.',
+      );
     }
     await for (final part in response.data!.stream) {
       out.add(part);
       if (out.length > maxBytes) {
         throw const ChatFailure(
           'CORRUPT',
-          'The photo is not the expected size.',
+          'The photo didn’t arrive intact. Try again.',
         );
       }
       onProgress?.call(out.length, declared > 0 ? declared : maxBytes);
