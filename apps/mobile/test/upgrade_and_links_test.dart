@@ -44,8 +44,9 @@ class _Capture implements HttpClientAdapter {
 class _Switch extends SessionController {
   @override
   AsyncValue<Session?> build() => const AsyncData(null);
-  void signIn({bool onboarded = true}) =>
-      state = AsyncData(Session('t', anjaliId, onboarded: onboarded));
+  void signIn({bool onboarded = true, String userId = anjaliId}) =>
+      state = AsyncData(Session('t', userId, onboarded: onboarded));
+  void signOut() => state = const AsyncData(null);
 }
 
 void main() {
@@ -275,6 +276,138 @@ void main() {
       await tester.pumpAndSettle();
       expect(router.state.uri.path, '/discover/person/$nikoId');
     });
+
+    testWidgets(
+      'signing out where you were and signing in again lands on Home, not on that page',
+      (tester) async {
+        final container = ProviderContainer(
+          overrides: [
+            apiProvider.overrideWithValue(SpacesFake()..blocked = false),
+            sessionProvider.overrideWith(_Switch.new),
+          ],
+        );
+        addTearDown(container.dispose);
+        await tester.pumpWidget(
+          UncontrolledProviderScope(
+            container: container,
+            child: const HiyallApp(),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final router = container.read(routerProvider);
+        final session = container.read(sessionProvider.notifier) as _Switch;
+        session.signIn();
+        await tester.pumpAndSettle();
+        router.go('/profile/settings');
+        await tester.pumpAndSettle();
+        expect(router.state.uri.path, '/profile/settings');
+
+        session.signOut();
+        await tester.pumpAndSettle();
+        expect(router.state.uri.path, '/welcome');
+        expect(
+          container.read(deepLinkMemoryProvider).pending,
+          isNull,
+          reason: 'the page you left is not a destination',
+        );
+
+        session.signIn();
+        await tester.pumpAndSettle();
+        expect(router.state.uri.path, '/home');
+      },
+    );
+
+    testWidgets(
+      'a different account signing in is not sent to the first one\'s page',
+      (tester) async {
+        final container = ProviderContainer(
+          overrides: [
+            apiProvider.overrideWithValue(SpacesFake()..blocked = false),
+            sessionProvider.overrideWith(_Switch.new),
+          ],
+        );
+        addTearDown(container.dispose);
+        await tester.pumpWidget(
+          UncontrolledProviderScope(
+            container: container,
+            child: const HiyallApp(),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final router = container.read(routerProvider);
+        final session = container.read(sessionProvider.notifier) as _Switch;
+        session.signIn();
+        await tester.pumpAndSettle();
+        router.go('/person/$nikoId');
+        await tester.pumpAndSettle();
+        session.expire();
+        await tester.pumpAndSettle();
+        session.signIn(userId: nikoId);
+        await tester.pumpAndSettle();
+        expect(router.state.uri.path, '/home');
+      },
+    );
+
+    testWidgets(
+      'a cold link opened signed out still works after the login that follows',
+      (tester) async {
+        final container = ProviderContainer(
+          overrides: [
+            apiProvider.overrideWithValue(SpacesFake()..blocked = false),
+            sessionProvider.overrideWith(_Switch.new),
+          ],
+        );
+        addTearDown(container.dispose);
+        await tester.pumpWidget(
+          UncontrolledProviderScope(
+            container: container,
+            child: const HiyallApp(),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final router = container.read(routerProvider);
+        router.go('/person/$nikoId');
+        await tester.pumpAndSettle();
+        expect(router.state.uri.path, '/welcome');
+        router.go('/login');
+        await tester.pumpAndSettle();
+        (container.read(sessionProvider.notifier) as _Switch).signIn();
+        await tester.pumpAndSettle();
+        expect(router.state.uri.path, '/person/$nikoId');
+      },
+    );
+
+    test('a link is bound to the account that was active, and only that one gets it', () {
+      final memory = DeepLinkMemory()..remember(Uri.parse('/person/x'));
+      memory.sessionActive('a');
+      expect(
+        memory.pending,
+        isNotNull,
+        reason: 'a cold link survives the login',
+      );
+      expect(memory.take('b'), isNull, reason: 'recorded for a');
+      expect(memory.pending, isNull);
+
+      final other = DeepLinkMemory()..remember(Uri.parse('/person/y'));
+      other.sessionActive('a');
+      other.sessionActive('b');
+      expect(other.pending, isNull, reason: 'another account appeared');
+
+      final same = DeepLinkMemory()..remember(Uri.parse('/person/z'));
+      same.sessionActive('a');
+      expect(same.take('a'), '/person/z');
+    });
+
+    test('once a session was active nothing more is remembered, until the app restarts', () {
+      final memory = DeepLinkMemory()..sessionActive('a');
+      expect(memory.sessionSeen, isTrue);
+      memory.remember(Uri.parse('/profile/settings'));
+      expect(memory.pending, isNull);
+      memory.clear();
+      memory.remember(Uri.parse('/profile/settings'));
+      expect(memory.pending, isNull);
+      expect(DeepLinkMemory().sessionSeen, isFalse);
+    });
   });
 
   group('404 and Back', () {
@@ -330,6 +463,48 @@ void main() {
         router.pop();
         await tester.pumpAndSettle();
         expect(router.state.uri.path, '/welcome');
+      },
+    );
+
+    testWidgets(
+      'Log in and Create account link to each other without stacking pages: Back still reaches Welcome',
+      (tester) async {
+        final container = ProviderContainer(
+          overrides: [
+            apiProvider.overrideWithValue(SpacesFake()..blocked = false),
+            sessionProvider.overrideWith(_Switch.new),
+          ],
+        );
+        addTearDown(container.dispose);
+        await tester.pumpWidget(
+          UncontrolledProviderScope(
+            container: container,
+            child: const HiyallApp(),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final router = container.read(routerProvider);
+        await tester.ensureVisible(find.byKey(const Key('log-in')));
+        await tester.tap(find.byKey(const Key('log-in')));
+        await tester.pumpAndSettle();
+        expect(router.state.uri.path, '/login');
+
+        // Across and back across: still one page above Welcome.
+        final toSignup = find.widgetWithText(TextButton, 'Create account');
+        await tester.ensureVisible(toSignup);
+        await tester.tap(toSignup);
+        await tester.pumpAndSettle();
+        expect(router.state.uri.path, '/signup');
+        final toLogin = find.widgetWithText(TextButton, 'Log in');
+        await tester.ensureVisible(toLogin);
+        await tester.tap(toLogin);
+        await tester.pumpAndSettle();
+        expect(router.state.uri.path, '/login');
+
+        router.pop();
+        await tester.pumpAndSettle();
+        expect(router.state.uri.path, '/welcome');
+        expect(router.canPop(), isFalse);
       },
     );
   });

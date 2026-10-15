@@ -32,6 +32,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get helpContactPrivacy => 'Privacy and your data';
 
   @override
+  String get helpContactSettingUpTitle => 'Contact details are being set up';
+
+  @override
+  String get helpContactSettingUpBody =>
+      'Until they are ready, use Block and Report in the app: open their profile or chat, tap the three dots, and choose Block or Report. We review every report.';
+
+  @override
   String get helpMailSubjectHelp => 'Help';
 
   @override

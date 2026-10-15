@@ -23,24 +23,54 @@ const entryRoutes = {
 /// where changing watched state would trigger another redirect.
 class DeepLinkMemory {
   Uri? _pending;
+  String? _owner;
+  bool _sessionSeen = false;
 
   Uri? get pending => _pending;
 
-  /// Remembers [uri] unless it is an entry step or the plain home page.
+  /// True once a signed-in session was active in this launch. From then on a
+  /// page the router sent someone away from is never remembered: it is where
+  /// they signed out or were signed out, not somewhere they were heading.
+  bool get sessionSeen => _sessionSeen;
+
+  /// Remembers [uri] unless it is an entry step or the plain home page, or a
+  /// session was already active in this launch.
   void remember(Uri uri) {
+    if (_sessionSeen) return;
     final path = uri.path.isEmpty ? '/' : uri.path;
     if (entryRoutes.contains(path) || path == '/' || path == '/home') return;
     _pending = uri;
+    _owner = null;
   }
 
-  /// The remembered location, cleared.
-  String? take() {
-    final uri = _pending;
+  /// A session for [userId] is active. A remembered link then belongs to that
+  /// account and is dropped if a different one shows up.
+  void sessionActive(String userId) {
+    _sessionSeen = true;
+    if (_pending != null && _owner != null && _owner != userId) {
+      _pending = null;
+    }
+    if (_pending != null) _owner = userId;
+  }
+
+  /// The remembered location, cleared. Null when it was recorded for another
+  /// account than [userId].
+  String? take([String? userId]) {
+    final uri = _pending, owner = _owner;
     _pending = null;
-    return uri?.toString();
+    _owner = null;
+    if (uri == null || (userId != null && owner != null && owner != userId)) {
+      return null;
+    }
+    return uri.toString();
   }
 
-  void clear() => _pending = null;
+  /// Forgets the link (sign-out, expiry, account deletion). The "a session was
+  /// active" mark stays: this launch has had a signed-in session.
+  void clear() {
+    _pending = null;
+    _owner = null;
+  }
 }
 
 final deepLinkMemoryProvider = Provider<DeepLinkMemory>(

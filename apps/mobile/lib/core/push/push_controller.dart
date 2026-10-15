@@ -272,16 +272,21 @@ class PushController extends Notifier<PushState> {
     await _forget();
   }
 
+  static const _forgetStepLimit = Duration(seconds: 2);
+
   Future<void> _forget() async {
     final backend = ref.read(pushBackendProvider);
     try {
-      final id = _deviceId ?? await backend.deviceId();
+      // Every step is bounded: sign-out must not wait on a slow keystore or
+      // network (the sign-out hook has its own, longer limit as well).
+      final id =
+          _deviceId ?? await backend.deviceId().timeout(_forgetStepLimit);
       if (id != null) {
-        await backend.clear(id).timeout(const Duration(seconds: 3));
+        await backend.clear(id).timeout(_forgetStepLimit);
       }
     } catch (_) {}
     try {
-      await _service.deleteToken();
+      await _service.deleteToken().timeout(_forgetStepLimit);
     } catch (_) {}
     _sentToken = null;
     if (ref.mounted) state = state.copyWith(registered: false);

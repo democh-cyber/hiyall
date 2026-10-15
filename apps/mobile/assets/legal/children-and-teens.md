@@ -14,7 +14,7 @@ Hiyall is for people aged 13 and over. We do not allow anyone under 13 to have a
 
 ## Two age groups
 
-When people sign up they declare a date of birth. We use it to place them in one of two groups:
+When people sign up they declare a date of birth. We store it privately and use it to place them in one of two groups:
 
 - **Teens**, aged 13 to 17.
 - **Adults**, aged 18 and over.
@@ -25,20 +25,24 @@ Nothing is deleted when two people are in different groups. If a teen turns 18, 
 
 ### Nearby
 
+Nearby is **off for every member until they turn it on**, and that includes every teen. Hiyall does not read a teen's location, and holds none for them, unless the teen has opened Nearby, read the explanation (teens get a stronger warning than adults) and chosen to turn it on. Turning Nearby off deletes the location we saved. Signing out in the app deletes it too. If a teen's sign-in is ended some other way, for example from another device or by us, the saved position stops being shown within 24 hours and is deleted within 7 days. [OPERATOR: update this when the server deletes it at once.]
+
 Teens are never shown in an adult's Nearby list, and adults are never shown in a teen's. For teens, location is also handled more carefully than for adults:
 
-- our server rounds a teen's saved location to about 11 kilometres (for adults, about 1 kilometre);
-- other teens see only wide distance steps (10, 25, 50 or 100 km).
+- our server adds a small secret offset and rounds a teen's saved location to about 11 kilometres (for adults, about 1 kilometre);
+- other teens see only wide distance steps (10, 25, 50 or 100 km);
+- the age and gender filters are not available to teens and are never applied to them.
 
 ### Stricter defaults for teens
 
-When a teen finishes sign-up, these start stricter than the adult versions:
+When a teen finishes sign-up, these start stricter than the adult versions, and **the app and our servers do not let a teen loosen them while they are under 18**:
 
 - **Online and last seen is off.** Other members cannot see when a teen is online or was last active.
 - **Country is visible to friends only.**
 - **Followers and following lists are visible to friends only.** For adults, anyone who follows them can see their lists.
+- **Nearby is off** until the teen turns it on, as described above.
 
-A teen can change the online and last seen setting afterwards in Settings.
+A teen can make these settings stricter, never more open. When they turn 18 the adult choices become available.
 
 ## What teens do share
 
@@ -46,7 +50,7 @@ Teens in Hiyall are still on an open, public-by-default service, so parents and 
 
 - A teen's profile can be found by other teens in Discover. It shows their name, username, photo, bio and whatever details they add.
 - Their **age in years** is shown on their profile to other teens who open it. The app has no setting to hide it.
-- **Other teens can message them** without being friends first. Teens can block and report, and starting new chats is rate-limited.
+- **Other teens can message them** without being friends first. To limit unwanted contact, a person can send only 3 messages to someone who has not yet replied, and starting new chats is rate-limited. Teens can block and report.
 - **Members can see who viewed their profile.**
 - Posts, stories and discussions in spaces are not end-to-end encrypted and may be seen by Hiyall staff when needed for safety.
 
@@ -55,14 +59,21 @@ Teens in Hiyall are still on an open, public-by-default service, so parents and 
 This matters, so we say it plainly.
 
 - **Age is self-declared.** We ask for a date of birth. We do not check it with an ID, a card, a face scan or any other proof.
+- **A younger date is refused, and the refusal is remembered.** If someone enters a birth date that makes them younger than 13, we do not create the account. We remember the refusal against the sign-in (the identifier Firebase gives it, never the date), with a count and a time. For 7 days after the last refusal that sign-in cannot try again, and we delete the record after 30 days. Deleting an account does not clear it. This stops an immediate retry with a different date. It does not stop someone who uses another sign-in.
 - **A false birth date defeats the protections.** A teen who types an adult birth date is treated as an adult and can be seen by, and can contact, adults. An adult who types a teen birth date can appear to teens.
 - **We cannot detect this automatically.** We have no tool that spots a false age. Reports are the main way we find out.
-- **The birth date cannot be changed after sign-up.** We keep the first date entered.
-- **We cannot read chats.** Chats are end-to-end encrypted. We cannot scan them for harm. Reports include only what the reporter chooses to send.
+- **The birth date cannot be changed after sign-up.** We keep the first date entered, privately, until the account is erased.
+- **We cannot read chats.** Chats are end-to-end encrypted. We cannot scan them for harm or for illegal images. Reports include only what the reporter chooses to send.
 - **Location can be faked.** Someone who fakes where they are could work out roughly where a person is to within a few kilometres.
 - **We do not verify parental consent.** Hiyall does not currently ask for a parent's permission. [LEGAL REVIEW: some countries need verifiable parental consent for people under 13 to 16, depending on the country, and for location data.]
 
 Age groups, stricter defaults, blocking, reporting and limits make harm less likely. They are not a guarantee.
+
+## Illegal images of children
+
+[COUNSEL: scanning status at launch. Keep the first paragraph below only if a hash list or scanning provider is live; if photos are not scanned at launch, replace it with: "We do not currently check uploaded photos against lists of known illegal images. We rely on reports."] Profile, post and story photos are checked when they are uploaded against a list of known illegal images, using a digital fingerprint of the photo. The check finds known images only. It cannot find a new image, and it cannot check photos in end-to-end encrypted chats.
+
+If a photo is flagged or matches, it is not shown, the upload is refused with a general message, and we open a safety case. The photo is kept as evidence in a separate restricted storage area, even if the account or the post is later deleted, for [COUNSEL: evidence retention period, default currently 365 days] from detection, or longer if the case is confirmed or reported, or an authority or the law requires it. A match can suspend the account and sign it out of every device. We do not tell the member why. Only authorised staff can see a case; the photo opens blurred for administrators only, and every view is logged. We may report suspected child sexual abuse material to the authorities where the law requires. If you come across it, do not share it: report it in the app or write to [SAFETY EMAIL].
 
 ## Tips for teens
 
@@ -70,13 +81,13 @@ Age groups, stricter defaults, blocking, reporting and limits make harm less lik
 - Do not share your address, school, or routine, and do not share photos you would not want everyone to see.
 - You do not owe anyone a reply. Block, then report.
 - If anyone asks you for sexual pictures, asks you to keep secrets, or wants to meet you alone, stop, block, report, and tell an adult you trust.
-- Turn off location for Hiyall in your phone's settings if you would rather not appear in Nearby.
+- Leave Nearby off (it is off until you turn it on). If you turned it on and want to stop, switch it off in Settings, which deletes the location we saved.
 - If you are in danger, call your local emergency number.
 
 ## Tips for parents and guardians
 
 - Talk with your teen about who they talk to, and what to do if something goes wrong.
-- Use your phone's own controls, such as screen time and location permission, to set limits.
+- Use your phone's own controls, such as screen time and location permission, to set limits. Hiyall does not read a teen's location unless the teen turns Nearby on.
 - Show them how to block and report in Hiyall.
 - You cannot see your teen's chats through us: they are private and we cannot read them.
 

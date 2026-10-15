@@ -310,7 +310,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with AuthActions {
           children: [
             const Text('New to Hiyall?'),
             TextButton(
-              onPressed: working ? null : () => context.go('/signup'),
+              onPressed: working
+                  ? null
+                  : () => context.pushReplacement('/signup'),
               child: const Text('Create account'),
             ),
           ],
@@ -416,7 +418,9 @@ class _SignupScreenState extends ConsumerState<SignupScreen> with AuthActions {
           children: [
             const Text('Already have an account?'),
             TextButton(
-              onPressed: working ? null : () => context.go('/login'),
+              onPressed: working
+                  ? null
+                  : () => context.pushReplacement('/login'),
               child: const Text('Log in'),
             ),
           ],

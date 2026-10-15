@@ -126,6 +126,9 @@ class FakeGateway implements AuthGateway {
 
 class AuthApi extends FakeApi {
   bool onboarded = false;
+
+  /// The terms revision the service asks the person to accept.
+  String termsVersion = '2026-10-01';
   bool usernameFree = true;
   bool failProfileRead = false;
   ApiFailure? completeFailure, updateFailure, ageFailure;
@@ -159,7 +162,7 @@ class AuthApi extends FakeApi {
 
   @override
   Future<OnboardingStatus> onboarding(Session s) async =>
-      OnboardingStatus(onboarded, '2026-10-01');
+      OnboardingStatus(onboarded, termsVersion);
 
   @override
   Future<bool> usernameAvailable(Session s, String username) async {
@@ -1022,6 +1025,31 @@ void main() {
           isTrue,
         );
         expect(location(container), '/home');
+      },
+    );
+
+    testWidgets(
+      'A terms revision this build does not show is never accepted for the person',
+      (tester) async {
+        final api = AuthApi()..termsVersion = '2099-01-01';
+        final container = await start(tester, api);
+        await fillOnboarding(tester);
+        await next(tester, 'onb-finish');
+
+        expect(
+          find.textContaining('terms have changed since this version'),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining('Update the app to continue'),
+          findsOneWidget,
+        );
+        expect(api.completed, isNull, reason: 'nothing was accepted');
+        expect(
+          container.read(sessionProvider).asData!.value!.onboarded,
+          isFalse,
+        );
+        expect(location(container), '/onboarding');
       },
     );
 

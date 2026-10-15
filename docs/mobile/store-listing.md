@@ -39,15 +39,17 @@ Unfinished fields are marked with the word in capitals that gate i searches for;
 | Data | Sent when | Server keeps it | Code |
 | --- | --- | --- | --- |
 | Email address, sign-in provider id | Sign-up and sign-in (Firebase Auth) | In Firebase and as the account's identity | `core/auth/*`, `identity/` |
-| Birth date | Onboarding age step | Checked, then not stored (only the age band) | `completeOnboarding` |
+| Birth date | Onboarding age step | **Yes, stored privately** on the server (never shown to other members; it sets the age band and the age shown in years) and deleted with the account. A date under 13 is refused and only the sign-in identifier, a count and a time are kept (7 days of cooldown, deleted after 30 days; no date) | `completeOnboarding`, `age_gate_refusals` |
 | Display name, username, bio, headline, profession, education, pronouns, gender, country, region, city, languages, interests, links | Profile editor | Yes, shown per the member's audience settings | `core/api.dart` `updateProfile` |
 | Profile, post, story photos | Upload | Yes (R2), metadata stripped | `avatar_upload.dart`, `pulse.dart` |
 | Posts, comments, story text, space discussions and members | Posting | Yes | `core/pulse.dart`, `core/spaces.dart` |
 | Chat messages and chat photos | Sending a chat | Ciphertext only (end-to-end encrypted); the server also sees who talks to whom and when | `core/chat/*` |
-| Approximate location | Only after the person opens Nearby, reads the explainer and chooses to share, or turns it on in Settings | Rounded server-side (about 1 km; about 11 km under 18), shared for 24 h, deleted on sign-out | `core/nearby.dart`, `features/nearby_optin.dart` |
+| Approximate location | Only after the person opens Nearby, reads the explainer and chooses to turn it on (off by default for everyone), or turns it on in Settings | Offset and rounded server-side (about 1 km; about 11 km under 18), shared for 24 h, deleted after 7 days if not refreshed, deleted at once when Nearby is turned off or the person signs out in the app. A session ended elsewhere stops showing the position within 24 h and deletes it within 7 days | `core/nearby.dart`, `features/nearby_optin.dart` |
 | Push token, chat device key, platform | Notifications consent, first chat | Yes, until signed out or the token is rejected | `core/push/*` |
 | Follows, friend requests, blocks, mutes, reports, notification settings, online-visibility choice | Using the app | Yes | `core/api.dart` |
-| Crash and error reports | Only in builds with a Sentry DSN | Scrubbed: no URLs, bodies, chat text, emails or ids; no user | `core/error_reporting.dart` |
+| Crash and error reports | Only in builds with a Sentry DSN (Sentry, a service provider; the API sends scrubbed server errors to the same provider) | Scrubbed: no URLs, bodies, chat text, emails or ids; no user | `core/error_reporting.dart`, `internal/errreport` |
+| Photos checked for known illegal images | Server side, when a profile, post or story photo is uploaded | A flagged photo and a case record (account id, fingerprint, size, times, decision) are kept as evidence for the period the legal text states, even after account deletion. Chat photos are end-to-end encrypted and are not checked | `internal/media/scan.go`, `internal/store/mediascan.go` <!-- claim:scanned --> |
+| Abuse-prevention records | Using the app | Counters (rate limits, daily limits), a 24 hour idempotency key on posting | `internal/ratelimit`, `internal/store/idempotency.go` |
 | IP address, user agent | Every request | In server logs only (retention is the host's) | uncertain: confirm host log retention |
 
 Not collected: contacts, calendar, microphone, advertising id, browsing history, precise GPS history,
@@ -68,8 +70,8 @@ not linked).
 | User Content: Other User Content | Yes | Posts, comments, stories, bio |
 | User Content: Emails or Text Messages | Yes (decide) | Chat is end-to-end encrypted and unreadable to us, but the server stores the ciphertext and delivery metadata. Apple's guidance on "collected" and E2EE is not explicit; declaring is the conservative reading |
 | Location: Coarse Location | Yes | Opt-in. The phone asks the OS for an approximate fix, but sends the coordinates it gets and the server rounds them; if you would rather declare Precise Location, change both this and the manifest |
-| Other Data Types | Yes | Birth date (not stored), gender, interests, languages |
-| Diagnostics: Crash Data | Yes | Only with Sentry; not linked |
+| Other Data Types | Yes | Birth date (stored privately for the age band), gender, interests, languages |
+| Diagnostics: Crash Data | Yes | Only with Sentry; not linked. Sentry is a service provider, not "sharing" |
 | Health, Financial, Sensitive Info, Contacts, Browsing/Search History, Purchases, Usage Data, Advertising | No | |
 
 Privacy policy URL: the hosted copy of `assets/legal/privacy-policy.md`. Required fields in the listing: age
@@ -117,7 +119,9 @@ Content rating questionnaire: UGC, user interaction, shares location (approximat
 violence by the app itself. Target audience includes 13 to 17: complete the Families/teen policy questions and
 note that adult and minor interaction limits exist (see `docs/legal/children-and-teens.md`).
 
-## Web account-deletion URL (needed: not built yet)
+## Web account-deletion URL (needed: not built yet; OWNER ACTION)
+
+**Owner: the account-deletion URL field in the Listing fields table is yours to fill. Nothing in the repository can create the page.**
 
 Play requires a public web page where a person can request deletion without installing the app, linked in the
 Data safety form. None exists. Minimum: a page at `https://<domain>/delete-account` that explains the
@@ -131,9 +135,11 @@ needs the owner's Apple key).
 - Test accounts for reviewers (email + password) with a note that email verification is pre-completed.
 - UGC safeguards (Apple 1.2): report and block in every profile and chat (Settings > Help & Safety explains
   them), published contact details (Help & Safety), a moderation team and a 24-hour response target
-  (`docs/security/`), filtering for sexual content in photos (scanning provider is an owner setup).
-- Location is opt-in, only while Nearby is open, rounded; age and gender filters are off when either side is a
-  minor; members under 18 are not discoverable by adults.
+  (`docs/security/`). Photo scanning, choose exactly ONE of the next two lines and delete the other (preflight gate q fails an unscanned release while the line that carries the hidden scanned-claim comment is still here):
+  - Scanner configured: profile, post and story photos are compared, on upload, against a list of known illegal images (a hash list or provider); there is no filtering for nudity or any other content, and chat photos are end-to-end encrypted and are not checked. <!-- claim:scanned -->
+  - Unscanned at launch (`SCAN_ALLOW_NONE=true` with `RELEASE_ACK_UNSCANNED=I_ACCEPT_UNSCANNED_PHOTOS`): uploaded photos are NOT scanned; moderation relies on member reports and staff review.
+- Location is opt-in (off by default for everyone, read only after the in-app explainer and only while Nearby is open),
+  rounded; age and gender filters are off when either side is a minor; members under 18 are not discoverable by adults.
 - Encryption: see "Export compliance" in `16-release-and-reliability.md`.
 
 ## Crisis resources list (Help & Safety)

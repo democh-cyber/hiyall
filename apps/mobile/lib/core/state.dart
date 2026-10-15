@@ -7,6 +7,10 @@ import 'api.dart';
 import 'auth/auth_gateway.dart';
 import 'auth/firebase_config.dart';
 import 'auth/firebase_gateway.dart';
+import 'chat_wipe_hook.dart';
+import 'data_delivery.dart' show exportWipeProvider;
+import 'deep_link.dart';
+import 'error_reporting.dart';
 import 'location_service.dart';
 import 'pending_revoke.dart';
 
@@ -85,10 +89,43 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
   int get accountEpoch => _accountEpoch;
   final _locationWrites = <Future<void>>{};
 
-  /// Work that needs the credential, run on sign-out before the session is
-  /// revoked (push notifications clear this device's token). Best effort: a
-  /// hook must not throw and should be quick.
+  /// Work that runs whenever a session ends: sign-out (before the session is
+  /// revoked, while the credential still works: push notifications clear this
+  /// device's token), expiry, and account deletion. Best effort: each hook is
+  /// given [signOutHookTimeout], and one that throws or hangs is logged and
+  /// skipped, never allowed to keep the person signed in.
   final signOutHooks = <Future<void> Function()>[];
+
+  /// The longest one sign-out hook may take.
+  Duration signOutHookTimeout = const Duration(seconds: 5);
+
+  /// The session that is ending, for hooks that need to know whose data to
+  /// remove (the state is already empty when a session expires).
+  Session? _departing;
+
+  /// True while [logout] or [signOutProvider] runs, so the 401 that a revoked
+  /// credential answers with does not start a second, "expired" sign-out.
+  bool _signingOut = false;
+
+  Future<void> _runSignOutHooks() async {
+    for (final hook in signOutHooks.toList()) {
+      try {
+        await hook().timeout(signOutHookTimeout);
+      } catch (error, stack) {
+        // Logged without detail: the error type only, no message that might carry data.
+        ErrorReporting.capture(
+          StateError('sign-out hook failed: ${error.runtimeType}'),
+          stack,
+        );
+      }
+    }
+  }
+
+  /// Forgets everything that belonged to the account that just left: a page it
+  /// was heading for, and a pending hook's view of who it was.
+  void _forgetAccount() {
+    ref.read(deepLinkMemoryProvider).clear();
+  }
 
   /// Sends a position for the account of [epoch], unless it has signed out
   /// since. Sign-out waits for writes already on the wire.
@@ -105,6 +142,11 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
 
   @override
   AsyncValue<Session?> build() {
+    // The local clean-up that must happen whenever a session ends, registered
+    // here so it does not depend on any screen or provider still listening.
+    signOutHooks
+      ..add(chatWipeHook(ref, () => _departing))
+      ..add(() => ref.read(exportWipeProvider)());
     // A sign-out that couldn't reach the server last time is sent now.
     unawaited(
       ref
@@ -234,10 +276,16 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
 
   /// The server no longer accepts this session; drop it locally.
   void expire() {
-    if (state.asData?.value == null) return;
+    final session = state.asData?.value;
+    if (session == null || _signingOut) return;
+    _departing = session;
     ref.read(sessionExpiredProvider.notifier).set(true);
     unawaited(ref.read(authGatewayProvider).signOut());
+    _forgetAccount();
     state = const AsyncData(null);
+    // The credential is already dead, so server calls in hooks fail quietly;
+    // the local clean-up (chat data, export files) is what this is for.
+    unawaited(_runSignOutHooks().whenComplete(() => _departing = null));
   }
 
   /// Signs out. Always finishes on this device, even offline: if the server
@@ -245,6 +293,17 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
   /// next launch.
   Future<void> logout() async {
     final session = state.asData?.value;
+    _signingOut = true;
+    _departing = session;
+    try {
+      await _logout(session);
+    } finally {
+      _signingOut = false;
+      _departing = null;
+    }
+  }
+
+  Future<void> _logout(Session? session) async {
     if (session != null) {
       // No new position goes out from here on; one already sent lands first
       // so the removal below is the last word.
@@ -259,13 +318,7 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
         await ref.read(apiProvider).stopSharingLocation(session);
       } catch (_) {}
       // This device stops getting the account's pushes while the credential still works.
-      for (final hook in signOutHooks.toList()) {
-        try {
-          await hook();
-        } catch (_) {
-          // A hook that needs the server must not keep the person signed in.
-        }
-      }
+      await _runSignOutHooks();
       try {
         await ref.read(apiProvider).logout(session);
       } on ApiFailure catch (error) {
@@ -284,14 +337,27 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
     }
     ref.read(sessionExpiredProvider.notifier).set(false);
     ref.read(awaitingVerificationProvider.notifier).set(null);
+    _forgetAccount();
     state = const AsyncData(null);
   }
 
-  /// Signs out of the identity provider alone, for accounts that never got a
-  /// server session (unverified email, failed start-up).
+  /// Signs out of the identity provider alone: after the member deleted the
+  /// account (the server already ended every session), and for accounts that
+  /// never got a server session (unverified email, failed start-up). The
+  /// local clean-up hooks run when there was a session.
   Future<void> signOutProvider() async {
-    await ref.read(authGatewayProvider).signOut();
+    final session = state.asData?.value;
+    _signingOut = true;
+    _departing = session;
+    try {
+      if (session != null) await _runSignOutHooks();
+      await ref.read(authGatewayProvider).signOut();
+    } finally {
+      _signingOut = false;
+      _departing = null;
+    }
     ref.read(awaitingVerificationProvider.notifier).set(null);
+    _forgetAccount();
     state = const AsyncData(null);
   }
 }

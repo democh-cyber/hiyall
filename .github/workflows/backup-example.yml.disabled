@@ -1,0 +1,84 @@
+# EXAMPLE, NOT ACTIVE. GitHub only runs files ending in .yml or .yaml, so this one does nothing until you rename it to
+# .github/workflows/backup.yml. Read docs/deployment/10-deploy-guide.md section 6 first.
+#
+# What it does: a nightly encrypted logical backup of the production database to a SEPARATE bucket through
+# scripts/backup-db.sh, and a monthly restore drill into a scratch Postgres service. It needs a database role with SELECT
+# only, an age PUBLIC key (the private key must not be stored in GitHub), and a bucket token limited to write and list on
+# the backup bucket. If you would rather not give GitHub a production database URL, run the same script from cron on a
+# machine you control:
+#
+#   17 2 * * *  cd /opt/hiyall && BACKUP_DATABASE_URL=... BACKUP_S3_BUCKET=... BACKUP_S3_ENDPOINT=... \
+#               BACKUP_AGE_RECIPIENT=age1... AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... scripts/backup-db.sh >> /var/log/hiyall-backup.log 2>&1
+#
+# Alert on a missing backup (nothing in the bucket newer than 26 hours); a silent scheduler is the usual failure.
+name: Backup
+on:
+  schedule:
+    - cron: '17 2 * * *'   # every night, 02:17 UTC (off the hour on purpose: scheduled runs bunch up at :00)
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: production-backup   # create it with the secrets below and required reviewers off (it runs unattended)
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Tools (the PostgreSQL client must be at least the server's major version)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client age awscli
+      - name: Encrypted backup to the backup bucket
+        env:
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}       # read-only role, sslmode=verify-full
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+          BACKUP_AGE_RECIPIENT: ${{ vars.BACKUP_AGE_RECIPIENT }}        # age1... public key
+          AWS_DEFAULT_REGION: auto
+        run: scripts/backup-db.sh
+
+  restore-drill:
+    # First day of the month only; proves the newest backup restores, roles and grants included.
+    needs: backup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: production-backup
+    services:
+      postgres:
+        image: postgres:16.15
+        env:
+          POSTGRES_PASSWORD: drill-only-disposable
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client age awscli
+      - name: Skip unless it is the first of the month (or a manual run)
+        id: when
+        run: |
+          if [ "${{ github.event_name }}" = workflow_dispatch ] || [ "$(date -u +%d)" = 01 ]; then echo "go=true" >> "$GITHUB_OUTPUT"; fi
+      - name: Restore the newest backup into the scratch database and check it
+        if: steps.when.outputs.go == 'true'
+        env:
+          DRILL_ADMIN_URL: postgresql://postgres:drill-only-disposable@127.0.0.1:5432/postgres
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.DRILL_S3_ACCESS_KEY_ID }}      # read token for the backup bucket
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DRILL_S3_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AGE_IDENTITY_FILE: ${{ runner.temp }}/age-identity.txt
+          AGE_IDENTITY: ${{ secrets.DRILL_AGE_IDENTITY }}               # the PRIVATE key: only this drill job may hold it
+        run: |
+          umask 077
+          printf '%s\n' "$AGE_IDENTITY" > "$AGE_IDENTITY_FILE"
+          scripts/restore-drill.sh --latest

@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/core/api.dart';
+import 'package:hiyall/core/api_config.dart';
+import 'package:hiyall/core/app_info.dart';
 import 'package:hiyall/core/auth/reauth.dart';
 
 /// An ApiClient whose HTTP layer answers with [reply] and records what was asked.
@@ -221,6 +223,175 @@ void main() {
       );
     },
   );
+
+  group(
+    'The export goes through the same request path as every other call',
+    () {
+      List<int> envelope(String code) => utf8.encode(
+        jsonEncode({
+          'success': false,
+          'error': {'code': code, 'message': 'x'},
+        }),
+      );
+
+      test('it carries the app version and the bearer token', () async {
+        final headers = <Map<String, dynamic>>[];
+        final api = clientWith([], (o) {
+          headers.add(Map.of(o.headers));
+          return json(o, 200, utf8.encode('{}'));
+        });
+        await api.exportData(session);
+        expect(headers.single[clientVersionHeader], AppInfo.version);
+        expect(headers.single['Authorization'], 'Bearer tok');
+      });
+
+      test(
+        'plain http to another host is refused before anything is sent',
+        () async {
+          var sent = 0;
+          final dio = Dio(BaseOptions(baseUrl: 'http://api.example.test'))
+            ..interceptors.add(
+              InterceptorsWrapper(
+                onRequest: (o, h) {
+                  sent++;
+                  h.resolve(json(o, 200, utf8.encode('{}')));
+                },
+              ),
+            );
+          await expectLater(
+            ApiClient(dio: dio).exportData(session),
+            throwsA(
+              isA<ApiFailure>().having(
+                (e) => e.message,
+                'message',
+                contains('not configured'),
+              ),
+            ),
+          );
+          expect(sent, 0, reason: 'the export holds personal data');
+        },
+      );
+
+      test(
+        'a 401 is retried once with a fresh token, and the session is kept',
+        () async {
+          final auths = <Object?>[];
+          var unauthorized = 0;
+          final api =
+              clientWith([], (o) {
+                  auths.add(o.headers['Authorization']);
+                  return auths.length == 1
+                      ? json(o, 401, envelope('UNAUTHENTICATED'))
+                      : json(o, 200, utf8.encode('{"exportVersion":1}'));
+                })
+                ..tokenRefresher = (() async => 'fresh')
+                ..onUnauthorized = () => unauthorized++;
+          expect(
+            utf8.decode(await api.exportData(session)),
+            '{"exportVersion":1}',
+          );
+          expect(auths, ['Bearer tok', 'Bearer fresh']);
+          expect(unauthorized, 0);
+        },
+      );
+
+      test('a 401 that survives the refresh ends the session', () async {
+        var unauthorized = 0;
+        final api =
+            clientWith([], (o) => json(o, 401, envelope('UNAUTHENTICATED')))
+              ..tokenRefresher = (() async => 'fresh')
+              ..onUnauthorized = () => unauthorized++;
+        await expectLater(
+          api.exportData(session),
+          throwsA(isA<ApiFailure>().having((e) => e.status, 'status', 401)),
+        );
+        expect(unauthorized, 1);
+      });
+
+      test('426 UPGRADE_REQUIRED shows the update screen', () async {
+        var upgrades = 0;
+        final api = clientWith(
+          [],
+          (o) => json(o, 426, envelope(upgradeRequiredCode)),
+        )..onUpgradeRequired = () => upgrades++;
+        await expectLater(
+          api.exportData(session),
+          throwsA(
+            isA<ApiFailure>().having(
+              (e) => e.code,
+              'code',
+              upgradeRequiredCode,
+            ),
+          ),
+        );
+        expect(upgrades, 1);
+      });
+
+      test(
+        'a 429 with no body still says to wait a day and carries Retry-After',
+        () async {
+          final api = clientWith(
+            [],
+            (o) => json(o, 429, utf8.encode(''), {
+              'retry-after': ['600'],
+            }),
+          );
+          await expectLater(
+            api.exportData(session),
+            throwsA(
+              isA<ApiFailure>()
+                  .having((e) => e.message, 'message', contains('once a day'))
+                  .having(
+                    (e) => e.retryAfter,
+                    'retryAfter',
+                    const Duration(minutes: 10),
+                  ),
+            ),
+          );
+        },
+      );
+    },
+  );
+
+  group('The shared transport rule', () {
+    test(
+      'https is always fine; plain http only to this machine in a debug build',
+      () {
+        expect(
+          isSecureTransport(Uri.parse('https://api.example.test')),
+          isTrue,
+        );
+        expect(
+          isSecureTransport(Uri.parse('http://127.0.0.1:8080'), debug: true),
+          isTrue,
+        );
+        expect(
+          isSecureTransport(Uri.parse('http://localhost:8080'), debug: true),
+          isTrue,
+        );
+        expect(
+          isSecureTransport(Uri.parse('http://10.0.2.2:8080'), debug: true),
+          isTrue,
+        );
+        expect(
+          isSecureTransport(Uri.parse('http://127.0.0.1:8080'), debug: false),
+          isFalse,
+        );
+        expect(
+          isSecureTransport(Uri.parse('http://api.example.test'), debug: true),
+          isFalse,
+        );
+        expect(
+          isSecureTransport(Uri.parse('ws://127.0.0.1'), debug: true),
+          isFalse,
+        );
+        expect(isSecureTransport(null), isFalse);
+        expect(isSecureTransport(Uri.parse('')), isFalse);
+        expect(isLoopbackHttp(Uri.parse('http://localhost')), isTrue);
+        expect(isLoopbackHttp(Uri.parse('https://localhost')), isFalse);
+      },
+    );
+  });
 
   group('Re-authentication errors', () {
     test('read as plain words', () {

@@ -15,7 +15,10 @@
 #   BACKUP_AGE_RECIPIENT    an age public key (age1...) OR
 #   BACKUP_GPG_RECIPIENT    a gpg key id/email already imported on this machine
 #   BACKUP_PREFIX           optional, default "hiyall/db"
-#   BACKUP_ALLOW_UNENCRYPTED=1   optional, local testing only; refused when the bucket is set to production
+#   BACKUP_ALLOW_UNENCRYPTED=1   optional, local testing only. REFUSED (exit 2) unless the database AND the bucket endpoint are
+#                           on this machine (localhost, 127.0.0.1, ::1 or a unix socket) and BACKUP_S3_BUCKET and APP_ENV do not
+#                           say "prod": anything else is treated as production, where a backup is never written in clear.
+# Scheduling: see docs/deployment/10-deploy-guide.md section 6 and .github/workflows/backup-example.yml.disabled.
 # The private key (age identity or gpg secret key) must NOT live on the machine that runs this script.
 set -euo pipefail
 
@@ -27,6 +30,23 @@ stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 umask 077
+
+# Anything that is not clearly a local test setup counts as production.
+looks_like_production() {
+  local db_host bucket_lc
+  bucket_lc="$(printf '%s' "$BACKUP_S3_BUCKET" | tr '[:upper:]' '[:lower:]')"
+  db_host="$(printf '%s' "$BACKUP_DATABASE_URL" | sed -E 's#^[a-z]+://([^@/]*@)?([^/:?]+|\[[^]]+\]).*#\2#')"
+  if [[ "${APP_ENV:-}" == production || "$bucket_lc" == *prod* ]]; then return 0; fi
+  case "$BACKUP_DATABASE_URL" in *host=/*) ;; *)
+    case "$db_host" in localhost | 127.0.0.1 | "[::1]") ;; *) return 0 ;; esac ;;
+  esac
+  case "$BACKUP_S3_ENDPOINT" in *://localhost* | *://127.0.0.1* | *://\[::1\]* | localhost* | 127.0.0.1*) ;; *) return 0 ;; esac
+  return 1
+}
+if [[ "${BACKUP_ALLOW_UNENCRYPTED:-}" == 1 && -z "${BACKUP_AGE_RECIPIENT:-}" && -z "${BACKUP_GPG_RECIPIENT:-}" ]] && looks_like_production; then
+  echo "backup-db: BACKUP_ALLOW_UNENCRYPTED=1 is refused here: the database or the bucket does not look like a local test setup (production backups are always encrypted). Set BACKUP_AGE_RECIPIENT or BACKUP_GPG_RECIPIENT." >&2
+  exit 2
+fi
 
 for tool in pg_dump psql aws; do
   command -v "$tool" >/dev/null || { echo "backup-db: $tool is not installed" >&2; exit 2; }

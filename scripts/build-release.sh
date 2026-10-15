@@ -19,6 +19,13 @@
 # Optional:  FIREBASE_API_KEY_ANDROID / _IOS / _WEB (per platform keys), FIREBASE_AUTH_DOMAIN,
 #            FIREBASE_STORAGE_BUCKET, FIREBASE_IOS_BUNDLE_ID (default app.hiyall.hiyall), APP_ENV,
 #            ENABLE_EVENTS, APPLE_SIGN_IN_WEB.
+# iOS signing (ios only): by default `flutter build ipa` signs automatically with the Apple account signed in to Xcode
+# (a Mac you use). In CI there is no account: when IOS_TEAM_ID and IOS_PROFILE_NAME are set (the release workflow reads
+# both from the installed provisioning profile) the script signs MANUALLY: `flutter build ios --config-only`, a
+# temporary manual-signing edit of the Runner target, `xcodebuild archive`, then `xcodebuild -exportArchive` with
+# apps/mobile/ios/ExportOptions.plist. That path refuses to run outside CI (it edits the Xcode project, and restores it
+# on exit) and has never run: rehearse the first archive on a Mac (docs/mobile/16-release-and-reliability.md).
+# HIYALL_IOS_NO_CODESIGN=1 builds an unsigned `flutter build ios --no-codesign` (release-dryrun.yml uses it).
 #
 # Dart defines go to a temporary --dart-define-from-file under apps/mobile/build (git-ignored, deleted on
 # exit). Android and iOS builds are obfuscated, with symbols in apps/mobile/build/symbols: keep them (and
@@ -146,14 +153,25 @@ json.dump(d, open(sys.argv[1], "w"), indent=2)
 PY
 
 flags=(--release "--build-name=$version" "--build-number=$build" "--dart-define-from-file=build/release-defines.json")
+manual_ios=0
 case "$platform" in
   android) cmd=(flutter build appbundle "${flags[@]}" --obfuscate --split-debug-info=build/symbols) ;;
-  ios) cmd=(flutter build ipa "${flags[@]}" --obfuscate --split-debug-info=build/symbols --export-method=app-store) ;;
+  ios)
+    if [[ "${HIYALL_IOS_NO_CODESIGN:-}" == 1 ]]; then
+      cmd=(flutter build ios "${flags[@]}" --obfuscate --split-debug-info=build/symbols --no-codesign)
+    elif [[ -n "${IOS_TEAM_ID:-}" && -n "${IOS_PROFILE_NAME:-}" ]]; then
+      manual_ios=1
+      cmd=(flutter build ios --config-only "${flags[@]}" --obfuscate --split-debug-info=build/symbols)
+    else
+      cmd=(flutter build ipa "${flags[@]}" --obfuscate --split-debug-info=build/symbols --export-method=app-store)
+    fi
+    ;;
   web) cmd=(flutter build web "${flags[@]}") ;; # Flutter web has no Dart obfuscation
 esac
 
 if ((check)); then
   echo "OK: would run in apps/mobile: ${cmd[*]}"
+  if ((manual_ios)); then echo "then (manual signing, team ${IOS_TEAM_ID}): xcodebuild archive, xcodebuild -exportArchive -exportOptionsPlist build/ExportOptions.plist"; fi
   echo "defines: $(python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))))' "$defines")"
   exit 0
 fi
@@ -161,7 +179,37 @@ fi
 if ! command -v flutter >/dev/null 2>&1 && [[ -f "$root/scripts/env.sh" ]]; then source "$root/scripts/env.sh"; fi
 cd "$root/apps/mobile"
 mkdir -p build/symbols
+if ((manual_ios)) && [[ "${CI:-}" != true && "${GITHUB_ACTIONS:-}" != true ]]; then
+  echo "Refusing manual iOS signing outside CI: it edits ios/Runner.xcodeproj. On a Mac, unset IOS_TEAM_ID and IOS_PROFILE_NAME and sign in to Xcode instead." >&2
+  exit 1
+fi
 "${cmd[@]}"
+if ((manual_ios)); then
+  # Manual signing for the Runner target only (a global xcodebuild override would also hit the Pods targets, which cannot
+  # take a provisioning profile). The project file is restored on exit, so nothing leaks into a commit.
+  pbx="ios/Runner.xcodeproj/project.pbxproj"
+  cp "$pbx" "$defines_dir/project.pbxproj.orig"
+  trap 'rm -f "$defines"; cp "$defines_dir/project.pbxproj.orig" "$root/apps/mobile/$pbx" 2>/dev/null || true; rm -f "$defines_dir/project.pbxproj.orig" "$defines_dir/ExportOptions.plist"' EXIT
+  python3 - "$pbx" "$IOS_TEAM_ID" "$IOS_PROFILE_NAME" "ios/ExportOptions.plist" "build/ExportOptions.plist" <<'PY'
+import re, sys
+pbx, team, profile, template, out = sys.argv[1:6]
+text = open(pbx, encoding="utf-8").read()
+q = lambda v: '"%s"' % v.replace("\\", "\\\\").replace('"', '\\"')
+manual = ("CODE_SIGN_STYLE = Manual;\n\t\t\t\tDEVELOPMENT_TEAM = %s;\n\t\t\t\tPROVISIONING_PROFILE_SPECIFIER = %s;\n\t\t\t\t"
+          "\"CODE_SIGN_IDENTITY[sdk=iphoneos*]\" = \"Apple Distribution\";") % (q(team), q(profile))
+text, n = re.subn(r"CODE_SIGN_STYLE = Automatic;", lambda m: manual, text)
+if n == 0:
+    sys.exit("no 'CODE_SIGN_STYLE = Automatic' in the Xcode project: the manual signing edit needs updating")
+open(pbx, "w", encoding="utf-8").write(text)
+tpl = open(template, encoding="utf-8").read()
+esc = lambda v: v.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+open(out, "w", encoding="utf-8").write(tpl.replace("__IOS_TEAM_ID__", esc(team)).replace("__IOS_PROFILE_NAME__", esc(profile)))
+PY
+  (cd ios && xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
+      -archivePath ../build/ios/archive/Runner.xcarchive archive)
+  xcodebuild -exportArchive -archivePath build/ios/archive/Runner.xcarchive \
+      -exportOptionsPlist build/ExportOptions.plist -exportPath build/ios/ipa
+fi
 if [[ "$platform" == web ]]; then
   # Fill the canonical / Open Graph markers in web/index.html (Flutter only substitutes the base href).
   python3 - build/web/index.html "$WEB_CANONICAL_URL" <<'PY'

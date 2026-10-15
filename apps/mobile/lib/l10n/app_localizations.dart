@@ -136,6 +136,18 @@ abstract class AppLocalizations {
   /// **'Privacy and your data'**
   String get helpContactPrivacy;
 
+  /// Shown in place of a contact address that is not set up yet.
+  ///
+  /// In en, this message translates to:
+  /// **'Contact details are being set up'**
+  String get helpContactSettingUpTitle;
+
+  /// No description provided for @helpContactSettingUpBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Until they are ready, use Block and Report in the app: open their profile or chat, tap the three dots, and choose Block or Report. We review every report.'**
+  String get helpContactSettingUpBody;
+
   /// Subject of the mail draft for the help address; the app adds the version after it.
   ///
   /// In en, this message translates to:

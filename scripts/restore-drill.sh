@@ -12,6 +12,10 @@
 #   DRILL_ADMIN_URL   connection string to a scratch Postgres server (database "postgres"), with rights to
 #                     create and drop databases. It must NOT be the production server.
 #   DRILL_DB          optional, default restore_drill_<timestamp>; must start with "restore_drill"
+#   DRILL_SKIP_ROLES  optional, 1 skips the database roles and grants check (a dump holds neither: backup-db.sh uses
+#                     --no-acl, so a restore is only usable after database/roles/roles.sql and grants.sql ran)
+#   API_BIN           optional path to the `api` binary; when it (or `api` on PATH) supports `check-config -db`, the drill
+#                     runs that grants self-check against the restored database too
 set -euo pipefail
 : "${DRILL_ADMIN_URL:?set DRILL_ADMIN_URL to a scratch Postgres server (never production)}"
 task_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -52,6 +56,40 @@ applied="$(q 'SELECT count(*) FROM schema_migrations')"
 shipped="$(ls "$task_root"/database/migrations/*.sql | wc -l | tr -d ' ')"
 echo "restore-drill: migrations applied $applied, shipped in this checkout $shipped"
 for t in users messages conversations deleted_users; do echo "restore-drill: $t rows: $(q "SELECT count(*) FROM $t")"; done
+if [[ "${DRILL_SKIP_ROLES:-}" != 1 ]]; then
+  # Roles are cluster-wide and privileges are not in the dump (pg_dump --no-acl). A restore that skips this step comes up
+  # with an API role that cannot read its own tables. The scratch server is disposable, so create the roles here
+  # if they are missing, apply the grants, then verify the privilege model the API depends on.
+  role_count="$(psql "$DRILL_ADMIN_URL" -X -At -c "SELECT count(*) FROM pg_roles WHERE rolname IN ('hiyall_api','hiyall_admin','hiyall_migrate')")"
+  if [[ "$role_count" != 3 ]]; then
+    echo "restore-drill: creating the database roles on the scratch server (database/roles/roles.sql)"
+    psql "$DRILL_ADMIN_URL" -X -q -v ON_ERROR_STOP=1 -f "$task_root/database/roles/roles.sql"
+  fi
+  if [[ -f "$task_root/database/roles/grants.sql" ]]; then
+    psql "$scratch_url" -X -q -v ON_ERROR_STOP=1 -f "$task_root/database/roles/grants.sql"
+  else
+    echo "restore-drill: FAIL database/roles/grants.sql is missing from this checkout" >&2; exit 1
+  fi
+  check() { # description, boolean SQL expression that must be true
+    [[ "$(q "SELECT $2")" == t ]] || { echo "restore-drill: FAIL roles check: $1" >&2; exit 1; }
+  }
+  check "hiyall_api can read users" "has_table_privilege('hiyall_api','users','SELECT')"
+  check "hiyall_api can write users" "has_table_privilege('hiyall_api','users','UPDATE')"
+  check "hiyall_api can read the profile counts view" "has_table_privilege('hiyall_api','profile_social_counts','SELECT')"
+  check "hiyall_api cannot read the operator tables" "NOT has_table_privilege('hiyall_api','operators','SELECT')"
+  check "hiyall_api cannot touch the operator audit log" "NOT has_table_privilege('hiyall_api','operator_audit','SELECT')"
+  check "hiyall_admin can append to the audit log" "has_table_privilege('hiyall_admin','operator_audit','INSERT')"
+  check "hiyall_admin cannot change the audit log" "NOT has_table_privilege('hiyall_admin','operator_audit','UPDATE') AND NOT has_table_privilege('hiyall_admin','operator_audit','DELETE')"
+  echo "restore-drill: roles and grants verified (api, admin, migrate)"
+  api_bin="${API_BIN:-$(command -v api || true)}"
+  if [[ -n "$api_bin" && -x "$api_bin" ]] && "$api_bin" check-config -h 2>&1 | grep -q -- '-db'; then
+    # The server's own grants self-check: every table and view the API needs is reachable as the API role would see it.
+    DATABASE_URL="$scratch_url" "$api_bin" check-config -db
+    echo "restore-drill: api check-config -db passed"
+  else
+    echo "restore-drill: note: no api binary with \`check-config -db\` found (set API_BIN); the server's own grants self-check was not run"
+  fi
+fi
 echo "restore-drill: users not yet purged but listed in deleted_users (must be 0 after replay-deletions): $(q "SELECT count(*) FROM users u JOIN deleted_users d USING(user_id) WHERE u.status<>'deleted'")"
 [[ "$applied" -le "$shipped" ]] || { echo "restore-drill: FAIL database is ahead of this checkout" >&2; exit 1; }
 echo "restore-drill: OK in $((SECONDS - start))s. Compare the counts with production, record the time and date in your ops log."

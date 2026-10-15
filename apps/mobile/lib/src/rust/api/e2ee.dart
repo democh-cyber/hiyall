@@ -49,7 +49,10 @@ abstract class OlmAccount implements RustOpaqueInterface {
   /// Rotates the fallback key and returns the unpublished one.
   PublicKeyEntry? generateFallbackKey();
 
-  /// Generates keys and returns every unpublished one-time key.
+  /// Makes sure `count` (at most 50) one-time keys are waiting to be published, generating only the
+  /// shortfall, and returns every unpublished one-time key. Keys left by an upload that failed are
+  /// therefore reused, never added to: the unpublished set stays as small as the biggest `count` asked
+  /// for, so a retry can never exceed the 50 keys the relay takes per request. `count: 0` makes none.
   List<PublicKeyEntry> generateOneTimeKeys({required int count});
 
   String identityKey();

@@ -26,3 +26,6 @@ Future<Delivery> deliverData(
   web.URL.revokeObjectURL(url);
   return Delivery.downloaded;
 }
+
+/// Nothing is ever written on the web: the browser handles the download.
+Future<void> wipeExports() async {}

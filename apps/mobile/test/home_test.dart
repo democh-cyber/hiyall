@@ -7,6 +7,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hiyall/core/app_info.dart' show FeatureFlags;
 import 'package:hiyall/app.dart';
 import 'package:hiyall/core/api.dart';
 import 'package:hiyall/core/home_prefs.dart';
@@ -606,6 +607,12 @@ void main() {
       await launch(tester, api);
       final create = find.byKey(const Key('home-create'));
       expect(create, findsOneWidget);
+      // The hint names only what exists: Moments are off for V1 (the events flag).
+      expect(FeatureFlags.events, isFalse);
+      expect(
+        tester.widget<PressScale>(create).semanticHint,
+        'Post, story or circle',
+      );
       expect(
         find.descendant(of: create, matching: find.text('Create')),
         findsOneWidget,

@@ -18,7 +18,7 @@ By creating an account you agree to these Terms and to our Privacy Policy. If yo
 
 - You must be at least **13 years old**.
 - When you sign up we ask for your date of birth. You tell us the date; we do not check it against an ID or any other record. You must give your real date of birth.
-- Your date of birth is kept privately. It decides which age group you are in (13 to 17, or 18 and over) and which protections apply to you. It cannot be changed later.
+- Your date of birth is stored privately. It decides which age group you are in (13 to 17, or 18 and over) and which protections apply to you. It cannot be changed later. If you enter a date that makes you younger than 13 we will not create your account, and that sign-in cannot try again for 7 days.
 - If you are under 18, please read these Terms with a parent or guardian. Read "Children and Teens" to see how we protect younger members.
 - [LEGAL REVIEW: some countries require a parent's or guardian's consent for people below an age that is higher than 13, and for certain kinds of data such as location. Hiyall does not currently ask for or verify parental consent. The operator must decide which markets to open and what each requires.]
 - If we learn that someone is under 13, we will remove their account.
@@ -40,8 +40,8 @@ Hiyall is a place to meet people and make friends. It is open by design. Here is
 - **Profile views are visible to you, and your views are visible to others.** When you open another member's profile, that member can see your name in their list of profile visitors. Members cannot turn this off. The list shows who visited and when they first visited.
 - **Followers can see connections.** For members aged 18 and over, anyone who follows them can open their followers and following lists. For members under 18, only their friends can.
 - **Online status and last seen.** Others can see when you are online and when you were last active, unless you turn this off in Settings. If you are under 18 it starts switched off.
-- **Nearby.** If you let the app read your location, you can appear in other members' Nearby lists, shown only as a rough distance. See the Privacy Policy for the detail.
-- **Anyone in your age group can message you.** There is no friend step. You can block or report anyone at any time.
+- **Nearby.** Nearby is off until you turn it on. Only if you do, and let the app read your location, can you appear in other members' Nearby lists, shown only as a rough distance. You can turn it off at any time. See the Privacy Policy for the detail.
+- **Anyone in your age group can message you.** There is no friend step, but a person can send only 3 messages to someone who has not replied yet. You can block or report anyone at any time.
 - **Posts, stories and spaces are not private.** Posts, stories and the discussions inside spaces can be read by the people who are allowed to see them, and by us. They are not end-to-end encrypted.
 - **Chats are different.** One-to-one chats are end-to-end encrypted. See the Privacy Policy for what that means and what it does not mean.
 
@@ -70,6 +70,7 @@ You must not:
 
 - You can block, mute or restrict any member, and report people, chats and messages from the app.
 - Reports are looked at by people. Reports about serious harm go to the front of the queue. We can warn an account, remove content, or suspend an account.
+- Photos you upload for your profile, posts and stories are checked for known illegal images. If a photo is flagged, we do not show it, we keep it as evidence (even if you delete it or your account), we may suspend the account without telling you why, and we may report it to the authorities. The Privacy Policy and Data Retention document explain what is kept and for how long. [COUNSEL: scanning status at launch; if photos are not scanned at launch, replace the first sentence with: "We do not currently check uploaded photos against lists of known illegal images."]
 - Because chats are end-to-end encrypted, we cannot read them. A report about a chat only includes the messages and photos that you choose to include. Sending them is your choice.
 - If you think we got a decision wrong, write to [APPEALS EMAIL] and tell us what happened. A person will look again. [OPERATOR: set a target response time.]
 - We may share information with the authorities or with others where the law requires, or where it is needed to protect someone from serious harm. [LEGAL REVIEW]
@@ -82,7 +83,7 @@ Hiyall is free to use today and has no ads. If we add paid features in future, w
 ## 9. Ending your account
 
 - You can stop using Hiyall at any time. In the app, go to **Settings > Account > Download my data** to get a copy of your information, and **Settings > Account > Delete account** to delete your account. The Data Retention document explains what is removed and when.
-- We may suspend or end an account that breaks these Terms or puts others at risk. Where we can, we will tell you why.
+- We may suspend or end an account that breaks these Terms or puts others at risk. Where we can, we will tell you why. We cannot always do so: for a safety or legal reason we may not be allowed to, or telling you could put someone at risk.
 - Some parts of these Terms keep applying after your account ends (for example, rules about liability and disputes).
 
 ## 10. Our rights

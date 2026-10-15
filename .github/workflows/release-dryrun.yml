@@ -1,0 +1,105 @@
+name: Release dry run
+# Rehearses the release BUILDS without secrets and without publishing anything, so the first real tag is not the first
+# time R8, cargokit (the Rust encryption library) and the obfuscated build run in CI. Start it by hand from the Actions tab.
+#
+#   Android: a release-mode App Bundle through scripts/build-release.sh, signed with a THROWAWAY keystore generated
+#            inside the job (random password, destroyed with the runner), so it exercises R8 shrinking, the keep rules and
+#            the Rust build for every ABI. The bundle is NOT uploaded and is useless for the Play Store.
+#   Web:     the release web build.
+#   iOS:     optional (input), an UNSIGNED `flutter build ios --release --no-codesign`; it proves the Xcode and cargokit
+#            build, not signing. The signed archive and export must still be rehearsed once on a Mac
+#            (docs/mobile/16-release-and-reliability.md).
+#
+# Nothing here uses a repository secret. Every value below is a made-up placeholder that satisfies the build script's checks.
+on:
+  workflow_dispatch:
+    inputs:
+      ios:
+        description: 'Also build iOS unsigned (macOS runner, slower and more expensive)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: release-dryrun-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  API_BASE_URL: https://api.dryrun.invalid
+  FIREBASE_PROJECT_ID: dryrun-project
+  FIREBASE_MESSAGING_SENDER_ID: '1'
+  FIREBASE_API_KEY: dryrun-not-a-real-key
+  FIREBASE_ANDROID_APP_ID: '1:1:android:0000000000000000'
+  FIREBASE_IOS_APP_ID: '1:1:ios:0000000000000000'
+  FIREBASE_WEB_APP_ID: '1:1:web:0000000000000000'
+  FIREBASE_AUTH_DOMAIN: dryrun-project.firebaseapp.com
+  WEB_CANONICAL_URL: https://dryrun.invalid/
+  SUPPORT_EMAIL: dryrun@dryrun.invalid
+  SAFETY_EMAIL: dryrun@dryrun.invalid
+  PRIVACY_EMAIL: dryrun@dryrun.invalid
+  APP_BUILD_NUMBER: '1'
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.47.6'
+          channel: stable
+          cache: true
+      - run: |
+          rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+      - name: Throwaway signing keystore (random password, never leaves the runner)
+        run: |
+          set -euo pipefail
+          umask 077
+          pass="$(openssl rand -hex 16)"
+          keytool -genkeypair -keystore "$RUNNER_TEMP/dryrun.jks" -storepass "$pass" -keypass "$pass" \
+            -alias dryrun -keyalg RSA -keysize 2048 -validity 2 -dname "CN=Hiyall release dry run"
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=dryrun\nkeyPassword=%s\n' "$RUNNER_TEMP/dryrun.jks" "$pass" "$pass" > apps/mobile/android/key.properties
+      - name: Release App Bundle (R8, obfuscation, Rust for all ABIs)
+        run: scripts/build-release.sh android
+      - name: What was produced
+        working-directory: apps/mobile
+        run: |
+          set -euo pipefail
+          ls -l build/app/outputs/bundle/release/*.aab
+          # R8 writes its mapping next to the bundle; its absence means shrinking did not run.
+          ls -l build/app/outputs/mapping/release/mapping.txt
+          ls build/symbols | head
+
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.47.6'
+          channel: stable
+          cache: true
+      - run: scripts/build-release.sh web
+      - run: test -s apps/mobile/build/web/index.html && ! grep -q '%WEB_' apps/mobile/build/web/index.html
+
+  ios:
+    if: ${{ inputs.ios }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.47.6'
+          channel: stable
+          cache: true
+      - run: |
+          rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
+          rustup target add aarch64-apple-ios
+      - name: Unsigned release build
+        env:
+          HIYALL_IOS_NO_CODESIGN: '1'
+        run: scripts/build-release.sh ios

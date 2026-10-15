@@ -14,19 +14,29 @@ import 'legal_screens.dart' show openLegal;
 /// defaults are placeholders that end in `.example`; the release script
 /// refuses to build with them for production.
 abstract final class HelpContacts {
-  static const support = String.fromEnvironment(
+  // Plain statics (not const) so a test can put a real address in; nothing
+  // else assigns them.
+  static String support = const String.fromEnvironment(
     'SUPPORT_EMAIL',
     defaultValue: 'support@hiyall.example',
   );
-  static const safety = String.fromEnvironment(
+  static String safety = const String.fromEnvironment(
     'SAFETY_EMAIL',
     defaultValue: 'safety@hiyall.example',
   );
-  static const privacy = String.fromEnvironment(
+  static String privacy = const String.fromEnvironment(
     'PRIVACY_EMAIL',
     defaultValue: 'privacy@hiyall.example',
   );
   static bool isPlaceholder(String address) => address.endsWith('.example');
+
+  /// Debug and test builds only: show placeholder addresses instead of hiding
+  /// them. A release build never lists an address that cannot receive mail.
+  static bool showPlaceholders = false;
+
+  /// Whether [address] may be listed for a person to write to.
+  static bool usable(String address) =>
+      showPlaceholders || !isPlaceholder(address);
 }
 
 /// Opens a mail draft. Replaced in tests, which have no mail app.
@@ -179,28 +189,43 @@ class _ContactSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
+    final rows = <Widget>[
+      if (HelpContacts.usable(HelpContacts.support))
+        _ContactTile(
+          Icons.mail_outline_rounded,
+          'Help and feedback',
+          l10n.helpContactHelp,
+          HelpContacts.support,
+          l10n.helpMailSubjectHelp,
+        ),
+      if (HelpContacts.usable(HelpContacts.safety))
+        _ContactTile(
+          Icons.shield_outlined,
+          'Safety concerns',
+          l10n.helpContactSafety,
+          HelpContacts.safety,
+          l10n.helpMailSubjectSafety,
+        ),
+      if (HelpContacts.usable(HelpContacts.privacy))
+        _ContactTile(
+          Icons.privacy_tip_outlined,
+          'Privacy and your data',
+          l10n.helpContactPrivacy,
+          HelpContacts.privacy,
+          l10n.helpMailSubjectPrivacy,
+        ),
+    ];
     return _Section(l10n.helpSectionContact, [
-      _ContactTile(
-        Icons.mail_outline_rounded,
-        'Help and feedback',
-        l10n.helpContactHelp,
-        HelpContacts.support,
-        l10n.helpMailSubjectHelp,
-      ),
-      _ContactTile(
-        Icons.shield_outlined,
-        'Safety concerns',
-        l10n.helpContactSafety,
-        HelpContacts.safety,
-        l10n.helpMailSubjectSafety,
-      ),
-      _ContactTile(
-        Icons.privacy_tip_outlined,
-        'Privacy and your data',
-        l10n.helpContactPrivacy,
-        HelpContacts.privacy,
-        l10n.helpMailSubjectPrivacy,
-      ),
+      ...rows,
+      // Addresses still placeholders (a build made without the release
+      // script): say so, and point at what works inside the app.
+      if (rows.length < 3)
+        ListTile(
+          key: const Key('help-contact-setting-up'),
+          leading: const Icon(Icons.hourglass_empty_rounded),
+          title: Text(l10n.helpContactSettingUpTitle, style: _bold),
+          subtitle: Text(l10n.helpContactSettingUpBody),
+        ),
     ]);
   }
 }

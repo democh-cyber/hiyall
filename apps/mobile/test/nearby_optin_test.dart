@@ -42,6 +42,13 @@ void main() {
       expect(find.text('Who can see it'), findsOneWidget);
       expect(find.text('How long'), findsOneWidget);
       expect(find.text('How to stop'), findsOneWidget);
+      // Discover refreshing the rough area while Nearby is on is disclosed.
+      expect(
+        find.textContaining(
+          'Discover also refreshes your approximate area automatically',
+        ),
+        findsOneWidget,
+      );
       expect(find.byKey(const Key('nearby-explainer-minor')), findsNothing);
       await tester.tap(find.byKey(const Key('nearby-explainer-cancel')));
       await tester.pumpAndSettle();

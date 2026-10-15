@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/core/error_reporting.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
@@ -28,6 +29,64 @@ void main() {
       expect(out, isNot(contains('ana@example.com')));
       expect(out, isNot(contains('eyJ')));
       expect(out, contains('[email]'));
+    });
+    test('a payload quoted inside an exception message is removed', () {
+      final json = scrubText(
+        const FormatException(
+          'Unexpected character',
+          '{"birthDate":"2010-01-01","displayName":"Ana","token":"abc"}',
+          3,
+        ).toString(),
+      );
+      expect(json, isNot(contains('birthDate')));
+      expect(json, isNot(contains('Ana')));
+      expect(json, contains('[json]'));
+      expect(
+        json,
+        contains('Unexpected character'),
+        reason: 'the kind of error stays',
+      );
+
+      final list = scrubText('Bad state\n[{"id":"1","body":"hello there"}]');
+      expect(list, isNot(contains('hello there')));
+      expect(list, startsWith('Bad state'));
+    });
+
+    test(
+      'long base64 fragments are removed, ordinary words and short ids stay',
+      () {
+        const blob =
+            'aGVsbG8gd29ybGQgdGhpcyBpcyBzb21lIGNpcGhlcnRleHQgYnl0ZXM0Mg==';
+        final out = scrubText('Could not decode $blob at offset 3');
+        expect(out, isNot(contains(blob)));
+        expect(out, contains('[data]'));
+        expect(out, contains('at offset 3'));
+        // Url-safe base64 (a signature or key).
+        expect(
+          scrubText(
+            'key=Zm9vYmFyLWJhei1xdXV4LWNvcmdlLWdyYXVsdC13YWxkby1mcmVkLXBsdWdo_AB12',
+          ),
+          isNot(contains('Zm9vYmFy')),
+        );
+        expect(
+          scrubText('NoSuchMethodError: method not found'),
+          contains('NoSuchMethodError'),
+        );
+        expect(
+          scrubText(
+            'package:hiyall/features/profile_editor/photo_step.dart failed',
+          ),
+          contains('package:hiyall/features/profile_editor/photo_step.dart'),
+        );
+        expect(scrubText('code abc123'), 'code abc123');
+      },
+    );
+
+    test('a JWT longer than the base64 limit is still masked as a token', () {
+      final jwt = 'eyJ${'a' * 60}.eyJ${'b' * 90}.${'c' * 80}';
+      final out = scrubText('Failed with $jwt now');
+      expect(out, isNot(contains('eyJ')));
+      expect(out, isNot(contains('bbbbbbbb')));
     });
   });
 
@@ -160,6 +219,54 @@ void main() {
       expect(text, isNot(contains('sig=1')));
       expect(event.transaction, '/person/:id');
       expect(event.breadcrumbs!.map((b) => b.message), ['to /home']);
+    });
+  });
+
+  group('what is reported as fatal', () {
+    tearDown(() {
+      ErrorReporting.onCapture = null;
+      FlutterError.onError = FlutterError.presentError;
+      PlatformDispatcher.instance.onError = null;
+    });
+
+    test(
+      'an error the framework caught is not a crash; an uncaught one is',
+      () {
+        final seen = <(String, bool)>[];
+        ErrorReporting.onCapture = (error, fatal) =>
+            seen.add(('$error', fatal));
+        ErrorReporting.installHandlers();
+
+        FlutterError.onError!(
+          FlutterErrorDetails(exception: StateError('overflow in a list')),
+        );
+        PlatformDispatcher.instance.onError!(
+          StateError('uncaught'),
+          StackTrace.empty,
+        );
+        // Even a "silent" framework error stays non-fatal.
+        FlutterError.onError!(
+          FlutterErrorDetails(exception: StateError('quiet'), silent: true),
+        );
+
+        expect(seen, [
+          ('Bad state: overflow in a list', false),
+          ('Bad state: uncaught', true),
+          ('Bad state: quiet', false),
+        ]);
+      },
+    );
+
+    test('only a fatal error is reported to Sentry as unhandled', () {
+      final handled = ErrorReporting.throwableFor(
+        StateError('x'),
+        fatal: false,
+      );
+      expect(handled, isA<StateError>());
+      final crash = ErrorReporting.throwableFor(StateError('x'), fatal: true);
+      expect(crash, isA<ThrowableMechanism>());
+      expect((crash as ThrowableMechanism).mechanism.handled, isFalse);
+      expect(crash.throwable, isA<StateError>());
     });
   });
 
