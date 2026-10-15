@@ -34,12 +34,17 @@ import (
 
 	"hiyall/services/api/internal/admin"
 	"hiyall/services/api/internal/logscrub"
+	"hiyall/services/api/internal/maintenance"
 	"hiyall/services/api/internal/media"
 	"hiyall/services/api/internal/store"
 )
 
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr); err != nil {
+		var code exitCodeError
+		if errors.As(err, &code) {
+			os.Exit(int(code)) // `admin healthcheck` already said why on stderr
+		}
 		var usage usageError
 		if errors.As(err, &usage) {
 			fmt.Fprintln(os.Stderr, string(usage))
@@ -54,11 +59,18 @@ type usageError string
 
 func (u usageError) Error() string { return string(u) }
 
+// exitCodeError makes run return a process exit code without logging an error line (admin healthcheck).
+type exitCodeError int
+
+func (e exitCodeError) Error() string { return fmt.Sprintf("exit %d", int(e)) }
+
 const usageText = `usage:
   admin [serve]
   admin operator-add -email EMAIL -role viewer|moderator|admin [-name NAME]
   admin operator-reset -email EMAIL
-  admin operator-disable -email EMAIL -reason TEXT`
+  admin operator-disable -email EMAIL -reason TEXT
+  admin healthcheck
+  admin purge-holds [-batch N]`
 
 func run(ctx context.Context, args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) error {
 	command := "serve"
@@ -71,6 +83,13 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdin i
 			return usageError(usageText)
 		}
 		return serve(ctx, getenv)
+	case "healthcheck":
+		if code := healthcheck(getenv, stderr); code != 0 {
+			return exitCodeError(code)
+		}
+		return nil
+	case "purge-holds":
+		return purgeHoldsCommand(ctx, args, getenv, stdout)
 	case "operator-add", "operator-reset", "operator-disable":
 		return operatorCommand(ctx, command, args, getenv, stdin, stdout, stderr)
 	}
@@ -84,7 +103,9 @@ func serve(ctx context.Context, getenv func(string) string) error {
 	}
 	startup, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	db, err := store.New(startup, cfg.DatabaseURL)
+	// Staff-only, low traffic, and some operations are long (pruning a year of audit entries, a big case): the
+	// maintenance limits (2 min statement, 10 s lock wait), not the 5 s a member's request gets.
+	db, err := store.New(startup, cfg.DatabaseURL, store.WithTimeouts(store.MaintenanceTimeouts))
 	if err != nil {
 		return errors.New("database connection failed; check configuration without logging credentials")
 	}
@@ -103,6 +124,17 @@ func serve(ctx context.Context, getenv func(string) string) error {
 	} else {
 		slog.Warn("photo preview off: ADMIN_MEDIA_ENDPOINT is not set; the console shows reported text only")
 	}
+	// Quarantined originals live in the evidence bucket (ADMIN_EVIDENCE_*): a read-only token for the case
+	// viewer, and a separate delete credential that only the hold purge timer below uses.
+	evidenceReader, evidenceDeleter, err := admin.NewEvidenceStores(startup, cfg)
+	if err != nil {
+		return err
+	}
+	if evidenceReader != nil {
+		svc.Evidence, svc.EvidenceDelete = evidenceReader, evidenceDeleter
+	} else if cfg.MediaEndpoint != "" {
+		slog.Warn("quarantined photos are read from the media bucket: set ADMIN_EVIDENCE_ENDPOINT (read-only token for the evidence bucket)")
+	}
 	if cfg.SharedDatabase {
 		slog.Warn("the console runs on DATABASE_URL (the API's database role); set ADMIN_DATABASE_URL to the hiyall_admin role (database/roles/roles.sql)")
 	}
@@ -120,6 +152,12 @@ func serve(ctx context.Context, getenv func(string) string) error {
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
 	shutdown, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if svc.EvidenceDelete != nil {
+		// Released evidence holds whose window is over, hourly, by one console instance at a time.
+		go maintenance.Run(shutdown, db.NewLeader(admin.PurgeLockKey), svc.PurgeJobs(), time.Hour, 50)
+	} else if svc.Evidence != nil {
+		slog.Warn("held evidence is never removed: ADMIN_EVIDENCE_DELETE_* is not set (run `admin purge-holds` where it is)")
+	}
 	done := make(chan error, 1)
 	go func() {
 		slog.Info("admin console listening", "address", cfg.Addr, "tls", cfg.TLSCert != "", "trustProxy", cfg.TrustProxy, "environment", cfg.Env)
@@ -253,4 +291,45 @@ func readPassword(stdin io.Reader, prompt io.Writer) (string, error) {
 		return "", errors.New("no password on stdin")
 	}
 	return strings.TrimRight(line, "\r\n"), nil
+}
+
+// purgeHoldsCommand is `admin purge-holds [-batch N]`: one pass of the released-hold purge, for a scheduler or by
+// hand where ADMIN_EVIDENCE_DELETE_* is configured. It drains what is due, N cases at a time.
+func purgeHoldsCommand(ctx context.Context, args []string, getenv func(string) string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("purge-holds", flag.ContinueOnError)
+	batch := flags.Int("batch", 50, "cases per pass")
+	if err := flags.Parse(args); err != nil || *batch < 1 || *batch > 500 {
+		return usageError(usageText)
+	}
+	cfg, err := admin.LoadConfig(getenv)
+	if err != nil {
+		return err
+	}
+	timeout, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	db, err := store.New(timeout, cfg.DatabaseURL, store.WithTimeouts(store.MaintenanceTimeouts))
+	if err != nil {
+		return errors.New("database connection failed; check configuration without logging credentials")
+	}
+	defer db.Pool.Close()
+	svc, err := admin.NewService(db, cfg)
+	if err != nil {
+		return err
+	}
+	if _, svc.EvidenceDelete, err = admin.NewEvidenceStores(timeout, cfg); err != nil {
+		return err
+	}
+	var total int64
+	for {
+		n, err := svc.PurgeHolds(timeout, *batch)
+		total += n
+		if err != nil {
+			return err
+		}
+		if n < int64(*batch) {
+			break
+		}
+	}
+	fmt.Fprintf(stdout, "Removed the objects of %d released hold(s).\n", total)
+	return nil
 }

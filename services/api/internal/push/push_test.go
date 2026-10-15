@@ -538,17 +538,97 @@ func TestDeviceNoticeIsContentFreeSecurityPushToTheOtherDevices(t *testing.T) {
 	if h.sender.count() != 2 {
 		t.Fatal("the new device was woken")
 	}
-	// Coalesced inside a minute, sent again after it.
-	h.d.Notify(Notice{Kind: "device", Actor: bob, Recipient: bob, Device: "new-phone"})
-	h.drain()
-	if h.sender.count() != 2 {
-		t.Fatal("a second notice inside the window went out")
-	}
-	h.now = h.now.Add(2 * time.Minute)
+	// A security push has no coalescing window: a second device added straight after is announced too.
 	h.d.Notify(Notice{Kind: "device", Actor: bob, Recipient: bob, Device: "new-phone"})
 	h.drain()
 	if h.sender.count() != 4 {
-		t.Fatalf("sent %d after the window", h.sender.count())
+		t.Fatalf("sent %d after a second notice", h.sender.count())
+	}
+}
+
+// bobDevices answers the target lookup with two devices of bob's.
+func bobDevices(c *Config) {
+	c.Targets = func(_ context.Context, users []string) ([]Target, error) {
+		return []Target{
+			{UserID: users[0], DeviceID: "old-phone", Provider: "fcm", Token: "t1"},
+			{UserID: users[0], DeviceID: "old-tablet", Provider: "apns", Token: "t2"},
+		}, nil
+	}
+}
+
+func TestSecurityPushesIgnoreALiveSocketTheChatCapAndTheWindow(t *testing.T) {
+	h := newHarness(t, func(c *Config) { bobDevices(c); c.DailyCap = 1 })
+	h.online[bob] = true // whoever holds a stolen token can keep a socket open
+	// A chat push is suppressed by the socket, as before.
+	h.d.Notify(chat(conv1))
+	h.d.Notify(Notice{Kind: "device", Actor: bob, Recipient: bob, Device: "new-phone"})
+	h.drain()
+	if h.sender.count() != 2 {
+		t.Fatalf("sent %d, want only the device notice to both devices", h.sender.count())
+	}
+	// The chat cap (1) is spent by chat alone; the device push never touched it.
+	h.online[bob] = false
+	h.d.Notify(chat(conv1))
+	h.drain()
+	if h.sender.count() != 4 {
+		t.Fatalf("the chat push after the device push: sent %d", h.sender.count())
+	}
+	h.d.Notify(chat(conv2))
+	h.drain()
+	if h.sender.count() != 4 {
+		t.Fatal("the chat cap did not hold")
+	}
+	// Exhausted chat cap, live socket again: the device and revoked pushes still go out.
+	h.online[bob] = true
+	h.d.Notify(Notice{Kind: "device", Actor: bob, Recipient: bob, Device: "other"})
+	h.d.Notify(Notice{Kind: "device-revoked", Actor: bob, Recipient: bob, Device: "gone"})
+	h.drain()
+	if h.sender.count() != 8 {
+		t.Fatalf("sent %d, want both security pushes to both devices", h.sender.count())
+	}
+}
+
+func TestSecurityPushesHaveTheirOwnSmallDailyCap(t *testing.T) {
+	h := newHarness(t, bobDevices)
+	for i := 0; i < SecurityDailyCap+5; i++ {
+		h.d.Notify(Notice{Kind: "device-revoked", Actor: bob, Recipient: bob, Device: "gone"})
+		h.drain()
+	}
+	if got := h.sender.count(); got != SecurityDailyCap*2 {
+		t.Fatalf("sent %d, want %d (cap %d, two devices)", got, SecurityDailyCap*2, SecurityDailyCap)
+	}
+	// Another recipient has their own, and the cap lifts after a day.
+	h.d.Notify(Notice{Kind: "device", Actor: alice, Recipient: alice, Device: "x"})
+	h.drain()
+	if h.sender.count() != SecurityDailyCap*2+2 {
+		t.Fatal("another recipient was held by bob's cap")
+	}
+	h.now = h.now.Add(25 * time.Hour)
+	h.d.Notify(Notice{Kind: "device", Actor: bob, Recipient: bob, Device: "x"})
+	h.drain()
+	if h.sender.count() != SecurityDailyCap*2+4 {
+		t.Fatal("the cap did not lift after a day")
+	}
+}
+
+func TestDeviceRevokedPushIsContentFree(t *testing.T) {
+	h := newHarness(t, bobDevices)
+	if CategoryOf("device-revoked") != CategorySecurity {
+		t.Fatal("device-revoked is not a security kind")
+	}
+	h.d.Notify(Notice{Kind: "device-revoked", Actor: bob, Recipient: bob, Device: "gone"})
+	h.drain()
+	got := h.sender.delivered()
+	if len(got) != 2 {
+		t.Fatalf("sent %d", len(got))
+	}
+	for _, m := range got {
+		if m.Kind != "device-revoked" || m.Title != "Hiyall" || m.Body != "A device was removed from your account" || m.CollapseKey != "device" {
+			t.Fatalf("message %+v", m)
+		}
+		if len(m.Data) != 1 || m.Data["kind"] != "device" {
+			t.Fatalf("data %v", m.Data)
+		}
 	}
 }
 

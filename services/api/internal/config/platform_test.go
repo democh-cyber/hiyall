@@ -18,6 +18,13 @@ func productionBasics(t *testing.T) {
 	t.Setenv("RATE_LIMIT_BACKEND", "postgres")
 	t.Setenv("TRUSTED_PROXY_CIDRS", "")
 	t.Setenv("BEHIND_PROXY", "")
+	// Production must say how clients arrive (audit API-1) and have a Nearby offset key (audit API-4).
+	t.Setenv("DIRECT_LISTENER", "true")
+	t.Setenv("DEBUG_LOG_PEER", "")
+	t.Setenv("NEARBY_OFFSET_KEY", testCursorKey)
+	for _, k := range []string{"NEARBY_OFFSET_KEY_PREVIOUS", "EVIDENCE_BUCKET", "EVIDENCE_ENDPOINT", "EVIDENCE_ACCESS_KEY", "EVIDENCE_SECRET_KEY", "EVIDENCE_SECURE", "EVIDENCE_REGION", "EVIDENCE_ALLOW_SHARED_BUCKET", "EVIDENCE_RETENTION_DAYS", "MEDIA_PROCESS_SLOTS", "EXPORT_CONCURRENCY"} {
+		t.Setenv(k, "")
+	}
 }
 
 func serviceAccountFile(t *testing.T) string {
@@ -35,8 +42,13 @@ func TestProductionStartChecks(t *testing.T) {
 		want string // "" = must load
 	}{
 		"baseline":                   {nil, ""},
-		"behind proxy without cidrs": {map[string]string{"BEHIND_PROXY": "true"}, "TRUSTED_PROXY_CIDRS"},
-		"behind proxy with cidrs":    {map[string]string{"BEHIND_PROXY": "true", "TRUSTED_PROXY_CIDRS": "10.0.0.0/8", "CLIENT_IP_HEADER": "Fly-Client-IP"}, ""},
+		"behind proxy without cidrs": {map[string]string{"DIRECT_LISTENER": "", "BEHIND_PROXY": "true"}, "TRUSTED_PROXY_CIDRS"},
+		"behind proxy with cidrs":    {map[string]string{"DIRECT_LISTENER": "", "BEHIND_PROXY": "true", "TRUSTED_PROXY_CIDRS": "10.0.0.0/8", "CLIENT_IP_HEADER": "Fly-Client-IP"}, ""},
+		"neither proxy nor direct":   {map[string]string{"DIRECT_LISTENER": ""}, "DIRECT_LISTENER"},
+		"direct and proxy":           {map[string]string{"BEHIND_PROXY": "true", "TRUSTED_PROXY_CIDRS": "10.0.0.0/8"}, "DIRECT_LISTENER"},
+		"direct with cidrs only":     {map[string]string{"TRUSTED_PROXY_CIDRS": "10.0.0.0/8"}, "DIRECT_LISTENER"},
+		"direct listener":            {map[string]string{"DIRECT_LISTENER": "true"}, ""},
+		"bad direct value":           {map[string]string{"DIRECT_LISTENER": "yes"}, "DIRECT_LISTENER"},
 		"header without cidrs":       {map[string]string{"CLIENT_IP_HEADER": "Fly-Client-IP"}, "CLIENT_IP_HEADER"},
 		"bad cidr":                   {map[string]string{"TRUSTED_PROXY_CIDRS": "10.0.0.0/40"}, "TRUSTED_PROXY_CIDRS"},
 		"no cursor key":              {map[string]string{"CURSOR_KEY": ""}, "CURSOR_KEY"},

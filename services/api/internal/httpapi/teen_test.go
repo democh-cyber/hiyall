@@ -196,61 +196,6 @@ func TestImplausibleLocationJumpsAreRefused(t *testing.T) {
 	h.expect(h.send(alice, "PUT", "/v1/me/location", putLocation(28.61, 77.21)), 200, "")
 }
 
-func TestDailyOffsetIsStoredRotatesAndMovesTheStoredPoint(t *testing.T) {
-	h := newSocialHarness(t)
-	h.exec(`INSERT INTO nearby_prefs(user_id,visible) VALUES($1,true),($2,true)`, alice, dev)
-	h.ageAt(dev, 15)
-	read := func(id string) (day string, north, east float64) {
-		t.Helper()
-		if err := h.db.Pool.QueryRow(h.ctx, `SELECT offset_day::text,offset_north_km,offset_east_km FROM nearby_prefs WHERE user_id=$1`, id).Scan(&day, &north, &east); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	h.expect(h.send(alice, "PUT", "/v1/me/location", putLocation(12.9716, 77.5946)), 200, "")
-	day, n1, e1 := read(alice)
-	if day != time.Now().UTC().Format(time.DateOnly) || n1*n1+e1*e1 > 2.0*2.0+1e-9 {
-		t.Fatalf("offset day %s, %v km north %v km east", day, n1, e1)
-	}
-	// The stored point is the rounded point of (true + offset): within the offset plus the grid of the true one.
-	var lat, lon float64
-	_ = h.db.Pool.QueryRow(h.ctx, `SELECT latitude,longitude FROM user_locations WHERE user_id=$1`, alice).Scan(&lat, &lon)
-	if d := domain.HaversineKm(domain.Location{Latitude: 12.97, Longitude: 77.59}, domain.Location{Latitude: lat, Longitude: lon}); d > 2.0+1.6 {
-		t.Fatalf("stored point is %v km from the rounded true point", d)
-	}
-	// The same day the offset is kept, so two writes agree.
-	h.api.locations.reset(alice)
-	h.expect(h.send(alice, "PUT", "/v1/me/location", putLocation(12.9716, 77.5946)), 200, "")
-	if _, n2, e2 := read(alice); n2 != n1 || e2 != e1 {
-		t.Fatal("the offset changed within the day")
-	}
-	// A new day gets a new offset.
-	changed := false
-	for i := 0; i < 5 && !changed; i++ {
-		h.exec(`UPDATE nearby_prefs SET offset_day=offset_day-1 WHERE user_id=$1`, alice)
-		h.api.locations.reset(alice)
-		h.fresh(alice)
-		h.expect(h.send(alice, "PUT", "/v1/me/location", putLocation(12.9716, 77.5946)), 200, "")
-		day, n2, e2 := read(alice)
-		if day != time.Now().UTC().Format(time.DateOnly) {
-			t.Fatalf("offset day %s was not rotated to today", day)
-		}
-		changed = n2 != n1 || e2 != e1
-	}
-	if !changed {
-		t.Fatal("the offset never changed across days")
-	}
-	// A minor's offset is larger and its point is on the coarse grid.
-	h.expect(h.send(dev, "PUT", "/v1/me/location", putLocation(12.9716, 77.5946)), 200, "")
-	_, n, e := read(dev)
-	if n*n+e*e > 5.0*5.0+1e-9 {
-		t.Fatalf("a minor's offset is %v,%v", n, e)
-	}
-	if h.count(`SELECT count(*) FROM user_locations WHERE user_id=$1 AND abs(latitude*10-round(latitude*10))<1e-9 AND abs(longitude*10-round(longitude*10))<1e-9`, dev) != 1 {
-		t.Fatal("a minor's point is off the 0.1 grid")
-	}
-}
-
 func TestDailyCapsOnSearchPagesNearbyQueriesAndProfileViews(t *testing.T) {
 	h := newSocialHarness(t)
 	h.withCaps(func(e *domain.Entitlements) {

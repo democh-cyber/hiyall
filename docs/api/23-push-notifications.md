@@ -60,6 +60,7 @@ it is queued. Title is always `Hiyall`.
 | --- | --- | --- | --- |
 | `chat` | a message arrived | `New message` (never named) | `{kind: "chat", conversationId}` |
 | `device` | a chat device was added to your account for the first time | `New device added to your account` (never named) | `{kind: "device"}` |
+| `device-revoked` | a device of your account was removed by a session that is not its own (another phone, or a stolen credential) | `A device was removed from your account` (never named) | `{kind: "device"}` |
 | `friend_request` | someone sent a friend request | `<name> sent you a friend request` | `{kind: "social", event}` |
 | `friend_accepted` | your request was accepted (also a crossing request) | `<name> accepted your friend request` | same |
 | `follow` | someone followed you | `<name> started following you` | same |
@@ -72,7 +73,7 @@ appear in Activity and reach open apps over the socket.
 
 The app opens the conversation for `kind: chat`, Activity for `kind: social` and the Chat devices screen (`/profile/devices`) for `kind: device`.
 
-`device` is a **security notice**: it has its own category, `security`, which the `chat` and `social` switches do not cover, so it cannot be turned off. It goes only to the account's other devices (the one that was just added is excluded by device id, and the actor is the recipient themselves), at most one a minute; it carries no device name. The other rules below (account state, a live socket on this node, daily cap) still apply. The realtime `device` event and the in-app banner cover devices that are connected.
+`device` and `device-revoked` are **security notices**: they have their own category, `security`, which the `chat` and `social` switches do not cover, so they cannot be turned off. They go only to the account's other devices (the one that was just added, or removed, is excluded by device id, and the actor is the recipient themselves); they carry no device name. Because whoever holds a stolen credential could otherwise silence them, they are **exempt from the live-socket rule** (an open socket for the account does not suppress them) and **from coalescing**, and they have **their own cap of 20 per recipient per rolling 24 hours**, counted apart from the 200 that chat and social share (re-audit CHAT-2). The other rules (account state) still apply. A removal by the device's own session (a sign-out) sends nothing. The realtime `device` event (`by: self|other`) and the in-app banner cover devices that are connected; `GET /v1/me/devices` also lists `removed` devices for 30 days.
 
 ## Privacy rules (server side)
 
@@ -84,7 +85,7 @@ The app opens the conversation for `kind: chat`, Activity for `kind: social` and
   and onboarded). Their profile card and Activity show the same name. A name is
   stripped of control characters and cut at 40 characters. Otherwise the body is
   the generic line.
-* A push is skipped when: the recipient has a live socket on this node; the chat
+* A push is skipped when (the security kinds ignore the socket rule, see below): the recipient has a live socket on this node; the chat
   is muted; the recipient muted or restricted the sender, or the sender
   restricted the recipient; either blocked the other; the two are in different
   age bands (isolation on); the conversation is closed; either account is not
@@ -100,7 +101,7 @@ The app opens the conversation for `kind: chat`, Activity for `kind: social` and
   minutes. The device also collapses them (`collapse_key`, `apns-collapse-id`:
   `chat-<conversationId>` and `social`). The app syncs on open, so a dropped
   push only delays nothing but the nudge.
-* A daily cap of 200 pushes per recipient (rolling 24 hours).
+* A daily cap of 200 pushes per recipient (rolling 24 hours); the security kinds have their own cap of 20.
 * Quiet hours are not implemented.
 
 The database rules run on a worker after the request has returned, so they never
@@ -140,9 +141,13 @@ worst case is a few extra nudges, never a lost message.
 
 `PUT /v1/devices/{id}/push {provider, token}` attaches a token to one of the
 caller's devices. A token the same account holds on another of its devices (a
-reinstall) is moved. A token held by **another account** is never taken over: the
-answer is `409 PUSH_TOKEN_IN_USE` (the server logs the refusal without the token
-or the other account; the body names nobody). `DELETE` clears it.
+reinstall) is moved. A token held by **another account's live device** is never
+taken over: the answer is `409 PUSH_TOKEN_IN_USE` (the server logs the refusal
+without the token or the other account; the body names nobody). The exception is
+a holder that has not been seen for more than 24 hours: the token is a secret of
+one install, so the caller presenting it is that install, and that holder is what
+an earlier sign-in on the same phone left behind. It is revoked (keys and
+undelivered ciphertext dropped) and the token goes to the caller. `DELETE` clears it.
 
 ## Preferences API
 

@@ -2,6 +2,9 @@ package admin
 
 import (
 	"bytes"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"net/url"
 	"strings"
 	"testing"
@@ -178,6 +181,26 @@ func TestContentPreviewShowsReportedItemsToModeratorsOnlyAfterAReasonAndAuditsEv
 	}
 }
 
+// heldPhoto is the processed copy of every test quarantine: a real picture with a lot of detail, so the blurred
+// preview can be told from it.
+var heldPhoto = func() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 640, 480))
+	for y := 0; y < 480; y++ {
+		for x := 0; x < 640; x++ {
+			v := uint8(0)
+			if (x/6+y/6)%2 == 0 {
+				v = 255
+			}
+			img.Set(x, y, color.RGBA{v, uint8(x), uint8(y), 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 92}); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}()
+
 // pendingQuarantine creates the case an upload scan would: a pending upload that was matched or flagged.
 func (e *env) pendingQuarantine(owner, result string, objects *media.Memory) (caseID, mediaID string, original []byte) {
 	e.t.Helper()
@@ -187,7 +210,7 @@ func (e *env) pendingQuarantine(owner, result string, objects *media.Memory) (ca
  VALUES($1,$2,'post','pending','image/jpeg',100,100,'uploads/x',now()+interval '1 hour')`, mediaID, owner)
 	originalKey, fullKey := media.HoldKeys(mediaID)
 	_ = objects.Put(e.ctx, originalKey, original, "image/jpeg")
-	_ = objects.Put(e.ctx, fullKey, []byte("\xff\xd8held-processed-copy"), "image/jpeg")
+	_ = objects.Put(e.ctx, fullKey, heldPhoto, "image/jpeg")
 	caseID, err := e.db.QuarantineMedia(e.ctx, store.Quarantine{MediaID: mediaID, Owner: owner, Purpose: "post", Result: result, Scanner: "hashlist",
 		Signals: map[string]string{"label": "list-1"}, OriginalSHA256: media.SHA256Hex(original), OriginalBytes: int64(len(original)), ContentType: "image/jpeg", OriginalKey: originalKey, FullKey: fullKey})
 	if err != nil {
@@ -261,9 +284,18 @@ func TestQuarantinedUploadsAreVisibleToAdministratorsOnlyBlurredFirstAndEverySte
 	if rr.status != 200 || !view.Blurred || !strings.HasPrefix(view.URL, "/admin/v1/media/"+mediaID+"?t=") || e.auditCount("quarantine_media_view", caseID) != 1 {
 		t.Fatalf("view: %d %s", rr.status, rr.raw)
 	}
+	// The link serves the blurred derivative made on the server, never the original pixels.
 	img := e.get(adm, view.URL)
-	if img.status != 200 || !bytes.Equal(img.raw, []byte("\xff\xd8held-processed-copy")) || e.auditCount("quarantine_media_fetch", mediaID) != 1 {
-		t.Fatalf("stream: %d %q", img.status, img.raw)
+	if img.status != 200 || bytes.Equal(img.raw, heldPhoto) || len(img.raw) > len(heldPhoto)/3 || e.auditCount("quarantine_media_fetch", mediaID) != 1 {
+		t.Fatalf("stream: %d %d bytes (original %d)", img.status, len(img.raw), len(heldPhoto))
+	}
+	if cfg, err := jpeg.DecodeConfig(bytes.NewReader(img.raw)); err != nil || cfg.Width > media.BlurEdge || cfg.Height > media.BlurEdge {
+		t.Fatalf("the blurred preview is %dx%d (%v)", cfg.Width, cfg.Height, err)
+	}
+	var fetchVariant string
+	e.db.Pool.QueryRow(e.ctx, `SELECT detail->>'variant' FROM operator_audit WHERE action='quarantine_media_fetch' AND target_id=$1`, mediaID).Scan(&fetchVariant)
+	if fetchVariant != "blur" {
+		t.Fatalf("the fetch was audited as %q", fetchVariant)
 	}
 	// A link issued for a case is useless to a moderator (it is bound to the administrator).
 	if rr := e.get(mod, view.URL); rr.status != 422 {
@@ -272,8 +304,38 @@ func TestQuarantinedUploadsAreVisibleToAdministratorsOnlyBlurredFirstAndEverySte
 	if e.auditCount("quarantine_media_reveal", caseID) != 0 {
 		t.Fatal("a reveal was recorded before it happened")
 	}
-	if rr := e.post(adm, base+"/reveal", map[string]string{"reason": "reviewing the scanner match"}); rr.status != 200 || e.auditCount("quarantine_media_reveal", caseID) != 1 {
-		t.Fatalf("reveal: %d", rr.status)
+	var revealed struct {
+		Revealed         bool
+		URL              string
+		ExpiresInSeconds int
+	}
+	rv := e.post(adm, base+"/reveal", map[string]string{"reason": "reviewing the scanner match"})
+	rv.data(&revealed)
+	if rv.status != 200 || !revealed.Revealed || e.auditCount("quarantine_media_reveal", caseID) != 1 || revealed.ExpiresInSeconds != 60 {
+		t.Fatalf("reveal: %d %s", rv.status, rv.raw)
+	}
+	if revealed.URL == view.URL || strings.Contains(string(rv.raw), "hold/") {
+		t.Fatal("the reveal must issue a second link, and never a storage key")
+	}
+	// Only the second link carries the original, and it is good for one minute and for this operator alone.
+	if full := e.get(adm, revealed.URL); full.status != 200 || !bytes.Equal(full.raw, heldPhoto) {
+		t.Fatalf("revealed stream: %d, %d bytes", full.status, len(full.raw))
+	}
+	var fullVariants int
+	e.db.Pool.QueryRow(e.ctx, `SELECT count(*) FROM operator_audit WHERE action='quarantine_media_fetch' AND target_id=$1 AND detail->>'variant'='full'`, mediaID).Scan(&fullVariants)
+	if fullVariants != 1 {
+		t.Fatalf("%d full fetches audited", fullVariants)
+	}
+	if other := e.get(mod, revealed.URL); other.status != 422 {
+		t.Fatalf("another operator with the revealed link: %d", other.status)
+	}
+	e.clock = e.clock.Add(61 * time.Second)
+	if late := e.get(adm, revealed.URL); late.status != 422 {
+		t.Fatalf("the revealed link still works after a minute: %d", late.status)
+	}
+	// The blurred link outlives it (two minutes), and still serves only the blurred copy.
+	if again := e.get(adm, view.URL); again.status != 200 || bytes.Equal(again.raw, heldPhoto) {
+		t.Fatalf("blurred link after a minute: %d", again.status)
 	}
 
 	// Resolution: confirm, then report with a reference; each audited in the same transaction.
@@ -286,7 +348,7 @@ func TestQuarantinedUploadsAreVisibleToAdministratorsOnlyBlurredFirstAndEverySte
 	if rr := e.post(adm, base+"/resolve", map[string]any{"action": "confirm", "reason": "confirmed by second review"}); rr.status != 200 {
 		t.Fatalf("confirm: %d %s", rr.status, rr.raw)
 	}
-	if rr := e.post(adm, base+"/resolve", map[string]any{"action": "clear", "reason": "cannot clear a confirmed case"}); rr.status != 409 || rr.code() != "CASE_STATE" {
+	if rr := e.post(adm, base+"/resolve", map[string]any{"action": "clear", "reason": "cannot clear a confirmed case"}); rr.status != 409 || rr.code() != "APPROVAL_REQUIRED" {
 		t.Fatalf("clear after confirm: %d %s", rr.status, rr.raw)
 	}
 	if rr := e.post(adm, base+"/resolve", map[string]any{"action": "reported", "reason": "reported to the authority", "reportReference": "NCMEC-123456"}); rr.status != 200 {
@@ -318,7 +380,6 @@ func TestQuarantinedUploadsAreVisibleToAdministratorsOnlyBlurredFirstAndEverySte
 	if e.count(`SELECT count(*) FROM users WHERE user_id=$1 AND status='active'`, other) != 1 {
 		t.Fatal("a flag suspended the uploader")
 	}
-	if rr := e.post(adm, "/admin/v1/content-cases/"+flagged+"/resolve", map[string]any{"action": "clear", "reason": "a false positive, looked at it"}); rr.status != 200 {
-		t.Fatalf("clear: %d %s", rr.status, rr.raw)
-	}
+	// Clearing is two people: one proposes, a different one approves (approvals_test.go has the full rules).
+	e.clearWithTwoAdmins(flagged, "a false positive, looked at it")
 }

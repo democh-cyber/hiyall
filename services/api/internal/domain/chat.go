@@ -26,6 +26,13 @@ var (
 	// own, a sender may send FirstContactMessages messages in a conversation.
 	ErrAwaitingReply      = &PolicyError{403, "AWAITING_REPLY", "You can send more once they reply. Give them a little time."}
 	ErrConversationClosed = &PolicyError{403, "CONVERSATION_CLOSED", "This conversation is closed"}
+	// ErrRecipientBacklog answers a send when a device that must receive it already holds the most
+	// undelivered envelopes a device may (Entitlements.ChatBacklogPerDevice). The caller adds Retry-After.
+	// ErrOwnBacklog is the same when the full device is one of the sender's own other devices.
+	ErrRecipientBacklog = &PolicyError{429, "RECIPIENT_BACKLOG", "They haven't picked up their earlier messages yet. Try again later."}
+	ErrOwnBacklog       = &PolicyError{429, "RECIPIENT_BACKLOG", "One of your other devices has too many unread messages. Open Hiyall on it, or remove it in Devices."}
+	// ErrChatDailyLimit is the per-conversation daily message quota (Entitlements.ChatMessagesPerConversationPerDay).
+	ErrChatDailyLimit = &PolicyError{429, "CHAT_DAILY_LIMIT", "You've sent a lot of messages in this chat today. Try again later."}
 	// ErrNewChatsQuota is the daily cap on starting conversations (Entitlements.NewConversationsPerDay);
 	// the caller adds a Retry-After.
 	ErrNewChatsQuota = &PolicyError{429, "QUOTA", "You’ve reached today’s limit for starting new chats. Try again later."}
@@ -291,4 +298,7 @@ type InboxItem struct {
 	Type           int       `json:"type"`
 	Ciphertext     string    `json:"ciphertext"`
 	CreatedAt      time.Time `json:"createdAt"`
+	// Aux is true for a message the sender marked auxiliary (a reaction or the quiet noop). The app checks that
+	// the decrypted kind agrees and drops the message when it does not (re-audit CHAT-3).
+	Aux bool `json:"aux,omitempty"`
 }

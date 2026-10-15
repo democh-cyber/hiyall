@@ -4,6 +4,12 @@
 // Environment: DATABASE_URL (required), MIGRATIONS_DIR (default ../../database/migrations),
 // MIGRATE_DEADLINE (overall, default 10m), MIGRATE_LOCK_TIMEOUT (per lock wait, default 5s),
 // MIGRATE_STATEMENT_TIMEOUT (per statement, default 5m; "0" turns it off).
+//
+// MIGRATE_DATABASE_URL, when set, is used instead of DATABASE_URL: the release step runs as hiyall_migrate (the
+// table owner) while DATABASE_URL, shared with the API, names hiyall_api. MIGRATE_RUN_GRANTS=true applies
+// database/roles/grants.sql after the migrations (one transaction, as the same role), so migrate and grants are
+// one release step; MIGRATE_GRANTS_FILE overrides its path (default <MIGRATIONS_DIR>/../roles/grants.sql, which is
+// /roles/grants.sql in the image).
 package main
 
 import (
@@ -11,6 +17,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -37,6 +45,19 @@ func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), opts.Deadline)
 	defer cancel()
 	opts.Log = func(format string, args ...any) { fmt.Printf(format+"\n", args...) }
-	_, err := Migrate(ctx, os.Getenv("DATABASE_URL"), opts)
-	return err
+	dsn := os.Getenv("MIGRATE_DATABASE_URL")
+	if dsn == "" {
+		dsn = os.Getenv("DATABASE_URL")
+	}
+	if _, err := Migrate(ctx, dsn, opts); err != nil {
+		return err
+	}
+	if strings.EqualFold(os.Getenv("MIGRATE_RUN_GRANTS"), "true") {
+		path := os.Getenv("MIGRATE_GRANTS_FILE")
+		if path == "" {
+			path = filepath.Join(opts.Dir, "..", "roles", "grants.sql")
+		}
+		return ApplyGrants(ctx, dsn, path, opts)
+	}
+	return nil
 }

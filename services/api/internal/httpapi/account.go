@@ -84,6 +84,19 @@ func (a *API) scheduleDeletion(w http.ResponseWriter, r *http.Request, p store.P
 			a.error(w, r, err)
 			return
 		}
+	} else if a.Apple != nil {
+		// The server knows how the account signs in: with Apple (or Apple linked), deleting without the code
+		// would leave the Apple authorization alive (App Store guideline 5.1.1(v)), so it is refused rather
+		// than left to the app (audit API-8). The app re-authenticates with Apple and retries with the code.
+		has, herr := a.Store.HasAppleAuthorization(ctx, p.UserID)
+		if herr != nil {
+			a.error(w, r, herr)
+			return
+		}
+		if has {
+			a.error(w, r, ErrAppleCodeRequired)
+			return
+		}
 	}
 	state, err := a.Store.ScheduleDeletion(ctx, p.UserID)
 	if err != nil {
@@ -102,6 +115,9 @@ type lazyResponse struct {
 	w       http.ResponseWriter
 	start   func()
 	started bool
+	// werr is the first error writing to the client: the client went away (or its connection broke), which
+	// is not the server's failure and does not give the daily export back.
+	werr error
 }
 
 func (l *lazyResponse) Write(p []byte) (int, error) {
@@ -109,13 +125,28 @@ func (l *lazyResponse) Write(p []byte) (int, error) {
 		l.started = true
 		l.start()
 	}
-	return l.w.Write(p)
+	n, err := l.w.Write(p)
+	if err != nil && l.werr == nil {
+		l.werr = err
+	}
+	return n, err
 }
 
 // export streams the member's data as a JSON attachment. The claim on the day's one export is taken first
 // and handed back if the document could not be finished, so a failure never costs the member their slot.
 func (a *API) export(w http.ResponseWriter, r *http.Request, p store.Principal) {
 	ctx := r.Context()
+	// An export holds a pooled database connection for as long as it streams (up to two minutes), so a node
+	// builds only EXPORT_CONCURRENCY of them at once; a member who finds every slot taken is told to retry and
+	// keeps their daily export, because the slot is taken before the claim (audit API-9).
+	release, ok := a.acquireExportSlot()
+	if !ok {
+		exportBusy.Inc()
+		w.Header().Set("Retry-After", "30")
+		a.failure(w, r, 503, "EXPORT_BUSY", "Lots of people are exporting their data right now. Try again in a minute; this did not use up today’s export.")
+		return
+	}
+	defer release()
 	previous, err := a.Store.ClaimExport(ctx, p.UserID)
 	if err != nil {
 		a.error(w, r, err)
@@ -145,6 +176,12 @@ func (a *API) export(w http.ResponseWriter, r *http.Request, p store.Principal) 
 	if complete {
 		return
 	}
+	if out.werr != nil {
+		// The client went away mid-download. The work was done and the slot was used, so the claim stays:
+		// otherwise starting and abandoning exports would be a free way to hold database connections.
+		slog.Info("export abandoned by the client", "requestId", ctx.Value(requestIDKey{}))
+		return
+	}
 	a.Store.ReleaseExport(ctx, p.UserID, previous)
 	if !out.started {
 		a.error(w, r, err)
@@ -152,6 +189,10 @@ func (a *API) export(w http.ResponseWriter, r *http.Request, p store.Principal) 
 	}
 	slog.Error("export incomplete", "requestId", ctx.Value(requestIDKey{}), "reason", scrubURLs(err.Error()))
 }
+
+// ErrAppleCodeRequired is 422 APPLE_CODE_REQUIRED: this account signs in with Apple, so deleting it needs the
+// one-time authorization code from a fresh Sign in with Apple.
+var ErrAppleCodeRequired = &domain.PolicyError{Status: 422, Code: "APPLE_CODE_REQUIRED", Message: "To delete this account, confirm with Apple first. Sign in with Apple again, then retry the deletion."}
 
 // AppleRevoker revokes a member's Sign in with Apple authorization at deletion time (identity.AppleRevoker).
 // RevokeAuthorizationCode returns a sealed refresh token to queue when Apple accepted the code but the

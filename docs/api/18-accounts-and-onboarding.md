@@ -110,6 +110,7 @@ The location and Nearby routes (`/v1/me/location`, `/v1/discover/nearby`) are de
 | 429 | `RATE_LIMITED` | Username checks or profile edits too frequent |
 | 429 | `USERNAME_COOLDOWN` | The username was changed in the last 30 days (`Retry-After`) |
 | 503 | `AUTH_UNAVAILABLE` | Signing keys or database unreachable; do not sign the person out |
+| 503 | `TEMPORARILY_UNAVAILABLE` | The database asked to retry (lock timeout, statement timeout, deadlock, serialization failure); any route, with `Retry-After: 1`. Retry; do not sign the person out |
 
 CORS is unchanged: the same allowed headers and methods, and the same exposed headers (`ETag`, `X-Request-Id`). The refusals above carry the usual CORS headers, so the web client can read them.
 

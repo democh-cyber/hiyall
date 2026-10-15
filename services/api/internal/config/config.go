@@ -47,6 +47,8 @@ type Config struct {
 	Platform
 	// Trust and safety: upload scanner, Apple token revocation (trust.go).
 	Trust
+	// Nearby offset key, photo and export limits, evidence bucket (safety.go).
+	Safety
 	// Error reporting and feature switches (reporting.go).
 	Reporting
 	Features
@@ -161,6 +163,9 @@ func Load() (Config, error) {
 		return c, err
 	}
 	if err := c.loadTrust(); err != nil {
+		return c, err
+	}
+	if err := c.loadSafety(); err != nil {
 		return c, err
 	}
 	if err := c.loadReporting(); err != nil {

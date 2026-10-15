@@ -61,7 +61,7 @@ func (s *Store) RegisterDeviceNew(ctx context.Context, d domain.Device) (domain.
 			return err
 		}
 		created = true
-		return appendEvent(ctx, tx, d.UserID, "device.added", 0)
+		return nil
 	})
 	if err != nil {
 		return d, false, err
@@ -121,10 +121,14 @@ func (s *Store) device(ctx context.Context, user, id string) (domain.Device, err
 	return scanDevice(s.Pool.QueryRow(ctx, `SELECT `+deviceColumns+` FROM devices WHERE device_id=$1 AND user_id=$2 AND revoked_at IS NULL`, id, user))
 }
 
-// RevokeDevice drops the device's unclaimed keys and undelivered ciphertext.
-func (s *Store) RevokeDevice(ctx context.Context, user, id string) error {
-	return s.inTx(ctx, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE devices SET revoked_at=now(),push_provider=NULL,push_token=NULL WHERE device_id=$1 AND user_id=$2 AND revoked_at IS NULL`, id, user)
+// RevokeDevice drops the device's unclaimed keys and undelivered ciphertext. bySession is the auth session that
+// asks for it: when that is not the session the device registered under (another phone of the account, or a
+// stolen credential), the removal is recorded in revoked_by_other so the owner's remaining devices can show it
+// (RemovedDevices), also when they missed the realtime signal. It reports that fact so the caller can push.
+func (s *Store) RevokeDevice(ctx context.Context, user, id, bySession string) (byOther bool, err error) {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE devices SET revoked_at=now(),push_provider=NULL,push_token=NULL,
+ revoked_by_other=(session_id IS DISTINCT FROM NULLIF($3,'')::uuid) WHERE device_id=$1 AND user_id=$2 AND revoked_at IS NULL`, id, user, bySession)
 		if err != nil {
 			return err
 		}
@@ -140,7 +144,30 @@ func (s *Store) RevokeDevice(ctx context.Context, user, id string) error {
 				return err
 			}
 		}
-		return appendEvent(ctx, tx, user, "device.revoked", 0)
+		return tx.QueryRow(ctx, `SELECT revoked_by_other FROM devices WHERE device_id=$1`, id).Scan(&byOther)
+	})
+	return byOther, err
+}
+
+// RemovedDevice is a device of the account that someone other than its own session removed.
+type RemovedDevice struct {
+	DeviceID  string    `json:"deviceId"`
+	RemovedAt time.Time `json:"removedAt"`
+}
+
+// RemovedWindow is how long a removal stays listed.
+const RemovedWindow = 30 * 24 * time.Hour
+
+// RemovedDevices lists the account's devices removed by another session in the last RemovedWindow, newest
+// first (at most 20). Only the owner reads it; it names ids and times, nothing else.
+func (s *Store) RemovedDevices(ctx context.Context, user string) ([]RemovedDevice, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT device_id::text,revoked_at FROM devices WHERE user_id=$1 AND revoked_by_other AND revoked_at>now()-$2::interval ORDER BY revoked_at DESC LIMIT 20`, user, RemovedWindow)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (RemovedDevice, error) {
+		var r RemovedDevice
+		return r, row.Scan(&r.DeviceID, &r.RemovedAt)
 	})
 }
 
@@ -519,15 +546,38 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 		if err := canMessage(ctx, tx, user, peer); err != nil {
 			return err
 		}
-		if m.Aux == "" {
-			// First-contact cap: until the peer has sent a message of their own in this conversation, the
-			// sender gets FirstContactMessages messages. A reaction does not count either way.
-			var mine, theirs int
-			if err := tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE sender_id=$2),count(*) FILTER (WHERE sender_id<>$2) FROM messages WHERE conversation_id=$1 AND NOT aux`, conversationID, user).Scan(&mine, &theirs); err != nil {
+		// First-contact cap: until the peer has sent a message of their own in this conversation (a reaction
+		// or noop of theirs is not one), the sender gets FirstContactMessages messages. Every message counts,
+		// those marked aux too: the relay cannot see kinds, so an aux hint would otherwise be a way round the
+		// cap (re-audit CHAT-3). Reactions and the noop only make sense once the peer has written, when the
+		// cap no longer applies. The cheap test comes first (is there a message of the peer's: one index
+		// probe), then a count that stops at the cap, so nothing scans the conversation under the row locks.
+		var peerWrote bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id=$1 AND sender_id=$2 AND NOT aux)`, conversationID, peer).Scan(&peerWrote); err != nil {
+			return err
+		}
+		if !peerWrote {
+			var mine int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT 1 FROM messages WHERE conversation_id=$1 AND sender_id=$2 LIMIT $3) q`, conversationID, user, FirstContactMessages).Scan(&mine); err != nil {
 				return err
 			}
-			if theirs == 0 && mine >= FirstContactMessages {
+			if mine >= FirstContactMessages {
 				return domain.ErrAwaitingReply
+			}
+		}
+		// Daily quota per sender per conversation: every message counts, reactions included. It reads the last
+		// 24 hours of this conversation through messages_conversation and stops at the limit.
+		if limit := e.ChatMessagesPerConversationPerDay; limit > 0 {
+			var sent int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM (SELECT 1 FROM messages WHERE conversation_id=$1 AND created_at>now()-interval '24 hours' AND sender_id=$2 LIMIT $3) q`, conversationID, user, limit).Scan(&sent); err != nil {
+				return err
+			}
+			if sent >= limit {
+				var wait int64
+				if err := tx.QueryRow(ctx, `SELECT coalesce(ceil(extract(epoch FROM min(created_at)+interval '24 hours'-now())),60)::bigint FROM messages WHERE conversation_id=$1 AND created_at>now()-interval '24 hours' AND sender_id=$2`, conversationID, user).Scan(&wait); err != nil {
+					return err
+				}
+				return domain.RetryAfter(domain.ErrChatDailyLimit, time.Duration(max(wait, 1))*time.Second)
 			}
 		}
 		var senderOK bool
@@ -537,18 +587,20 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 		if !senderOK {
 			return domain.ErrNotFound
 		}
-		rows, err := tx.Query(ctx, `SELECT device_id::text FROM devices WHERE revoked_at IS NULL AND (user_id=$1 OR (user_id=$2 AND device_id<>$3)) ORDER BY device_id`, peer, user, m.SenderDeviceID)
+		rows, err := tx.Query(ctx, `SELECT device_id::text,user_id::text FROM devices WHERE revoked_at IS NULL AND (user_id=$1 OR (user_id=$2 AND device_id<>$3)) ORDER BY device_id`, peer, user, m.SenderDeviceID)
 		if err != nil {
 			return err
 		}
 		expected := []string{}
+		ownDevice := map[string]bool{}
 		for rows.Next() {
-			var id string
-			if err = rows.Scan(&id); err != nil {
+			var id, owner string
+			if err = rows.Scan(&id, &owner); err != nil {
 				rows.Close()
 				return err
 			}
 			expected = append(expected, id)
+			ownDevice[id] = owner == user
 		}
 		rows.Close()
 		got := make([]string, 0, len(m.Envelopes))
@@ -562,6 +614,41 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 		for i := range got {
 			if got[i] != expected[i] {
 				return domain.ErrDevicesChanged
+			}
+		}
+		// Backlog cap: no device holds more than ChatBacklogPerDevice undelivered envelopes. lockPair holds the
+		// row of every account whose devices are named here (the sender's and the peer's) until commit, and
+		// every send that stores an envelope for one of them takes that lock, so the count below cannot be
+		// outrun by a concurrent send and the cap is exact. The count walks envelopes_inbox, partial on
+		// undelivered rows, and stops at the cap.
+		if limit := e.ChatBacklogPerDevice; limit > 0 {
+			full, err := tx.Query(ctx, `SELECT d.id FROM unnest($1::uuid[]) AS d(id)
+ WHERE (SELECT count(*) FROM (SELECT 1 FROM message_envelopes WHERE recipient_device_id=d.id AND delivered_at IS NULL LIMIT $2) q)>=$2`, expected, limit)
+			if err != nil {
+				return err
+			}
+			var fullDevice string
+			var peerFull, ownFull bool
+			for full.Next() {
+				if err = full.Scan(&fullDevice); err != nil {
+					full.Close()
+					return err
+				}
+				if ownDevice[fullDevice] {
+					ownFull = true
+				} else {
+					peerFull = true
+				}
+			}
+			full.Close()
+			if err = full.Err(); err != nil {
+				return err
+			}
+			if peerFull {
+				return domain.RetryAfter(domain.ErrRecipientBacklog, time.Minute)
+			}
+			if ownFull {
+				return domain.RetryAfter(domain.ErrOwnBacklog, time.Minute)
 			}
 		}
 		if err = tx.QueryRow(ctx, `INSERT INTO messages(message_id,conversation_id,sender_id,sender_device_id,aux) VALUES($1,$2,$3,$4,$5) RETURNING created_at`, m.MessageID, conversationID, user, m.SenderDeviceID, m.Aux != "").Scan(&created); err != nil {
@@ -665,14 +752,55 @@ func (s *Store) Unread(ctx context.Context, user string) (domain.UnreadSummary, 
 // ErrPushTokenInUse answers a token another account already holds. It names nobody.
 var ErrPushTokenInUse = &domain.PolicyError{Status: 409, Code: "PUSH_TOKEN_IN_USE", Message: "This push token cannot be used for this device."}
 
+// StalePushHolderAfter is how long another account's device must have been unseen before a push token it holds
+// may be handed to the install that presents it (see SetPushToken).
+const StalePushHolderAfter = 24 * time.Hour
+
 // SetPushToken attaches a push token to one of the caller's devices. A token
 // moved from another of the caller's own devices (reinstall) is detached from
-// it first. A token held by a different account is never taken over (that
-// would let one account silence another's pushes, or collect them): the call is
+// it first. A token held by a different account is not taken over while that
+// holder is alive (that would let one account silence another's pushes, or collect them): the call is
 // refused with 409 and logged without the token or the other account.
+//
+// The one exception is a stale holder: a token is a secret of one install, so the caller presenting it is that
+// install, and a device of another account that holds it and has not been seen for StalePushHolderAfter is what
+// a previous sign-in on this same phone left behind (it signed out offline, or the app was reinstalled). That
+// row is revoked (keys and undelivered ciphertext dropped, like any revocation) and the token is accepted.
+// A holder seen within the day, which a phone in use always is (the inbox poll touches last_seen_at every
+// five minutes), still refuses.
 func (s *Store) SetPushToken(ctx context.Context, user, deviceID, provider, token string) error {
 	return s.inTx(ctx, func(tx pgx.Tx) error {
 		if token != "" {
+			rows, err := tx.Query(ctx, `UPDATE devices SET revoked_at=now(),push_provider=NULL,push_token=NULL
+ WHERE push_provider=$1 AND push_token=$2 AND user_id<>$3 AND revoked_at IS NULL AND last_seen_at<now()-$4::interval RETURNING device_id::text`, provider, token, user, StalePushHolderAfter)
+			if err != nil {
+				return err
+			}
+			var stale []string
+			for rows.Next() {
+				var id string
+				if err = rows.Scan(&id); err != nil {
+					rows.Close()
+					return err
+				}
+				stale = append(stale, id)
+			}
+			rows.Close()
+			if err = rows.Err(); err != nil {
+				return err
+			}
+			if len(stale) > 0 {
+				for _, statement := range []string{
+					`DELETE FROM one_time_keys WHERE device_id=ANY($1::uuid[])`,
+					`DELETE FROM fallback_keys WHERE device_id=ANY($1::uuid[])`,
+					`DELETE FROM message_envelopes WHERE recipient_device_id=ANY($1::uuid[]) AND delivered_at IS NULL`,
+				} {
+					if _, err = tx.Exec(ctx, statement, stale); err != nil {
+						return err
+					}
+				}
+				slog.Info("push token held by a stale device of another account; that device was revoked", "device", deviceID, "revoked", len(stale))
+			}
 			var foreign bool
 			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM devices WHERE push_provider=$1 AND push_token=$2 AND user_id<>$3 AND revoked_at IS NULL)`, provider, token, user).Scan(&foreign); err != nil {
 				return err
@@ -748,7 +876,7 @@ func (s *Store) Inbox(ctx context.Context, user, deviceID string, limit int) ([]
 	if !exists {
 		return nil, domain.ErrNotFound
 	}
-	rows, err := s.Pool.Query(ctx, `SELECT m.message_id::text,m.conversation_id::text,m.sender_id::text,m.sender_device_id::text,sd.identity_key,e.envelope_type,e.ciphertext,m.created_at
+	rows, err := s.Pool.Query(ctx, `SELECT m.message_id::text,m.conversation_id::text,m.sender_id::text,m.sender_device_id::text,sd.identity_key,e.envelope_type,e.ciphertext,m.created_at,m.aux
  FROM message_envelopes e JOIN messages m USING(message_id) JOIN devices sd ON sd.device_id=m.sender_device_id
  WHERE e.recipient_device_id=$1 AND e.delivered_at IS NULL
  AND NOT interaction_barred($2::uuid,m.sender_id)
@@ -760,7 +888,7 @@ func (s *Store) Inbox(ctx context.Context, user, deviceID string, limit int) ([]
 	result := []domain.InboxItem{}
 	for rows.Next() {
 		var i domain.InboxItem
-		if err = rows.Scan(&i.MessageID, &i.ConversationID, &i.SenderID, &i.SenderDeviceID, &i.SenderIdentity, &i.Type, &i.Ciphertext, &i.CreatedAt); err != nil {
+		if err = rows.Scan(&i.MessageID, &i.ConversationID, &i.SenderID, &i.SenderDeviceID, &i.SenderIdentity, &i.Type, &i.Ciphertext, &i.CreatedAt, &i.Aux); err != nil {
 			return nil, err
 		}
 		result = append(result, i)

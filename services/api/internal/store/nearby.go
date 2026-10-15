@@ -18,10 +18,12 @@ import (
 // maintenance job deletes rows after 7 days.
 
 // SetLocation stores the member's point and returns when it was stored. The member must have turned on
-// "Show me in Nearby" (ErrNearbyOff otherwise). The submitted point is moved by the member's daily random
-// offset (rotated when the stored offset is not from today, UTC), then rounded to the precision of the
-// member's age band at write time, so neither a precise position nor the member's true grid cell is ever
-// stored. A write that lands in the cell already stored only refreshes its time. Any other write counts as
+// "Show me in Nearby" (ErrNearbyOff otherwise). The submitted point is moved by the member's stable secret
+// offset (domain.StableOffset: HMAC of the member id under NEARBY_OFFSET_KEY, up to 2 km, 5 km for minors, the
+// same direction and distance every time), then rounded to the precision of the member's age band at write
+// time, so neither a precise position nor the member's true grid cell is ever stored. Because the offset
+// never changes, repeating the update (or averaging many days of searches) converges on the stored point and
+// no closer to the true position. A write that lands in the cell already stored only refreshes its time. Any other write counts as
 // a location change against e.LocationChangesPerDay and is refused when it is faster than
 // domain.MaxTravelKmh from the last stored point (domain.ErrLocationJump): together they stop a script from
 // walking spoofed centres around a member to find them.
@@ -46,23 +48,14 @@ func (s *Store) SetLocation(ctx context.Context, userID string, in domain.Locati
 			return domain.ErrNearbyOff
 		}
 		now := time.Now().UTC()
-		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-		if day == nil || !day.UTC().Equal(today) {
-			radius := domain.NearbyOffsetKm
-			if minor {
-				radius = domain.MinorNearbyOffsetKm
-			}
-			off := randomOffset(radius)
-			north, east = off.NorthKm, off.EastKm
-			if _, err = tx.Exec(ctx, `UPDATE nearby_prefs SET offset_day=$2::date,offset_north_km=$3,offset_east_km=$4 WHERE user_id=$1`, userID, today.Format(time.DateOnly), north, east); err != nil {
-				return err
-			}
-		}
+		// The member's offset is fixed: derived from their id and NEARBY_OFFSET_KEY, never stored and never
+		// rotated by the clock (audit API-4). A row with offset_day set carries an explicit pin instead.
+		off := memberOffset(userID, day != nil, north, east, minor)
 		decimals := domain.LocationDecimals
 		if minor {
 			decimals = domain.MinorLocationDecimals
 		}
-		point := domain.RoundLocationTo(in.For(minor).Shift(domain.Offset{NorthKm: north, EastKm: east}), decimals)
+		point := domain.RoundLocationTo(in.For(minor).Shift(off), decimals)
 		var prev domain.Location
 		var prevAt time.Time
 		err = tx.QueryRow(ctx, `SELECT latitude,longitude,updated_at FROM user_locations WHERE user_id=$1 FOR UPDATE`, userID).Scan(&prev.Latitude, &prev.Longitude, &prevAt)

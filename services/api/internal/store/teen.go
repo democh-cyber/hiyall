@@ -2,8 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/binary"
 	"errors"
 	"time"
 
@@ -56,17 +54,6 @@ func (s *Store) IsMinor(ctx context.Context, user string) (bool, error) {
 	var minor bool
 	err := s.Pool.QueryRow(ctx, `SELECT age_band($1)=$2`, user, domain.BandMinor).Scan(&minor)
 	return minor, err
-}
-
-// randomOffset draws a disc offset from the system random source.
-func randomOffset(radiusKm float64) domain.Offset {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic(err)
-	}
-	u := float64(binary.BigEndian.Uint64(b[:8])>>11) / (1 << 53)
-	v := float64(binary.BigEndian.Uint64(b[8:])>>11) / (1 << 53)
-	return domain.RandomOffset(radiusKm, u, v)
 }
 
 // NearbyState is the member's Nearby switch and whether a fresh point is stored.

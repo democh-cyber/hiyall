@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -24,6 +25,10 @@ type Verifier struct {
 	resolve  Resolve
 	// firebase selects Firebase ID-token semantics instead of OIDC access tokens.
 	firebase bool
+	// seen remembers which sign-ins already have their provider recorded (see recordProvider).
+	record func(ctx context.Context, issuer, subject, provider string, appleLinked bool) error
+	seenMu sync.Mutex
+	seen   map[string]providerInfo
 }
 
 func New(ctx context.Context, issuer, audience string, s *store.Store) (*Verifier, error) {

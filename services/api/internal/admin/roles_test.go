@@ -20,13 +20,19 @@ import (
 // superuser or CREATEROLE, which the test database user has locally and in CI; without it the tests skip.
 
 const rolesScriptPath = "../../../../database/roles/roles.sql"
+const grantsScriptPath = "../../../../database/roles/grants.sql"
 
 func applyRoles(t *testing.T, e *env) {
 	t.Helper()
-	script, err := os.ReadFile(rolesScriptPath)
+	first, err := os.ReadFile(rolesScriptPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+	second, err := os.ReadFile(grantsScriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := append(append(first, '\n'), second...)
 	conn, err := e.db.Pool.Acquire(e.ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +93,7 @@ func TestDatabaseRolesHaveLeastPrivilege(t *testing.T) {
 		`INSERT INTO operator_audit(actor,action) VALUES('api','x')`, `UPDATE operators SET role='admin'`, `DELETE FROM operator_sessions`,
 		`SELECT nextval('operator_audit_audit_id_seq')`,
 		// It cannot read or change cases, only open one; it cannot rewrite migration history.
-		`SELECT count(*) FROM content_cases`, `UPDATE content_cases SET status='cleared'`, `INSERT INTO schema_migrations(version,checksum) VALUES('x','y')`,
+		`SELECT status FROM content_cases`, `SELECT user_id, original_key FROM content_cases`, `SELECT * FROM content_cases`, `UPDATE content_cases SET status='cleared'`, `INSERT INTO schema_migrations(version,checksum) VALUES('x','y')`,
 		// Nor change the schema or the trigger that protects the audit log.
 		`ALTER TABLE operator_audit DISABLE TRIGGER ALL`, `DROP TABLE operator_audit`, `CREATE TABLE api_made(x int)`, `TRUNCATE users CASCADE`,
 	} {
@@ -96,7 +102,9 @@ func TestDatabaseRolesHaveLeastPrivilege(t *testing.T) {
 		}
 	}
 	// What it needs works (the statements do nothing when the table is empty or the row absent).
-	for _, q := range []string{`SELECT count(*) FROM users`, `UPDATE sessions SET revoked_at=revoked_at WHERE false`, `SELECT count(*) FROM schema_migrations`, `SELECT count(*) FROM media_assets`, `SELECT count(*) FROM apple_revocations`} {
+	for _, q := range []string{`SELECT count(*) FROM users`, `UPDATE sessions SET revoked_at=revoked_at WHERE false`, `SELECT count(*) FROM schema_migrations`, `SELECT count(*) FROM media_assets`, `SELECT count(*) FROM apple_revocations`,
+		// A view reads with its owner's rights; the one column of content_cases the tombstone purge needs.
+		`SELECT count(*) FROM profile_social_counts`, `SELECT media_id FROM content_cases WHERE false`} {
 		if _, err := api.Exec(ctx, q); err != nil {
 			t.Errorf("hiyall_api refused %q: %v", q, err)
 		}
@@ -190,6 +198,26 @@ func TestConsoleWorksEndToEndOnTheRestrictedAdminRole(t *testing.T) {
 	ok(e.get(s, view.URL), "case media")
 	ok(e.post(s, "/admin/v1/content-cases/"+caseID+"/reveal", map[string]string{"reason": "reveal on the restricted role"}), "reveal")
 	ok(e.post(s, "/admin/v1/content-cases/"+caseID+"/resolve", map[string]any{"action": "confirm", "reason": "confirmed on the restricted role"}), "resolve case")
+
+	// Two-person control and the hold purge, on the restricted role: propose, approve by a second administrator,
+	// release, and the purge job runs the hold functions.
+	second := e.session(e.operator(RoleAdmin))
+	flagged, _, _ := e.pendingQuarantine(e.member(false), "flagged", objects)
+	if r, ap := e.propose(s, flagged, "clear", "clearing on the restricted role", ""); r.status != 201 {
+		t.Fatalf("propose on the admin role: %d %s", r.status, r.raw)
+	} else if r = e.decide(second, ap.Approval.ApprovalID, "approve", "approving on the restricted role"); r.status != 200 {
+		t.Fatalf("approve on the admin role: %d %s", r.status, r.raw)
+	}
+	ok(e.get(s, "/admin/v1/approvals?status=approved"), "approvals list")
+	if r, ap := e.propose(s, flagged, "release", "releasing on the restricted role", ""); r.status != 201 {
+		t.Fatalf("propose release on the admin role: %d %s", r.status, r.raw)
+	} else if r = e.decide(second, ap.Approval.ApprovalID, "approve", "approving the release on the restricted role"); r.status != 200 {
+		t.Fatalf("approve release on the admin role: %d %s", r.status, r.raw)
+	}
+	e.svc.EvidenceDelete = objects
+	if _, err := e.svc.PurgeHolds(e.ctx, 5); err != nil {
+		t.Fatalf("hold purge on the admin role: %v", err)
+	}
 
 	// Operator management and the audit log.
 	other := e.operator(RoleViewer)

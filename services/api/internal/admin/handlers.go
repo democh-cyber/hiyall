@@ -440,10 +440,10 @@ func (s *Server) pruneAudit(w http.ResponseWriter, r *http.Request, p *Principal
 		s.fail(w, r, &domain.ValidationError{Field: "olderThanDays", Message: "must be 365 or more: newer entries are never pruned"})
 		return
 	}
-	removed, err := s.svc.PruneAudit(r.Context(), p, reason, days)
+	removed, more, err := s.svc.PruneAudit(r.Context(), p, reason, days)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	s.ok(w, r, map[string]any{"deleted": removed, "olderThanDays": days})
+	s.ok(w, r, map[string]any{"deleted": removed, "olderThanDays": days, "more": more})
 }

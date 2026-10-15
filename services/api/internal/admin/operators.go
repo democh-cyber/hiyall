@@ -108,8 +108,14 @@ type Service struct {
 	Pool  *pgxpool.Pool
 	// Media is the console's read-only view of the media bucket; nil when ADMIN_MEDIA_* is not set.
 	Media media.Store
-	cfg   Config
-	keys  keys
+	// Evidence is the console's READ-ONLY view of the evidence bucket (ADMIN_EVIDENCE_*), where quarantined
+	// originals live apart from the media bucket. Nil: the cases are read from Media (shared bucket).
+	Evidence media.Store
+	// EvidenceDelete is the separate credential that removes released holds. Only the purge job
+	// (PurgeHolds) uses it; no request handler does.
+	EvidenceDelete media.Store
+	cfg            Config
+	keys           keys
 	// Now is the clock for one-time codes and signed cursors. Session and lockout expiry use the
 	// database clock, so every node agrees on them.
 	Now func() time.Time
@@ -143,6 +149,14 @@ func NewService(db *store.Store, cfg Config) (*Service, error) {
 	}
 	s.dummyKey = NewTOTPSecret()
 	return s, nil
+}
+
+// evidenceReader is where quarantined photos are read: the evidence bucket, else the media bucket.
+func (s *Service) evidenceReader() media.Store {
+	if s.Evidence != nil {
+		return s.Evidence
+	}
+	return s.Media
 }
 
 type queryer interface {

@@ -97,8 +97,14 @@ const (
 	CategorySocial = "social"
 	// CategorySecurity is never switched off by the member's notification choices: the notice that a
 	// device was added to their account is the one defence against a stolen credential adding one.
+	// It is also exempt from what could silence it: a live socket (the thief may hold one open), the
+	// coalescing window and the chat daily cap. It has its own small cap instead, SecurityDailyCap.
 	CategorySecurity = "security"
 )
+
+// SecurityDailyCap is how many security pushes one recipient gets per rolling 24 hours, counted apart from the
+// chat and social cap (Config.DailyCap), so neither can use up the other's.
+const SecurityDailyCap = 20
 
 // kindSpec is one row of the allowlist: only these kinds are ever pushed. Anything
 // else, such as reactions, comments and space moderation, is dropped before it is
@@ -116,7 +122,8 @@ const title = "Hiyall"
 
 var kinds = map[string]kindSpec{
 	"chat":            {CategoryChat, 30 * time.Second, "New message", ""},
-	"device":          {CategorySecurity, time.Minute, "New device added to your account", ""},
+	"device":          {CategorySecurity, 0, "New device added to your account", ""},
+	"device-revoked":  {CategorySecurity, 0, "A device was removed from your account", ""},
 	"friend_request":  {CategorySocial, 10 * time.Minute, "You have a new friend request", "%s sent you a friend request"},
 	"friend_accepted": {CategorySocial, 10 * time.Minute, "Your friend request was accepted", "%s accepted your friend request"},
 	"follow":          {CategorySocial, 10 * time.Minute, "You have a new follower", "%s started following you"},
@@ -180,6 +187,7 @@ type Dispatcher struct {
 	mu        sync.Mutex
 	last      map[string]time.Time // coalescing: key -> last push
 	daily     map[string]*dayCount // recipient -> pushes in the current window
+	secDaily  map[string]*dayCount // recipient -> security pushes in the current window
 	lastSweep time.Time
 }
 
@@ -215,7 +223,7 @@ func NewDispatcher(cfg Config) *Dispatcher {
 	if cfg.Online == nil {
 		cfg.Online = func(string) bool { return false }
 	}
-	return &Dispatcher{cfg: cfg, jobs: make(chan Notice, cfg.Queue), last: map[string]time.Time{}, daily: map[string]*dayCount{}}
+	return &Dispatcher{cfg: cfg, jobs: make(chan Notice, cfg.Queue), last: map[string]time.Time{}, daily: map[string]*dayCount{}, secDaily: map[string]*dayCount{}}
 }
 
 // backoff is 0.5s, 1s, 2s … with up to 50% jitter added, so retries from many
@@ -243,7 +251,7 @@ func (n Notice) collapseKey() string {
 	switch n.Kind {
 	case "chat":
 		return "chat-" + n.Conversation
-	case "device":
+	case "device", "device-revoked":
 		return "device"
 	}
 	return "social"
@@ -256,15 +264,19 @@ func (n Notice) collapseKey() string {
 func (d *Dispatcher) Notify(n Notice) {
 	spec, ok := kinds[n.Kind]
 	// A device notice is about the account itself, so its actor is the recipient.
-	if !ok || n.Recipient == "" || (n.Recipient == n.Actor && n.Kind != "device") || (n.Kind == "chat" && n.Conversation == "") {
+	if !ok || n.Recipient == "" || (n.Recipient == n.Actor && spec.category != CategorySecurity) || (n.Kind == "chat" && n.Conversation == "") {
 		return
 	}
-	// A live socket on another node is not seen here; that costs at most one redundant wake-up.
-	if d.cfg.Online(n.Recipient) {
-		return
-	}
-	if d.coalesced(n, spec) {
-		return
+	// A security push ignores both of the rules below: whoever holds a stolen credential can keep a socket
+	// open for the account, and a window or the chat cap must not be a way to swallow the notice.
+	if spec.category != CategorySecurity {
+		// A live socket on another node is not seen here; that costs at most one redundant wake-up.
+		if d.cfg.Online(n.Recipient) {
+			return
+		}
+		if d.coalesced(n, spec) {
+			return
+		}
 	}
 	select {
 	case d.jobs <- n:
@@ -298,8 +310,8 @@ func (d *Dispatcher) process(ctx context.Context, n Notice) {
 	spec := kinds[n.Kind]
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	// The recipient may have connected while this waited in the queue.
-	if d.cfg.Online(n.Recipient) {
+	// The recipient may have connected while this waited in the queue (not for a security push, see Notify).
+	if spec.category != CategorySecurity && d.cfg.Online(n.Recipient) {
 		return
 	}
 	verdict, err := d.cfg.Check(ctx, n, spec.category)
@@ -340,7 +352,7 @@ func message(n Notice, spec kindSpec, actorName string) Message {
 	data := map[string]string{"kind": n.Kind}
 	if n.Kind == "chat" {
 		data["conversationId"] = n.Conversation
-	} else if n.Kind == "device" {
+	} else if n.Kind == "device" || n.Kind == "device-revoked" {
 		// Content-free: the app opens the chat devices screen and lists what the relay knows.
 		data["kind"] = "device"
 	} else {
@@ -427,6 +439,20 @@ func (d *Dispatcher) admit(n Notice, spec kindSpec) bool {
 	defer d.mu.Unlock()
 	now := d.cfg.Now()
 	d.sweepLocked(now)
+	if spec.category == CategorySecurity {
+		// Its own small cap, separate from chat and social; no window.
+		c := d.secDaily[n.Recipient]
+		if c == nil || now.Sub(c.start) >= 24*time.Hour {
+			c = &dayCount{start: now}
+			d.secDaily[n.Recipient] = c
+		}
+		if c.n >= SecurityDailyCap {
+			slog.Warn("security push daily cap reached", "kind", n.Kind)
+			return false
+		}
+		c.n++
+		return true
+	}
 	if at, ok := d.last[n.key()]; ok && now.Sub(at) < spec.window {
 		return false
 	}
@@ -446,7 +472,7 @@ func (d *Dispatcher) admit(n Notice, spec kindSpec) bool {
 
 // sweepLocked forgets expired entries, at most once a minute and only when the maps are large.
 func (d *Dispatcher) sweepLocked(now time.Time) {
-	if len(d.last)+len(d.daily) < sweepAbove || now.Sub(d.lastSweep) < sweepEvery {
+	if len(d.last)+len(d.daily)+len(d.secDaily) < sweepAbove || now.Sub(d.lastSweep) < sweepEvery {
 		return
 	}
 	d.lastSweep = now
@@ -462,6 +488,11 @@ func (d *Dispatcher) sweepLocked(now time.Time) {
 	for u, c := range d.daily {
 		if now.Sub(c.start) >= 24*time.Hour {
 			delete(d.daily, u)
+		}
+	}
+	for u, c := range d.secDaily {
+		if now.Sub(c.start) >= 24*time.Hour {
+			delete(d.secDaily, u)
 		}
 	}
 }

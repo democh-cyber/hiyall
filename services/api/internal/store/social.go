@@ -52,6 +52,16 @@ func lockPair(ctx context.Context, tx pgx.Tx, a, b string) error {
 	return nil
 }
 
+// lockMembers locks both accounts in id order (FOR NO KEY UPDATE, the lock a status change takes) without any
+// condition on them, for the paths that end a follow or friendship and must also work on a suspended or blocked
+// member. The counter triggers read both members' status; holding this lock while the edge changes stops a
+// suspension from committing between the trigger's read and the edge's commit, which drifted the counters
+// (the edge's -1 and the suspension's -1 both applied). Same order as lockPair, so no deadlock between them.
+func lockMembers(ctx context.Context, tx pgx.Tx, a, b string) error {
+	_, err := tx.Exec(ctx, `SELECT 1 FROM users WHERE user_id IN ($1,$2) ORDER BY user_id FOR NO KEY UPDATE`, a, b)
+	return err
+}
+
 func normalizePrivacy(data []byte) (domain.Privacy, error) {
 	var p domain.Privacy
 	if err := json.Unmarshal(data, &p); err != nil {
@@ -144,18 +154,6 @@ func unnotify(ctx context.Context, tx pgx.Tx, recipient, actor, event string) er
 	return err
 }
 
-func (s *Store) inTx(ctx context.Context, work func(pgx.Tx) error) error {
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if err = work(tx); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
-
 func noSelf(actor, target string) error {
 	if actor == target {
 		return &domain.ValidationError{Field: "userId", Message: "choose another account"}
@@ -219,6 +217,9 @@ func (s *Store) Unfollow(ctx context.Context, actor, target string) error {
 		return err
 	}
 	return s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := lockMembers(ctx, tx, actor, target); err != nil {
+			return err
+		}
 		tag, err := tx.Exec(ctx, `UPDATE follows SET state='removed',removed_at=now() WHERE follower_id=$1 AND followee_id=$2 AND state<>'removed'`, actor, target)
 		if err != nil || tag.RowsAffected() == 0 {
 			return err
@@ -237,6 +238,8 @@ func (s *Store) RespondFollowRequest(ctx context.Context, owner, follower string
 			if err := lockPair(ctx, tx, owner, follower); err != nil {
 				return err
 			}
+		} else if err := lockMembers(ctx, tx, owner, follower); err != nil {
+			return err
 		}
 		next := "removed"
 		if accept {
@@ -264,6 +267,9 @@ func (s *Store) RespondFollowRequest(ctx context.Context, owner, follower string
 // RemoveFollower lets an owner drop an active follower without blocking them.
 func (s *Store) RemoveFollower(ctx context.Context, owner, follower string) error {
 	return s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := lockMembers(ctx, tx, owner, follower); err != nil {
+			return err
+		}
 		tag, err := tx.Exec(ctx, `UPDATE follows SET state='removed',removed_at=now() WHERE follower_id=$2 AND followee_id=$1 AND state='active'`, owner, follower)
 		if err != nil || tag.RowsAffected() == 0 {
 			return err
@@ -373,6 +379,8 @@ func (s *Store) RespondFriendRequest(ctx context.Context, actor, id string, acce
 			if err := lockPair(ctx, tx, actor, requester); err != nil {
 				return err
 			}
+		} else if err := lockMembers(ctx, tx, actor, requester); err != nil {
+			return err
 		}
 		// Recheck under lock: the request may have been cancelled or replaced meanwhile.
 		var still bool
@@ -416,6 +424,9 @@ func (s *Store) Unfriend(ctx context.Context, actor, target string) error {
 		return err
 	}
 	return s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := lockMembers(ctx, tx, actor, target); err != nil {
+			return err
+		}
 		tag, err := tx.Exec(ctx, `UPDATE friendships SET status='removed',updated_at=now() WHERE user_low_id=least($1::uuid,$2::uuid) AND user_high_id=greatest($1::uuid,$2::uuid) AND status='accepted'`, actor, target)
 		if err != nil || tag.RowsAffected() == 0 {
 			return err

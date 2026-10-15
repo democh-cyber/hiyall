@@ -84,6 +84,8 @@ type API struct {
 	visitWrites *keyedLimiter
 	// mediaSlots bounds concurrent photo processing on this node.
 	mediaSlots chan struct{}
+	// safe is the evidence store, hold length and export slots (safety_state.go).
+	safe safetyState
 	// Media is optional; without it photo uploads answer 503.
 	Media media.Store
 	// Scanner inspects every non-encrypted upload before it can be shown (docs/security/16-csam-and-illegal-content.md).
@@ -143,7 +145,7 @@ func New(s *store.Store, verify Verify, dev bool, origin string) *API {
 		chatKeys:      newKeyedLimiter(2, 30, 4096),
 		chatInbox:     newKeyedLimiter(5, 60, 4096),
 		visitWrites:   newKeyedLimiter(rate.Every(time.Hour), 1, 65536),
-		mediaSlots:    make(chan struct{}, 4),
+		mediaSlots:    make(chan struct{}, 2),
 		heartbeat:     pingEvery,
 	}
 	if _, err := rand.Read(a.cursorKey[:]); err != nil {
@@ -384,6 +386,8 @@ func (a *API) error(w http.ResponseWriter, r *http.Request, err error) {
 		a.failure(w, r, 404, "NOT_FOUND", "This resource is unavailable")
 	case invalidText(err):
 		a.failure(w, r, 422, "VALIDATION", "Text contains characters that cannot be stored")
+	case store.ContentionCode(err) != "":
+		a.contended(w, r, err)
 	default:
 		// The cause is logged for diagnosis: database and Go errors name the failing operation,
 		// never a request body, credential, birth date or position.

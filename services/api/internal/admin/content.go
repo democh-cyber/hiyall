@@ -26,20 +26,37 @@ import (
 // object storage with its own read-only token and streamed to the browser through /admin/v1/media: the
 // browser never gets a storage URL, and the stream URL carries a two minute token bound to the operator,
 // the photo and the report or case it was issued for. Quarantined uploads can be read only by
-// administrators, behind a second, explicit reveal. Private chats have no preview at all.
+// administrators, and by default the console serves a small, heavily blurred derivative made on the server
+// (media.BlurredPreview): the original pixels reach the browser only after the audited reveal call, which
+// issues a second token that is good for one minute and for the full image only. Private chats have no
+// preview at all.
 
-const mediaTokenTTL = 2 * time.Minute
+const (
+	mediaTokenTTL  = 2 * time.Minute
+	revealTokenTTL = time.Minute
+)
+
+// Variants of a quarantined photo a token may ask for.
+const (
+	variantBlur = "blur" // the default: small and blurred, made on the server
+	variantFull = "full" // the processed original, only after the audited reveal
+)
 
 type mediaToken struct {
-	Scope string `json:"s"` // "report" or "case"
-	Op    string `json:"o"`
-	Ref   string `json:"r"` // report id or case id
-	Media string `json:"m"`
-	Exp   int64  `json:"e"`
+	Scope   string `json:"s"` // "report" or "case"
+	Op      string `json:"o"`
+	Ref     string `json:"r"` // report id or case id
+	Media   string `json:"m"`
+	Variant string `json:"v,omitempty"` // case tokens: variantBlur or variantFull
+	Exp     int64  `json:"e"`
 }
 
 func (s *Server) signMediaToken(t mediaToken) string {
-	t.Exp = s.svc.Now().Add(mediaTokenTTL).Unix()
+	ttl := mediaTokenTTL
+	if t.Variant == variantFull {
+		ttl = revealTokenTTL
+	}
+	t.Exp = s.svc.Now().Add(ttl).Unix()
 	raw, _ := json.Marshal(t)
 	m := hmac.New(sha256.New, s.svc.keys.derive("media"))
 	m.Write(raw)
@@ -78,6 +95,13 @@ func (s *Server) routeContent() {
 	s.handle("POST", "/admin/v1/content-cases/{id}/reveal", RoleAdmin, s.revealContentCase)
 	s.handle("POST", "/admin/v1/content-cases/{id}/resolve", RoleAdmin, s.resolveContentCase)
 	s.handle("POST", "/admin/v1/holds/{id}/release", RoleAdmin, s.releaseHold)
+	// Two-person control (approvals.go): a second administrator approves what the first proposed.
+	s.handle("GET", "/admin/v1/approvals", RoleAdmin, s.listApprovals)
+	s.handle("GET", "/admin/v1/content-cases/{id}/proposals", RoleAdmin, s.listCaseProposals)
+	s.handle("POST", "/admin/v1/content-cases/{id}/proposals", RoleAdmin, s.proposeEvidenceStep)
+	s.handle("POST", "/admin/v1/approvals/{id}/approve", RoleAdmin, s.approveEvidenceStep)
+	s.handle("POST", "/admin/v1/approvals/{id}/reject", RoleAdmin, s.rejectEvidenceStep)
+	s.handle("POST", "/admin/v1/approvals/{id}/withdraw", RoleAdmin, s.withdrawEvidenceStep)
 }
 
 type previewMedia struct {
@@ -138,22 +162,27 @@ func (s *Server) streamMedia(w http.ResponseWriter, r *http.Request, p *Principa
 		s.fail(w, r, &domain.ValidationError{Field: "t", Message: "this link has expired; open the item again"})
 		return
 	}
-	if s.svc.Media == nil {
-		s.fail(w, r, errMediaUnavailable)
-		return
-	}
-	var key, action string
+	var key, action, variant string
 	var err error
+	var reader media.Store
 	switch t.Scope {
 	case "report":
+		reader = s.svc.Media
 		action = "content_media_fetch"
-		key, err = s.svc.Store.ReadyMediaKey(r.Context(), mediaID)
+		if reader != nil {
+			key, err = s.svc.Store.ReadyMediaKey(r.Context(), mediaID)
+		}
 	case "case":
 		if !p.Operator.Role.Allows(RoleAdmin) { // the token was issued to an administrator; roles are checked again
 			s.fail(w, r, ErrForbidden)
 			return
 		}
+		reader = s.svc.evidenceReader()
 		action = "quarantine_media_fetch"
+		variant = t.Variant
+		if variant != variantFull {
+			variant = variantBlur
+		}
 		var held string
 		if held, key, err = s.svc.Store.HeldCaseKey(r.Context(), t.Ref); err == nil && held != mediaID {
 			err = domain.ErrNotFound
@@ -161,18 +190,33 @@ func (s *Server) streamMedia(w http.ResponseWriter, r *http.Request, p *Principa
 	default:
 		err = domain.ErrNotFound
 	}
+	if reader == nil {
+		s.fail(w, r, errMediaUnavailable)
+		return
+	}
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	if err = s.audited(r.Context(), p, action, "media", mediaID, map[string]any{"ref": t.Ref}); err != nil {
+	detail := map[string]any{"ref": t.Ref}
+	if variant != "" {
+		detail["variant"] = variant
+	}
+	if err = s.audited(r.Context(), p, action, "media", mediaID, detail); err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	data, err := s.svc.Media.Get(r.Context(), key, media.MaxUploadBytes)
+	data, err := reader.Get(r.Context(), key, media.MaxUploadBytes)
 	if err != nil {
 		s.fail(w, r, domain.ErrNotFound)
 		return
+	}
+	if variant == variantBlur {
+		// The console never sends the original unless the administrator revealed it: shrink and blur here.
+		if data, err = media.BlurredPreview(data); err != nil {
+			s.fail(w, r, domain.ErrNotFound)
+			return
+		}
 	}
 	h := w.Header()
 	h.Set("Content-Type", "image/jpeg")
@@ -237,8 +281,8 @@ func (s *Server) getContentCase(w http.ResponseWriter, r *http.Request, p *Princ
 	s.ok(w, r, map[string]any{"case": c, "mediaAvailable": s.svc.Media != nil})
 }
 
-// viewContentCase issues the link to the quarantined photo. The viewer shows it blurred; the explicit
-// reveal is a separate audited step.
+// viewContentCase issues the link to the blurred preview of the quarantined photo. The blur is made on the
+// server; the explicit reveal is a separate audited step that issues a second, one minute link to the original.
 func (s *Server) viewContentCase(w http.ResponseWriter, r *http.Request, p *Principal) {
 	id := r.PathValue("id")
 	var body reasonBody
@@ -255,7 +299,7 @@ func (s *Server) viewContentCase(w http.ResponseWriter, r *http.Request, p *Prin
 		s.fail(w, r, domain.ErrNotFound)
 		return
 	}
-	if s.svc.Media == nil {
+	if s.svc.evidenceReader() == nil {
 		s.fail(w, r, errMediaUnavailable)
 		return
 	}
@@ -268,10 +312,12 @@ func (s *Server) viewContentCase(w http.ResponseWriter, r *http.Request, p *Prin
 		s.fail(w, r, err)
 		return
 	}
-	s.ok(w, r, map[string]any{"url": s.mediaURL(mediaToken{Scope: "case", Op: p.Operator.ID, Ref: id, Media: mediaID}), "blurred": true})
+	// The link serves the blurred derivative only (variant blur); the original needs the reveal below.
+	s.ok(w, r, map[string]any{"url": s.mediaURL(mediaToken{Scope: "case", Op: p.Operator.ID, Ref: id, Media: mediaID, Variant: variantBlur}), "blurred": true})
 }
 
-// revealContentCase records that the administrator chose to see the quarantined photo unblurred.
+// revealContentCase records that the administrator chose to see the quarantined photo unblurred, and returns
+// the second link, good for one minute and for the full image of this case only.
 func (s *Server) revealContentCase(w http.ResponseWriter, r *http.Request, p *Principal) {
 	id := r.PathValue("id")
 	var body reasonBody
@@ -288,7 +334,12 @@ func (s *Server) revealContentCase(w http.ResponseWriter, r *http.Request, p *Pr
 		s.fail(w, r, domain.ErrNotFound)
 		return
 	}
-	if _, _, err = s.svc.Store.HeldCaseKey(r.Context(), id); err != nil {
+	if s.svc.evidenceReader() == nil {
+		s.fail(w, r, errMediaUnavailable)
+		return
+	}
+	mediaID, _, err := s.svc.Store.HeldCaseKey(r.Context(), id)
+	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
@@ -296,7 +347,7 @@ func (s *Server) revealContentCase(w http.ResponseWriter, r *http.Request, p *Pr
 		s.fail(w, r, err)
 		return
 	}
-	s.ok(w, r, map[string]any{"revealed": true})
+	s.ok(w, r, map[string]any{"revealed": true, "url": s.mediaURL(mediaToken{Scope: "case", Op: p.Operator.ID, Ref: id, Media: mediaID, Variant: variantFull}), "expiresInSeconds": int(revealTokenTTL.Seconds())})
 }
 
 func (s *Server) resolveContentCase(w http.ResponseWriter, r *http.Request, p *Principal) {
@@ -341,39 +392,9 @@ func (s *Server) resolveContentCase(w http.ResponseWriter, r *http.Request, p *P
 	s.ok(w, r, map[string]any{"caseId": id, "action": body.Action})
 }
 
-// releaseHold lifts the evidence hold of a quarantine case ({id} is the case id). It needs a reason, is audited
-// in the transaction that records the release, and is refused (409 HOLD_CASE_OPEN, HOLD_LEGAL_HOLD,
-// HOLD_REPORT_OPEN, HOLD_OTHER_CASE_OPEN) while anything still depends on the evidence. Nothing is deleted
-// here: the API's maintenance job removes the held objects once the retention window (holdUntil) is over.
+// releaseHold used to lift an evidence hold on one administrator's word. It now answers 409 APPROVAL_REQUIRED:
+// releasing a hold is a proposal (POST /admin/v1/content-cases/{id}/proposals, kind "release") that a different
+// administrator approves (approvals.go). The route stays so an old client gets a clear answer, not a 404.
 func (s *Server) releaseHold(w http.ResponseWriter, r *http.Request, p *Principal) {
-	id := r.PathValue("id")
-	var body reasonBody
-	if err := decode(w, r, &body); err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	reason, err := Reason(body.Reason)
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	if !domain.IsID(id) {
-		s.fail(w, r, domain.ErrNotFound)
-		return
-	}
-	hook := func(ctx context.Context, tx pgx.Tx, subject string) error {
-		opID := p.Operator.ID
-		return insertAudit(ctx, tx, AuditEntry{OperatorID: &opID, Actor: p.Operator.Email, Action: "hold_release", TargetType: "content_case", TargetID: id,
-			Reason: reason, IP: p.IP, Detail: map[string]any{"subjectId": subject}})
-	}
-	if err = s.svc.Store.ReleaseHold(r.Context(), id, p.Operator.Email, reason, hook); err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	c, err := s.svc.Store.AdminContentCase(r.Context(), id)
-	if err != nil {
-		s.fail(w, r, err)
-		return
-	}
-	s.ok(w, r, map[string]any{"caseId": id, "releasedAt": c.ReleasedAt, "objectsRemovedAfter": c.HoldUntil})
+	s.fail(w, r, store.ErrApprovalRequired)
 }
