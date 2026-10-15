@@ -102,6 +102,9 @@ class _LiveSyncState extends ConsumerState<LiveSync> {
   /// steps of minutes, so this is deliberately slow.
   static const presenceRefresh = Duration(seconds: 60);
 
+  /// The account's device list is re-read at most this often by the syncs (a device signal is not held back).
+  static const ownDevicesEvery = Duration(seconds: 25);
+
   RealtimeClient? client;
   StreamSubscription<RealtimeEvent>? events;
   Timer? fallback, presence;
@@ -179,6 +182,13 @@ class _LiveSyncState extends ConsumerState<LiveSync> {
     quietly(() async {
       final engine = await ref.read(chatEngineProvider.future);
       engine?.setPollInterval(live ? connectedPoll : fallbackPoll);
+      // Also on the socket's ready and resync and on every resume, so a device added or removed while this
+      // phone was not listening is still noticed (the realtime signal alone can be missed).
+      try {
+        await engine?.refreshOwnDevices(minAge: ownDevicesEvery);
+      } catch (_) {
+        // The inbox below still runs; looked at again next time.
+      }
       await engine?.pollNow();
       await ref.read(chatUnreadProvider.notifier).refresh();
       ref.read(chatSignalProvider.notifier).bump();

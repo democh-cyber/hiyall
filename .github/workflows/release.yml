@@ -1,8 +1,12 @@
 name: Release
-# Runs only for tags like v1.2.3. Nothing here deploys: the API image is pushed to GHCR by digest, the
-# mobile bundles are built and attached to a DRAFT GitHub release, and the production migration waits for a
-# reviewer to approve the `production` environment. Owner setup (environment, secrets, variables) is in
-# docs/deployment/11-environments.md, section "GitHub".
+# Runs only for tags like v1.2.3. Nothing here deploys: the API and admin images are pushed to GHCR by digest (and
+# scanned there), the mobile bundles are built and attached to a DRAFT GitHub release, and the production migration
+# waits for a reviewer to approve the `production` environment. Owner setup (environment, secrets, variables) is in
+# docs/deployment/11-environments.md, section "GitHub". Rehearse this pipeline first with release-dryrun.yml.
+#
+# Which platforms ship is decided by the repository variable RELEASE_PLATFORMS (default "android,ios"). A platform
+# that is listed MUST have its signing secrets: its job fails when they are missing (it is never silently skipped),
+# and the preflight (gates e and r) fails first. Leave a platform out of the variable to release without it.
 on:
   push:
     tags: ['v*']
@@ -14,15 +18,30 @@ concurrency:
 
 jobs:
   release-preflight:
-    # Every release gate in one place (scripts/release-preflight.sh): legal text final, release inputs set, owner
-    # placeholders gone, contract current, go vet. It fails the run before anything is built. Gate d (the production
-    # API environment) needs secrets that live on the host, not in GitHub, so it is skipped here and run
+    # Every release gate in one place (scripts/release-preflight.sh): the Foundation checks green on this commit, legal
+    # text final, release inputs set, owner placeholders gone, contract current, go vet, govulncheck, the production
+    # GitHub environment has reviewers. It fails the run before anything is built. Gate d (the production API
+    # environment) needs secrets that live on the host, not in GitHub, so it is skipped here and run
     # by hand against staging and production (docs/deployment/12-release-runbook.md, step 3).
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+      checks: read   # gate n reads the check runs of the tagged commit
+      actions: read  # gate o reads the `production` environment's protection rules
     env:
       PREFLIGHT_SKIP: d
-      PREFLIGHT_ANDROID_SIGNING_IN_CI: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+      GH_TOKEN: ${{ github.token }}
+      # Optional fine-grained token with Administration: read, when the default token cannot see the environment rules
+      # (gate o prints NOT VERIFIED when neither works). Never required to be a write token.
+      GH_ADMIN_TOKEN: ${{ secrets.RELEASE_GATE_TOKEN }}
+      RELEASE_PLATFORMS: ${{ vars.RELEASE_PLATFORMS || 'android,ios' }}
+      PREFLIGHT_ANDROID_SIGNING_IN_CI: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && secrets.ANDROID_STORE_PASSWORD != '' && secrets.ANDROID_KEY_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' }}
+      PREFLIGHT_IOS_SIGNING_IN_CI: ${{ secrets.IOS_CERTIFICATE_BASE64 != '' && secrets.IOS_CERTIFICATE_PASSWORD != '' && secrets.IOS_PROVISIONING_PROFILE_BASE64 != '' }}
+      # Mirror of the production API setting: set SCAN_ALLOW_NONE=true here ONLY if production runs without an upload
+      # scanner, and then also RELEASE_ACK_UNSCANNED=I_ACCEPT_UNSCANNED_PHOTOS (gate q; docs/deployment/12, step 0).
+      SCAN_ALLOW_NONE: ${{ vars.SCAN_ALLOW_NONE }}
+      RELEASE_ACK_UNSCANNED: ${{ vars.RELEASE_ACK_UNSCANNED }}
       API_BASE_URL: ${{ vars.API_BASE_URL }}
       SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
       FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
@@ -43,11 +62,18 @@ jobs:
         with:
           go-version-file: services/api/go.mod
           cache-dependency-path: services/api/go.sum
+      - name: Install govulncheck (gate l fails in CI when it is missing)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: The preflight's own tests
+        run: python3 scripts/test-release-preflight.py
       - run: scripts/release-preflight.sh
 
   checks:
     needs: release-preflight
-    # A tag must point at a commit whose normal checks passed. This re-runs the fast, decisive ones.
+    # A tag must point at a commit whose normal checks passed. The preflight (gate n) requires the Foundation
+    # workflow to be green on this exact commit; this job re-runs the fast, decisive Go checks as a second look.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
@@ -57,7 +83,7 @@ jobs:
           POSTGRES_USER: hiyall
           POSTGRES_PASSWORD: ci-only-disposable
           POSTGRES_DB: hiyall_test
-        ports: [5432:5432]
+        ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U hiyall -d hiyall_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
@@ -86,8 +112,11 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: name
-        # GHCR names must be lower case.
-        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}/api" >> "$GITHUB_OUTPUT"
+        # GHCR names must be lower case. COMMIT is the 12-character commit stamped into the binary (startup log,
+        # hiyall_build_info, the error tracker's release); VERSION is the tag.
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}/api" >> "$GITHUB_OUTPUT"
+          echo "commit=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -101,10 +130,71 @@ jobs:
           file: services/api/Dockerfile
           push: true
           tags: ${{ steps.name.outputs.image }}:${{ github.ref_name }}
-      - run: echo "Pushed ${{ steps.name.outputs.image }}@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          build-args: |
+            COMMIT=${{ steps.name.outputs.commit }}
+            VERSION=${{ github.ref_name }}
+      - name: Scan the pushed image by digest (trivy; fixable HIGH and CRITICAL fail the release)
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}@${{ steps.build.outputs.digest }}
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz"
+          echo "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a  /tmp/trivy.tgz" | sha256sum -c -
+          mkdir /tmp/trivy && tar -xzf /tmp/trivy.tgz -C /tmp/trivy trivy
+          /tmp/trivy/trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --no-progress "$IMAGE"
+      - run: echo "Pushed ${{ steps.name.outputs.image }}@${{ steps.build.outputs.digest }} (commit ${{ steps.name.outputs.commit }}, version ${{ github.ref_name }})" >> "$GITHUB_STEP_SUMMARY"
+
+  admin-image:
+    # The moderation console image, built, stamped, scanned and pushed by digest exactly like the API image. It is never
+    # deployed by this workflow; see docs/deployment/10-deploy-guide.md section 11.
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.name.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: name
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}/admin" >> "$GITHUB_OUTPUT"
+          echo "commit=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: services/api/Dockerfile.admin
+          push: true
+          tags: ${{ steps.name.outputs.image }}:${{ github.ref_name }}
+          build-args: |
+            COMMIT=${{ steps.name.outputs.commit }}
+            VERSION=${{ github.ref_name }}
+      - name: Scan the pushed image by digest (trivy; fixable HIGH and CRITICAL fail the release)
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}@${{ steps.build.outputs.digest }}
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz"
+          echo "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a  /tmp/trivy.tgz" | sha256sum -c -
+          mkdir /tmp/trivy && tar -xzf /tmp/trivy.tgz -C /tmp/trivy trivy
+          /tmp/trivy/trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --no-progress "$IMAGE"
+      - run: echo "Pushed ${{ steps.name.outputs.image }}@${{ steps.build.outputs.digest }} (commit ${{ steps.name.outputs.commit }}, version ${{ github.ref_name }})" >> "$GITHUB_STEP_SUMMARY"
 
   sbom:
-    needs: api-image
+    needs: [api-image, admin-image]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -124,43 +214,49 @@ jobs:
           format: spdx-json
           output-file: api-sbom.spdx.json
           upload-artifact: false
+      - uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: ${{ needs.admin-image.outputs.image }}@${{ needs.admin-image.outputs.digest }}
+          format: spdx-json
+          output-file: admin-sbom.spdx.json
+          upload-artifact: false
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: api-sbom
-          path: api-sbom.spdx.json
+          name: sbom
+          path: |
+            api-sbom.spdx.json
+            admin-sbom.spdx.json
 
   android:
-    # Skipped (not failed) until the owner has added the signing secrets and release variables.
+    # Runs when RELEASE_PLATFORMS lists android (the default). Then the signing secrets are REQUIRED: the job fails
+    # without them. The preflight (gate e) already refused the release in that case.
     needs: checks
+    if: ${{ contains(format(',{0},', vars.RELEASE_PLATFORMS || 'android,ios'), ',android,') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      HAVE_SIGNING: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Guard
-        id: guard
+      - name: Signing secrets are present
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          if [ "$HAVE_SIGNING" != "true" ] || [ ! -x scripts/build-release.sh ]; then
-            echo "Android release skipped: ANDROID_KEYSTORE_BASE64 secret or scripts/build-release.sh is missing." | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.guard.outputs.run == 'true'
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+          for v in KEYSTORE_B64 STORE_PASSWORD KEY_PASSWORD KEY_ALIAS; do
+            if [ -z "${!v}" ]; then echo "::error::Android is in RELEASE_PLATFORMS but the secret for $v is missing (ANDROID_KEYSTORE_BASE64, ANDROID_STORE_PASSWORD, ANDROID_KEY_PASSWORD, ANDROID_KEY_ALIAS)"; exit 1; fi
+          done
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: '3.47.6'
           channel: stable
           cache: true
-      - if: steps.guard.outputs.run == 'true'
-        # Rust mobile libraries: rust_builder (cargokit) compiles hiyall_e2ee for each Android ABI during
+      - # Rust mobile libraries: rust_builder (cargokit) compiles hiyall_e2ee for each Android ABI during
         # the Gradle build, so the targets must be installed first.
         run: |
           rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
           rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
-      - if: steps.guard.outputs.run == 'true'
-        name: Write signing files (never committed, never logged)
+      - name: Write signing files (never committed, never logged)
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
@@ -172,8 +268,7 @@ jobs:
           echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
           printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
             "$RUNNER_TEMP/release.jks" "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > apps/mobile/android/key.properties
-      - if: steps.guard.outputs.run == 'true'
-        # build-release.sh fails on any missing define, so a build can never ship "not configured".
+      - # build-release.sh fails on any missing define, so a build can never ship "not configured".
         env:
           API_BASE_URL: ${{ vars.API_BASE_URL }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
@@ -186,8 +281,22 @@ jobs:
           FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
           FIREBASE_MESSAGING_SENDER_ID: ${{ vars.FIREBASE_MESSAGING_SENDER_ID }}
         run: scripts/build-release.sh android
-      - if: steps.guard.outputs.run == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Upload Dart debug symbols to Sentry
+        # Obfuscated crashes are unreadable without these. Skipped, with a notice on the run, until the three
+        # Sentry secrets exist (docs/mobile/16-release-and-reliability.md). @sentry/cli is pinned to an exact version.
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SENTRY_AUTH_TOKEN" ] || [ -z "$SENTRY_ORG" ] || [ -z "$SENTRY_PROJECT" ]; then
+            echo "::notice::SENTRY_AUTH_TOKEN, SENTRY_ORG or SENTRY_PROJECT is not set: build/symbols was NOT uploaded to Sentry. Obfuscated crashes will not be readable. Keep the build/symbols artifact."
+            exit 0
+          fi
+          npm install --global @sentry/cli@3.7.0
+          sentry-cli debug-files upload apps/mobile/build/symbols
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: android-aab
           path: |
@@ -196,39 +305,41 @@ jobs:
           if-no-files-found: error
 
   ios:
+    # Runs when RELEASE_PLATFORMS lists ios (the default). Signing is MANUAL: the certificate and the App Store
+    # provisioning profile are installed into a temporary keychain, and scripts/build-release.sh archives with
+    # `xcodebuild` and exports with apps/mobile/ios/ExportOptions.plist (team and profile name filled from the
+    # profile). The first archive must be rehearsed on a Mac (docs/mobile/16-release-and-reliability.md).
     needs: checks
+    if: ${{ contains(format(',{0},', vars.RELEASE_PLATFORMS || 'android,ios'), ',ios,') }}
     runs-on: macos-15
     timeout-minutes: 60
-    env:
-      HAVE_SIGNING: ${{ secrets.IOS_CERTIFICATE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Guard
-        id: guard
-        run: |
-          if [ "$HAVE_SIGNING" != "true" ] || [ ! -x scripts/build-release.sh ]; then
-            echo "iOS release skipped: IOS_CERTIFICATE_BASE64 secret or scripts/build-release.sh is missing." | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.guard.outputs.run == 'true'
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
-        with:
-          flutter-version: '3.47.6'
-          channel: stable
-          cache: true
-      - if: steps.guard.outputs.run == 'true'
-        # Rust mobile libraries: cargokit builds the static library for the device during the Xcode build.
-        run: |
-          rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
-          rustup target add aarch64-apple-ios
-      - if: steps.guard.outputs.run == 'true'
-        name: Install signing certificate and provisioning profile (temporary keychain)
+      - name: Signing secrets are present
         env:
           CERT_B64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
           CERT_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
           PROFILE_B64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          for v in CERT_B64 CERT_PASSWORD PROFILE_B64; do
+            if [ -z "${!v}" ]; then echo "::error::iOS is in RELEASE_PLATFORMS but the secret for $v is missing (IOS_CERTIFICATE_BASE64, IOS_CERTIFICATE_PASSWORD, IOS_PROVISIONING_PROFILE_BASE64)"; exit 1; fi
+          done
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.47.6'
+          channel: stable
+          cache: true
+      - # Rust mobile libraries: cargokit builds the static library for the device during the Xcode build.
+        run: |
+          rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
+          rustup target add aarch64-apple-ios
+      - name: Install signing certificate and provisioning profile (temporary keychain)
+        env:
+          CERT_B64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          PROFILE_B64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          TEAM_OVERRIDE: ${{ vars.IOS_TEAM_ID }}
+          PROFILE_NAME_OVERRIDE: ${{ vars.IOS_PROFILE_NAME }}
         run: |
           set -euo pipefail
           KC="$RUNNER_TEMP/build.keychain-db"; KC_PASS="$(openssl rand -hex 16)"
@@ -240,9 +351,17 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KC_PASS" "$KC" >/dev/null
           security list-keychains -d user -s "$KC" login.keychain-db
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          echo "$PROFILE_B64" | base64 -d > ~/Library/MobileDevice/Provisioning\ Profiles/hiyall.mobileprovision
-      - if: steps.guard.outputs.run == 'true'
-        env:
+          echo "$PROFILE_B64" | base64 -d > "$RUNNER_TEMP/hiyall.mobileprovision"
+          cp "$RUNNER_TEMP/hiyall.mobileprovision" ~/Library/MobileDevice/Provisioning\ Profiles/hiyall.mobileprovision
+          # The manual-signing export needs the profile's NAME and the team id; read them from the profile itself
+          # unless the repository variables IOS_PROFILE_NAME / IOS_TEAM_ID say otherwise. Neither is a secret.
+          security cms -D -i "$RUNNER_TEMP/hiyall.mobileprovision" > "$RUNNER_TEMP/profile.plist"
+          name="${PROFILE_NAME_OVERRIDE:-$(/usr/libexec/PlistBuddy -c 'Print :Name' "$RUNNER_TEMP/profile.plist")}"
+          team="${TEAM_OVERRIDE:-$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$RUNNER_TEMP/profile.plist")}"
+          echo "IOS_PROFILE_NAME=$name" >> "$GITHUB_ENV"
+          echo "IOS_TEAM_ID=$team" >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/profile.plist"
+      - env:
           API_BASE_URL: ${{ vars.API_BASE_URL }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
@@ -254,8 +373,22 @@ jobs:
           FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
           FIREBASE_MESSAGING_SENDER_ID: ${{ vars.FIREBASE_MESSAGING_SENDER_ID }}
         run: scripts/build-release.sh ios
-      - if: steps.guard.outputs.run == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Upload Dart debug symbols to Sentry
+        # Obfuscated crashes are unreadable without these. Skipped, with a notice on the run, until the three
+        # Sentry secrets exist (docs/mobile/16-release-and-reliability.md). @sentry/cli is pinned to an exact version.
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SENTRY_AUTH_TOKEN" ] || [ -z "$SENTRY_ORG" ] || [ -z "$SENTRY_PROJECT" ]; then
+            echo "::notice::SENTRY_AUTH_TOKEN, SENTRY_ORG or SENTRY_PROJECT is not set: build/symbols was NOT uploaded to Sentry. Obfuscated crashes will not be readable. Keep the build/symbols artifact."
+            exit 0
+          fi
+          npm install --global @sentry/cli@3.7.0
+          sentry-cli debug-files upload apps/mobile/build/symbols
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ios-ipa
           path: |
@@ -264,9 +397,10 @@ jobs:
           if-no-files-found: error
 
   draft-release:
-    # Attaches whatever was built to a DRAFT release; a human publishes it.
-    needs: [api-image, sbom, android, ios]
-    if: ${{ !cancelled() && needs.api-image.result == 'success' }}
+    # Attaches whatever was built to a DRAFT release; a human publishes it. A platform that is not in
+    # RELEASE_PLATFORMS is skipped on purpose; one that is listed and failed blocks the draft.
+    needs: [api-image, admin-image, sbom, android, ios]
+    if: ${{ !cancelled() && needs.api-image.result == 'success' && needs.admin-image.result == 'success' && needs.sbom.result == 'success' && needs.android.result != 'failure' && needs.ios.result != 'failure' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -277,16 +411,30 @@ jobs:
           path: artifacts
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          IMAGE: ${{ needs.api-image.outputs.image }}@${{ needs.api-image.outputs.digest }}
+          API_IMAGE: ${{ needs.api-image.outputs.image }}@${{ needs.api-image.outputs.digest }}
+          ADMIN_IMAGE: ${{ needs.admin-image.outputs.image }}@${{ needs.admin-image.outputs.digest }}
+          PLATFORMS: ${{ vars.RELEASE_PLATFORMS || 'android,ios' }}
+          SCAN_ALLOW_NONE: ${{ vars.SCAN_ALLOW_NONE }}
+          RELEASE_ACK_UNSCANNED: ${{ vars.RELEASE_ACK_UNSCANNED }}
         run: |
           set -euo pipefail
-          printf 'API image (by digest): `%s`\n\nMigrations are NOT applied. Approve the "migrate-production" job of this run, then deploy the digest above.\n' "$IMAGE" > notes.md
+          {
+            printf 'API image (by digest, commit %s): `%s`\n\n' "${GITHUB_SHA::12}" "$API_IMAGE"
+            printf 'Admin console image (by digest): `%s`\n\n' "$ADMIN_IMAGE"
+            printf 'Mobile platforms in this release: %s\n\n' "$PLATFORMS"
+            if [ "$SCAN_ALLOW_NONE" = "true" ]; then
+              printf '**UNSCANNED PHOTOS ACKNOWLEDGED (%s).** This release was approved with photo upload scanning OFF (SCAN_ALLOW_NONE=true). Uploaded photos are not checked against any hash list or provider before they are shown.\n\n' "$RELEASE_ACK_UNSCANNED"
+            fi
+            printf 'Migrations are NOT applied. Approve the "migrate-production" job of this run (it also refreshes the database role grants), then deploy the digest above.\n'
+          } > notes.md
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --title "$GITHUB_REF_NAME" --notes-file notes.md \
             $(find artifacts -type f \( -name '*.aab' -o -name '*.ipa' -o -name '*.spdx.json' \) | tr '\n' ' ')
 
   migrate-production:
-    # Waits for a required reviewer on the `production` environment (owner setup). Runs the image's own
-    # /migrate against the production database; it does not start or replace the API.
+    # Waits for a required reviewer on the `production` environment (owner setup; the preflight's gate o checks it exists
+    # with reviewers). Runs the image's own /migrate against the production database as the migration role, with
+    # MIGRATE_RUN_GRANTS=true so the same step then refreshes the grants of the API and admin roles
+    # (database/roles/grants.sql). It does not start or replace the API.
     needs: [api-image, draft-release]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -300,11 +448,11 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Migrate
+      - name: Migrate and refresh role grants
         env:
           PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
           IMAGE: ${{ needs.api-image.outputs.image }}@${{ needs.api-image.outputs.digest }}
         run: |
           set -euo pipefail
           test -n "$PRODUCTION_DATABASE_URL" || { echo "PRODUCTION_DATABASE_URL is not set on the production environment"; exit 1; }
-          docker run --rm -e DATABASE_URL="$PRODUCTION_DATABASE_URL" --entrypoint /migrate "$IMAGE"
+          docker run --rm -e DATABASE_URL="$PRODUCTION_DATABASE_URL" -e MIGRATE_RUN_GRANTS=true --entrypoint /migrate "$IMAGE"

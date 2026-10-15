@@ -7,6 +7,10 @@ import 'package:hiyall/core/api.dart';
 import 'package:hiyall/core/auth/auth_gateway.dart';
 import 'package:hiyall/core/auth/reauth.dart';
 import 'package:hiyall/core/data_delivery.dart';
+import 'package:hiyall/core/error_reporting.dart';
+import 'package:hiyall/features/help_safety.dart'
+    show HelpContacts, mailLauncher;
+import 'package:url_launcher/url_launcher.dart' show launchUrl;
 import 'package:hiyall/core/state.dart';
 import 'package:hiyall/features/account_data.dart';
 
@@ -380,6 +384,139 @@ void main() {
         await press(tester, 'delete-reauth');
         expect(api.scheduled, ['anjali']);
         expect(api.appleCodes, ['apple-code-1']);
+      },
+    );
+
+    Future<void> toApplePrompt(
+      WidgetTester tester,
+      AccountFake api,
+      FakeReauth reauth,
+    ) async {
+      final container = await openAccount(tester, api, reauth: reauth);
+      await container.read(profileProvider.future);
+      await start(tester);
+      await press(tester, 'delete-continue');
+      await tester.enterText(
+        find.byKey(const Key('delete-username')),
+        'anjali',
+      );
+      await tester.pump();
+      await press(tester, 'delete-confirm');
+      expect(find.text('Continue with Apple'), findsOneWidget);
+    }
+
+    testWidgets(
+      'Apple returning no code shows an explanation with two ways out, then stops asking after two tries',
+      (tester) async {
+        final reported = <String>[];
+        ErrorReporting.onCapture = (error, fatal) => reported.add('$error');
+        addTearDown(() => ErrorReporting.onCapture = null);
+        final api = AccountFake();
+        final reauth = FakeReauth(AuthMethod.apple);
+        await toApplePrompt(tester, api, reauth);
+
+        // First miss: explained, with a retry and support. Not another prompt.
+        await press(tester, 'delete-reauth');
+        expect(find.byKey(const Key('delete-apple-explain')), findsOneWidget);
+        expect(find.text('Try Apple again'), findsOneWidget);
+        expect(find.text('Contact support'), findsOneWidget);
+        expect(find.text('Continue with Apple'), findsNothing);
+        expect(reauth.passwords, hasLength(1));
+        expect(api.scheduled, isEmpty);
+
+        // Second miss: only support is left.
+        await press(tester, 'delete-apple-retry');
+        expect(reauth.passwords, hasLength(2));
+        expect(find.byKey(const Key('delete-apple-explain')), findsOneWidget);
+        expect(find.text('Try Apple again'), findsNothing);
+        expect(find.text('Contact support'), findsOneWidget);
+
+        // Back and Delete again goes straight to the explanation: no third Apple sheet.
+        await tester.tap(find.text('Back'));
+        await tester.pumpAndSettle();
+        await press(tester, 'delete-confirm');
+        expect(find.byKey(const Key('delete-apple-explain')), findsOneWidget);
+        expect(reauth.passwords, hasLength(2));
+        expect(api.scheduled, isEmpty);
+
+        // Logged twice, with no personal data in it.
+        expect(reported, hasLength(2));
+        for (final line in reported) {
+          expect(line, contains('no authorization code'));
+          expect(line, isNot(contains('anjali')));
+        }
+      },
+    );
+
+    testWidgets(
+      'An Apple retry that does return a code finishes the deletion',
+      (tester) async {
+        final api = AccountFake();
+        final reauth = FakeReauth(AuthMethod.apple);
+        await toApplePrompt(tester, api, reauth);
+        await press(tester, 'delete-reauth');
+        expect(find.byKey(const Key('delete-apple-explain')), findsOneWidget);
+        reauth.appleCode = 'apple-code-2';
+        await press(tester, 'delete-apple-retry');
+        expect(api.scheduled, ['anjali']);
+        expect(api.appleCodes, ['apple-code-2']);
+      },
+    );
+
+    testWidgets('APPLE_CODE_REQUIRED from the server opens the same screen', (
+      tester,
+    ) async {
+      final api = AccountFake()
+        ..scheduleFailures.add(
+          const ApiFailure(
+            'Check your entries and try again.',
+            422,
+            'APPLE_CODE_REQUIRED',
+          ),
+        );
+      final reauth = FakeReauth(AuthMethod.apple);
+      await toApplePrompt(tester, api, reauth);
+      reauth.appleCode = 'stale-code';
+      await press(tester, 'delete-reauth');
+      expect(find.byKey(const Key('delete-apple-explain')), findsOneWidget);
+      expect(find.text('Try Apple again'), findsOneWidget);
+      expect(find.text('Contact support'), findsOneWidget);
+      expect(api.scheduled, isEmpty);
+    });
+
+    testWidgets(
+      'Contact support opens a mail draft to the Help & Safety address',
+      (tester) async {
+        HelpContacts.showPlaceholders = true;
+        addTearDown(() => HelpContacts.showPlaceholders = false);
+        Uri? opened;
+        mailLauncher = (uri) async {
+          opened = uri;
+          return true;
+        };
+        addTearDown(() => mailLauncher = (uri) => launchUrl(uri));
+        final api = AccountFake();
+        final reauth = FakeReauth(AuthMethod.apple);
+        await toApplePrompt(tester, api, reauth);
+        await press(tester, 'delete-reauth');
+        await press(tester, 'delete-apple-support');
+        expect(opened?.scheme, 'mailto');
+        expect(opened?.path, HelpContacts.support);
+      },
+    );
+
+    testWidgets(
+      'Contact support without a real address says it is being set up',
+      (tester) async {
+        final api = AccountFake();
+        final reauth = FakeReauth(AuthMethod.apple);
+        await toApplePrompt(tester, api, reauth);
+        await press(tester, 'delete-reauth');
+        await press(tester, 'delete-apple-support');
+        expect(
+          find.textContaining('Contact details are being set up'),
+          findsOneWidget,
+        );
       },
     );
 

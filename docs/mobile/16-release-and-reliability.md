@@ -43,8 +43,19 @@ Phone: `sentry_flutter` 9.30.1 (pinned; 10.0.0 was five days old when this was w
 Nothing personal leaves the phone (`lib/core/error_reporting.dart`, tested in `test/error_reporting_test.dart`):
 `sendDefaultPii` is false; no screenshots; request bodies and headers are dropped (only content type and the
 client platform and version survive); URL query strings and fragments are cut and ids in paths become `:id`;
-bearer tokens, JWTs, emails and ids are masked in every message; console/print breadcrumbs and anything that
-mentions a chat or conversation are dropped.
+bearer tokens, JWTs, emails and ids are masked in every message, and so are quoted payloads (a JSON object or
+array is cut from its opening `{"` to the end of the line, as a `FormatException` quotes it) and long base64-looking
+runs; console/print breadcrumbs and anything that mentions a chat or conversation are dropped. Only an error that
+nothing caught (`PlatformDispatcher.onError`) is reported as fatal and unhandled; errors the framework caught
+(`FlutterError.onError`) are non-fatal, so crash-free statistics are not skewed.
+
+**Debug symbols.** Release builds are obfuscated (`--obfuscate --split-debug-info=build/symbols`), so Dart stack
+traces in Sentry are unreadable without the symbols. The Android and iOS jobs of `.github/workflows/release.yml`
+upload `apps/mobile/build/symbols` with `sentry-cli debug-files upload` (`@sentry/cli` pinned) when the
+repository secrets `SENTRY_AUTH_TOKEN`, `SENTRY_ORG` and `SENTRY_PROJECT` are all set; with any of them missing
+the step prints a notice and is skipped, and the symbols are still kept in the build artifact. Create the token
+in Sentry with the `project:releases` and `org:read` scopes (a Custom Integration or an organisation token), and
+upload the Android R8 `mapping.txt` the same way if native frames matter.
 
 Server: `SENTRY_DSN` (plus `SENTRY_ENVIRONMENT`, `SENTRY_RELEASE`) enables `internal/errreport`, which
 implements `httpapi.ErrorReporter` for panics and unexpected 500s. It is a small envelope client rather than
@@ -71,15 +82,28 @@ timeout and 5xx are different messages, 404 names what was missing, 409 only say
 
 Sign-out always finishes on the device. If the server cannot be told, the short-lived access token is kept in
 the platform keystore for up to an hour and the revoke is sent on the next launch (`RevokeQueue`); the
-identity-provider session ends on the device regardless. The `signOutHooks` list (push token removal, chat
-wipe) runs first and a failing hook no longer blocks sign-out.
+identity-provider session ends on the device regardless.
+
+`SessionController.signOutHooks` runs whenever a session ends: sign-out, session expiry and account deletion
+(`lib/core/state.dart`). Each hook gets 5 seconds (`signOutHookTimeout`); one that throws or hangs is logged
+(error type only) and skipped, so it can never keep the person signed in. The controller registers two hooks of
+its own, independent of any screen or provider listener: `chatWipeHook` (`lib/core/chat_wipe_hook.dart`, erases
+the departing account's chat keys, history and cached photos through `ChatLocalData.wipeAccount` and removes the
+chat device on the server, best effort with a 3 s limit; a failed revoke is remembered and retried next launch)
+and the export-file wipe. The chat keystore is bound in `lib/bindings.dart` (`chatWipeStoreProvider`). Push
+(`PushController.beforeSignOut`, each step limited to 2 s) and the chat engine add theirs. On expiry the credential
+is already dead, so server calls in hooks fail quietly and the local clean-up is what runs.
+Tests: `test/session_hooks_test.dart` (real `SessionController`, fake keystore and revoker).
 
 ## Deep links
 
 A location the person was sent away from (a notification, a shared link, a web URL) is remembered through
 splash, welcome, log in, verify-email and onboarding and opened afterwards instead of Home
-(`lib/core/deep_link.dart`). Unknown links show a branded "This page wandered off" page. Back from Sign up and
-Log in returns to Welcome (they are pushed).
+(`lib/core/deep_link.dart`). It is only remembered while no session has been active in this launch, so the
+page someone signed out of is never offered to the next sign-in; it is bound to the account that was active and
+dropped if another one signs in, and it is cleared on sign-out, session expiry and account deletion.
+Unknown links show a branded "This page wandered off" page. Back from Sign up and
+Log in returns to Welcome (they are pushed, and the links between the two replace each other).
 
 **Owner steps for real Universal Links / App Links** (the app handles the routes; the platforms need proof
 of domain ownership, which needs the final domain):
@@ -90,6 +114,33 @@ of domain ownership, which needs the final domain):
 - iOS: add the Associated Domains capability (`applinks:<domain>`) to `Runner.entitlements`, and host
   `https://<domain>/.well-known/apple-app-site-association` with the team id + bundle id and the paths to open.
 - Web: serve the Flutter build with SPA fallback (every path returns `index.html`) so a deep link reloads.
+
+## Data export on the phone
+
+"Download my data" goes through `ApiClient._request` like every other call (`X-Client-Version`, the https rule,
+401 refresh-and-retry, 426 handling), as a raw byte download. On a phone the file is written to the temporary
+folder only (never Documents, which iOS backs up), offered to the share sheet, and deleted when the sheet closes
+(shared, cancelled or failed). Leftovers (an interrupted share, a crash, a file an older build put in Documents)
+are removed at launch, when Settings resumes, and at sign-out when this run wrote one
+(`lib/core/data_delivery.dart`, `data_delivery_io.dart`; the web download is unchanged). Tests:
+`test/data_delivery_test.dart` (fake file system), `test/account_api_test.dart`.
+
+One transport rule (`lib/core/api_config.dart`, `isSecureTransport`): https, or plain http to localhost,
+127.0.0.1 or 10.0.2.2 in a debug build only. `ApiClient` and the realtime socket use it; `ChatApi`'s upload-slot
+check should call it too (`lib/core/chat/chat_api.dart`, still a copy of the old host list).
+
+## Deleting an Apple account
+
+Apple accounts sign in with Apple again and send the one-time authorization code. If Apple returns none (web
+never does; iOS is unverified on a device), or the server answers `422 APPLE_CODE_REQUIRED`, the delete screen
+shows a plain explanation with "Try Apple again" and "Contact support" (the Help & Safety support address), logs
+it to error reporting without personal data, and stops asking after two misses: only "Contact support" remains.
+
+## Help & Safety contacts
+
+The three addresses come from `SUPPORT_EMAIL`, `SAFETY_EMAIL` and `PRIVACY_EMAIL`. A placeholder (`*.example`,
+what a build made without the release script has) is never listed: its row is hidden, and the section says
+"Contact details are being set up" and points at Block and Report in the app.
 
 ## Export compliance (owner action)
 

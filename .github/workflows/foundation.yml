@@ -20,7 +20,7 @@ jobs:
           POSTGRES_USER: hiyall
           POSTGRES_PASSWORD: ci-only-disposable
           POSTGRES_DB: hiyall_test
-        ports: [5432:5432]
+        ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U hiyall -d hiyall_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
@@ -47,7 +47,24 @@ jobs:
           psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE hiyall_test_admin'
           DATABASE_URL="$ADMIN_TEST_DATABASE_URL" go run ./cmd/migrate
         working-directory: services/api
+      - name: 'Database roles on both test databases (roles.sql once, then grants.sql: the production release order)'
+        run: |
+          go run ./cmd/migrate
+          for url in "$TEST_DATABASE_URL" "$ADMIN_TEST_DATABASE_URL"; do
+            psql "$url" -v ON_ERROR_STOP=1 -q -f ../../database/roles/roles.sql
+            psql "$url" -v ON_ERROR_STOP=1 -q -f ../../database/roles/grants.sql
+          done
+        working-directory: services/api
       - run: go run ./cmd/migrate && go vet ./... && go test -race ./...
+        working-directory: services/api
+      - name: Requests and jobs on the restricted hiyall_api role ran (a skipped one fails the job)
+        run: |
+          set -o pipefail
+          go test -race -count=1 -v -run 'TestRequestsAndJobsRunOnTheRestrictedAPIRole|TestEveryMaintenanceJobRunsOnTheRestrictedAPIRole|TestProductionStartRefusesARoleThatIsTooPowerful|TestRoleProblemsAndGrantProblemsSeeWhatIsWrong|TestCheckConfigDatabaseFlag|TestMigrateRunsGrantsAfterTheMigrations' ./internal/httpapi ./cmd/api ./cmd/migrate | tee "$RUNNER_TEMP/role-tests.log"
+          if grep -E -- '--- SKIP' "$RUNNER_TEMP/role-tests.log"; then echo "::error::restricted role tests were skipped"; exit 1; fi
+          for t in TestRequestsAndJobsRunOnTheRestrictedAPIRole TestEveryMaintenanceJobRunsOnTheRestrictedAPIRole TestProductionStartRefusesARoleThatIsTooPowerful TestMigrateRunsGrantsAfterTheMigrations; do
+            grep -q -- "--- PASS: $t" "$RUNNER_TEMP/role-tests.log"
+          done
         working-directory: services/api
       - name: Admin console and database role tests ran (a skipped one fails the job)
         run: |
@@ -76,7 +93,7 @@ jobs:
         working-directory: apps/mobile/rust
       - run: flutter pub get && dart format --set-exit-if-changed lib test && flutter analyze
         working-directory: apps/mobile
-      - run: flutter test --dart-define=ENABLE_DEV_LOGIN=true --dart-define=API_BASE_URL=http://127.0.0.1:8080
+      - run: flutter test --dart-define=API_BASE_URL=http://127.0.0.1:8080
         working-directory: apps/mobile
         env:
           REQUIRE_RUST_CORE: '1'
@@ -92,6 +109,12 @@ jobs:
           node-version: '24.21.0'
           cache: npm
       - run: npm ci && npm audit --audit-level=moderate && python3 scripts/validate_architecture.py && npm run contracts:lint && npm run contracts:build
+      - name: Release tooling (preflight unit tests, build script, env docs, alert rules)
+        run: |
+          python3 scripts/test-release-preflight.py
+          scripts/test-build-release.sh
+          python3 scripts/check_env_docs.py
+          scripts/validate-alerts.sh
       - run: git diff --exit-code -- docs/api/openapi-foundation.json packages/api-contracts/foundation.d.ts
   admin:
     # The moderation console UI (apps/admin): types, unit tests, the production build (which must stay free of
@@ -151,7 +174,7 @@ jobs:
           POSTGRES_USER: hiyall
           POSTGRES_PASSWORD: ci-only-disposable
           POSTGRES_DB: hiyall_image
-        ports: [5432:5432]
+        ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U hiyall -d hiyall_image"
           --health-interval 5s --health-timeout 5s --health-retries 10
@@ -160,11 +183,14 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: docker build -f services/api/Dockerfile --build-arg COMMIT="${GITHUB_SHA::12}" --build-arg VERSION=ci -t hiyall-api:ci .
-      - name: Image runs as a non-root user
-        run: test "$(docker image inspect --format '{{.Config.User}}' hiyall-api:ci)" = "nonroot:nonroot"
+      - name: Image runs as a non-root user and declares a health check
+        run: |
+          test "$(docker image inspect --format '{{.Config.User}}' hiyall-api:ci)" = "nonroot:nonroot"
+          test "$(docker image inspect --format '{{json .Config.Healthcheck.Test}}' hiyall-api:ci)" != "null"
       - name: Scan the image (trivy)
         # Fails on fixable HIGH/CRITICAL vulnerabilities in the image; the base image is distroless, so
-        # this is mostly the Go binaries' dependencies. Same pinned trivy as the security job.
+        # this is mostly the Go binaries' dependencies. Same pinned trivy as the security job and the release workflow.
+        # The admin image is built and scanned below with the same binary.
         run: |
           set -euo pipefail
           curl -fsSL -o /tmp/trivy.tgz "https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz"
@@ -192,9 +218,13 @@ jobs:
           # Metrics are never on the public listener.
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/metrics)" != 200
       - name: Build the admin console image (API binary and built UI)
-        run: docker build -f services/api/Dockerfile.admin -t hiyall-admin:ci .
-      - name: Admin image runs as a non-root user
-        run: test "$(docker image inspect --format '{{.Config.User}}' hiyall-admin:ci)" = "nonroot:nonroot"
+        run: docker build -f services/api/Dockerfile.admin --build-arg COMMIT="${GITHUB_SHA::12}" --build-arg VERSION=ci -t hiyall-admin:ci .
+      - name: Admin image runs as a non-root user and declares a health check
+        run: |
+          test "$(docker image inspect --format '{{.Config.User}}' hiyall-admin:ci)" = "nonroot:nonroot"
+          test "$(docker image inspect --format '{{json .Config.Healthcheck.Test}}' hiyall-admin:ci)" != "null"
+      - name: Scan the admin image (trivy)
+        run: /tmp/trivy/trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --no-progress hiyall-admin:ci
       - name: Start the admin console and fetch the UI
         run: |
           docker run -d --name admin --network host \
@@ -208,6 +238,8 @@ jobs:
           # The JSON API refuses an anonymous caller and the UI is served with the strict CSP.
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/admin/v1/me)" = 401
           curl -sI http://127.0.0.1:8081/ | grep -qi "^content-security-policy: default-src 'self'"
+          # The image's own health check (`admin healthcheck`, a TCP connect to ADMIN_ADDR) passes.
+          docker exec admin /admin healthcheck
       - if: failure()
         run: docker logs admin || true
       - if: failure()

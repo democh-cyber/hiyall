@@ -1,0 +1,160 @@
+# Prometheus alerting rules for the Hiyall API (and the admin console where noted). Format: Prometheus rule files
+# (https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/), which Grafana Cloud, Grafana Mimir,
+# VictoriaMetrics' vmalert and Alertmanager setups also read. Metrics come from the API's METRICS_ADDR listener
+# (docs/deployment/10-deploy-guide.md section 7); scrape it with the METRICS_TOKEN as a bearer token.
+#
+# Validate with scripts/validate-alerts.sh (promtool when installed, a structure check otherwise). The `severity` label
+# is the routing hook: page = wake someone, ticket = look within a working day. Every rule has a runbook pointer in
+# its annotations. Thresholds are first guesses for a small launch; tune them after the first real week of traffic.
+#
+# `up` is the scrape-level check: the job name below must match your scrape config (job_name: hiyall-api).
+groups:
+  - name: hiyall-availability
+    rules:
+      - alert: HiyallApiDown
+        expr: up{job="hiyall-api"} == 0
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "Hiyall API metrics endpoint is unreachable"
+          description: "{{ $labels.instance }} did not answer a scrape for 2 minutes: the machine is down or the metrics address or token is wrong."
+          runbook: "docs/deployment/10-deploy-guide.md section 10, incident 1"
+      - alert: HiyallReadinessFailing
+        # Needs an external probe of /readyz (blackbox exporter, Fly checks or an uptime service) exposed as probe_success.
+        expr: probe_success{job="hiyall-readyz"} == 0
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "/readyz has been failing for 2 minutes"
+          description: "The API reports not ready: database unavailable or the schema is behind this release. Liveness (/healthz) may still be fine."
+          runbook: "docs/deployment/10-deploy-guide.md section 10, incidents 2 and 3"
+
+  - name: hiyall-requests
+    rules:
+      - alert: HiyallHigh5xxRate
+        expr: |
+          sum(rate(hiyall_http_requests_total{status_class="5xx"}[5m]))
+            / clamp_min(sum(rate(hiyall_http_requests_total[5m])), 1) > 0.01
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "More than 1% of requests answer 5xx"
+          description: "Server errors are {{ $value | humanizePercentage }} of requests over 5 minutes. A 503 with Retry-After from database contention is counted by HiyallDbContention as well."
+          runbook: "docs/deployment/10-deploy-guide.md section 10, incident 1 (roll back first)"
+      - alert: HiyallHandlerPanics
+        expr: increase(hiyall_http_panics_total[10m]) > 0
+        labels: {severity: page}
+        annotations:
+          summary: "A request handler panicked"
+          description: "Route {{ $labels.route }} recovered from a panic. The log line has the stack and the request id; Sentry has the scrubbed report."
+          runbook: "docs/deployment/10-deploy-guide.md section 10, incident 1"
+      - alert: HiyallSlowRequests
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(hiyall_http_request_duration_seconds_bucket[5m]))) > 1
+        for: 10m
+        labels: {severity: ticket}
+        annotations:
+          summary: "p95 request latency is above 1 second"
+          description: "p95 over 5 minutes is {{ $value | humanizeDuration }}. Check database CPU, pool waits and the slowest route in hiyall_http_request_duration_seconds."
+          runbook: "docs/deployment/10-deploy-guide.md section 7, item 1"
+
+  - name: hiyall-database
+    rules:
+      - alert: HiyallDbPoolSaturated
+        expr: hiyall_db_pool_conns_acquired >= hiyall_db_pool_conns_max
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "Every database connection of {{ $labels.instance }} has been in use for 5 minutes"
+          description: "Requests are waiting for a connection. Add database CPU or memory and read the slow queries before adding machines."
+          runbook: "docs/deployment/10-deploy-guide.md section 10, incident 2"
+      - alert: HiyallDbContention
+        # Requests answered 503 because PostgreSQL asked the client to retry: lock timeout, statement timeout, deadlock,
+        # serialization failure (the `code` label is the SQLSTATE).
+        expr: sum by (code) (increase(hiyall_db_contention_total[10m])) > 10
+        labels: {severity: ticket}
+        annotations:
+          summary: "Database contention ({{ $labels.code }}) is answering requests with 503"
+          description: "More than 10 requests in 10 minutes were refused with SQLSTATE {{ $labels.code }}. 55P03 or 40P01: find the lock holder or the deadlocking pair. 57014: a query is too slow."
+          runbook: "docs/deployment/10-deploy-guide.md section 7, item 1"
+      - alert: HiyallRateLimitBackendErrors
+        # The shared limiter could not reach the database, so requests were let through unlimited.
+        expr: increase(hiyall_rate_limit_backend_errors_total[10m]) > 0
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "The shared rate limiter is failing open"
+          description: "Limiter {{ $labels.limiter }} could not count requests; they are being let through. Treat as a database problem and as an abuse window."
+          runbook: "docs/deployment/10-deploy-guide.md section 7, item 4"
+      - alert: HiyallUntrustedForwardingHeaders
+        # A wrong TRUSTED_PROXY_CIDRS puts every client in one shared rate-limit bucket.
+        expr: increase(hiyall_untrusted_forwarding_total[15m]) > 100
+        labels: {severity: ticket}
+        annotations:
+          summary: "Forwarding headers arrive from a peer that is not a trusted proxy"
+          description: "TRUSTED_PROXY_CIDRS or CLIENT_IP_HEADER is probably wrong: clients share one rate-limit bucket. The startup log names the client-address mode."
+          runbook: "docs/deployment/10-deploy-guide.md section 4a"
+
+  - name: hiyall-maintenance
+    rules:
+      - alert: HiyallMaintenanceLeaderMissing
+        # Exactly one machine holds the cleanup lock; the sum is 1 when healthy.
+        expr: sum(hiyall_maintenance_leader) < 1
+        for: 15m
+        labels: {severity: page}
+        annotations:
+          summary: "No machine is running the maintenance jobs"
+          description: "hiyall_maintenance_leader is 0 everywhere: purge, retention, media cleanup and reconcile jobs are not running. Look for a direct-connection problem (a pooler breaks the advisory lock)."
+          runbook: "docs/deployment/10-deploy-guide.md section 7, item 5"
+      - alert: HiyallMaintenanceJobFailing
+        expr: sum by (job) (increase(hiyall_maintenance_job_runs_total{result=~"error|timeout"}[1h])) > 0
+        labels: {severity: ticket}
+        annotations:
+          summary: "Maintenance job {{ $labels.job }} is failing"
+          description: "Errors or timeouts in the last hour. For `media cleanup` and `account purge` objects and accounts are not being removed (retried hourly). Check the role grants (`api check-config -db`) first."
+          runbook: "docs/deployment/10-deploy-guide.md section 7, item 5"
+      - alert: HiyallSessionPurgeStale
+        expr: time() - max(hiyall_maintenance_job_last_run_timestamp_seconds{job="session purge"}) > 7200
+        labels: {severity: ticket}
+        annotations:
+          summary: "The session purge job has not run for 2 hours"
+          description: "The hourly maintenance loop is not completing on any machine."
+          runbook: "docs/deployment/10-deploy-guide.md section 7, item 5"
+
+  - name: hiyall-safety
+    rules:
+      - alert: HiyallQuarantineCaseOpened
+        # A new quarantine case means the upload scanner flagged or matched a photo. A person must look the same day
+        # (docs/security/16-csam-and-illegal-content.md). `result` is `flagged` or `match`.
+        expr: sum by (result) (increase(hiyall_quarantine_cases_total[15m])) > 0
+        labels: {severity: page}
+        annotations:
+          summary: "New quarantine case ({{ $labels.result }}) in the moderation console"
+          description: "The upload scanner opened {{ $value }} case(s). Open the admin console and follow the illegal-content runbook; a `match` is the urgent one."
+          runbook: "docs/security/16-csam-and-illegal-content.md"
+      - alert: HiyallScanUpstreamErrors
+        # The upload scanner could not get an answer from its list or provider, so uploads stay unavailable and
+        # nothing is being screened. The metric is exported by the scanner (name per docs/security/16); until a
+        # build exports it this rule never fires.
+        expr: increase(hiyall_scan_upstream_errors_total[15m]) > 0
+        for: 10m
+        labels: {severity: page}
+        annotations:
+          summary: "The upload scanner cannot reach its provider or list"
+          description: "Photo uploads are waiting or failing because scanning is unavailable. Check SCAN_PROVIDER_URL, the key file and the provider's status."
+          runbook: "docs/security/16-csam-and-illegal-content.md section 2"
+      - alert: HiyallPushConfigErrors
+        # FCM refused a push because of OUR configuration (tokens are kept). Wrong FCM_SERVICE_ACCOUNT_FILE for the app's project.
+        expr: increase(hiyall_push_config_errors_total[15m]) > 0
+        labels: {severity: ticket}
+        annotations:
+          summary: "Push notifications are refused because of this server's configuration"
+          description: "Check FCM_SERVICE_ACCOUNT_FILE and FCM_PROJECT_ID against the Firebase project the apps use."
+          runbook: "docs/deployment/10-deploy-guide.md section 7 (baseline alerts)"
+      - alert: HiyallMediaProcessingBusy
+        expr: increase(hiyall_media_busy_total[10m]) > 20
+        labels: {severity: ticket}
+        annotations:
+          summary: "Photo uploads are being refused because every processing slot is busy"
+          description: "More than 20 uploads in 10 minutes answered 503. Check CPU and memory, MEDIA_PROCESS_SLOTS and abuse."
+          runbook: "docs/deployment/10-deploy-guide.md section 7, item 6"

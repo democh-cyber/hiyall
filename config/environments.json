@@ -1,0 +1,7 @@
+{
+  "_comment": "Identifiers of the DEVELOPMENT environment. Not secret; committed on purpose. scripts/release_preflight.py (gates c and d) fails a release whose production Firebase project id or media buckets equal any value below, so test sign-ups and test photos can never land in production. When development moves to its own Firebase project or buckets, list the new names here too. Details: docs/deployment/11-environments.md, section Development identifiers.",
+  "development": {
+    "DEV_FIREBASE_PROJECT_ID": ["hiyall-prod-1"],
+    "DEV_MEDIA_BUCKETS": ["hiyall", "hiyall-chat", "hiyall-media"]
+  }
+}

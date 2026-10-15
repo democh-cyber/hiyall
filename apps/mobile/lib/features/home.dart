@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import '../core/activity_state.dart';
 import '../core/api.dart';
+import '../core/app_info.dart' show FeatureFlags;
 import '../core/feed_state.dart';
 import '../core/home_prefs.dart';
 import '../core/state.dart';
@@ -546,7 +547,9 @@ class HomeCreateButton extends StatelessWidget {
           minHeight: 56,
           pressedScale: .94,
           semanticLabel: 'Create',
-          semanticHint: 'Post, story, circle or moment',
+          semanticHint: FeatureFlags.events
+              ? 'Post, story, circle or moment'
+              : 'Post, story or circle',
           onTap: () => showCreateSheet(context),
           child: DecoratedBox(
             decoration: BoxDecoration(

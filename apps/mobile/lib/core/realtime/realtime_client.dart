@@ -4,6 +4,7 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+import '../api_config.dart';
 import 'connect_stub.dart' if (dart.library.io) 'connect_io.dart';
 import 'socket.dart';
 
@@ -38,8 +39,16 @@ class RealtimeClient {
     this.refreshToken,
     this.onSessionEnded,
     Future<RealtimeSocket> Function(Uri, String)? connect,
+
+    /// Overrides [kDebugMode] for the transport check (tests).
+    bool? debugBuild,
   }) : url = _socketUrl(apiBase),
+       _secure = isSecureTransport(Uri.tryParse(apiBase), debug: debugBuild),
        _connect = connect ?? connectSocket;
+
+  /// False when the API address is not https (or this machine's own http in a
+  /// debug build): the token is then never sent and the client does not run.
+  final bool _secure;
 
   /// WebSocket close code for "policy violation": the session ended.
   static const sessionEndedCode = 1008;
@@ -73,7 +82,7 @@ class RealtimeClient {
   Stream<RealtimeEvent> get events => _events.stream;
 
   void start() {
-    if (_running || _disposed) return;
+    if (_running || _disposed || !_secure) return;
     _running = true;
     _generation++;
     _retryingEndedSession = false;

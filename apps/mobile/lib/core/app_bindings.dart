@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'chat/chat_engine.dart' show ChatEngine;
+import 'chat/chat_store.dart' show ChatStore;
 
 /// Seams that let `core` use things the app shell owns without importing the
 /// shell or the feature screens. `lib/bindings.dart` fills them in for the app;
@@ -19,3 +20,8 @@ final chatEngineSourceProvider = FutureProvider<ChatEngine?>(
 final routeOpenerProvider = Provider<void Function(String location)>(
   (ref) => (location) {},
 );
+
+/// The keystore the chat keeps its keys and history in, for the sign-out wipe
+/// (`chat_wipe_hook.dart`). Null (nothing to wipe) until `lib/bindings.dart`
+/// binds the platform keystore.
+final chatWipeStoreProvider = Provider<ChatStore?>((ref) => null);

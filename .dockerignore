@@ -2,6 +2,7 @@
 *
 !services/api/
 !database/migrations/
+!database/roles/grants.sql
 !apps/admin/
 services/api/**/*_test.go
 apps/admin/node_modules/

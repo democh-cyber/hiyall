@@ -148,7 +148,7 @@ class NearbyExplainer extends StatelessWidget {
                   point(
                     Icons.schedule_rounded,
                     'How long',
-                    'Your area expires after 24 hours. Hiyall reads your location only when you open Nearby and ask it to, never in the background.',
+                    'Your area expires after 24 hours. While Nearby is on, Discover also refreshes your approximate area automatically when you open it. Hiyall reads your location only while the app is open, never in the background.',
                   ),
                   point(
                     Icons.toggle_off_outlined,

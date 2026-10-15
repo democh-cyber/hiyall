@@ -22,6 +22,8 @@ expect() { # name, want (ok|fail), grep pattern, then env overrides
 }
 expect "complete android config" ok "flutter build appbundle.*--dart-define-from-file.*--obfuscate --split-debug-info=build/symbols"
 PLATFORM=ios expect "complete ios config" ok "flutter build ipa.*--obfuscate"
+PLATFORM=ios expect "ios with team and profile signs manually" ok "manual signing, team ABCDE12345" IOS_TEAM_ID=ABCDE12345 IOS_PROFILE_NAME=Hiyall-AppStore
+PLATFORM=ios expect "ios no-codesign build for the dry run" ok "flutter build ios.*--no-codesign" HIYALL_IOS_NO_CODESIGN=1
 PLATFORM=web expect "complete web config" ok "flutter build web"
 PLATFORM=web expect "missing canonical URL refused for web" fail "WEB_CANONICAL_URL is not set" WEB_CANONICAL_URL=
 PLATFORM=web expect "canonical URL without trailing slash refused" fail "must be an https URL ending in /" WEB_CANONICAL_URL=https://app.hiyall.example.com

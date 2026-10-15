@@ -54,10 +54,12 @@ String? authRedirect(Ref ref, String location, [Uri? uri]) {
     return location == '/update' ? null : '/update';
   }
   final memory = ref.read(deepLinkMemoryProvider);
+  final active = ref.read(sessionProvider).asData?.value;
+  if (active != null) memory.sessionActive(active.userId);
   final target = _authTarget(ref, location);
   if (target == null) return null;
   memory.remember(uri ?? Uri(path: location));
-  if (target == '/home') return memory.take() ?? '/home';
+  if (target == '/home') return memory.take(active?.userId) ?? '/home';
   return target;
 }
 

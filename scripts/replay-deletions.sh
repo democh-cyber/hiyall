@@ -35,7 +35,11 @@ ids="$work/ids.txt"
 
 if [[ -n "$ledger_file" ]]; then
   # CSV with header: user_id,deleted_at
-  tail -n +2 "$ledger_file" | cut -d, -f1 | tr -d '"' | grep -E '^[0-9a-f-]{36}$' > "$ids" || true
+  # A row that is not a uuid is an error, never silently dropped: a half-read ledger would leave deleted people in the restore.
+  tail -n +2 "$ledger_file" | cut -d, -f1 | tr -d '"\r' | sed '/^$/d' > "$ids.raw"
+  bad="$( (grep -c -v -E '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' "$ids.raw" || true) | tr -d ' ')"
+  [[ "$bad" == 0 ]] || { echo "replay-deletions: $bad ledger row(s) in $ledger_file are not user ids; is the file decrypted and complete?" >&2; exit 1; }
+  mv "$ids.raw" "$ids"
 else
   : "${PROD_DATABASE_URL:?set PROD_DATABASE_URL or pass --ledger-file}"
   psql "$PROD_DATABASE_URL" -X -At -c "SELECT user_id FROM deleted_users ORDER BY deleted_at" > "$ids"
@@ -43,10 +47,11 @@ fi
 echo "replay-deletions: ledger has $(wc -l < "$ids" | tr -d ' ') purged accounts"
 
 R() { psql "$RESTORED_DATABASE_URL" -X -v ON_ERROR_STOP=1 "$@"; }
-R() { psql "$RESTORED_DATABASE_URL" -X -v ON_ERROR_STOP=1 "$@"; }
 
 if [[ "$mode" == apply ]]; then
-  R -At <<SQL | grep '^replay-deletions' || true
+  # No `| grep || true`: a psql failure (permissions, a bad ledger, a lost connection) must stop the script with its
+  # exit status, because a silent failure here means a restore that brings deleted people back.
+  out="$(R -At <<SQL
 CREATE TEMP TABLE ledger(user_id uuid PRIMARY KEY);
 \\copy ledger FROM '$ids'
 WITH changed AS (
@@ -57,6 +62,8 @@ SELECT 'replay-deletions: marked due for purge: ' || count(*) FROM changed;
 -- ids the restored database already knows as purged are left alone; ids it never had need nothing.
 INSERT INTO deleted_users(user_id) SELECT user_id FROM ledger WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.user_id=ledger.user_id) ON CONFLICT DO NOTHING;
 SQL
+)"
+  printf '%s\n' "$out" | grep '^replay-deletions' || { echo "replay-deletions: psql printed no result line; treat the replay as FAILED" >&2; exit 1; }
   echo "replay-deletions: now start the API against the restored database (no user traffic), wait for the hourly purge job or restart it, then run: $0 --verify"
 else
   out="$(R -At <<SQL

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/app.dart';
 import 'package:hiyall/core/state.dart';
+import 'package:hiyall/features/help_safety.dart' show HelpContacts;
 
 import 'discover_helpers.dart';
 import 'widget_test.dart' show FakeApi, SignedIn;
@@ -89,6 +90,8 @@ void main() {
   });
 
   group('Help & Safety', () {
+    setUp(() => HelpContacts.showPlaceholders = true);
+    tearDown(() => HelpContacts.showPlaceholders = false);
     for (final (direction, backOnLeft) in [
       (TextDirection.ltr, true),
       (TextDirection.rtl, false),

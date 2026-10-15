@@ -37,9 +37,11 @@ mixin AccountApi {
     Object? body,
     // ignore: unused_element_parameter
     String? version,
+    // ignore: unused_element_parameter
+    bool bytes,
+    // ignore: unused_element_parameter
+    Duration? receiveTimeout,
   });
-
-  Dio get _dio;
 
   Future<DeletionStatus> deletionStatus(Session s) async =>
       DeletionStatus.fromJson(
@@ -87,56 +89,11 @@ mixin AccountApi {
 
   /// The JSON export as bytes. The server allows one a day: that refusal is an
   /// [ApiFailure] with code `RATE_LIMITED` and the wait in `retryAfter`.
-  Future<List<int>> exportData(Session s) async {
-    if (_dio.options.baseUrl.isEmpty) {
-      throw const ApiFailure('The service is not configured yet.');
-    }
-    try {
-      final response = await _dio.get<List<int>>(
-        '/v1/me/export',
-        options: Options(
-          responseType: ResponseType.bytes,
-          receiveTimeout: const Duration(minutes: 2),
-          headers: {'Authorization': 'Bearer ${s.token}'},
-        ),
-      );
-      return response.data ?? const <int>[];
-    } on DioException catch (error) {
-      final status = error.response?.statusCode;
-      var code = '', message = '';
-      try {
-        final body = error.response?.data;
-        if (body is List<int>) {
-          final reply = jsonDecode(utf8.decode(body));
-          if (reply is Map && reply['error'] is Map) {
-            code = (reply['error'] as Map)['code'] as String? ?? '';
-            message = (reply['error'] as Map)['message'] as String? ?? '';
-          }
-        }
-      } catch (_) {
-        // Not JSON: fall through to the generic copy.
-      }
-      final wait = int.tryParse(
-        error.response?.headers.value('retry-after') ?? '',
-      );
-      if (status == 429) {
-        throw ApiFailure(
-          message.isEmpty
-              ? 'You can download your data once a day. Try again later.'
-              : message,
-          status,
-          code.isEmpty ? 'RATE_LIMITED' : code,
-          wait == null || wait < 1 ? null : Duration(seconds: wait),
-        );
-      }
-      if (status == 401) {
-        throw const ApiFailure('Your session has expired. Sign in again.', 401);
-      }
-      throw ApiFailure(
-        'Could not prepare your data. Check your connection and try again.',
-        status,
-        code.isEmpty ? null : code,
-      );
-    }
-  }
+  Future<List<int>> exportData(Session s) async => (await _request(
+    'GET',
+    '/v1/me/export',
+    token: s.token,
+    bytes: true,
+    receiveTimeout: const Duration(minutes: 2),
+  )) as List<int>;
 }

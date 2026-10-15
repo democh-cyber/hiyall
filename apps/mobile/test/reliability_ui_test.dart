@@ -10,7 +10,8 @@ import 'package:hiyall/core/api.dart';
 import 'package:hiyall/core/auth/firebase_config.dart';
 import 'package:hiyall/core/state.dart';
 import 'package:hiyall/features/auth/auth_screens.dart';
-import 'package:hiyall/features/help_safety.dart' show mailLauncher;
+import 'package:hiyall/features/help_safety.dart'
+    show HelpContacts, mailLauncher;
 import 'package:hiyall/features/live_sync.dart';
 import 'package:url_launcher/url_launcher.dart' show launchUrl;
 import 'package:hiyall/features/pulse.dart' show photoDecodeWidth;
@@ -306,7 +307,88 @@ void main() {
     setUp(() {
       copied = null;
       TestWidgetsFlutterBinding.ensureInitialized();
+      // The addresses in a test build are placeholders; the rows are tested as if real.
+      HelpContacts.showPlaceholders = true;
     });
+    tearDown(() => HelpContacts.showPlaceholders = false);
+
+    testWidgets(
+      'placeholder addresses are hidden: it says contacts are being set up and points at Block and Report',
+      (tester) async {
+        HelpContacts.showPlaceholders = false;
+        await open(tester, FakeApi(), '/profile/help');
+        expect(
+          find.byKey(const Key('help-contact-Help and feedback')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const Key('help-contact-Safety concerns')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const Key('help-contact-Privacy and your data')),
+          findsNothing,
+        );
+        expect(find.text('support@hiyall.example'), findsNothing);
+        expect(find.text('Contact details are being set up'), findsOneWidget);
+        expect(
+          find.textContaining('use Block and Report in the app'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('real addresses are listed and no notice shows', (
+      tester,
+    ) async {
+      HelpContacts.showPlaceholders = false;
+      final (support, safety, privacy) = (
+        HelpContacts.support,
+        HelpContacts.safety,
+        HelpContacts.privacy,
+      );
+      HelpContacts.support = 'help@hiyall.app';
+      HelpContacts.safety = 'safety@hiyall.app';
+      HelpContacts.privacy = 'privacy@hiyall.app';
+      addTearDown(() {
+        HelpContacts.support = support;
+        HelpContacts.safety = safety;
+        HelpContacts.privacy = privacy;
+      });
+      await open(tester, FakeApi(), '/profile/help');
+      expect(
+        find.byKey(const Key('help-contact-Help and feedback')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('help-contact-Safety concerns')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('help-contact-setting-up')), findsNothing);
+    });
+
+    testWidgets(
+      'one real address keeps its row and the notice covers the rest',
+      (tester) async {
+        HelpContacts.showPlaceholders = false;
+        final support = HelpContacts.support;
+        HelpContacts.support = 'help@hiyall.app';
+        addTearDown(() => HelpContacts.support = support);
+        await open(tester, FakeApi(), '/profile/help');
+        expect(
+          find.byKey(const Key('help-contact-Help and feedback')),
+          findsOneWidget,
+        );
+        expect(
+          find.byKey(const Key('help-contact-Safety concerns')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const Key('help-contact-setting-up')),
+          findsOneWidget,
+        );
+      },
+    );
 
     void captureClipboard(WidgetTester tester) {
       tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(

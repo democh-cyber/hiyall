@@ -53,19 +53,38 @@ abstract final class ErrorReporting {
   /// handlers Sentry's own integrations set, so each error is reported once,
   /// through [scrubEvent] like everything else.
   static void installHandlers() {
+    // The framework caught this and the app carries on, so it is not a crash.
     FlutterError.onError = (details) {
       FlutterError.presentError(details);
-      capture(details.exception, details.stack, fatal: !details.silent);
+      capture(details.exception, details.stack);
     };
+    // Nothing caught this one: the only truly unhandled case.
     PlatformDispatcher.instance.onError = (error, stack) {
       capture(error, stack, fatal: true);
       return true;
     };
   }
 
+  /// Tests watch what was reported (and whether as fatal) here.
+  @visibleForTesting
+  static void Function(Object error, bool fatal)? onCapture;
+
+  /// Sentry marks an error handled unless told otherwise; only an error
+  /// nothing caught ([fatal]) is reported as unhandled, so crash-free stats
+  /// are not skewed by caught framework or app errors.
+  @visibleForTesting
+  static Object throwableFor(Object error, {required bool fatal}) => fatal
+      ? ThrowableMechanism(
+          Mechanism(type: 'PlatformDispatcher.onError', handled: false),
+          error,
+        )
+      : error;
+
   /// Reports one error. Details stay out of the UI: screens show
   /// `friendlyError` text and the specifics land here.
   static void capture(Object error, StackTrace? stack, {bool fatal = false}) {
+    final probe = onCapture;
+    if (probe != null) probe(error, fatal);
     if (kDebugMode) {
       debugPrint(
         'Captured ${fatal ? 'fatal ' : ''}error: ${scrubText('$error')}',
@@ -74,7 +93,7 @@ abstract final class ErrorReporting {
     if (!enabled) return;
     unawaited(
       Sentry.captureException(
-        error,
+        throwableFor(error, fatal: fatal),
         stackTrace: stack,
         withScope: (scope) =>
             scope.level = fatal ? SentryLevel.fatal : SentryLevel.error,
@@ -105,14 +124,27 @@ String scrubUrl(String url) {
   return cut.replaceAll(_uuid, ':id');
 }
 
-/// Masks credentials, emails and URL queries anywhere in free text.
+/// A JSON object or array being quoted: from its opening `{"` or `[{` to the
+/// end of the line. A FormatException shows the text it could not parse.
+final _jsonFragment = RegExp(r'''(\{\s*["'][^\n]*|\[\s*[{"][^\n]*)''');
+
+/// A long run that looks like base64 or base64url (a token, key, ciphertext).
+final _longBase64 = RegExp(r'(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{40,}={0,2}');
+
+/// Masks credentials, emails, payload fragments and URL queries anywhere in free text.
 String scrubText(String text) => text
+    .replaceAll(_uuid, ':id')
+    .replaceAllMapped(_jsonFragment, (_) => '[json]')
     .replaceAllMapped(_url, (m) => scrubUrl(m[0]!))
     .replaceAllMapped(_routeQuery, (m) => m[1]!)
     .replaceAll(_bearer, 'Bearer [redacted]')
     .replaceAll(_jwt, '[token]')
     .replaceAll(_email, '[email]')
-    .replaceAll(_uuid, ':id');
+    .replaceAllMapped(
+      _longBase64,
+      // Needs a digit so a long plain identifier is left readable.
+      (m) => RegExp(r'\d').hasMatch(m[0]!) ? '[data]' : m[0]!,
+    );
 
 /// An app route such as `/chats/<id>?peer=…&name=Niko` becomes `/chats/:id`.
 String scrubRoute(String route) => scrubUrl(route);

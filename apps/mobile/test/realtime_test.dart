@@ -55,6 +55,55 @@ void main() {
     );
   });
 
+  test(
+    'The socket never opens, and no token is sent, over a plain http address',
+    () {
+      fakeAsync((async) {
+        var connects = 0;
+        Future<RealtimeSocket> connect(Uri url, String token) async {
+          connects++;
+          throw StateError('should not connect');
+        }
+
+        final insecure = RealtimeClient(
+          'http://api.example.test',
+          'secret-token',
+          connect: connect,
+          debugBuild: true,
+        )..start();
+        // A release build refuses even this machine's own http.
+        final release = RealtimeClient(
+          'http://127.0.0.1:8080',
+          'secret-token',
+          connect: connect,
+          debugBuild: false,
+        )..start();
+        async.elapse(const Duration(minutes: 2));
+        expect(connects, 0);
+        insecure.dispose();
+        release.dispose();
+
+        // https and this machine's http in a debug build are allowed.
+        final ok = RealtimeClient(
+          'https://api.example.test',
+          't',
+          connect: connect,
+          debugBuild: false,
+        )..start();
+        final local = RealtimeClient(
+          'http://127.0.0.1:8080',
+          't',
+          connect: connect,
+          debugBuild: true,
+        )..start();
+        async.flushMicrotasks();
+        expect(connects, 2);
+        ok.dispose();
+        local.dispose();
+      });
+    },
+  );
+
   test('Client parses signals, reconnects after a drop and stops cleanly', () {
     fakeAsync((async) {
       final sockets = <FakeSocket>[];

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
+import 'api_config.dart';
 import 'app_info.dart';
 import 'badge.dart';
 import 'discovery.dart';
@@ -24,12 +25,6 @@ const clientVersionHeader = 'X-Client-Version';
 
 /// With HTTP 426, the server's answer to a version it no longer accepts.
 const upgradeRequiredCode = 'UPGRADE_REQUIRED';
-
-/// Plain http is accepted only by debug builds and only for the machine's own API
-/// (the host, the Android emulator's alias for it). Release builds require https.
-bool _isLocalHttp(Uri url) =>
-    url.scheme == 'http' &&
-    const ['localhost', '127.0.0.1', '10.0.2.2'].contains(url.host);
 
 class ApiFailure implements Exception {
   final String message;
@@ -400,7 +395,6 @@ String get clientPlatform => kIsWeb
       };
 
 class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
-  @override
   final Dio _dio;
 
   /// Sends photo bytes straight to object storage; no API base URL or token.
@@ -449,31 +443,50 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
     Object? body,
     String? version,
     bool retried = false,
+    bool bytes = false,
+    Duration? receiveTimeout,
   }) async {
-    final url = Uri.tryParse(_dio.options.baseUrl);
-    if (url == null || url.host.isEmpty) {
-      throw const ApiFailure('The service is not configured yet.');
-    }
-    if (url.scheme != 'https' && !(kDebugMode && _isLocalHttp(url))) {
+    // Release builds talk https only; debug builds may use this machine's own API.
+    if (!isSecureTransport(Uri.tryParse(_dio.options.baseUrl))) {
       throw const ApiFailure('The service is not configured yet.');
     }
     try {
+      final options = Options(
+        method: method,
+        responseType: bytes ? ResponseType.bytes : null,
+        receiveTimeout: receiveTimeout,
+        headers: {
+          clientVersionHeader: AppInfo.version,
+          if (token != null) 'Authorization': 'Bearer $token',
+          if (version != null) 'If-Match': '"$version"',
+        },
+      );
+      if (bytes) {
+        // A raw download (the data export): the body is the payload, not an envelope.
+        final response = await _dio.request<List<int>>(
+          path,
+          data: body,
+          options: options,
+        );
+        return response.data ?? const <int>[];
+      }
       final response = await _dio.request<Map<String, dynamic>>(
         path,
         data: body,
-        options: Options(
-          method: method,
-          headers: {
-            clientVersionHeader: AppInfo.version,
-            if (token != null) 'Authorization': 'Bearer $token',
-            if (version != null) 'If-Match': '"$version"',
-          },
-        ),
+        options: options,
       );
       return response.data!['data'];
     } on DioException catch (error) {
       final status = error.response?.statusCode;
-      final reply = error.response?.data;
+      var reply = error.response?.data;
+      if (reply is List<int>) {
+        // A failed raw download still answers with the JSON error envelope.
+        try {
+          reply = jsonDecode(utf8.decode(reply));
+        } catch (_) {
+          reply = null;
+        }
+      }
       final failure = reply is Map && reply['error'] is Map
           ? reply['error'] as Map
           : const {};
@@ -488,6 +501,8 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
             body: body,
             version: version,
             retried: true,
+            bytes: bytes,
+            receiveTimeout: receiveTimeout,
           );
         }
       }
@@ -505,22 +520,27 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
               (path == '/v1/me/deletion' && code == 'VALIDATION') ||
               (path.startsWith('/v1/spaces') && code == 'VALIDATION')) &&
           failure['message'] is String) {
-        final wait = int.tryParse(
-          error.response?.headers.value('retry-after') ?? '',
-        );
         throw ApiFailure(
           failure['message'] as String,
           status,
           code,
-          wait == null || wait < 1 ? null : Duration(seconds: wait),
+          _retryAfter(error),
         );
       }
       throw ApiFailure(
         failureMessage(error.type, status, code, path),
         status,
         code ?? transportCode(error.type, status),
+        status == 429 ? _retryAfter(error) : null,
       );
     }
+  }
+
+  static Duration? _retryAfter(DioException error) {
+    final wait = int.tryParse(
+      error.response?.headers.value('retry-after') ?? '',
+    );
+    return wait == null || wait < 1 ? null : Duration(seconds: wait);
   }
 
   /// `TIMEOUT` or `OFFLINE` when no answer came back, so callers (and tests)
@@ -582,6 +602,8 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
       412 => 'Your settings changed. Reload before saving.',
       413 => 'That’s too large to send.',
       422 => 'Check your entries and try again.',
+      429 when p == '/v1/me/export' =>
+        'You can download your data once a day. Try again later.',
       429 => 'Please wait a moment and try again.',
       _ => 'That didn’t work. Try again.',
     };

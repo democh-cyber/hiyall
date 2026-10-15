@@ -114,7 +114,7 @@
 				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
 			</array>
 		</dict>
-		<!-- Date of birth (age check at sign-up, not kept), gender, interests, languages, country -->
+		<!-- Date of birth (stored privately on the server to set the age band; never shown to other members), gender, interests, languages, country -->
 		<dict>
 			<key>NSPrivacyCollectedDataType</key>
 			<string>NSPrivacyCollectedDataTypeOtherDataTypes</string>

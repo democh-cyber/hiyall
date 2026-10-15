@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app.dart';
 import 'bindings.dart';
 import 'core/auth/firebase_config.dart';
+import 'core/data_delivery.dart' show wipeLeftoverExports;
 import 'core/error_reporting.dart';
 import 'core/licenses.dart';
 import 'core/push/push_service.dart' show registerPushBackgroundHandler;
@@ -23,6 +26,8 @@ Future<void> main() async {
       }
     }
     registerAppLicenses();
+    // An export left by an interrupted share (or an older build) does not survive a launch.
+    unawaited(wipeLeftoverExports().catchError((_) {}));
     runApp(ProviderScope(overrides: appBindings(), child: const HiyallApp()));
   });
 }
