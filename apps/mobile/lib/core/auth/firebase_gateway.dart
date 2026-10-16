@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart' as fb;
 import 'package:flutter/foundation.dart';
 
+import '../error_reporting.dart';
 import 'auth_gateway.dart';
 
 /// Firebase Authentication behind [AuthGateway]. Email/password, Google and
@@ -94,8 +95,10 @@ class FirebaseAuthGateway implements AuthGateway {
       throw _failure(error);
     } on fb.FirebaseException catch (error) {
       // Not an auth error (for example a misconfigured or uninitialised app).
-      debugPrint(
-        'Firebase error ${error.plugin}/${error.code}: ${error.message}',
+      // Plugin and code only: the message can carry an address. No console line in a release build.
+      ErrorReporting.capture(
+        StateError('Firebase error ${error.plugin}/${error.code}'),
+        StackTrace.current,
       );
       throw _failureForCode(error.code);
     }

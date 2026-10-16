@@ -37,3 +37,18 @@ config/mobile-release.*.local.env
 config/api.production.env
 config/api.staging.env
 config/secrets/
+
+# Manual iOS signing settings written by scripts/build-release.sh in CI (Runner target only)
+apps/mobile/ios/Flutter/Signing.xcconfig
+# Production admin console environment, any local-only env file, and the R2 admin keys
+config/admin.production.env
+config/r2.local.env
+config/*.local.env
+*.env.local
+# Python bytecode: the release preflight and its tests must leave nothing behind (gate a)
+__pycache__/
+scripts/__pycache__/
+*.pyc
+# Owner-role migration settings (config/migrate.*.example.env are the templates)
+config/migrate.production.env
+config/migrate.staging.env

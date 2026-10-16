@@ -16,10 +16,10 @@ The preflight fails loudly on each of these; nothing in the repository fakes the
 | Final legal text (Terms, Privacy, Children and Teens, Community Guidelines, Data Retention) with company name, address, dates, contacts, retention periods; a new terms version | `docs/legal/*` copied to `apps/mobile/assets/legal/`; version in the documents, `legal_documents.dart`, `domain.TermsVersion` | b |
 | Mobile release inputs: API URL, Firebase ids and key, Sentry DSN, store URLs, three real mailboxes | `config/mobile-release.production.local.env` (git-ignored) or GitHub variables and secrets | c |
 | Production API environment and key files (cursor key, Firebase admin and FCM service accounts, Apple key, upload scanner list or provider) | platform secret store; for the local check `config/api.production.env` and `config/secrets/` (both git-ignored) | d |
-| Android upload keystore and `key.properties` (CI: four secrets) | `apps/mobile/android/key.properties` | e |
-| Apple Developer account, App ID with Push and Sign in with Apple, APNs key, distribution certificate and profile (CI: three secrets) | Xcode, App Store Connect, GitHub secrets | r (CI) |
+| Android upload keystore and `key.properties` (CI: four secrets, in the `release` environment) | `apps/mobile/android/key.properties` | e |
+| Apple Developer account, App ID with Push and Sign in with Apple, APNs key, distribution certificate and profile (CI: three secrets, in the `release` environment) | Xcode, App Store Connect, GitHub secrets | r (CI) |
 | Which mobile platforms ship: the repository variable `RELEASE_PLATFORMS` (default `android,ios`). A listed platform must have its signing secrets; an unlisted one is skipped on purpose | GitHub variables | e, r |
-| The GitHub `production` environment with required reviewers (and optionally the `RELEASE_GATE_TOKEN` secret so the check can read it) | GitHub Settings > Environments | o |
+| The GitHub `production` AND `release` environments, both with required reviewers (`release` holds the store signing secrets), the `v*` tag protection, and the `RELEASE_GATE_TOKEN` secret (fine-grained, Administration: read) so gate o can read them | GitHub Settings > Environments, Rules | o |
 | Real GitHub owner and security contact | `.github/CODEOWNERS`, `SECURITY.md` | h |
 | Foundation checks green on the commit that is tagged | GitHub Actions | n |
 | Photo scanning: a hash list or provider, **or** the written acknowledgement below | API environment | q, d |
@@ -27,7 +27,7 @@ The preflight fails loudly on each of these; nothing in the repository fakes the
 | Store listing fields, privacy answers, reviewer accounts | `docs/mobile/store-listing.md` | i |
 | Production Firebase project, buckets, database, DNS and TLS, separate from development | [environments](11-environments.md) | d |
 | Moderator on call, CSAM runbook owner, hash-list or scanning provider | `docs/security/16-csam-and-illegal-content.md` | d (scanner), q |
-| Database roles and grants (`database/roles/roles.sql` once, then `grants.sql` after every migration; the release step does the second) | production database | see steps 2 and 6 |
+| Database roles and grants (`database/roles/roles.sql` once, then `grants.sql` after every migration; the release step does the second, as `hiyall_migrate`; the API itself runs as `hiyall_api`) | production database | see steps 2 and 5 |
 | Independent review of the end-to-end encryption | external | none (a go/no-go decision) |
 
 **Photo scanning, the written acknowledgement.** Production refuses to start without an upload scanner unless
@@ -48,23 +48,27 @@ scripts/release-preflight.sh   # every release gate, each with its one-line fix;
 ```
 
 `release-preflight.sh` only gates. Fix every `[FAIL]` and run it again; do not tag while it fails. Its own tests run with
-`python3 scripts/test-release-preflight.py` (placeholder patterns, dev-identifier reuse, check-run and environment checks,
-the scanning acknowledgement, env-docs drift). Gates n (Foundation checks green on the tagged commit) and o (the `production`
-environment has reviewers) call `gh api`: in CI they use the workflow token and fail or report `NOT VERIFIED` as the
-environment page describes; locally they print `NOT VERIFIED` without a logged-in `gh`, and then you confirm both by hand.
+`python3 scripts/test-release-preflight.py` (the legal-placeholder allowlist, dev-identifier reuse, check-run and environment checks,
+the scanning acknowledgement, platform parsing, skip rules, env-docs drift). Gate b is an allowlist: every square-bracket span left in a
+legal document, in any case and over any number of lines, blocks the release unless it is a Markdown link with a real address or a
+checkbox. Gates n (Foundation checks green on the tagged commit) and o (the `production` and `release` environments have reviewers) call
+`gh api`: in CI they **fail** when they cannot look (a gate that cannot verify must not pass); locally they print `NOT VERIFIED` without a
+logged-in `gh`, and then you confirm both by hand.
 Gate p fails when an environment variable the Go code reads is not in an example env file (`python3 scripts/check_env_docs.py`).
 Gate l fails in CI when `govulncheck` is missing (the workflow installs it) unless `PREFLIGHT_SKIP_GOVULNCHECK=1`. Gate d needs the
-production environment as a file on your machine; if you would rather not keep one, skip it (`PREFLIGHT_SKIP=d`,
-printed as SKIPPED) and run the same server check on the deployed machine in step 2 and again in step 6. The release
-workflow runs this script as its first job (`release-preflight`) with gate d skipped for that reason.
+production environment as a file on your machine; if you would rather not keep one, skip it locally (`PREFLIGHT_SKIP=d`,
+printed as SKIPPED) and run the same server check in step 5. In CI gate d cannot run, so the workflow skips it **only** while the repository
+variable `PREFLIGHT_HOST_CHECK` equals the tag being released, which you set after the host check of step 5.2 passed; any other CI
+skip needs `PREFLIGHT_SKIP_REASON`, and gate o can be skipped only while no `RELEASE_GATE_TOKEN` exists. `RELEASE_PLATFORMS` may be written
+`android, ios`: a `platforms` job normalises spaces and case and rejects an unknown name.
 
 ## 2. Staging deploy
 
 1. Build or take the image of this commit and deploy it to staging as the production recipe does
-   ([deploy guide](10-deploy-guide.md) section 4; staging runs `APP_ENV=production`). `/migrate` runs first as the release step.
+   ([deploy guide](10-deploy-guide.md) section 4; staging runs `APP_ENV=production`). `/migrate` runs first, as `hiyall_migrate`, from your laptop or a one-off machine (not as an app release command).
    **Roles and grants:** on a new database create the roles once (`psql "$SUPERUSER_URL" -f database/roles/roles.sql`, then give each a
-   password; deploy guide section 11). After that every release must refresh the grants; the release step does it when
-   `MIGRATE_RUN_GRANTS=true` is set (the workflow's `migrate-production` job sets it; set it on staging's release command too), and
+   password; deploy guide section 11). After that every release must refresh the grants; `/migrate` does it when
+   `MIGRATE_RUN_GRANTS=true` and `MIGRATE_DATABASE_URL` are set (the workflow's `migrate-production` job does), and
    running `database/roles/grants.sql` by hand as the migration role does the same. Skipping it leaves the API role unable to read a
    new table or view. The API and the jobs must run as `hiyall_api` on staging, so a missing grant shows up there and not in production.
 2. On the machine: `fly ssh console -a <staging-app> -C "/api check-config -release"` (any platform: run the image's
@@ -77,7 +81,7 @@ workflow runs this script as its first job (`release-preflight`) with gate d ski
    `commit="unknown"` and `version="dev"`: the image was built without the build arguments. Sentry's release defaults to that version.
 4. Build the apps against staging (`HIYALL_RELEASE_ENV=staging scripts/build-release.sh android`) and install them on real devices.
 
-## 3. Smoke test list (staging, real devices: one Android and one iPhone, two accounts)
+## 3. Smoke test list (staging, real devices: one Android and one iPhone, two accounts). Done before the tag; the production checks are step 6
 
 Tick every line; each has failed in some app before it shipped. Record date, build number, device and tester.
 
@@ -111,16 +115,73 @@ Tick every line; each has failed in some app before it shipped. Record date, bui
    Bundle with a throwaway keystore generated inside the job (R8 shrinking, obfuscation, the Rust library for every ABI) and the
    web build, with made-up configuration and no secrets, and uploads nothing. Tick its `ios` input for an unsigned iOS build.
    **The first signed iOS archive cannot be rehearsed in CI. Do it once on a Mac** with your Apple account
-   (`scripts/build-release.sh ios`; the CI path signs manually through `apps/mobile/ios/ExportOptions.plist`, has never run, and is
-   the most likely step to need a fix).
+   (`scripts/build-release.sh ios` without `IOS_TEAM_ID`/`IOS_PROFILE_NAME`; the CI path signs manually: it writes the git-ignored
+   `ios/Flutter/Signing.xcconfig`, which only the Runner target includes, proves it with `xcodebuild -showBuildSettings`, archives, and
+   exports with `apps/mobile/ios/ExportOptions.plist`. It has never run and is the most likely step to need a fix: rehearse it
+   on a Mac with a manual-signing profile first).
 3. The workflow runs: preflight (with the Foundation checks required green), Go checks, the API **and admin console** images
    built with the commit and tag stamped in, scanned with trivy and pushed by digest, SBOMs, Android bundle, iOS IPA, a **draft**
    release. A platform missing from `RELEASE_PLATFORMS` is skipped; a listed one without signing secrets fails. Download
-   `android-aab` and `ios-ipa`; they include `build/symbols`. Upload the symbols, and the Android
+   `android-aab`, `android-r8-mapping` and `ios-ipa`; the bundles include `build/symbols`. Upload the symbols, and the Android
    `mapping.txt`, to Sentry for that release name (`hiyall@<version>+<build>`).
-4. Do **not** approve `migrate-production` yet if you want to test the new image against production first; see step 6.
+4. The run now waits: the `android` and `ios` jobs wait for a reviewer on the `release` environment (they hold the store signing keys),
+   and `migrate-production` waits for one on `production`. Approve `release` when the preflight and checks are green; do **not**
+   approve `migrate-production` until step 5 says so. Nothing in this step touches production: production smoke tests and the
+   reviewer accounts come after the production deploy (steps 5 and 6), never before.
 
-## 5. Store submission
+## 5. Production deploy
+
+Order matters. The production environment is made complete first, then the new image is checked against it, then the schema is
+migrated, then the API is rolled out.
+
+1. **Set the production environment, `MIN_CLIENT_VERSION_*` included, before any check.** `api check-config -release` refuses a
+   production environment without a minimum client version, so set it first, not after. For the **first** release set
+   `MIN_CLIENT_VERSION_ANDROID`, `MIN_CLIENT_VERSION_IOS` (and `_WEB` if the web app ships) to `1.0.0`, the version being released:
+   no installed app is older, so nobody is locked out, and the setting exists for the day you need to retire a version. Later releases
+   raise it only after the fixed version is live in the stores (step 9). `APP_CHECK_ENFORCE=false` (the app does not send App Check
+   tokens yet; plan `log` then `true`, deploy guide 4b).
+2. **Check the new image with that environment, before approving anything.** Run the image's `/api check-config -release` with the
+   production environment and the key files mounted at `/secrets/` (a one-off container on your laptop:
+   `docker run --rm --env-file <production env file> -v <secrets dir>:/secrets:ro --entrypoint /api <image>@<digest> check-config -release`,
+   or a one-off machine on your platform). It must exit 0. This is also what lets you set the repository variable `PREFLIGHT_HOST_CHECK`
+   to the tag, which the next release's preflight needs to skip gate d.
+3. **Migrate.** The run waits at `migrate-production` for a required reviewer on the `production` environment. Before approving: back up and
+   confirm PITR, then approve; the job runs the image's own `/migrate` as `hiyall_migrate` (secret `PRODUCTION_MIGRATE_DATABASE_URL`, never an
+   application secret; idempotent, locked, each file in a transaction) with `MIGRATE_RUN_GRANTS=true`, which then applies `grants.sql`, the
+   privilege refresh for new tables and views (deploy guide section 11). The job needs network reach to the production database; a GitHub-hosted
+   runner has no fixed address. If it cannot connect, run the same command from your laptop or a one-off machine that can
+   (deploy guide section 5) and let the job fail. `api check-config -db` confirms the grants afterwards.
+4. **Deploy the image by digest** from the draft release ([deploy guide](10-deploy-guide.md) section 8b):
+   `fly deploy --image ghcr.io/<owner>/<repo>/api@sha256:... --app hiyall-api`. The API runs as `hiyall_api`; there is no `release_command`.
+5. On the machine: `/api check-config -release` and `-db` against the live production environment. The startup log names the client-address
+   mode; check `hiyall_build_info{commit}` equals the tagged commit; `/readyz` 200. Set the repository variable `PREFLIGHT_HOST_CHECK` to the tag.
+6. Go on to step 6 (reviewer accounts and the production smoke test), then step 7 (stores). Publish the GitHub draft release last.
+
+## 6. Reviewer accounts and the production smoke test
+
+Only now, after step 5: the reviewer accounts live in the production database and the production app talks to the production API.
+
+**There is no demo account built into the app.** The app signs in only through Firebase; the development login and the
+fixture identities were removed, and the API refuses `ENABLE_DEV_AUTH` in production, so no special credential can be baked
+into a build. A reviewer account must therefore be a real Firebase user:
+
+1. In the production app on a real phone, sign up with a mailbox you control (for example `reviewer1@<your-domain>`),
+   complete verification, choose a birth date that makes the account an adult, finish onboarding with a real-looking
+   profile and photo. Repeat for `reviewer2@`. Make them friends, and post one photo each, so Discover, chat and Pulse
+   are not empty. Leave Nearby off (the reviewer can opt in).
+2. Put the email and password in the **App Review Information** sign-in fields (Apple) and **App access** instructions
+   (Play), plus a phone number and email Apple can reach. The password has to work without a second factor.
+3. Do not delete or suspend these accounts; check they still sign in before every submission. Use a long unique
+   password and rotate it after review. Keep their credentials in the password manager with the keystore.
+4. If a reviewer reports a verification email never arrived, check the Firebase Authentication templates and the
+   sender domain, and the mailbox itself.
+5. Production smoke test, one real phone, a throwaway account: sign up, finish onboarding, send one chat photo (it proves both
+   buckets), post one photo (the social bucket), request deletion and cancel it, then delete the account for good. Check `/readyz`,
+   the logs for `ERROR`, Sentry (a deliberate test error from the API and from a production build), and that a test alert fires.
+
+## 7. Store submission
+
+Submit only after step 6: the review notes and the store forms name reviewer accounts that exist in production.
 
 ### Google Play (owner)
 
@@ -129,7 +190,7 @@ Tick every line; each has failed in some app before it shipped. Record date, bui
    Accounts created as a personal developer account recently may need a closed test with a minimum number of testers
    for a minimum number of days before production access; the Console says so on the Dashboard. Check it early.
 2. App content declarations (Policy and programs > App content): privacy policy URL; **App access**: restricted, give the
-   reviewer instructions (see "Reviewer account" below); ads: none; **Content rating** questionnaire (user generated
+   reviewer instructions (see step 6 (Reviewer accounts)); ads: none; **Content rating** questionnaire (user generated
    content and user interaction yes; shares location yes, approximate; no gambling, no violence by the app); **Target
    audience**: 13 and up, so complete the teen questions and state that minors and adults are kept apart and that
    location is off by default for teens (`docs/legal/children-and-teens.md`); news, government, health, financial
@@ -160,7 +221,7 @@ Tick every line; each has failed in some app before it shipped. Record date, bui
    >
    > User-generated content safeguards (guideline 1.2): every profile, post, story, comment and chat has Report and
    > Block; reports reach a moderator console where a person reviews the reported content and can remove it, restrict
-   > or ban the account; we aim to act on reports within 24 hours; contact details are in Settings > Help & Safety
+   > or ban the account; [COUNSEL/OPERATOR: response target, only once someone is on call to meet it]; contact details are in Settings > Help & Safety
    > (`SAFETY_EMAIL`). Photos are scanned on upload against known-illegal-image hash lists before they are shown. <!-- claim:scanned -->
    > (Unscanned release: delete the line above and write instead: "Uploaded photos are not scanned; moderation relies on reports and staff review.")
    > Members under 18 and adults are kept apart (no discovery or messaging between them); Nearby is off until a member turns it
@@ -170,41 +231,7 @@ Tick every line; each has failed in some app before it shipped. Record date, bui
 
 5. Submit for review with manual release. After approval, release on the chosen day.
 
-### Reviewer account (both stores)
-
-**There is no demo account built into the app.** The app signs in only through Firebase; the development login and the
-fixture identities were removed, and the API refuses `ENABLE_DEV_AUTH` in production, so no special credential can be baked
-into a build. A reviewer account must therefore be a real Firebase user:
-
-1. In the production app on a real phone, sign up with a mailbox you control (for example `reviewer1@<your-domain>`),
-   complete verification, choose a birth date that makes the account an adult, finish onboarding with a real-looking
-   profile and photo. Repeat for `reviewer2@`. Make them friends, and post one photo each, so Discover, chat and Pulse
-   are not empty. Leave Nearby off (the reviewer can opt in).
-2. Put the email and password in the **App Review Information** sign-in fields (Apple) and **App access** instructions
-   (Play), plus a phone number and email Apple can reach. The password has to work without a second factor.
-3. Do not delete or suspend these accounts; check they still sign in before every submission. Use a long unique
-   password and rotate it after review. Keep their credentials in the password manager with the keystore.
-4. If a reviewer reports a verification email never arrived, check the Firebase Authentication templates and the
-   sender domain, and the mailbox itself.
-
-## 6. Production deploy
-
-1. The release run waits at `migrate-production` for a required reviewer on the `production` environment. Before
-   approving: back up and confirm PITR, then approve; the job runs the image's own `/migrate` (idempotent, locked,
-   each file in a transaction). Database roles: `roles.sql` ran once; with `MIGRATE_RUN_GRANTS=true` and
-   `MIGRATE_DATABASE_URL` (`hiyall_migrate`) the same step then applies `grants.sql`, the privilege refresh for new
-   tables and views (deploy guide section 11). `api check-config -db` on the machine confirms the grants.
-2. Deploy the image **by digest** from the draft release ([deploy guide](10-deploy-guide.md) section 8b):
-   `fly deploy --image ghcr.io/<owner>/<repo>/api@sha256:... --app hiyall-api`.
-3. On the machine: `/api check-config -release` (same as step 2) against the production environment. The startup log
-   names the client-address mode; check `hiyall_build_info{commit}` equals the tagged commit; `/readyz` 200.
-4. Set `MIN_CLIENT_VERSION_ANDROID` and `_IOS` to `1.0.0`, `APP_CHECK_ENFORCE=false` (App Check is not sent by the app
-   yet; plan `log` then `true` after an app release that sends tokens, see deploy guide 4b).
-5. Publish the stores: Play staged rollout; App Store manual release. Publish the GitHub draft release last.
-6. Sign up on a real phone against production with a throwaway account and send one chat photo (it proves both
-   buckets), then delete the account.
-
-## 7. Post-release monitoring checklist
+## 8. Post-release monitoring checklist
 
 First hour (one person watching, no other changes):
 
@@ -223,7 +250,7 @@ First day: store reviews and support mailbox answered; Play pre-launch and vital
 First week: staged rollout increased when crash-free sessions and 5xx stay healthy; retention of new accounts;
 restore drill rehearsed; open an issue list from reviews; decide the `MIN_CLIENT_VERSION` plan for the first bug-fix.
 
-## 8. Rollback
+## 9. Rollback
 
 - **API:** redeploy the previous image digest ([deploy guide](10-deploy-guide.md) section 8). The schema is
   backward compatible by rule, so the old code runs on the new schema. Never edit an applied migration; fix forward.

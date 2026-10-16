@@ -36,11 +36,18 @@ class ApiFailure implements Exception {
   const ApiFailure(this.message, [this.status, this.code, this.retryAfter]);
 
   /// The words to show. A daily limit (code QUOTA) that says when it lifts trades the server's
-  /// "Try again later." for "Try again in about 5 hours."; every other failure is [message].
+  /// "Try again later." for "Try again in about 5 hours."; a busy answer (503) that says when to
+  /// come back trades "Try again in a moment." for "Try again in 20 seconds."; every other failure
+  /// is [message].
   String get displayMessage {
     final wait = retryAfter;
+    if (wait == null) return message;
+    if (status == 503 && message.endsWith(busyLater)) {
+      final head = message.substring(0, message.length - busyLater.length);
+      return '$head Try again in ${_busyWait(wait)}.';
+    }
     const later = ' Try again later.';
-    if (code != 'QUOTA' || wait == null || !message.endsWith(later)) {
+    if (code != 'QUOTA' || !message.endsWith(later)) {
       return message;
     }
     final head = message.substring(0, message.length - later.length);
@@ -53,6 +60,19 @@ class ApiFailure implements Exception {
           })();
     return '$head Try again in about $about.';
   }
+
+  /// "20 seconds", "2 minutes": how long a busy server asked to be left alone.
+  static String _busyWait(Duration wait) {
+    final seconds = wait.inSeconds;
+    if (seconds <= 90) return seconds == 1 ? '1 second' : '$seconds seconds';
+    final minutes = (seconds / 60).ceil();
+    return minutes < 90
+        ? '$minutes minutes'
+        : '${(minutes / 60).round()} hours';
+  }
+
+  /// The ending every 503 message shares, which [displayMessage] swaps for the wait.
+  static const busyLater = ' Try again in a moment.';
 
   @override
   String toString() => displayMessage;
@@ -531,7 +551,7 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
         failureMessage(error.type, status, code, path),
         status,
         code ?? transportCode(error.type, status),
-        status == 429 ? _retryAfter(error) : null,
+        status == 429 || status == 503 ? _retryAfter(error) : null,
       );
     }
   }
@@ -569,6 +589,20 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
         'TIMEOUT' => 'Hiyall is taking too long to answer. Try again.',
         'OFFLINE' => 'You’re offline. Check your connection and try again.',
         _ => 'Could not connect. Check your connection and retry.',
+      };
+    }
+    if (status == 503) {
+      // Busy or unavailable on purpose (not a fault): the server's code says which.
+      return switch (code) {
+        'EXPORT_BUSY' =>
+          'Data exports are busy right now.${ApiFailure.busyLater}',
+        'MEDIA_BUSY' =>
+          'Photo uploads are busy right now. Your photo has not been lost.${ApiFailure.busyLater}',
+        'APPLE_REVOKE_FAILED' =>
+          'We couldn’t disconnect Hiyall from your Apple ID just now, so nothing was deleted.${ApiFailure.busyLater}',
+        'TEMPORARILY_UNAVAILABLE' =>
+          'Hiyall is briefly unavailable.${ApiFailure.busyLater}',
+        _ => 'Something went wrong on our side.${ApiFailure.busyLater}',
       };
     }
     if (status >= 500) {

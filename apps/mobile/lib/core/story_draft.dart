@@ -2,9 +2,9 @@ import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../shared/story_canvas.dart';
+import 'secure_storage.dart';
 
 /// The hours a story can be set to stay up. The server decides what a member may use (an
 /// unlisted number is refused with a validation error); these are what the app offers.
@@ -86,6 +86,9 @@ abstract class StoryDraftStore {
   Future<StoryDraft?> read(String userId);
   Future<void> write(String userId, StoryDraft draft);
   Future<void> clear(String userId);
+
+  /// Removes everything kept for [userId]: the sign-out step for the account leaving this phone.
+  Future<void> forget(String userId);
 }
 
 /// Kept in the platform keystore with the other small per-device state. A draft is private words,
@@ -93,7 +96,7 @@ abstract class StoryDraftStore {
 /// (tests, some desktops) nothing is kept and nothing fails.
 class SecureStoryDraftStore implements StoryDraftStore {
   const SecureStoryDraftStore();
-  static const _storage = FlutterSecureStorage();
+  static final _storage = createSecureStorage();
   static String _key(String userId) => 'story_draft_$userId';
 
   @override
@@ -118,6 +121,9 @@ class SecureStoryDraftStore implements StoryDraftStore {
       await _storage.delete(key: _key(userId));
     } catch (_) {}
   }
+
+  @override
+  Future<void> forget(String userId) => clear(userId);
 }
 
 /// A draft store that lives only in memory.
@@ -131,6 +137,8 @@ class MemoryStoryDraftStore implements StoryDraftStore {
       drafts[userId] = draft.encode();
   @override
   Future<void> clear(String userId) async => drafts.remove(userId);
+  @override
+  Future<void> forget(String userId) => clear(userId);
 }
 
 final storyDraftStoreProvider = Provider<StoryDraftStore>(

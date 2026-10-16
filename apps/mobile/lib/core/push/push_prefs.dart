@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+import '../secure_storage.dart';
 
 /// Never ask again sooner than this after "Not now".
 const pushAskEvery = Duration(days: 14);
@@ -14,13 +15,16 @@ abstract class PushPrefsStore {
   /// token stays unregistered even though the system permission is granted.
   Future<bool> switchedOff(String userId);
   Future<void> saveSwitchedOff(String userId, bool off);
+
+  /// Removes everything kept for [userId] (the sign-out wipe).
+  Future<void> forget(String userId);
 }
 
 /// Kept in the platform keystore beside the other small per-device choices.
 /// Where there is no platform storage nothing is kept and nothing fails.
 class SecurePushPrefsStore implements PushPrefsStore {
   const SecurePushPrefsStore();
-  static const _storage = FlutterSecureStorage();
+  static final _storage = createSecureStorage();
   static String _asked(String u) => 'push_not_now_$u';
   static String _off(String u) => 'push_switched_off_$u';
 
@@ -65,6 +69,15 @@ class SecurePushPrefsStore implements PushPrefsStore {
       }
     } catch (_) {}
   }
+
+  @override
+  Future<void> forget(String userId) async {
+    for (final key in [_asked(userId), _off(userId)]) {
+      try {
+        await _storage.delete(key: key);
+      } catch (_) {}
+    }
+  }
 }
 
 class MemoryPushPrefsStore implements PushPrefsStore {
@@ -80,6 +93,11 @@ class MemoryPushPrefsStore implements PushPrefsStore {
   @override
   Future<void> saveSwitchedOff(String userId, bool v) async =>
       v ? off.add(userId) : off.remove(userId);
+  @override
+  Future<void> forget(String userId) async {
+    notNow.remove(userId);
+    off.remove(userId);
+  }
 }
 
 final pushPrefsStoreProvider = Provider<PushPrefsStore>(

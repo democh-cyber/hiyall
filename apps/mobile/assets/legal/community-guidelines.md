@@ -23,7 +23,7 @@ Hiyall is a place to find your people. These guidelines keep it a place people w
 
 **Threats and violence.** No threats, no encouraging violence, no showing violence to shock or celebrate it.
 
-**Sexual content.** No nudity or sexual content in profiles, photos, posts, stories or spaces. Photos you upload are checked for known illegal images; a flagged photo is not shown, is kept as evidence, and can lead to the account being suspended without notice. Never send sexual messages or images to anyone who has not clearly asked for them. **Never send sexual content to, or about, anyone under 18. Never ask a minor for sexual content or for a meeting. This is zero tolerance, and we will remove the account and, where the law requires, report it.**
+**Sexual content.** No nudity or sexual content in profiles, photos, posts, stories or spaces. [COUNSEL: scanning status at launch. Keep this sentence only if photos are scanned at launch, otherwise delete it: Photos you upload are checked for known illegal images; a flagged photo is not shown, is kept as evidence, and can lead to the account being suspended without notice.] Never send sexual messages or images to anyone who has not clearly asked for them. **Never send sexual content to, or about, anyone under 18. Never ask a minor for sexual content or for a meeting. This is zero tolerance, and we will remove the account and, where the law requires, report it.**
 
 **Child safety.** Adults and teens are kept apart on Hiyall. Do not try to get around that, for example by lying about your age or by contacting teens somewhere else after meeting them here.
 
@@ -55,7 +55,7 @@ Hiyall is a place to find your people. These guidelines keep it a place people w
 - **Report.** From a profile, a post, a chat or a single message.
 - **Online and last seen.** Settings has a switch to hide when you are online. For members under 18 it is off and stays off.
 - **Nearby.** Off until you turn it on. Turn it off in Settings at any time.
-- **First messages.** You can send up to 3 messages to someone who has not replied yet. After that, wait for a reply. Do not work around this with another account.
+- **First messages.** You can send up to 3 messages to someone who has not replied yet. Reactions and quiet messages count too. After that, wait for a reply. Do not work around this with another account. A chat also has daily and backlog limits (at most 2,000 messages from you in one chat in a day).
 
 ## Reporting
 
@@ -74,7 +74,7 @@ A person on our team looks at the report. Depending on what we find, we may:
 - warn the person;
 - remove content;
 - suspend the account. A suspended account is signed out straight away;
-- for a photo that the upload check flags or matches: keep it as evidence, suspend the account without telling the person why, and report it to the authorities where the law requires.
+- [COUNSEL: scanning status at launch. Keep this item only if photos are scanned at launch; if not, reword it for a photo that is reported. Wording if live: for a photo that the upload check flags or matches: keep it as evidence, suspend the account without telling the person why, and report it to the authorities where the law requires.]
 
 We may act without a report when we find something serious. We decide with the rules in mind and do not need a perfect answer to protect people. We can make mistakes. If you think we did, write to [APPEALS EMAIL] and a person will look again. [OPERATOR: add response times and the review process.]
 

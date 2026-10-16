@@ -7,6 +7,12 @@
 # is the routing hook: page = wake someone, ticket = look within a working day. Every rule has a runbook pointer in
 # its annotations. Thresholds are first guesses for a small launch; tune them after the first real week of traffic.
 #
+# First events: a Prometheus counter that appears only at its first increment makes increase() and rate() report nothing for
+# that event. Two things close it: the API creates every counter an alert reads at zero when it starts (internal/metrics
+# Preset, for label values known in advance), and the rules for counters whose labels are open-ended (a route, a limiter, a
+# job) use `increase(x[w]) > 0 or (x > 0 unless x offset w)`: a series that exists now with a value above zero and did not exist
+# w ago is a first event. scripts/validate-alerts.sh fails when a rule names a hiyall_* metric that no Go file defines.
+#
 # `up` is the scrape-level check: the job name below must match your scrape config (job_name: hiyall-api).
 groups:
   - name: hiyall-availability
@@ -42,7 +48,9 @@ groups:
           description: "Server errors are {{ $value | humanizePercentage }} of requests over 5 minutes. A 503 with Retry-After from database contention is counted by HiyallDbContention as well."
           runbook: "docs/deployment/10-deploy-guide.md section 10, incident 1 (roll back first)"
       - alert: HiyallHandlerPanics
-        expr: increase(hiyall_http_panics_total[10m]) > 0
+        expr: |
+          sum by (route) (increase(hiyall_http_panics_total[10m])) > 0
+            or (sum by (route) (hiyall_http_panics_total) > 0 unless sum by (route) (hiyall_http_panics_total offset 10m))
         labels: {severity: page}
         annotations:
           summary: "A request handler panicked"
@@ -79,7 +87,9 @@ groups:
           runbook: "docs/deployment/10-deploy-guide.md section 7, item 1"
       - alert: HiyallRateLimitBackendErrors
         # The shared limiter could not reach the database, so requests were let through unlimited.
-        expr: increase(hiyall_rate_limit_backend_errors_total[10m]) > 0
+        expr: |
+          sum by (limiter) (increase(hiyall_rate_limit_backend_errors_total[10m])) > 0
+            or (sum by (limiter) (hiyall_rate_limit_backend_errors_total) > 0 unless sum by (limiter) (hiyall_rate_limit_backend_errors_total offset 10m))
         for: 5m
         labels: {severity: page}
         annotations:
@@ -107,7 +117,10 @@ groups:
           description: "hiyall_maintenance_leader is 0 everywhere: purge, retention, media cleanup and reconcile jobs are not running. Look for a direct-connection problem (a pooler breaks the advisory lock)."
           runbook: "docs/deployment/10-deploy-guide.md section 7, item 5"
       - alert: HiyallMaintenanceJobFailing
-        expr: sum by (job) (increase(hiyall_maintenance_job_runs_total{result=~"error|timeout"}[1h])) > 0
+        expr: |
+          sum by (job) (increase(hiyall_maintenance_job_runs_total{result=~"error|timeout"}[1h])) > 0
+            or (sum by (job) (hiyall_maintenance_job_runs_total{result=~"error|timeout"}) > 0
+                unless sum by (job) (hiyall_maintenance_job_runs_total{result=~"error|timeout"} offset 1h))
         labels: {severity: ticket}
         annotations:
           summary: "Maintenance job {{ $labels.job }} is failing"
@@ -126,17 +139,20 @@ groups:
       - alert: HiyallQuarantineCaseOpened
         # A new quarantine case means the upload scanner flagged or matched a photo. A person must look the same day
         # (docs/security/16-csam-and-illegal-content.md). `result` is `flagged` or `match`.
-        expr: sum by (result) (increase(hiyall_quarantine_cases_total[15m])) > 0
+        expr: |
+          sum by (result) (increase(hiyall_quarantine_cases_total[15m])) > 0
+            or (sum by (result) (hiyall_quarantine_cases_total) > 0 unless sum by (result) (hiyall_quarantine_cases_total offset 15m))
         labels: {severity: page}
         annotations:
           summary: "New quarantine case ({{ $labels.result }}) in the moderation console"
           description: "The upload scanner opened {{ $value }} case(s). Open the admin console and follow the illegal-content runbook; a `match` is the urgent one."
           runbook: "docs/security/16-csam-and-illegal-content.md"
       - alert: HiyallScanUpstreamErrors
-        # The upload scanner could not get an answer from its list or provider, so uploads stay unavailable and
-        # nothing is being screened. The metric is exported by the scanner (name per docs/security/16); until a
-        # build exports it this rule never fires.
-        expr: increase(hiyall_scan_upstream_errors_total[15m]) > 0
+        # The scan provider could not give an answer (unreachable, a non-200 or an answer not understood), so uploads stay
+        # unavailable and nothing is being screened. internal/media counts every failed provider call.
+        expr: |
+          sum by (scanner) (increase(hiyall_scan_upstream_errors_total[15m])) > 0
+            or (sum by (scanner) (hiyall_scan_upstream_errors_total) > 0 unless sum by (scanner) (hiyall_scan_upstream_errors_total offset 15m))
         for: 10m
         labels: {severity: page}
         annotations:
@@ -145,7 +161,9 @@ groups:
           runbook: "docs/security/16-csam-and-illegal-content.md section 2"
       - alert: HiyallPushConfigErrors
         # FCM refused a push because of OUR configuration (tokens are kept). Wrong FCM_SERVICE_ACCOUNT_FILE for the app's project.
-        expr: increase(hiyall_push_config_errors_total[15m]) > 0
+        expr: |
+          sum by (provider) (increase(hiyall_push_config_errors_total[15m])) > 0
+            or (sum by (provider) (hiyall_push_config_errors_total) > 0 unless sum by (provider) (hiyall_push_config_errors_total offset 15m))
         labels: {severity: ticket}
         annotations:
           summary: "Push notifications are refused because of this server's configuration"

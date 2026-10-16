@@ -13,10 +13,18 @@ abstract class Reauthenticator {
   /// identity provider is connected).
   AuthMethod? get method;
 
+  /// True when the account also lists Apple among its sign-in providers, whatever
+  /// [method] says (an account made with Apple and later linked to Google reports
+  /// Google first). Deleting such an account needs Apple's one-time code too.
+  bool get linksApple => method == AuthMethod.apple;
+
   /// Signs in again with the same provider and renews the ID token so its
   /// `auth_time` is new. [password] is only used for [AuthMethod.password].
-  /// Throws [AuthFailure]; a closed sign-in sheet is a cancelled one.
-  Future<void> reauthenticate({String? password});
+  /// With [withApple] the sign-in is Apple's, whatever the primary method is:
+  /// that is how the one-time authorization code is obtained for an account
+  /// the server knows an Apple identity for. Throws [AuthFailure]; a closed
+  /// sign-in sheet is a cancelled one.
+  Future<void> reauthenticate({String? password, bool withApple = false});
 
   /// The one-time Sign in with Apple authorization code from the last [reauthenticate], once, or null
   /// (other providers, or already taken). The server exchanges it and revokes Apple's token when the
@@ -30,7 +38,10 @@ class NoReauthenticator extends Reauthenticator {
   @override
   AuthMethod? get method => null;
   @override
-  Future<void> reauthenticate({String? password}) async {}
+  Future<void> reauthenticate({
+    String? password,
+    bool withApple = false,
+  }) async {}
 }
 
 /// Firebase's `reauthenticateWithCredential` / `reauthenticateWithProvider`.
@@ -49,6 +60,11 @@ class FirebaseReauthenticator extends Reauthenticator {
   }
 
   @override
+  bool get linksApple =>
+      _auth.currentUser?.providerData.any((p) => p.providerId == 'apple.com') ??
+      false;
+
+  @override
   AuthMethod? get method {
     final user = _auth.currentUser;
     if (user == null) return null;
@@ -65,13 +81,16 @@ class FirebaseReauthenticator extends Reauthenticator {
   }
 
   @override
-  Future<void> reauthenticate({String? password}) async {
+  Future<void> reauthenticate({
+    String? password,
+    bool withApple = false,
+  }) async {
     final user = _auth.currentUser;
     if (user == null) {
       throw const AuthFailure('Sign in to continue.', code: 'signed-out');
     }
     try {
-      switch (method) {
+      switch (withApple ? AuthMethod.apple : method) {
         case AuthMethod.password:
           final email = user.email;
           if (email == null || password == null || password.isEmpty) {

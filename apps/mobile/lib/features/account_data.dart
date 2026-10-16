@@ -306,16 +306,29 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen> {
   /// The one-time Apple code from the last Apple re-sign-in; spent by the request, so it is cleared after.
   String? appleCode;
 
-  /// Times Apple (or the server) reported that no authorization code arrived.
-  int appleMisses = 0;
+  /// The server answered APPLE_CODE_REQUIRED: it knows an Apple identity for this account, so Apple's
+  /// sign-in is asked for whatever the account's main sign-in method is.
+  bool serverWantsApple = false;
+
+  /// Times Apple (or the server) reported that no authorization code arrived, kept per user for the
+  /// life of the app so leaving this screen and coming back does not start the count again.
+  int get appleMisses =>
+      ref.read(appleDeletionMissesProvider.notifier).of(session.userId);
+
+  /// Apple's code is needed: the account lists Apple as a provider (also next to Google, Facebook or a
+  /// password) or the server said so.
+  bool get needsApple =>
+      serverWantsApple || ref.read(reauthenticatorProvider).linksApple;
 
   /// Apple gave no code: show why, once, instead of asking again and again.
   /// Logged with no personal data (counts only).
   void appleMissed(String where) {
-    appleMisses++;
+    final misses = ref
+        .read(appleDeletionMissesProvider.notifier)
+        .add(session.userId);
     ErrorReporting.capture(
       StateError(
-        'Apple account deletion: no authorization code ($where, miss $appleMisses)',
+        'Apple account deletion: no authorization code ($where, miss $misses)',
       ),
       StackTrace.current,
     );
@@ -342,13 +355,16 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen> {
     );
   }
 
-  Future<void> schedule() async {
+  /// Schedules the deletion. [codeUnavailable] is the member's choice, after Apple twice gave no
+  /// code, to go on without it: the server then revokes Apple's access by hand.
+  Future<void> schedule({bool codeUnavailable = false}) async {
     if (busy) return;
-    // An Apple account always signs in with Apple again first: that gives the one-time code the server
-    // trades for Apple's token and revokes (App Store guideline 5.1.1(v)).
+    // An account with an Apple identity always signs in with Apple again first, whatever else it signs in
+    // with: that gives the one-time code the server trades for Apple's token and revokes (App Store
+    // guideline 5.1.1(v)).
     final reauth = ref.read(reauthenticatorProvider);
     appleCode ??= reauth.takeAppleAuthorizationCode();
-    if (reauth.method == AuthMethod.apple && appleCode == null) {
+    if (needsApple && appleCode == null && !codeUnavailable) {
       // Apple already came back empty twice: no more prompts, only the way out.
       go(appleMisses >= appleCodeAttempts ? _Step.appleNoCode : _Step.reauth);
       return;
@@ -362,9 +378,15 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen> {
     try {
       final status = await ref
           .read(apiProvider)
-          .scheduleDeletion(session, typed, appleAuthorizationCode: code);
+          .scheduleDeletion(
+            session,
+            typed,
+            appleAuthorizationCode: code,
+            appleCodeUnavailable: codeUnavailable && code == null,
+          );
       // Every session ended on the server; leave this one too, quietly, and say when it ends.
       ref.read(deletionScheduledProvider.notifier).set(status.dueAt);
+      ref.read(appleDeletionMissesProvider.notifier).clear(session.userId);
       final router = ref.read(routerProvider);
       await ref.read(sessionProvider.notifier).signOutProvider();
       router.go('/account-deleted');
@@ -372,8 +394,9 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen> {
       if (!mounted) return;
       if (failure.code == 'REAUTH_REQUIRED') {
         go(_Step.reauth);
-      } else if (failure.code == 'APPLE_CODE_REQUIRED') {
+      } else if (failure.code == 'APPLE_CODE_REQUIRED' && !codeUnavailable) {
         // The server needs Apple's one-time code and did not get one.
+        serverWantsApple = true;
         appleMissed('server');
       } else {
         setState(() => error = failure.displayMessage);
@@ -396,7 +419,7 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen> {
     try {
       await ref
           .read(reauthenticatorProvider)
-          .reauthenticate(password: password.text);
+          .reauthenticate(password: password.text, withApple: needsApple);
       // The new sign-in time travels in a fresh token.
       await ref.read(authGatewayProvider).refreshToken();
     } on AuthFailure catch (failure) {
@@ -418,7 +441,7 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen> {
     }
     if (mounted) setState(() => busy = false);
     final reauth = ref.read(reauthenticatorProvider);
-    if (reauth.method == AuthMethod.apple) {
+    if (needsApple) {
       appleCode = reauth.takeAppleAuthorizationCode();
       if (appleCode == null) {
         appleMissed('reauth');
@@ -609,42 +632,61 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen> {
     ];
   }
 
-  List<Widget> _appleNoCode(ChatTokens tokens) => [
-    Text(
-      'Apple signed you in but didn’t send back the confirmation we need to finish deleting your account and disconnect it from Apple. Nothing has been deleted.',
-      key: const Key('delete-apple-explain'),
-      style: TextStyle(height: 1.5, color: tokens.textSecondary),
-    ),
-    const SizedBox(height: 18),
-    AuthError(error),
-    if (appleMisses < appleCodeAttempts) ...[
-      FilledButton(
-        key: const Key('delete-apple-retry'),
-        onPressed: busy ? null : confirmItsYou,
-        child: Text(busy ? 'Confirming…' : 'Try Apple again'),
+  List<Widget> _appleNoCode(ChatTokens tokens) {
+    final giveUp = appleMisses >= appleCodeAttempts;
+    return [
+      Text(
+        giveUp
+            ? 'Apple twice signed you in without sending back the confirmation we use to disconnect Hiyall from your Apple ID. You can still delete your account now. We will remove Hiyall’s access to your Apple ID by hand afterwards, so it can take a little longer than usual to disappear from the list of apps using your Apple ID (you can also remove it yourself in your Apple ID settings). Nothing has been deleted yet.'
+            : 'Apple signed you in but didn’t send back the confirmation we need to finish deleting your account and disconnect it from Apple. Nothing has been deleted.',
+        key: const Key('delete-apple-explain'),
+        style: TextStyle(height: 1.5, color: tokens.textSecondary),
       ),
+      const SizedBox(height: 18),
+      AuthError(error),
+      if (!giveUp) ...[
+        FilledButton(
+          key: const Key('delete-apple-retry'),
+          onPressed: busy ? null : confirmItsYou,
+          child: Text(busy ? 'Confirming…' : 'Try Apple again'),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton(
+          key: const Key('delete-apple-support'),
+          onPressed: busy ? null : contactSupport,
+          child: const Text('Contact support'),
+        ),
+      ] else ...[
+        FilledButton(
+          key: const Key('delete-apple-continue'),
+          style: FilledButton.styleFrom(
+            backgroundColor: tokens.error,
+            foregroundColor: Colors.white,
+          ),
+          onPressed: busy ? null : () => schedule(codeUnavailable: true),
+          child: Text(busy ? 'Deleting…' : 'Delete my account anyway'),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton(
+          key: const Key('delete-apple-support'),
+          onPressed: busy ? null : contactSupport,
+          child: const Text('Contact support'),
+        ),
+      ],
       const SizedBox(height: 8),
-      OutlinedButton(
-        key: const Key('delete-apple-support'),
-        onPressed: busy ? null : contactSupport,
-        child: const Text('Contact support'),
+      TextButton(
+        onPressed: busy ? null : () => go(_Step.confirm),
+        child: const Text('Back'),
       ),
-    ] else ...[
-      FilledButton(
-        key: const Key('delete-apple-support'),
-        onPressed: busy ? null : contactSupport,
-        child: const Text('Contact support'),
-      ),
-    ],
-    const SizedBox(height: 8),
-    TextButton(
-      onPressed: busy ? null : () => go(_Step.confirm),
-      child: const Text('Back'),
-    ),
-  ];
+    ];
+  }
 
   List<Widget> _reauth(ChatTokens tokens) {
-    final method = ref.read(reauthenticatorProvider).method;
+    // An account with an Apple identity is always asked for Apple, even when it is mainly a Google,
+    // Facebook or password account.
+    final method = needsApple
+        ? AuthMethod.apple
+        : ref.read(reauthenticatorProvider).method;
     final provider = switch (method) {
       AuthMethod.google => 'Google',
       AuthMethod.facebook => 'Facebook',

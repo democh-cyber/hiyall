@@ -1,13 +1,27 @@
 # Owners are asked to review every change. Replace @OWNER-PLACEHOLDER with the real GitHub user or team
-# (the owner must do this; a CODEOWNERS file naming a user that does not exist is silently ignored).
-# Later matches win, so the sensitive paths below are listed last.
+# (the owner must do this; a CODEOWNERS file naming a user that does not exist is silently ignored; release preflight gate h
+# fails while the placeholder is here). Later matches win, so the sensitive paths below are listed last. Every path below
+# exists: scripts/release_preflight.py (gate h) also checks that, because a pattern that matches nothing protects nothing.
 *                                   @OWNER-PLACEHOLDER
 /.github/                           @OWNER-PLACEHOLDER
+/SECURITY.md                        @OWNER-PLACEHOLDER
+/config/                            @OWNER-PLACEHOLDER
+/infrastructure/                    @OWNER-PLACEHOLDER
 /database/migrations/               @OWNER-PLACEHOLDER
-/services/api/internal/auth/        @OWNER-PLACEHOLDER
+/database/roles/                    @OWNER-PLACEHOLDER
+/services/api/internal/identity/    @OWNER-PLACEHOLDER
+/services/api/internal/appcheck/    @OWNER-PLACEHOLDER
+/services/api/internal/media/       @OWNER-PLACEHOLDER
 /services/api/internal/admin/       @OWNER-PLACEHOLDER
+/services/api/internal/ratelimit/   @OWNER-PLACEHOLDER
+/apps/admin/                        @OWNER-PLACEHOLDER
 /apps/mobile/rust/                  @OWNER-PLACEHOLDER
+/apps/mobile/android/app/build.gradle.kts @OWNER-PLACEHOLDER
+/apps/mobile/ios/ExportOptions.plist @OWNER-PLACEHOLDER
 /docs/security/                     @OWNER-PLACEHOLDER
 /docs/legal/                        @OWNER-PLACEHOLDER
+/apps/mobile/assets/legal/          @OWNER-PLACEHOLDER
 /scripts/backup-db.sh               @OWNER-PLACEHOLDER
 /scripts/replay-deletions.sh        @OWNER-PLACEHOLDER
+/scripts/build-release.sh           @OWNER-PLACEHOLDER
+/scripts/release_preflight.py       @OWNER-PLACEHOLDER

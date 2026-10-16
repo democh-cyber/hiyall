@@ -13,6 +13,7 @@ import 'deep_link.dart';
 import 'error_reporting.dart';
 import 'location_service.dart';
 import 'pending_revoke.dart';
+import 'signout_residue.dart';
 
 /// The identity provider. Real Firebase when its keys were supplied to the
 /// build; otherwise a stand-in whose actions say sign-in isn't set up.
@@ -103,6 +104,10 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
   /// remove (the state is already empty when a session expires).
   Session? _departing;
 
+  /// The account that was signed in last in this process, for the clean-up of a sign-out that has no
+  /// session left to name it.
+  String? _lastUserId;
+
   /// True while [logout] or [signOutProvider] runs, so the 401 that a revoked
   /// credential answers with does not start a second, "expired" sign-out.
   bool _signingOut = false;
@@ -146,7 +151,8 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
     // here so it does not depend on any screen or provider still listening.
     signOutHooks
       ..add(chatWipeHook(ref, () => _departing))
-      ..add(() => ref.read(exportWipeProvider)());
+      ..add(() => ref.read(exportWipeProvider)())
+      ..add(accountResidueHook(ref, () => _departing?.userId ?? _lastUserId));
     // A sign-out that couldn't reach the server last time is sent now.
     unawaited(
       ref
@@ -191,11 +197,25 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
       booting = true;
       state = const AsyncLoading();
     }
+    _endedByServer = false;
     final result = await AsyncValue.guard(() => _establish(gateway));
     if (generation != _generation) return;
+    _lastUserId = result.asData?.value?.userId ?? _lastUserId;
+    if (_endedByServer && result.hasError) {
+      // The server refused the credential of this start-up for good: that is a sign-out too, and
+      // this phone's chat data goes with it (the same clean-up as an expiry while signed in).
+      // The person stays on the error screen, which offers a retry and "use a different account".
+      _departing = null;
+      await _runSignOutHooks();
+      if (generation != _generation) return;
+    }
     booting = false;
     state = result;
   }
+
+  /// Set by [_establish] when the server answered 401 and the account is not in its deletion grace
+  /// period (checked, not guessed: a failed check leaves it false).
+  bool _endedByServer = false;
 
   /// Exchanges the provider's token for the API's view of the account. The
   /// first authenticated call also creates the account on the server.
@@ -210,13 +230,21 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
       // A member in the deletion grace period is refused everything but the deletion routes: they get
       // the screen that offers to keep the account instead of being signed out.
       if (error.status == 401) {
-        final pending = await pendingDeletionOf(
-          api,
-          Session(token, '', live: live),
-        );
-        if (pending != null) {
-          ref.read(pendingAccountProvider.notifier).set(pending);
-          return null;
+        final probe = Session(token, '', live: live);
+        try {
+          final status = await api.deletionStatus(probe);
+          if (status.pending) {
+            ref
+                .read(pendingAccountProvider.notifier)
+                .set(PendingAccount(probe, status));
+            return null;
+          }
+          _endedByServer = true;
+        } on ApiFailure catch (check) {
+          // The same refusal for the check: the credential is dead. Any other answer (offline) proves nothing.
+          _endedByServer = check.status == 401;
+        } catch (_) {
+          _endedByServer = false;
         }
       }
       rethrow;
@@ -264,6 +292,7 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
       return session.copyWith(onboarded: status.completed);
     });
     booting = false;
+    _lastUserId = result.asData?.value?.userId ?? _lastUserId;
     state = result;
   }
 
@@ -285,7 +314,12 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
     state = const AsyncData(null);
     // The credential is already dead, so server calls in hooks fail quietly;
     // the local clean-up (chat data, export files) is what this is for.
-    unawaited(_runSignOutHooks().whenComplete(() => _departing = null));
+    unawaited(
+      _runSignOutHooks().whenComplete(() {
+        _departing = null;
+        _lastUserId = null;
+      }),
+    );
   }
 
   /// Signs out. Always finishes on this device, even offline: if the server
@@ -300,6 +334,7 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
     } finally {
       _signingOut = false;
       _departing = null;
+      _lastUserId = null;
     }
   }
 
@@ -329,6 +364,11 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
       } catch (_) {
         await ref.read(revokeQueueProvider).add(session.token);
       }
+    } else {
+      // No session (the sign-out of a pending-deletion member, of a start-up that failed, of an account
+      // whose session already ended): the local clean-up still runs, for the account this phone's
+      // chat data belongs to.
+      await _runSignOutHooks();
     }
     try {
       await ref.read(authGatewayProvider).signOut();
@@ -343,18 +383,20 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
 
   /// Signs out of the identity provider alone: after the member deleted the
   /// account (the server already ended every session), and for accounts that
-  /// never got a server session (unverified email, failed start-up). The
-  /// local clean-up hooks run when there was a session.
+  /// never got a server session (unverified email, failed start-up, "use a
+  /// different account"). The local clean-up hooks always run; without a
+  /// session they act on the account this phone's chat data belongs to.
   Future<void> signOutProvider() async {
     final session = state.asData?.value;
     _signingOut = true;
     _departing = session;
     try {
-      if (session != null) await _runSignOutHooks();
+      await _runSignOutHooks();
       await ref.read(authGatewayProvider).signOut();
     } finally {
       _signingOut = false;
       _departing = null;
+      _lastUserId = null;
     }
     ref.read(awaitingVerificationProvider.notifier).set(null);
     _forgetAccount();

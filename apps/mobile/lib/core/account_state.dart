@@ -57,3 +57,31 @@ final reauthenticatorProvider = Provider<Reauthenticator>(
       ? FirebaseReauthenticator()
       : const NoReauthenticator(),
 );
+
+/// How many times Apple gave no authorization code while a member tried to delete
+/// their account, per user, for as long as the app process lives. Closing the
+/// delete screen and opening it again therefore does not hand out two more
+/// Apple prompts.
+final appleDeletionMissesProvider =
+    NotifierProvider<AppleDeletionMisses, Map<String, int>>(
+      AppleDeletionMisses.new,
+    );
+
+class AppleDeletionMisses extends Notifier<Map<String, int>> {
+  @override
+  Map<String, int> build() => const {};
+
+  int of(String userId) => state[userId] ?? 0;
+
+  int add(String userId) {
+    final next = of(userId) + 1;
+    state = {...state, userId: next};
+    return next;
+  }
+
+  void clear(String userId) {
+    if (state.containsKey(userId)) {
+      state = {...state}..remove(userId);
+    }
+  }
+}

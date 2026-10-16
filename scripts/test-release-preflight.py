@@ -15,6 +15,9 @@ import sys
 import tempfile
 import unittest
 
+# Importing scripts under test must never write scripts/__pycache__ (the release preflight's gate a would see it).
+sys.dont_write_bytecode = True
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
@@ -34,9 +37,13 @@ def load(name, filename):
 
 rp = load("release_preflight", "release_preflight.py")
 envdocs = load("check_env_docs", "check_env_docs.py")
+iossign = load("ios_signing_check", "ios_signing_check.py")
 
 
 class PlaceholderTests(unittest.TestCase):
+    """Gate b is an allowlist: after links with a real address, checkboxes, code spans and the DRAFT banner are taken out,
+    every remaining bracket span fails. These are the strings the round-3 audit slipped past the old denylist, plus the
+    older misses."""
     MUST_FLAG = [
         "[CONFIRM: operator to set a period]",
         "[CONFIRM]",
@@ -61,18 +68,50 @@ class PlaceholderTests(unittest.TestCase):
         "[Insert company name]",
         "[Counsel: choose]",
         "{{ company_name }}",
-    ]
-    MUST_NOT_FLAG = [
-        "[BRACKETS]",
-        "see [the privacy policy](https://hiyall.app/privacy)",
-        "[App Store](https://apps.apple.com/app/x)",
-        "[x] done",
-        "[ ] not done",
-        "[1]",
-        "[ref]: https://example.com",
+        # round 3
+        "[CoUnSeL: mixed case]",
+        "[Counsel\nscanning status at launch]",
+        "[COUNSEL:\nscanning status,\ncontinued here]",
+        "[COUNSEL]: x",
+        "[Company name]",
+        "[Effective date]",
+        "[your address here]",
         "[Settings > Help & Safety]",
         "Use the [Report] button",
         "a list like [a, b, c]",
+        "[1]",
+        "[ref]: https://hiyall.app/ref",
+        "[BRACKETS]",
+        "[x] done",
+        "[ ] not done",
+        "[COUNSEL: x](https://hiyall.app/privacy)",
+        "[see this](https://hiyall.example.com/x)",
+        "[the policy](TBD)",
+        "[the policy](<url>)",
+        "[the policy]()",
+        "[the policy](#)",
+        "[a [nested] span](https://hiyall.app/x)",
+        "a stray ] bracket",
+        "an opening [ bracket with no end",
+        "We will reply within TBD days",
+        "TODO: write this",
+        "FIXME later",
+        "XXX",
+    ]
+    MUST_NOT_FLAG = [
+        "see [the privacy policy](https://hiyall.app/privacy)",
+        "[App Store](https://apps.apple.com/app/x)",
+        "[Write to us](mailto:help@hiyall.app)",
+        "[Children and teens](children-and-teens.md)",
+        "[Children and teens](./children-and-teens.md#age)",
+        "[Jump](#retention)",
+        "- [x] done",
+        "- [ ] not done",
+        "1. [ ] numbered",
+        "Use the `[Report]` button",
+        "```\n[COUNSEL: inside a code block]\n```",
+        "> **DRAFT for legal review. Not legal advice. Placeholders in [BRACKETS] must be filled by the operator.**",
+        "Settings > Help & Safety",
         "",
     ]
 
@@ -81,13 +120,31 @@ class PlaceholderTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertTrue(rp.find_placeholders("Before " + text + " after."), "not flagged: " + text)
 
-    def test_normal_markdown_is_not_flagged(self):
+    def test_at_least_twenty_six_audit_strings(self):
+        self.assertGreaterEqual(len(self.MUST_FLAG), 26)
+
+    def test_allowed_markdown_is_not_flagged(self):
         for text in self.MUST_NOT_FLAG:
             with self.subTest(text=text):
                 self.assertEqual(rp.find_placeholders(text), set(), "flagged by mistake: " + text)
 
     def test_banner_wording_alone_passes(self):
         self.assertEqual(rp.find_placeholders("> **DRAFT for legal review. Placeholders in [BRACKETS] must be filled.**"), set())
+
+    def test_placeholder_hidden_in_a_two_line_span_is_one_finding(self):
+        found = rp.find_placeholders("[COUNSEL: scanning\nstatus at launch]")
+        self.assertEqual(len(found), 1)
+
+    def test_real_legal_documents_only_fail_on_marked_placeholders(self):
+        # The committed drafts must carry markers (the gate blocks the release); this guards the opposite mistake, a bracket
+        # used as ordinary text, which would make the final documents impossible to pass.
+        for d in ("docs/legal", "apps/mobile/assets/legal"):
+            for n in sorted(os.listdir(os.path.join(ROOT, d))):
+                if not n.endswith(".md"):
+                    continue
+                for span in rp.find_placeholders(slurp(os.path.join(d, n))):
+                    with self.subTest(doc=d + "/" + n, span=span[:60]):
+                        self.assertRegex(span, r"^\[[A-Z][A-Z /,.&'-]{2,}(:|\]|,)|^\[[A-Z][A-Z /,.&'-]+\]$|^\{\{")
 
 
 class LegalGateTests(unittest.TestCase):
@@ -126,7 +183,8 @@ class LegalGateTests(unittest.TestCase):
 
     def test_each_miss_blocks_the_release(self):
         for body in ("[CONFIRM: operator to set a period]", "[DATA PROTECTION CONTACT / REPRESENTATIVE, if required]",
-                     "[operator: fill in]", "[to be confirmed]"):
+                     "[operator: fill in]", "[to be confirmed]", "[Company name]", "[COUNSEL]: x", "[CoUnSeL: x]",
+                     "[COUNSEL: scanning\nstatus]", "[your address here]", "[Effective date]", "TBD"):
             with self.subTest(body=body):
                 self.doc("Retention: " + body)
                 self.assertTrue(any("unfilled placeholder" in m for m, _ in self.run_gate().problems), body)
@@ -305,6 +363,162 @@ class EnvDocsTests(unittest.TestCase):
         for n in ("DATABASE_URL", "SENTRY_DSN", "ADMIN_DATA_KEY", "TRUSTED_PROXY_CIDRS"):
             self.assertIn(n, names)
         self.assertNotIn("CHANGE_ME", names)
+
+
+class PlatformTests(unittest.TestCase):
+    def test_spaces_case_and_blanks_are_ignored(self):
+        self.assertEqual(rp.parse_platforms("android, ios"), ({"android", "ios"}, []))
+        self.assertEqual(rp.parse_platforms(" Android ,\tIOS\r\n"), ({"android", "ios"}, []))
+        self.assertEqual(rp.parse_platforms("ios,,"), ({"ios"}, []))
+
+    def test_unknown_platform_is_reported_not_dropped(self):
+        self.assertEqual(rp.parse_platforms("andriod,ios"), ({"ios"}, ["andriod"]))
+
+    def test_gate_e_fails_on_an_unknown_platform(self):
+        os.environ["RELEASE_PLATFORMS"] = "android, andriod"
+        try:
+            g = rp.Gate("e", "x")
+            rp.gate_android_signing(g)
+        finally:
+            del os.environ["RELEASE_PLATFORMS"]
+        self.assertTrue(any("andriod" in m for m, _ in g.problems))
+
+    def test_release_workflow_normalises_the_list_in_one_job(self):
+        text = slurp(".github/workflows/release.yml")
+        self.assertIn("platforms:", text)
+        self.assertNotIn("contains(format(',{0},', vars.RELEASE_PLATFORMS", text)
+
+
+class SkipPolicyTests(unittest.TestCase):
+    CI = {"GITHUB_ACTIONS": "true", "GITHUB_REF_NAME": "v1.0.0"}
+
+    def refusal(self, gid, **env):
+        e = dict(self.CI)
+        e.update(env)
+        return rp.skip_refusal(gid, environ=e, ci=True)
+
+    def test_anything_may_be_skipped_locally(self):
+        self.assertIsNone(rp.skip_refusal("d", environ={}, ci=False))
+        self.assertIsNone(rp.skip_refusal("o", environ={}, ci=False))
+
+    def test_gate_d_in_ci_needs_the_host_check_for_this_tag(self):
+        self.assertIsNotNone(self.refusal("d"))
+        self.assertIsNotNone(self.refusal("d", PREFLIGHT_HOST_CHECK="v0.9.0"))
+        self.assertIsNone(self.refusal("d", PREFLIGHT_HOST_CHECK="v1.0.0"))
+
+    def test_other_gates_in_ci_need_a_reason(self):
+        self.assertIsNotNone(self.refusal("o"))
+        self.assertIsNone(self.refusal("o", PREFLIGHT_SKIP_REASON="no admin token on a personal repository"))
+
+    def test_gate_o_cannot_be_skipped_while_a_token_exists(self):
+        self.assertIsNotNone(self.refusal("o", PREFLIGHT_SKIP_REASON="x", GH_ADMIN_TOKEN="t"))
+
+    def test_gate_o_in_ci_fails_when_it_cannot_look(self):
+        old = rp.in_ci, rp.gh_api, rp.github_repo
+        rp.in_ci, rp.gh_api, rp.github_repo = (lambda: True), (lambda a, token=None: (1, "HTTP 403: Resource not accessible")), (lambda: "o/r")
+        try:
+            g = rp.Gate("o", "x")
+            rp.gate_environment(g)
+        finally:
+            rp.in_ci, rp.gh_api, rp.github_repo = old
+        self.assertTrue(g.problems)
+        self.assertTrue(any("could not verify" in m for m, _ in g.problems))
+
+    def test_gate_o_locally_is_only_a_notice(self):
+        old = rp.in_ci, rp.gh_api, rp.github_repo
+        rp.in_ci, rp.gh_api, rp.github_repo = (lambda: False), (lambda a, token=None: (127, "gh is not installed")), (lambda: "o/r")
+        try:
+            g = rp.Gate("o", "x")
+            rp.gate_environment(g)
+        finally:
+            rp.in_ci, rp.gh_api, rp.github_repo = old
+        self.assertEqual(g.problems, [])
+        self.assertTrue(any("NOT VERIFIED" in n for n in g.notes))
+
+    def test_release_environment_without_reviewers_blocks(self):
+        problems, _ = rp.evaluate_environment({"protection_rules": []}, "release")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("release", problems[0])
+
+
+class HygieneTests(unittest.TestCase):
+    def test_importing_the_scripts_leaves_no_bytecode(self):
+        self.assertFalse(os.path.isdir(os.path.join(HERE, "__pycache__")), "scripts/__pycache__ exists after the imports above")
+
+    def test_bytecode_is_git_ignored_and_the_workflow_disables_it(self):
+        gi = slurp(".gitignore")
+        for line in ("scripts/__pycache__/", "*.pyc", "__pycache__/", "config/admin.production.env", "config/r2.local.env", "*.env.local",
+                     "apps/mobile/ios/Flutter/Signing.xcconfig"):
+            self.assertIn(line, gi.splitlines(), line)
+        self.assertIn("PYTHONDONTWRITEBYTECODE", slurp(".github/workflows/release.yml"))
+
+    def test_foundation_never_cancels_a_run_on_main(self):
+        text = slurp(".github/workflows/foundation.yml")
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", text)
+
+
+class AlertRuleTests(unittest.TestCase):
+    def run_validator(self, text):
+        import subprocess
+        d = tempfile.mkdtemp(prefix="alerts-")
+        try:
+            path = os.path.join(d, "rules.yml")
+            with open(path, "w") as f:
+                f.write(text)
+            r = subprocess.run([os.path.join(HERE, "validate-alerts.sh"), path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+            return r.returncode, r.stdout
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_committed_rules_pass(self):
+        rc, out = self.run_validator(slurp("infrastructure/alerts/hiyall.rules.yml"))
+        self.assertEqual(rc, 0, out)
+
+    def test_a_rule_on_a_metric_no_code_defines_fails(self):
+        rc, out = self.run_validator(slurp("infrastructure/alerts/hiyall.rules.yml").replace("hiyall_media_busy_total", "hiyall_made_up_total"))
+        self.assertNotEqual(rc, 0)
+        self.assertIn("hiyall_made_up_total", out)
+
+    def test_counter_rules_cover_the_first_event(self):
+        text = slurp("infrastructure/alerts/hiyall.rules.yml")
+        for metric in ("hiyall_http_panics_total", "hiyall_quarantine_cases_total", "hiyall_push_config_errors_total", "hiyall_scan_upstream_errors_total"):
+            self.assertIn("unless sum by", text)
+            self.assertRegex(text, r"(?s)%s\[[0-9a-z]+\]\)\) > 0\s+or \(sum by \(\w+\) \(%s\) > 0 unless" % (metric, metric))
+
+
+class CodeownersTests(unittest.TestCase):
+    def test_every_path_in_the_real_file_exists(self):
+        self.assertEqual(rp.codeowners_missing_paths(slurp(".github/CODEOWNERS")), [])
+
+    def test_a_dead_path_is_found(self):
+        self.assertEqual(rp.codeowners_missing_paths("* @o\n/services/api/internal/auth/ @o\n/docs/legal/ @o\n"), ["/services/api/internal/auth/"])
+
+
+class IosSigningTests(unittest.TestCase):
+    GOOD = """Build settings for action build and target Runner:
+    CODE_SIGN_IDENTITY = Apple Distribution
+    CODE_SIGN_STYLE = Manual
+    DEVELOPMENT_TEAM = ABCDE12345
+    PROVISIONING_PROFILE_SPECIFIER = Hiyall App Store
+
+Build settings for action build and target FlutterGeneratedPluginSwiftPackage:
+    CODE_SIGN_STYLE = Automatic
+"""
+
+    def test_runner_only_passes(self):
+        self.assertEqual(iossign.problems(self.GOOD, "ABCDE12345", "Hiyall App Store"), [])
+
+    def test_wrong_target_is_reported(self):
+        text = self.GOOD.replace("target Runner:", "target RunnerTests:")
+        self.assertTrue(any("no target named Runner" in x for x in iossign.problems(text, "ABCDE12345", "Hiyall App Store")))
+
+    def test_automatic_style_on_runner_fails(self):
+        text = self.GOOD.replace("CODE_SIGN_STYLE = Manual", "CODE_SIGN_STYLE = Automatic")
+        self.assertTrue(any("CODE_SIGN_STYLE" in x for x in iossign.problems(text, "ABCDE12345", "Hiyall App Store")))
+
+    def test_profile_leaking_to_another_target_fails(self):
+        text = self.GOOD + "\nBuild settings for action build and target SomePackage:\n    PROVISIONING_PROFILE_SPECIFIER = Hiyall App Store\n"
+        self.assertTrue(any("leaked" in x for x in iossign.problems(text, "ABCDE12345", "Hiyall App Store")))
 
 
 class RealTreeTests(unittest.TestCase):

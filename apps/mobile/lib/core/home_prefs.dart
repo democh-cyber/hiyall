@@ -1,21 +1,24 @@
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import 'secure_storage.dart';
 import 'state.dart';
 
 /// Where Home keeps its small per-device choices, one set per account.
 abstract class HomePrefsStore {
   Future<bool> profileNudgeHidden(String userId);
   Future<void> hideProfileNudge(String userId);
+
+  /// Removes everything kept for [userId] (the sign-out wipe).
+  Future<void> forget(String userId);
 }
 
 /// Kept in the platform keystore beside the story draft. Where there is no
 /// platform storage (tests, some desktops) nothing is kept and nothing fails.
 class SecureHomePrefsStore implements HomePrefsStore {
   const SecureHomePrefsStore();
-  static const _storage = FlutterSecureStorage();
+  static final _storage = createSecureStorage();
   static String _key(String userId) => 'home_profile_nudge_hidden_$userId';
 
   @override
@@ -33,6 +36,13 @@ class SecureHomePrefsStore implements HomePrefsStore {
       await _storage.write(key: _key(userId), value: '1');
     } catch (_) {}
   }
+
+  @override
+  Future<void> forget(String userId) async {
+    try {
+      await _storage.delete(key: _key(userId));
+    } catch (_) {}
+  }
 }
 
 /// A store that lives only in memory.
@@ -43,6 +53,8 @@ class MemoryHomePrefsStore implements HomePrefsStore {
       hidden.contains(userId);
   @override
   Future<void> hideProfileNudge(String userId) async => hidden.add(userId);
+  @override
+  Future<void> forget(String userId) async => hidden.remove(userId);
 }
 
 final homePrefsStoreProvider = Provider<HomePrefsStore>(

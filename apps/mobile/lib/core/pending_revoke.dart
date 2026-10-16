@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'api.dart';
+import 'secure_storage.dart';
 
 /// A server sign-out that could not be sent (offline, server down). Sign-out
 /// always finishes on the device; the credential is kept here, in the
@@ -18,7 +19,7 @@ class RevokeQueue {
   final FlutterSecureStorage _storage;
   final DateTime Function() _now;
   RevokeQueue({FlutterSecureStorage? storage, DateTime Function()? now})
-    : _storage = storage ?? const FlutterSecureStorage(),
+    : _storage = storage ?? createSecureStorage(),
       _now = now ?? DateTime.now;
 
   Future<void> add(String token) async {

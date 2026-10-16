@@ -18,7 +18,9 @@ enum Delivery {
 /// the web, the system share sheet on a phone. On a phone the file exists only
 /// in the temporary folder, only while the sheet is open, and is deleted when
 /// it closes (shared, cancelled or failed); it never goes to the documents
-/// folder, which iOS backs up. [origin] anchors the sheet on iPad. Replaced by
+/// folder, which iOS backs up. On Android the share library also keeps a copy
+/// in its own cache folder (`<cache>/share_plus`); that copy is deleted as
+/// well, then and by every wipe below. [origin] anchors the sheet on iPad. Replaced by
 /// a fake in tests.
 typedef DataDelivery = Future<Delivery> Function(
   String filename,
@@ -29,7 +31,8 @@ typedef DataDelivery = Future<Delivery> Function(
 final dataDeliveryProvider = Provider<DataDelivery>((ref) => deliverData);
 
 /// Deletes any export file still on this device (an interrupted share, a
-/// crash, or an older build that saved it in documents). A no-op on the web.
+/// crash, the share library's own copy on Android, or an older build that
+/// saved it in documents). A no-op on the web.
 /// Replaced by a fake in tests.
 ///
 /// The sign-out hook uses this. An export only ever comes from this process
@@ -57,13 +60,21 @@ abstract class ExportFiles {
 
   Future<void> delete(String path);
 
-  /// Paths of export files in the temporary folder, and in the documents
-  /// folder where older builds put them.
+  /// Paths of export files in the temporary folder, in the share library's
+  /// cache folder inside it (Android), and in the documents folder where
+  /// older builds put them.
   Future<List<String>> list();
 }
 
-/// Paths being shared right now; a wipe leaves them alone.
+/// Paths being shared right now; a wipe leaves them alone, and so the copy
+/// the share library made of them (same file name, another folder).
 final _inFlight = <String>{};
+
+String _baseName(String path) => path.split(RegExp(r'[/\\]')).last;
+
+bool _isBeingShared(String path) =>
+    _inFlight.contains(path) ||
+    _inFlight.any((p) => _baseName(p) == _baseName(path));
 
 /// Writes the export to the temporary folder, runs [share], and deletes the
 /// file however [share] ends. Earlier leftovers are removed first.
@@ -86,6 +97,8 @@ Future<Delivery> deliverThroughFile(
     } catch (_) {
       // A locked file is removed by the next wipe.
     }
+    // Then whatever else is left, on Android the share library's own copy.
+    await wipeExportFiles(files);
   }
   return Delivery.shared;
 }
@@ -99,7 +112,7 @@ Future<void> wipeExportFiles(ExportFiles files) async {
     return;
   }
   for (final path in found) {
-    if (_inFlight.contains(path)) continue;
+    if (_isBeingShared(path)) continue;
     try {
       await files.delete(path);
     } catch (_) {

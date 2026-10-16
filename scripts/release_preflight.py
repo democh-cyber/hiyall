@@ -11,20 +11,24 @@ Environment:
   HIYALL_RELEASE_ENV        which config/mobile-release.<env>.local.env to read (default production)
   HIYALL_API_ENV_FILE       the production API environment file (default config/api.production.env)
   PREFLIGHT_SECRETS_DIR     where files named /secrets/... in that env file live locally (default config/secrets)
-  PREFLIGHT_SKIP            comma list of gate ids to skip, e.g. "d" (printed as SKIPPED, never silent)
-  PREFLIGHT_ANDROID_SIGNING_IN_CI=true
-                            the release workflow sets it when the signing secrets exist, because it writes
-                            key.properties only inside the Android job
+  PREFLIGHT_SKIP            comma list of gate ids to skip, e.g. "d" (printed as SKIPPED, never silent). In CI a skip is
+                            honoured only with a reason: gate d needs PREFLIGHT_HOST_CHECK equal to the tag (the owner
+                            ran `api check-config -release` on the production host for this version), every other gate
+                            needs PREFLIGHT_SKIP_REASON, and gate o can only be skipped while no RELEASE_GATE_TOKEN exists
+  PREFLIGHT_ANDROID_SIGNING_IN_CI=true|false|deferred
+                            the release workflow writes key.properties only inside the Android job. "deferred": the
+                            secrets live in the `release` environment, which this job cannot read; the Android job itself
+                            refuses to run without them
   RELEASE_PLATFORMS         comma list of mobile platforms this release ships (default "android,ios"); a listed
                             platform must have its signing inputs (gates e and r)
-  PREFLIGHT_IOS_SIGNING_IN_CI=true|false
-                            the release workflow sets it from the presence of the three iOS signing secrets
+  PREFLIGHT_IOS_SIGNING_IN_CI=true|false|deferred
+                            as above for the three iOS signing secrets
   PREFLIGHT_SKIP_GOVULNCHECK=1
                             gate l fails in CI when govulncheck is missing; this is the explicit, printed skip
   SCAN_ALLOW_NONE / RELEASE_ACK_UNSCANNED
                             gate q: a release with upload scanning off needs RELEASE_ACK_UNSCANNED=I_ACCEPT_UNSCANNED_PHOTOS
   GH_TOKEN / GH_ADMIN_TOKEN gates n and o call `gh api`; without gh or a login they print NOT VERIFIED locally and
-                            fail in CI (gate n) or skip with a notice (gate o)
+                            FAIL in CI (a gate that cannot look must not pass)
   DEV_FIREBASE_PROJECT_ID / DEV_MEDIA_BUCKETS
                             extra comma lists added to config/environments.json (production must not equal any)
   PREFLIGHT_IMAGE           a built API image; when set and docker is present, its /migrations is compared
@@ -40,6 +44,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+
+# The preflight and its tests import scripts from scripts/: never leave __pycache__ behind (gate a would see it). `python3 -I`
+# ignores PYTHONDONTWRITEBYTECODE, so this is set in code.
+sys.dont_write_bytecode = True
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MOBILE = os.path.join(ROOT, "apps/mobile")
@@ -163,26 +171,58 @@ def gate_git(g):
 
 
 # --------------------------------------------------------------------------------------------------------------
-# Any bracketed span that is an unfilled placeholder: its first token is UPPER CASE letters, spaces or slashes
-# ([CONFIRM: ...], [DATA PROTECTION CONTACT / REPRESENTATIVE, if required], [COUNSEL: ...], [PRIVACY EMAIL]), or it starts
-# with a placeholder keyword in any case ([Operator: ...], [confirm ...], [to be confirmed], [fill in]), or it is a
-# {{template}} field. Markdown links [text](url) and reference definitions are not placeholders.
-_BRACKET = re.compile(r"\[([^\[\]\n]{1,400})\](?![(:])")
-_UPPER_TOKEN = re.compile(r"^[A-Z][A-Z0-9 /&._'-]{2,}$")
-_KEYWORD = re.compile(r"^\s*(operator|owner|counsel|legal review|confirm|todo|tbd|to be (confirmed|decided|filled)|fill in|placeholder|insert|decision)\b", re.I)
-_TEMPLATE = re.compile(r"\{\{[^}\n]+\}\}")
-PLACEHOLDER_EXEMPT = {"[BRACKETS]"}  # the banner's own wording
+# Gate b is an ALLOWLIST. Once the things that are allowed to contain square brackets are taken out (code spans, Markdown
+# links with a real address, task-list checkboxes, the DRAFT banner line), ANY bracket that is left is an unfilled
+# placeholder: [COUNSEL: ...], [Company name], [your address here], [Effective date], [COUNSEL]: x, in any case, over one
+# line or several. A stray "[" or "]" counts too. Bare TBD / TODO / FIXME / XXX words and {{template}} fields fail as well.
+_FENCE = re.compile(r"^(```|~~~).*?^\1[^\n]*$", re.S | re.M)
+_CODE_SPAN = re.compile(r"`[^`\n]*`")
+_BANNER = re.compile(r"(?m)^>\s*\*\*DRAFT.*$")
+_CHECKBOX = re.compile(r"(?m)^(\s*(?:[-*+]|\d+[.)])\s+)\[[ xX]\]")
+_LINK = re.compile(r"\[([^\[\]]*)\]\(([^()\s]*)\)")
+_BARE = re.compile(r"\b(TBD|TODO|FIXME|XXX)\b")
+_TEMPLATE = re.compile(r"\{\{[^}]*\}\}")
+_REAL_URL = re.compile(r"^(https://[^\s<>]+|mailto:[^\s<>@]+@[^\s<>@]+\.[A-Za-z]{2,}|tel:\+?[0-9 -]{5,}|#[A-Za-z0-9_-]+|(\.{1,2}/)?[A-Za-z0-9_./-]+\.md(#[A-Za-z0-9_-]+)?)$")
+_FAKE_URL = re.compile(r"(?i)(^|[./@])example\.(com|org|net)|\.invalid\b|\.test\b|\.example\b|\byour-|placeholder|\btbd\b|\btodo\b|\bxxx\b|[<>{}]")
+_LABEL = re.compile(r"^\s*(operator|owner|counsel|legal review|confirm|todo|tbd|to be (confirmed|decided|filled)|fill in|placeholder|insert|decision)\b", re.I)
+_UPPER = re.compile(r"^[A-Z][A-Z0-9 /&._'-]{2,}$")
+
+
+def _link_ok(text, url):
+    """A Markdown link is allowed only when the address is a real one and the text is not itself a placeholder label."""
+    if not _REAL_URL.match(url) or _FAKE_URL.search(url):
+        return False
+    first = re.split(r"[:,;(]", text, 1)[0].strip()
+    return not (_UPPER.match(first) or _LABEL.match(text))
 
 
 def find_placeholders(text):
+    """Every unfilled placeholder in a legal document, as a set of the offending spans (shortened to one line)."""
     found = set()
-    for m in _BRACKET.finditer(text):
-        inner = m.group(1)
-        first = re.split(r"[:,;(]", inner, 1)[0].strip()
-        if _UPPER_TOKEN.match(first) or _KEYWORD.match(inner):
-            found.add(m.group(0))
-    found |= set(_TEMPLATE.findall(text))
-    return found - PLACEHOLDER_EXEMPT
+    text = _FENCE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
+    text = _CODE_SPAN.sub("", text)
+    text = _BANNER.sub("", text)
+    text = _CHECKBOX.sub(lambda m: m.group(1), text)
+    kept = []
+
+    def link(m):
+        if _link_ok(m.group(1), m.group(2)):
+            kept.append(m.group(1))
+            return " " + m.group(1) + " "
+        found.add(re.sub(r"\s+", " ", m.group(0)))
+        return " "
+    text = _LINK.sub(link, text)
+    # Anything in square brackets that is still here: balanced spans (across lines too), then stray brackets.
+    for m in re.finditer(r"\[[^\[\]]*\]", text):
+        found.add(re.sub(r"\s+", " ", m.group(0)))
+    rest = re.sub(r"\[[^\[\]]*\]", " ", text)
+    if "[" in rest or "]" in rest:
+        i = min(x for x in (rest.find("["), rest.find("]")) if x >= 0)
+        found.add("unbalanced bracket near: " + re.sub(r"\s+", " ", rest[max(0, i - 20):i + 30]).strip())
+    found |= {re.sub(r"\s+", " ", t) for t in _TEMPLATE.findall(text)}
+    for m in _BARE.finditer(text):
+        found.add(m.group(1))
+    return found
 
 
 DRAFT_RE = re.compile(r"DRAFT for legal review|^>\s*\*\*DRAFT", re.M)
@@ -374,7 +414,7 @@ def gate_api_env(g):
     if not os.path.isfile(path):
         g.bad("%s does not exist" % rel,
               "copy config/api.production.example.env (plus the secrets listed in docs/deployment/10-deploy-guide.md section 3) to %s; it is git-ignored. "
-              "Or run `api check-config -release` on the deployed machine (runbook step 3)" % rel)
+              "Or run `api check-config -release` on the deployed machine (runbook step 5)" % rel)
         return
     values = parse_env_file(path)
     secrets_dir = os.environ.get("PREFLIGHT_SECRETS_DIR") or p("config/secrets")
@@ -419,13 +459,29 @@ def gate_api_env(g):
 
 
 # --------------------------------------------------------------------------------------------------------------
+KNOWN_PLATFORMS = ("android", "ios")
+
+
+def parse_platforms(raw):
+    """(set of platforms, unknown tokens). Spaces, tabs, line ends and case never matter ("android, ios" is both)."""
+    tokens = [re.sub(r"\s+", "", x).lower() for x in (raw or "").split(",")]
+    tokens = [x for x in tokens if x]
+    return {x for x in tokens if x in KNOWN_PLATFORMS}, [x for x in tokens if x not in KNOWN_PLATFORMS]
+
+
 def release_platforms():
-    return {x.strip().lower() for x in os.environ.get("RELEASE_PLATFORMS", "android,ios").split(",") if x.strip()}
+    return parse_platforms(os.environ.get("RELEASE_PLATFORMS") or "android,ios")[0]
 
 
 @gate("e", "Android release signing is set up and cannot fall back to debug")
 def gate_android_signing(g):
     props = p("apps/mobile/android/key.properties")
+    raw_platforms = os.environ.get("RELEASE_PLATFORMS") or "android,ios"
+    wanted, unknown = parse_platforms(raw_platforms)
+    if unknown:
+        g.bad("RELEASE_PLATFORMS contains %s (known: %s)" % (", ".join(repr(x) for x in unknown), ", ".join(KNOWN_PLATFORMS)), "fix the repository variable RELEASE_PLATFORMS, for example `android,ios`")
+    if not wanted:
+        g.bad("RELEASE_PLATFORMS names no platform", "set it to `android`, `ios` or `android,ios`")
     if "android" not in release_platforms():
         g.note("android is not in RELEASE_PLATFORMS: its signing inputs are not required for this release (the Gradle guards are still checked)")
     elif os.path.isfile(props):
@@ -437,6 +493,8 @@ def gate_android_signing(g):
             g.bad("android/key.properties storeFile does not exist", "point storeFile at the upload keystore (an absolute path is safest)")
     elif os.environ.get("PREFLIGHT_ANDROID_SIGNING_IN_CI") == "true":
         g.note("signing secrets are present in CI; key.properties is written by the Android job")
+    elif os.environ.get("PREFLIGHT_ANDROID_SIGNING_IN_CI") == "deferred":
+        g.note("the Android signing secrets live in the `release` environment: the Android job refuses to run without them (checked there, not here)")
     elif os.environ.get("PREFLIGHT_ANDROID_SIGNING_IN_CI") == "false":
         g.bad("an Android signing secret is not set in GitHub (all four of ANDROID_KEYSTORE_BASE64, ANDROID_STORE_PASSWORD, ANDROID_KEY_PASSWORD, ANDROID_KEY_ALIAS are required)", "add the upload keystore secrets (docs/deployment/11-environments.md item 9), or leave android out of the RELEASE_PLATFORMS variable")
     else:
@@ -509,6 +567,9 @@ def gate_ids(g):
             g.bad("Info.plist %s is missing or too short" % key, "write an honest one-sentence purpose")
     if not re.search(r"<key>NSLocationDefaultAccuracyReduced</key>\s*<true/>", plist):
         g.bad("Info.plist NSLocationDefaultAccuracyReduced is not true", "Nearby needs approximate location only; set the key to <true/> so iOS asks for reduced accuracy by default")
+    rel_xc = read(p("apps/mobile/ios/Flutter/Release.xcconfig"))
+    if not re.search(r'(?m)^#include\?\s+"Signing\.xcconfig"\s*$', rel_xc):
+        g.bad('ios/Flutter/Release.xcconfig does not include "Signing.xcconfig"', 'restore the line `#include? "Signing.xcconfig"`: CI manual signing writes that file, so the Runner target (and only it) is signed manually')
     export = p("apps/mobile/ios/ExportOptions.plist")
     if not os.path.isfile(export):
         g.bad("apps/mobile/ios/ExportOptions.plist is missing", "restore it (manual signing template used by scripts/build-release.sh ios in CI)")
@@ -576,6 +637,22 @@ def png_has_alpha(path):
 
 
 # --------------------------------------------------------------------------------------------------------------
+def codeowners_missing_paths(text, root=None):
+    """Literal paths in a CODEOWNERS file that do not exist (patterns with wildcards are not checked)."""
+    root = root or ROOT
+    missing = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        pattern = line.split()[0]
+        if pattern in ("*",) or any(c in pattern for c in "*?[") or not pattern.startswith("/"):
+            continue
+        if not os.path.exists(os.path.join(root, pattern.lstrip("/"))):
+            missing.append(pattern)
+    return missing
+
+
 @gate("h", "Owner placeholders are gone from CODEOWNERS and SECURITY.md")
 def gate_owner(g):
     for rel, fix in ((".github/CODEOWNERS", "replace @OWNER-PLACEHOLDER with the real GitHub user or team"),
@@ -585,10 +662,13 @@ def gate_owner(g):
         hits += [i + 1 for i, line in enumerate(text.splitlines()) if re.search(r"<OWNER\b", line)]
         if hits:
             g.bad("%s still has an owner placeholder (line %s)" % (rel, ", ".join(str(h) for h in sorted(set(hits))[:5])), fix)
+    for path in codeowners_missing_paths(read(p(".github/CODEOWNERS"))):
+        g.bad(".github/CODEOWNERS names %s, which does not exist (a pattern that matches nothing protects nothing)" % path,
+              "fix the path in .github/CODEOWNERS (the code moved or was renamed)")
 
 
 # --------------------------------------------------------------------------------------------------------------
-LISTING_MARKER_RE = re.compile(r"\bTODO\b|\bTBD\b|\bFIXME\b|PLACEHOLDER|REPLACE_ME|not built yet|<[A-Z][A-Za-z0-9 _/-]*>")
+LISTING_MARKER_RE = re.compile(r"\bTODO\b|\bTBD\b|\bFIXME\b|PLACEHOLDER|REPLACE_ME|not built yet|<[A-Z][A-Za-z0-9 _/-]*>|\[(COUNSEL|OPERATOR|OWNER|CONFIRM)\b[^\]]*\]")
 
 
 @gate("i", "Store listing document is completed")
@@ -795,47 +875,64 @@ def gate_checks_green(g):
         g.note("no Foundation check run was found at all: was this commit pushed to main?")
 
 
-def evaluate_environment(env_json):
-    """Problems with a GitHub environment document (the response of GET /repos/{r}/environments/production)."""
+ENV_CONSEQUENCE = {"production": "migrate-production would run without approval",
+                   "release": "anyone who can push a tag could build with the store signing keys"}
+
+
+def evaluate_environment(env_json, name="production"):
+    """Problems with a GitHub environment document (the response of GET /repos/{r}/environments/<name>)."""
     problems, notes = [], []
     rules = env_json.get("protection_rules", []) or []
     reviewers = [r for r in rules if r.get("type") == "required_reviewers" and r.get("reviewers")]
     if not reviewers:
-        problems.append("the `production` environment has no required reviewers, so migrate-production would run without approval")
+        problems.append("the `%s` environment has no required reviewers, so %s" % (name, ENV_CONSEQUENCE.get(name, "its jobs run without approval")))
     elif not any(r.get("prevent_self_review") for r in reviewers):
-        notes.append("prevent self-review is off on `production`: fine for a single owner, turn it on when a second reviewer exists")
+        notes.append("prevent self-review is off on `%s`: fine for a single owner, turn it on when a second reviewer exists" % name)
     policy = env_json.get("deployment_branch_policy")
     if not policy:
-        notes.append("`production` is not restricted to selected branches or tags: restrict it to the tag pattern v*")
+        notes.append("`%s` is not restricted to selected branches or tags: restrict it to the tag pattern v*" % name)
     return problems, notes
 
 
-@gate("o", "GitHub `production` environment exists with required reviewers")
+def cannot_verify(g, why, fix):
+    """A gate that could not look. Locally it is a notice; in CI nothing is watching, so it fails."""
+    if in_ci():
+        g.bad("could not verify: %s" % why, fix)
+    else:
+        g.note("NOT VERIFIED: %s. %s" % (why, fix))
+
+
+@gate("o", "GitHub `production` and `release` environments exist with required reviewers")
 def gate_environment(g):
     repo = github_repo()
+    by_hand = "check Settings > Environments by hand (docs/deployment/11-environments.md items 8 and 9)"
     if not repo:
-        g.note("NOT VERIFIED: no GitHub repository could be determined; check Settings > Environments > production by hand (docs/deployment/11-environments.md item 8)")
+        cannot_verify(g, "no GitHub repository could be determined", by_hand)
         return
-    rc, out = gh_api(["repos/%s/environments/production" % repo], token=os.environ.get("GH_ADMIN_TOKEN"))
-    if rc == 127:
-        g.note("NOT VERIFIED: gh is not installed; check Settings > Environments > production by hand (docs/deployment/11-environments.md item 8)")
-        return
-    if rc != 0:
-        if re.search(r"HTTP 404", out):
-            g.bad("the `production` environment does not exist (or this token cannot see it)",
-                  "create it with required reviewers (docs/deployment/11-environments.md item 8): without it the migrate job is auto-created and waits for nobody")
-        else:
-            g.note("NOT VERIFIED: gh is not authenticated or lacks the permission (%s). Run `gh auth login` as the repository owner, or check Settings > Environments by hand" % out.strip().splitlines()[-1][:120])
-        return
-    try:
-        problems, notes = evaluate_environment(json.loads(out))
-    except ValueError:
-        g.note("NOT VERIFIED: GitHub returned an unreadable answer")
-        return
-    for msg in problems:
-        g.bad(msg, "Settings > Environments > production > Required reviewers (docs/deployment/11-environments.md item 8)")
-    for msg in notes:
-        g.note(msg)
+    names = ["production"] + (["release"] if release_platforms() else [])
+    for name in names:
+        rc, out = gh_api(["repos/%s/environments/%s" % (repo, name)], token=os.environ.get("GH_ADMIN_TOKEN"))
+        if rc == 127:
+            cannot_verify(g, "gh is not installed", "install it and run `gh auth login`, or " + by_hand)
+            return
+        if rc != 0:
+            if re.search(r"HTTP 404", out):
+                g.bad("the `%s` environment does not exist (or this token cannot see it)" % name,
+                      "create it with required reviewers (docs/deployment/11-environments.md items 8 and 9): without it its jobs are auto-created and wait for nobody")
+            else:
+                tail = out.strip().splitlines()[-1][:120] if out.strip() else "no output"
+                cannot_verify(g, "gh is not authenticated or lacks the permission (%s)" % tail,
+                              "add the RELEASE_GATE_TOKEN secret (fine-grained, Administration: read), or list `o` in PREFLIGHT_SKIP with a PREFLIGHT_SKIP_REASON, or " + by_hand)
+            continue
+        try:
+            problems, notes = evaluate_environment(json.loads(out), name)
+        except ValueError:
+            cannot_verify(g, "GitHub returned an unreadable answer for `%s`" % name, by_hand)
+            continue
+        for msg in problems:
+            g.bad(msg, "Settings > Environments > %s > Required reviewers (docs/deployment/11-environments.md items 8 and 9)" % name)
+        for msg in notes:
+            g.note(msg)
 
 
 @gate("p", "Every environment variable the code reads is documented")
@@ -887,7 +984,7 @@ def gate_scan_ack(g):
     for n in notes:
         g.note(n)
     if not allow_none:
-        g.note("SCAN_ALLOW_NONE is not true in this run's environment; the production host's own check is `api check-config -release` (runbook step 2)")
+        g.note("SCAN_ALLOW_NONE is not true in this run's environment; the production host's own check is `api check-config -release` (runbook step 5)")
 
 
 @gate("r", "iOS signing inputs are present for the release workflow")
@@ -898,6 +995,8 @@ def gate_ios_signing(g):
     flag = os.environ.get("PREFLIGHT_IOS_SIGNING_IN_CI")
     if flag == "true":
         g.note("the three iOS signing secrets are present in CI")
+    elif flag == "deferred":
+        g.note("the iOS signing secrets live in the `release` environment: the iOS job refuses to run without them (checked there, not here)")
     elif flag == "false":
         g.bad("an iOS signing secret is not set in GitHub (IOS_CERTIFICATE_BASE64, IOS_CERTIFICATE_PASSWORD and IOS_PROVISIONING_PROFILE_BASE64 are all required)",
               "add them (docs/deployment/11-environments.md item 9), or leave ios out of the RELEASE_PLATFORMS variable")
@@ -906,6 +1005,26 @@ def gate_ios_signing(g):
 
 
 # --------------------------------------------------------------------------------------------------------------
+def skip_refusal(gid, environ=None, ci=None):
+    """None when skipping gate `gid` is allowed here; otherwise (message, fix). Outside CI a skip is the developer's own
+    choice. In CI a skip needs a recorded reason, because nobody is watching the run."""
+    env = os.environ if environ is None else environ
+    if not (in_ci() if ci is None else ci):
+        return None
+    if gid == "d":
+        tag = env.get("GITHUB_REF_NAME", "")
+        if tag and env.get("PREFLIGHT_HOST_CHECK", "") == tag:
+            return None
+        return ("gate d (the production API environment) cannot run in CI and PREFLIGHT_HOST_CHECK does not equal the tag %r" % tag,
+                "run `api check-config -release` on the production host (runbook step 5.2), then set the repository variable PREFLIGHT_HOST_CHECK to the tag (%s) and re-run" % (tag or "vX.Y.Z"))
+    if not env.get("PREFLIGHT_SKIP_REASON", "").strip():
+        return ("gate %s was skipped without a reason" % gid, "set the repository variable PREFLIGHT_SKIP_REASON to why, or fix the gate")
+    if gid == "o" and (env.get("GH_ADMIN_TOKEN") or env.get("RELEASE_GATE_TOKEN")):
+        return ("gate o can read the environment (a RELEASE_GATE_TOKEN exists); a skip is for when no token can exist",
+                "remove `o` from PREFLIGHT_SKIP")
+    return None
+
+
 def main():
     skip = {s.strip() for s in os.environ.get("PREFLIGHT_SKIP", "").split(",") if s.strip()}
     version, build = pubspec_version()
@@ -915,13 +1034,17 @@ def main():
     unmet, skipped = [], []
     for gid, title, fn in GATES:
         g = Gate(gid, title)
-        if gid in skip:
+        refusal = skip_refusal(gid) if gid in skip else None
+        if refusal:
+            g.bad("PREFLIGHT_SKIP lists this gate but the skip is not allowed in CI: %s" % refusal[0], refusal[1])
+        elif gid in skip:
             print("[SKIP] (%s) %s" % (gid, title))
             print("       SKIPPED on purpose (PREFLIGHT_SKIP): this gate is NOT verified by this run")
             skipped.append(gid)
             continue
         try:
-            fn(g)
+            if not refusal:
+                fn(g)
         except Exception as e:  # a crashing gate must fail, never pass
             g.bad("the gate crashed: %s: %s" % (type(e).__name__, e), "fix scripts/release_preflight.py")
         print("[%s] (%s) %s" % ("FAIL" if g.problems else "PASS", gid, title))

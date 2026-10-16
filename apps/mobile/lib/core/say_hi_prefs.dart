@@ -1,7 +1,8 @@
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+import 'secure_storage.dart';
 
 /// How long a person stays "Hi sent" in Discover after a wave went to them.
 const sayHiSentFor = Duration(hours: 24);
@@ -16,6 +17,9 @@ abstract class SayHiPrefsStore {
   /// When each person (by id) was last sent a wave, for this account.
   Future<Map<String, DateTime>> sent(String userId);
   Future<void> saveSent(String userId, Map<String, DateTime> sent);
+
+  /// Removes everything kept for [userId] (the sign-out wipe).
+  Future<void> forget(String userId);
 }
 
 /// The stored form of the sent waves: `{"<peer id>": <UTC milliseconds>}`. Anything that does not
@@ -51,7 +55,7 @@ String encodeSent(Map<String, DateTime> sent) => jsonEncode({
 /// desktops) nothing is kept and nothing fails.
 class SecureSayHiPrefsStore implements SayHiPrefsStore {
   const SecureSayHiPrefsStore();
-  static const _storage = FlutterSecureStorage();
+  static final _storage = createSecureStorage();
   static String _confirmedKey(String userId) =>
       'discover_say_hi_confirmed_$userId';
   static String _sentKey(String userId) => 'discover_say_hi_sent_$userId';
@@ -87,6 +91,15 @@ class SecureSayHiPrefsStore implements SayHiPrefsStore {
       await _storage.write(key: _sentKey(userId), value: encodeSent(sent));
     } catch (_) {}
   }
+
+  @override
+  Future<void> forget(String userId) async {
+    for (final key in [_confirmedKey(userId), _sentKey(userId)]) {
+      try {
+        await _storage.delete(key: key);
+      } catch (_) {}
+    }
+  }
 }
 
 /// A store that lives only in memory.
@@ -103,6 +116,11 @@ class MemorySayHiPrefsStore implements SayHiPrefsStore {
   @override
   Future<void> saveSent(String userId, Map<String, DateTime> sent) async =>
       sentBy[userId] = Map.of(sent);
+  @override
+  Future<void> forget(String userId) async {
+    confirmedBy.remove(userId);
+    sentBy.remove(userId);
+  }
 }
 
 /// The clock Say hi reads when it stamps a wave and decides whether one is still

@@ -349,9 +349,12 @@ mixin PulseApi {
       },
     ) as Map<String, dynamic>;
     final headers = Map<String, String>.from(made['headers'] as Map);
+    // The address comes from the server: the photo is sent only over https (or plain http to this
+    // machine in a debug build), the same rule every other connection follows.
+    final uploadUrl = checkedUploadUrl(made['uploadUrl'] as String);
     try {
       await _uploads.put<void>(
-        made['uploadUrl'] as String,
+        uploadUrl,
         // The bytes themselves, so the body is exactly the declared size: Dio derives the
         // Content-Length from them and the signed URL refuses any other length.
         data: bytes,
@@ -417,5 +420,17 @@ mixin PulseApi {
       token: s.token,
     ) as Map<String, dynamic>,
     (v) => v,
+  );
+}
+
+/// [raw] if it is a storage address the app may send a photo to, else an [ApiFailure] with code
+/// `INSECURE_UPLOAD_URL` (and no address in its words). [debug] is for tests; it defaults to the
+/// build mode.
+String checkedUploadUrl(String raw, {bool? debug}) {
+  if (isSecureTransport(Uri.tryParse(raw), debug: debug)) return raw;
+  throw const ApiFailure(
+    'The photo couldn’t be sent safely. Try again later or update the app.',
+    null,
+    'INSECURE_UPLOAD_URL',
   );
 }

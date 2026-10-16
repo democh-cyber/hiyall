@@ -21,10 +21,13 @@
 #            ENABLE_EVENTS, APPLE_SIGN_IN_WEB.
 # iOS signing (ios only): by default `flutter build ipa` signs automatically with the Apple account signed in to Xcode
 # (a Mac you use). In CI there is no account: when IOS_TEAM_ID and IOS_PROFILE_NAME are set (the release workflow reads
-# both from the installed provisioning profile) the script signs MANUALLY: `flutter build ios --config-only`, a
-# temporary manual-signing edit of the Runner target, `xcodebuild archive`, then `xcodebuild -exportArchive` with
-# apps/mobile/ios/ExportOptions.plist. That path refuses to run outside CI (it edits the Xcode project, and restores it
-# on exit) and has never run: rehearse the first archive on a Mac (docs/mobile/16-release-and-reliability.md).
+# both from the installed provisioning profile) the script signs MANUALLY: `flutter build ios --config-only`, then it
+# writes the git-ignored ios/Flutter/Signing.xcconfig (CODE_SIGN_STYLE=Manual, team, profile, Apple Distribution), which
+# ios/Flutter/Release.xcconfig includes, so ONLY the Runner target takes the settings (a command-line override would also
+# hit the Swift package targets, which cannot take a profile). It proves that with `xcodebuild -showBuildSettings`
+# (scripts/ios_signing_check.py), runs `xcodebuild archive`, then `xcodebuild -exportArchive` with
+# apps/mobile/ios/ExportOptions.plist. The Xcode project file is never edited. That path refuses to run outside CI
+# and has never run: rehearse the first archive on a Mac (docs/mobile/16-release-and-reliability.md).
 # HIYALL_IOS_NO_CODESIGN=1 builds an unsigned `flutter build ios --no-codesign` (release-dryrun.yml uses it).
 #
 # Dart defines go to a temporary --dart-define-from-file under apps/mobile/build (git-ignored, deleted on
@@ -45,9 +48,16 @@ esac
 if [[ -z "${HIYALL_RELEASE_ENV:-}" ]]; then HIYALL_RELEASE_ENV=production; fi
 env_file="$root/config/mobile-release.${HIYALL_RELEASE_ENV}.local.env"
 if [[ -f "$env_file" ]]; then
-  # Only fill what the environment has not set.
+  # Only fill what the environment has not set. Values are trimmed and one pair of surrounding quotes is removed, exactly
+  # as scripts/release_preflight.py reads the same file, so the two can never disagree about a value.
   while IFS='=' read -r key value; do
     [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || continue
+    value="${value%$'\r'}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    if [[ ${#value} -ge 2 && ( ( "${value:0:1}" == '"' && "${value: -1}" == '"' ) || ( "${value:0:1}" == "'" && "${value: -1}" == "'" ) ) ]]; then
+      value="${value:1:${#value}-2}"
+    fi
     if [[ -z "${!key:-}" ]]; then export "$key=$value"; fi
   done < <(grep -E '^[A-Z][A-Z0-9_]*=' "$env_file")
 fi
@@ -116,6 +126,23 @@ if ((${#errors[@]})); then
   exit 1
 fi
 
+# Manual iOS signing happens only in CI (the settings file it writes would otherwise fight the Xcode account on a Mac).
+# Decided here, before anything is written, so the guard cannot be reached after a file was changed.
+manual_ios=0
+if [[ "$platform" == ios && "${HIYALL_IOS_NO_CODESIGN:-}" != 1 && -n "${IOS_TEAM_ID:-}" && -n "${IOS_PROFILE_NAME:-}" ]]; then
+  manual_ios=1
+  if [[ ! "$IOS_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]; then errors+=("IOS_TEAM_ID must be the 10-character Apple team id"); fi
+  if [[ "$IOS_PROFILE_NAME" == *$'\n'* || "$IOS_PROFILE_NAME" == *'//'* || "$IOS_PROFILE_NAME" == *'$'* ]]; then errors+=("IOS_PROFILE_NAME contains a newline, // or \$, which an .xcconfig file cannot hold"); fi
+  if ((check == 0)) && [[ "${CI:-}" != true && "${GITHUB_ACTIONS:-}" != true ]]; then
+    errors+=("manual iOS signing runs only in CI (it writes ios/Flutter/Signing.xcconfig). On a Mac, unset IOS_TEAM_ID and IOS_PROFILE_NAME and sign in to Xcode instead")
+  fi
+  if ((${#errors[@]})); then
+    echo "Refusing to build a $platform release:" >&2
+    for e in "${errors[@]}"; do echo "  - $e" >&2; done
+    exit 1
+  fi
+fi
+
 # The Firebase URL scheme iOS needs for sign-in is the app id with ":" turned into "-", prefixed "app-".
 if [[ "$platform" == ios ]]; then
   xcconfig="$root/apps/mobile/ios/Flutter/Firebase.xcconfig"
@@ -127,7 +154,13 @@ fi
 defines_dir="$root/apps/mobile/build"
 mkdir -p "$defines_dir"
 defines="$defines_dir/release-defines.json"
-trap 'rm -f "$defines"' EXIT
+signing_xcconfig="$root/apps/mobile/ios/Flutter/Signing.xcconfig"
+wrote_signing=0
+cleanup() {
+  rm -f "$defines" "$defines_dir/ExportOptions.plist" "$defines_dir/ios-build-settings.txt"
+  if ((wrote_signing)); then rm -f "$signing_xcconfig"; fi
+}
+trap cleanup EXIT
 umask 077
 export RELEASE_PLATFORM="$platform" RELEASE_VERSION="$version" RELEASE_BUILD="$build" RELEASE_APP_ID="$app_id" RELEASE_API_KEY="$api_key"
 python3 - "$defines" <<'PY'
@@ -153,14 +186,12 @@ json.dump(d, open(sys.argv[1], "w"), indent=2)
 PY
 
 flags=(--release "--build-name=$version" "--build-number=$build" "--dart-define-from-file=build/release-defines.json")
-manual_ios=0
 case "$platform" in
   android) cmd=(flutter build appbundle "${flags[@]}" --obfuscate --split-debug-info=build/symbols) ;;
   ios)
     if [[ "${HIYALL_IOS_NO_CODESIGN:-}" == 1 ]]; then
       cmd=(flutter build ios "${flags[@]}" --obfuscate --split-debug-info=build/symbols --no-codesign)
-    elif [[ -n "${IOS_TEAM_ID:-}" && -n "${IOS_PROFILE_NAME:-}" ]]; then
-      manual_ios=1
+    elif ((manual_ios)); then
       cmd=(flutter build ios --config-only "${flags[@]}" --obfuscate --split-debug-info=build/symbols)
     else
       cmd=(flutter build ipa "${flags[@]}" --obfuscate --split-debug-info=build/symbols --export-method=app-store)
@@ -171,7 +202,7 @@ esac
 
 if ((check)); then
   echo "OK: would run in apps/mobile: ${cmd[*]}"
-  if ((manual_ios)); then echo "then (manual signing, team ${IOS_TEAM_ID}): xcodebuild archive, xcodebuild -exportArchive -exportOptionsPlist build/ExportOptions.plist"; fi
+  if ((manual_ios)); then echo "then (manual signing, team ${IOS_TEAM_ID}): write ios/Flutter/Signing.xcconfig (Runner target only), xcodebuild -showBuildSettings check, xcodebuild archive, xcodebuild -exportArchive -exportOptionsPlist build/ExportOptions.plist"; fi
   echo "defines: $(python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))))' "$defines")"
   exit 0
 fi
@@ -179,34 +210,30 @@ fi
 if ! command -v flutter >/dev/null 2>&1 && [[ -f "$root/scripts/env.sh" ]]; then source "$root/scripts/env.sh"; fi
 cd "$root/apps/mobile"
 mkdir -p build/symbols
-if ((manual_ios)) && [[ "${CI:-}" != true && "${GITHUB_ACTIONS:-}" != true ]]; then
-  echo "Refusing manual iOS signing outside CI: it edits ios/Runner.xcodeproj. On a Mac, unset IOS_TEAM_ID and IOS_PROFILE_NAME and sign in to Xcode instead." >&2
-  exit 1
-fi
 "${cmd[@]}"
 if ((manual_ios)); then
-  # Manual signing for the Runner target only (a global xcodebuild override would also hit the Pods targets, which cannot
-  # take a provisioning profile). The project file is restored on exit, so nothing leaks into a commit.
-  pbx="ios/Runner.xcodeproj/project.pbxproj"
-  cp "$pbx" "$defines_dir/project.pbxproj.orig"
-  trap 'rm -f "$defines"; cp "$defines_dir/project.pbxproj.orig" "$root/apps/mobile/$pbx" 2>/dev/null || true; rm -f "$defines_dir/project.pbxproj.orig" "$defines_dir/ExportOptions.plist"' EXIT
-  python3 - "$pbx" "$IOS_TEAM_ID" "$IOS_PROFILE_NAME" "ios/ExportOptions.plist" "build/ExportOptions.plist" <<'PY'
-import re, sys
-pbx, team, profile, template, out = sys.argv[1:6]
-text = open(pbx, encoding="utf-8").read()
-q = lambda v: '"%s"' % v.replace("\\", "\\\\").replace('"', '\\"')
-manual = ("CODE_SIGN_STYLE = Manual;\n\t\t\t\tDEVELOPMENT_TEAM = %s;\n\t\t\t\tPROVISIONING_PROFILE_SPECIFIER = %s;\n\t\t\t\t"
-          "\"CODE_SIGN_IDENTITY[sdk=iphoneos*]\" = \"Apple Distribution\";") % (q(team), q(profile))
-text, n = re.subn(r"CODE_SIGN_STYLE = Automatic;", lambda m: manual, text)
-if n == 0:
-    sys.exit("no 'CODE_SIGN_STYLE = Automatic' in the Xcode project: the manual signing edit needs updating")
-open(pbx, "w", encoding="utf-8").write(text)
+  # Signing settings for the Runner target only: Release.xcconfig (the Runner target's base configuration) includes this
+  # git-ignored file when it exists. Nothing in the Xcode project is edited. It is deleted on exit.
+  wrote_signing=1
+  python3 - "$signing_xcconfig" "$IOS_TEAM_ID" "$IOS_PROFILE_NAME" "ios/ExportOptions.plist" "build/ExportOptions.plist" <<'PY'
+import sys
+xc, team, profile, template, out = sys.argv[1:6]
+with open(xc, "w", encoding="utf-8") as f:
+    f.write("// Written by scripts/build-release.sh in CI. Do not commit; deleted when the build ends.\n"
+            "CODE_SIGN_STYLE = Manual\n"
+            "DEVELOPMENT_TEAM = %s\n"
+            "PROVISIONING_PROFILE_SPECIFIER = %s\n"
+            "CODE_SIGN_IDENTITY = Apple Distribution\n"
+            "CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution\n" % (team, profile))
 tpl = open(template, encoding="utf-8").read()
 esc = lambda v: v.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 open(out, "w", encoding="utf-8").write(tpl.replace("__IOS_TEAM_ID__", esc(team)).replace("__IOS_PROFILE_NAME__", esc(profile)))
 PY
+  # Prove the settings reached Runner and nothing else before spending an archive on it.
+  (cd ios && xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release -showBuildSettings) > build/ios-build-settings.txt
+  python3 -I "$root/scripts/ios_signing_check.py" build/ios-build-settings.txt "$IOS_TEAM_ID" "$IOS_PROFILE_NAME"
   (cd ios && xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
-      -archivePath ../build/ios/archive/Runner.xcarchive archive)
+      -destination 'generic/platform=iOS' -archivePath ../build/ios/archive/Runner.xcarchive archive)
   xcodebuild -exportArchive -archivePath build/ios/archive/Runner.xcarchive \
       -exportOptionsPlist build/ExportOptions.plist -exportPath build/ios/ipa
 fi
