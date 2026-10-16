@@ -229,8 +229,8 @@ func (s *Server) streamMedia(w http.ResponseWriter, r *http.Request, p *Principa
 func (s *Server) listContentCases(w http.ResponseWriter, r *http.Request, p *Principal) {
 	q := r.URL.Query()
 	status := q.Get("status")
-	if status != "" && status != "open" && status != "confirmed" && status != "cleared" && status != "reported" {
-		s.fail(w, r, &domain.ValidationError{Field: "status", Message: "must be open, confirmed, cleared or reported"})
+	if status != "" && status != "pending" && status != "open" && status != "confirmed" && status != "cleared" && status != "reported" {
+		s.fail(w, r, &domain.ValidationError{Field: "status", Message: "must be pending, open, confirmed, cleared or reported"})
 		return
 	}
 	limit, err := limitParam(r)
@@ -384,7 +384,7 @@ func (s *Server) resolveContentCase(w http.ResponseWriter, r *http.Request, p *P
 		return insertAudit(ctx, tx, AuditEntry{OperatorID: &opID, Actor: p.Operator.Email, Action: "content_case_" + body.Action, TargetType: "content_case", TargetID: id,
 			Reason: reason, IP: p.IP, Detail: map[string]any{"subjectId": subject, "reportReference": ref}})
 	}
-	err = s.svc.Store.ResolveContentCase(r.Context(), id, store.ContentCaseStep{Action: body.Action, Operator: p.Operator.Email, Note: reason, ReportReference: ref, LegalHold: body.LegalHold}, hook)
+	err = s.svc.Store.ResolveContentCase(r.Context(), id, store.ContentCaseStep{Action: body.Action, OperatorID: p.Operator.ID, Note: reason, ReportReference: ref, LegalHold: body.LegalHold}, hook)
 	if err != nil {
 		s.fail(w, r, err)
 		return

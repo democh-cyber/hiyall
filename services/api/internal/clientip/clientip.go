@@ -245,3 +245,24 @@ func (r *Resolver) observe(req *http.Request, peer netip.Addr, client string) {
 		slog.Info("DEBUG_LOG_PEER", "peer", peer.String(), "peerTrusted", trusted, "client", client, "headers", values)
 	}
 }
+
+// Bucket is the key a client address is limited and counted under. An IPv6 customer is given a whole /64 (and
+// can rotate through all of it for free), so counting single IPv6 addresses is no limit at all: an IPv6 address is
+// reduced to its /64 prefix. An IPv4 address (also an IPv4-mapped IPv6 one) is kept whole, a /32. Text that is
+// not an address (a test's or a unix socket's RemoteAddr) is returned unchanged. Behind carrier-grade NAT or a
+// school network many people share one bucket: limits keyed on it must be generous (docs/architecture/18).
+func Bucket(addr string) string {
+	a, err := netip.ParseAddr(strings.Trim(strings.TrimSpace(addr), "[]"))
+	if err != nil {
+		return addr
+	}
+	a = a.Unmap().WithZone("")
+	if a.Is4() {
+		return a.String()
+	}
+	p, err := a.Prefix(64)
+	if err != nil {
+		return a.String()
+	}
+	return p.String()
+}

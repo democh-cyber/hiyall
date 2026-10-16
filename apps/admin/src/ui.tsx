@@ -95,12 +95,15 @@ export interface ReasonDialogProps {
   danger?: boolean
   /** An extra required line of text (a report reference); onSubmit then receives it as the second argument. */
   referenceLabel?: string
+  /** The reference must match this (counsel's reference); its hint is shown and the button stays disabled until it does. */
+  referencePattern?: RegExp
+  referenceHint?: string
   onSubmit: (reason: string, reference: string) => Promise<void>
   onClose: () => void
 }
 
 /** Every action needs a written reason of at least 10 characters, and some need an explicit confirmation. */
-export function ReasonDialog({ title, intro, confirmLabel, confirmText, danger, referenceLabel, onSubmit, onClose }: ReasonDialogProps) {
+export function ReasonDialog({ title, intro, confirmLabel, confirmText, danger, referenceLabel, referencePattern, referenceHint, onSubmit, onClose }: ReasonDialogProps) {
   const [reason, setReason] = useState('')
   const [reference, setReference] = useState('')
   const referenceId = useId()
@@ -109,7 +112,8 @@ export function ReasonDialog({ title, intro, confirmLabel, confirmText, danger, 
   const [error, setError] = useState<string | null>(null)
   const reasonId = useId()
   const trimmed = reason.trim()
-  const ready = trimmed.length >= MIN_REASON && confirmed && !busy && (!referenceLabel || reference.trim().length > 0)
+  const referenceOk = !referenceLabel || (reference.trim().length > 0 && (!referencePattern || referencePattern.test(reference.trim())))
+  const ready = trimmed.length >= MIN_REASON && confirmed && !busy && referenceOk
 
   async function submit(e: FormEvent) {
     e.preventDefault()
@@ -134,7 +138,8 @@ export function ReasonDialog({ title, intro, confirmLabel, confirmText, danger, 
         {referenceLabel && (
           <>
             <label htmlFor={referenceId}>{referenceLabel}</label>
-            <input id={referenceId} type="text" value={reference} onChange={(e) => setReference(e.target.value)} maxLength={200} required />
+            <input id={referenceId} type="text" value={reference} onChange={(e) => setReference(e.target.value)} maxLength={200} required aria-describedby={referenceHint ? `${referenceId}-hint` : undefined} aria-invalid={referencePattern && reference.trim() !== '' && !referenceOk ? true : undefined} />
+            {referenceHint && <div className="hint" id={`${referenceId}-hint`}>{referenceHint}</div>}
           </>
         )}
         {confirmText && (

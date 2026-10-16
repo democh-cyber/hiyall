@@ -514,9 +514,10 @@ func TestPurgeBatchFailureResumesOnTheNextRun(t *testing.T) {
 	h.scheduled(xan, "xan")
 	h.expire(xan)
 	// A trigger makes the last statement of the content purge fail once.
+	// Created here and dropped with the trigger (CASCADE), so no test helper outlives the test in the shared database.
 	h.exec(`CREATE OR REPLACE FUNCTION fail_purge() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'simulated crash'; END $$`)
 	h.exec(`CREATE TRIGGER fail_purge BEFORE DELETE ON member_ages FOR EACH ROW EXECUTE FUNCTION fail_purge()`)
-	defer h.exec(`DROP TRIGGER IF EXISTS fail_purge ON member_ages`)
+	defer h.exec(`DROP FUNCTION IF EXISTS fail_purge() CASCADE`)
 	if _, err := h.db.PurgeDeletedAccounts(h.ctx, &fakeDeleter{}, 10); err == nil {
 		t.Fatal("expected the simulated crash")
 	}
@@ -526,7 +527,7 @@ func TestPurgeBatchFailureResumesOnTheNextRun(t *testing.T) {
 	if h.count(`SELECT count(*) FROM member_ages WHERE user_id=$1`, xan) == 0 {
 		t.Fatal("the failed batch must not have deleted its rows")
 	}
-	h.exec(`DROP TRIGGER fail_purge ON member_ages`)
+	h.exec(`DROP FUNCTION fail_purge() CASCADE`)
 	w.purgeUntilDone(&fakeDeleter{})
 }
 

@@ -39,7 +39,9 @@ func (s *Store) CompleteOnboarding(ctx context.Context, userID string, birth tim
 	var result Onboarding
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var active bool
-		if err := tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, userID).Scan(&active); err != nil || !active {
+		if err := tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, userID).Scan(&active); err != nil {
+			return mapped(err)
+		} else if !active {
 			return domain.ErrNotFound
 		}
 		var completedAt *time.Time

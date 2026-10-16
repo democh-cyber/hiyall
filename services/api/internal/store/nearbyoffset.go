@@ -64,45 +64,48 @@ func nearbyProbeHash(kind, value string) []byte {
 	return mac.Sum(nil)[:16]
 }
 
-// CountNearbyProbe records that the account, searching from source address addr, used the stored point
-// centre (any stable text for it, such as a keyed tag) as the centre of a Nearby search today, and refuses
-// with 429 DAILY_LIMIT when that would be one centre too many for the account or for the address. A centre
-// already used today is free. addr may be empty (no limit per address).
-func (s *Store) CountNearbyProbe(ctx context.Context, user, addr, centre string, perAccount, perAddress int) error {
-	subjects := []struct {
-		hash  []byte
-		limit int
-	}{{nearbyProbeHash("account", user), perAccount}}
-	if addr != "" {
-		subjects = append(subjects, struct {
-			hash  []byte
-			limit int
-		}{nearbyProbeHash("address", addr), perAddress})
-	}
+// CountNearbyProbe records that the account, searching from source address addr (the caller passes
+// clientip.Bucket: an IPv6 /64 or an IPv4 address), used the stored point centre (any stable text for it, such
+// as a keyed tag) as the centre of a Nearby search today. It refuses with 429 DAILY_LIMIT when that would be one
+// centre too many for the account (centresPerAccount) or one account too many for the address
+// (accountsPerAddress). A centre already used today, and an account already counted for the address, are free.
+// addr may be empty (no limit per address).
+//
+// The only lock is per account, so searches from one shared address never queue behind each other. The
+// per-address count is therefore a ceiling that two accounts racing at the edge can pass by one or two, which is
+// all it needs to be. Address rows reuse the table: subject is the keyed hash of the address, and "centre" holds
+// the keyed hash of the account.
+func (s *Store) CountNearbyProbe(ctx context.Context, user, addr, centre string, centresPerAccount, accountsPerAddress int) error {
+	account := nearbyProbeHash("account", user)
 	c := nearbyProbeHash("centre", centre)
 	return mapped(s.inTx(ctx, func(tx pgx.Tx) error {
-		for _, sub := range subjects {
-			// One writer per subject at a time, so the count and the insert cannot race past the cap.
-			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(encode($1::bytea,'hex'),41))`, sub.hash); err != nil {
-				return err
-			}
+		// One writer per account at a time, so the count and the insert cannot race past the cap.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(encode($1::bytea,'hex'),41))`, account); err != nil {
+			return err
+		}
+		add := func(subject, member []byte, limit int, kind string) error {
 			var known bool
 			var n int
 			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM nearby_probe_centres WHERE subject=$1 AND day=(now() AT TIME ZONE 'UTC')::date AND centre=$2),
- (SELECT count(*) FROM nearby_probe_centres WHERE subject=$1 AND day=(now() AT TIME ZONE 'UTC')::date)`, sub.hash, c).Scan(&known, &n); err != nil {
+ (SELECT count(*) FROM nearby_probe_centres WHERE subject=$1 AND day=(now() AT TIME ZONE 'UTC')::date)`, subject, member).Scan(&known, &n); err != nil {
 				return err
 			}
 			if known {
-				continue
+				return nil
 			}
-			if n >= sub.limit {
-				return domain.DailyLimitError(domain.DailyNearbyCentres, domain.UntilNextUTCDay(time.Now()))
+			if n >= limit {
+				return domain.DailyLimitError(kind, domain.UntilNextUTCDay(time.Now()))
 			}
-			if _, err := tx.Exec(ctx, `INSERT INTO nearby_probe_centres(subject,day,centre) VALUES($1,(now() AT TIME ZONE 'UTC')::date,$2) ON CONFLICT DO NOTHING`, sub.hash, c); err != nil {
-				return err
-			}
+			_, err := tx.Exec(ctx, `INSERT INTO nearby_probe_centres(subject,day,centre) VALUES($1,(now() AT TIME ZONE 'UTC')::date,$2) ON CONFLICT DO NOTHING`, subject, member)
+			return err
 		}
-		return nil
+		if err := add(account, c, centresPerAccount, domain.DailyNearbyCentres); err != nil {
+			return err
+		}
+		if addr == "" {
+			return nil
+		}
+		return add(nearbyProbeHash("address", addr), account, accountsPerAddress, domain.DailyNearbyAddress)
 	}))
 }
 

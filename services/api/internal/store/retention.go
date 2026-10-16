@@ -50,13 +50,14 @@ func openReportAgainst(alias, col string) string {
 	return `NOT EXISTS(SELECT 1 FROM reports rp WHERE rp.target_id=` + alias + `.` + col + ` AND rp.status='open')`
 }
 
-// messageNotReported is true when no report names message row alias (its id column message_id) as its target or in
-// its evidence list (reports.evidence is an array of objects with a messageId). The account purge uses it per row;
-// PurgeMessageMetadata reads the evidence list once per statement instead, because it looks at many rows.
-func messageNotReported(alias string) string {
-	return `NOT EXISTS(SELECT 1 FROM reports er WHERE er.target_type='message' AND er.target_id=` + alias + `.message_id)
- AND NOT EXISTS(SELECT 1 FROM reports er WHERE jsonb_typeof(er.evidence)='array' AND er.evidence @> jsonb_build_array(jsonb_build_object('messageId',` + alias + `.message_id::text)))`
-}
+// reportedMessageIDs is a CTE (name "evidence", column id) with the ids of the messages named in the evidence of
+// any report (reports.evidence is an array of objects with a messageId). It is read once per statement, from the
+// reports that carry evidence only (reports_with_evidence, migration 0044), and joined as a hash set: asking
+// "is this message in some report's evidence" per message with a containment test scans every such report for
+// every message (round-3 audit DB-NEW-4). Messages named as a report's target are looked up by reports_target.
+const reportedMessageIDs = `evidence AS MATERIALIZED (
+  SELECT DISTINCT ev->>'messageId' AS id FROM reports r
+  CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(r.evidence)='array' THEN r.evidence ELSE '[]'::jsonb END) ev WHERE r.evidence IS NOT NULL)`
 
 // PurgeNotifications deletes notifications older than retain.
 func (s *Store) PurgeNotifications(ctx context.Context, retain time.Duration) (int64, error) {
@@ -182,20 +183,36 @@ func (s *Store) purgeDeletedPosts(ctx context.Context, retain time.Duration) (in
 // is still waiting for a device to receive it (both sides have it), no attachment hangs on it, and no report
 // names it as evidence. A conversation always keeps each member's latest real (non-reaction) message, because
 // the "has the peer replied" rule reads it.
+//
+// One run is one pass over the old messages in (created_at, message_id) order, in windows of retentionChunk rows
+// examined from a cursor (messages_age_key). The rows that stay (each member's latest message, reported ones)
+// are therefore looked at once per run, not once per chunk as when every chunk began again at the oldest row
+// (round-3 audit N11).
 func (s *Store) PurgeMessageMetadata(ctx context.Context, retain time.Duration) (int64, error) {
-	return drain(ctx, func() (int64, error) {
-		tag, err := s.Pool.Exec(ctx, `WITH evidence AS MATERIALIZED (
-  SELECT DISTINCT ev->>'messageId' AS id FROM reports r
-  CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(r.evidence)='array' THEN r.evidence ELSE '[]'::jsonb END) ev WHERE r.evidence IS NOT NULL)
- DELETE FROM messages WHERE ctid IN (SELECT m.ctid FROM messages m WHERE m.created_at<now()-$1::interval
-  AND NOT EXISTS(SELECT 1 FROM message_envelopes e WHERE e.message_id=m.message_id AND e.delivered_at IS NULL)
-  AND NOT EXISTS(SELECT 1 FROM chat_blobs b WHERE b.message_id=m.message_id)
-  AND NOT EXISTS(SELECT 1 FROM reports r WHERE r.target_type='message' AND r.target_id=m.message_id)
-  AND NOT EXISTS(SELECT 1 FROM evidence WHERE evidence.id=m.message_id::text)
-  AND (m.aux OR EXISTS(SELECT 1 FROM messages n WHERE n.conversation_id=m.conversation_id AND n.sender_id=m.sender_id AND NOT n.aux AND (n.created_at,n.message_id)>(m.created_at,m.message_id)))
-  ORDER BY m.created_at LIMIT $2)`, retain, retentionChunk)
-		return tag.RowsAffected(), err
-	})
+	var total int64
+	afterTS, afterID := "-infinity", "00000000-0000-0000-0000-000000000000"
+	for ctx.Err() == nil {
+		var examined, deleted int64
+		var lastTS, lastID *string
+		err := s.Pool.QueryRow(ctx, `WITH `+reportedMessageIDs+`,
+ win AS MATERIALIZED (SELECT m.ctid AS tid,m.message_id,m.created_at,m.conversation_id,m.sender_id,m.aux FROM messages m
+  WHERE m.created_at<now()-$1::interval AND (m.created_at,m.message_id)>($2::timestamptz,$3::uuid) ORDER BY m.created_at,m.message_id LIMIT $4),
+ del AS (DELETE FROM messages WHERE ctid IN (SELECT w.tid FROM win w
+  WHERE NOT EXISTS(SELECT 1 FROM message_envelopes e WHERE e.message_id=w.message_id AND e.delivered_at IS NULL)
+  AND NOT EXISTS(SELECT 1 FROM chat_blobs b WHERE b.message_id=w.message_id)
+  AND NOT EXISTS(SELECT 1 FROM reports r WHERE r.target_type='message' AND r.target_id=w.message_id)
+  AND NOT EXISTS(SELECT 1 FROM evidence WHERE evidence.id=w.message_id::text)
+  AND (w.aux OR EXISTS(SELECT 1 FROM messages n WHERE n.conversation_id=w.conversation_id AND n.sender_id=w.sender_id AND NOT n.aux AND (n.created_at,n.message_id)>(w.created_at,w.message_id)))) RETURNING 1)
+ SELECT (SELECT count(*) FROM win),(SELECT count(*) FROM del),
+  (SELECT created_at::text FROM win ORDER BY created_at DESC,message_id DESC LIMIT 1),(SELECT message_id::text FROM win ORDER BY created_at DESC,message_id DESC LIMIT 1)`,
+			retain, afterTS, afterID, retentionChunk).Scan(&examined, &deleted, &lastTS, &lastID)
+		total += deleted
+		if err != nil || examined < retentionChunk || lastTS == nil {
+			return total, err
+		}
+		afterTS, afterID = *lastTS, *lastID
+	}
+	return total, ctx.Err()
 }
 
 // PurgeMediaTombstones deletes the rows of photos whose objects are gone (status deleted, keys cleared) more

@@ -2,15 +2,21 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"hiyall/services/api/internal/config"
+	"hiyall/services/api/internal/identity"
 )
 
 // serviceAccount writes a syntactically valid service-account key (a throwaway RSA key) and returns its path.
@@ -173,5 +179,89 @@ func TestReleaseRequiresAClientAddressDecisionAndEvidenceBucket(t *testing.T) {
 	t.Setenv("EVIDENCE_ALLOW_SHARED_BUCKET", "true")
 	if _, out := runCheck(t, "-release"); !strings.Contains(out, "EVIDENCE_BUCKET (and its write-only token) is required") {
 		t.Fatalf("a shared evidence bucket passed the release check: %s", out)
+	}
+}
+
+// appleEnv adds a real (throwaway) Apple key and the four APPLE_* values to productionEnv's environment.
+func appleEnv(t *testing.T, dir string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, _ := x509.MarshalPKCS8PrivateKey(key)
+	file := filepath.Join(dir, "AuthKey_ABC123.p8")
+	if err = os.WriteFile(file, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range map[string]string{"APPLE_SIGN_IN_ENABLED": "true", "APPLE_TEAM_ID": "TEAM123456", "APPLE_KEY_ID": "ABC123", "APPLE_CLIENT_ID": "app.hiyall.test", "APPLE_PRIVATE_KEY_FILE": file} {
+		t.Setenv(k, v)
+	}
+}
+
+// Round-3 audit API-1: -release, -db and -net ask Apple whether the APPLE_* values work.
+func TestCheckConfigProbesAppleAndSeparatesBadCredentialsFromNoNetwork(t *testing.T) {
+	appleEnv(t, productionEnv(t))
+	original := appleProbe
+	t.Cleanup(func() { appleProbe = original })
+	calls := 0
+	answer := func(err error) { appleProbe = func(*identity.AppleRevoker) error { calls++; return err } }
+
+	answer(nil)
+	if code, out := runCheck(t, "-release"); code != 0 || calls != 1 {
+		t.Fatalf("a configured Apple client: %d calls=%d %s", code, calls, out)
+	}
+	answer(identity.ErrAppleClientRejected)
+	code, out := runCheck(t, "-release")
+	if code != 1 || !strings.Contains(out, "problem: Apple rejected APPLE_TEAM_ID") || !strings.Contains(out, "invalid_client") {
+		t.Fatalf("invalid_client must fail: %d %s", code, out)
+	}
+	answer(identity.ErrAppleUnreachable)
+	code, out = runCheck(t, "-release")
+	if code != 0 || !strings.Contains(out, "warning: could not reach Apple") {
+		t.Fatalf("no network is a warning only: %d %s", code, out)
+	}
+	answer(&identity.AppleError{Status: 400, Code: "unsupported_grant_type"})
+	if code, out = runCheck(t, "-release"); code != 0 || !strings.Contains(out, "warning: Apple answered the APPLE_* probe") {
+		t.Fatalf("an odd answer is a warning: %d %s", code, out)
+	}
+	// A plain check never calls Apple; -net does.
+	calls = 0
+	answer(nil)
+	if code, _ = runCheck(t); code != 0 || calls != 0 {
+		t.Fatalf("plain check dialled Apple: %d", calls)
+	}
+	if _, _ = runCheck(t, "-net"); calls != 1 {
+		t.Fatalf("-net must probe Apple, calls=%d", calls)
+	}
+}
+
+// Round-3 audit API-2: -net proves the API's evidence token is write-only, or fails.
+func TestCheckConfigNetRunsTheEvidenceCanary(t *testing.T) {
+	productionEnv(t)
+	original := evidenceProbe
+	t.Cleanup(func() { evidenceProbe = original })
+	calls := 0
+	answer := func(problem, warning string, err error) {
+		evidenceProbe = func(config.Config) (string, string, error) { calls++; return problem, warning, err }
+	}
+	answer("", "", nil)
+	if code, out := runCheck(t, "-release"); calls != 0 {
+		t.Fatalf("the canary must not run without -net: %d %s", code, out)
+	}
+	if code, out := runCheck(t, "-net"); code != 0 || calls != 1 {
+		t.Fatalf("a write-only token: %d calls=%d %s", code, calls, out)
+	}
+	answer("the API's evidence token can delete objects in the evidence bucket", "", nil)
+	if code, out := runCheck(t, "-net"); code != 1 || !strings.Contains(out, "problem: the API's evidence token can delete") {
+		t.Fatalf("a deletable token must fail: %d %s", code, out)
+	}
+	answer("", "EVIDENCE_ALLOW_API_DELETE=true: accepted with a bucket-lock", nil)
+	if code, out := runCheck(t, "-net"); code != 0 || !strings.Contains(out, "warning: EVIDENCE_ALLOW_API_DELETE=true") {
+		t.Fatalf("an accepted token: %d %s", code, out)
+	}
+	answer("", "", errors.New("the evidence token cannot write a probe object (code AccessDenied)"))
+	if code, out := runCheck(t, "-net"); code != 0 || !strings.Contains(out, "warning: evidence token canary did not run") {
+		t.Fatalf("a probe that could not run: %d %s", code, out)
 	}
 }

@@ -100,7 +100,10 @@ func (s *Store) mediaRefs(ctx context.Context, c *AdminContent, query, id string
 func (s *Store) ReadyMediaKey(ctx context.Context, mediaID string) (string, error) {
 	var key *string
 	err := s.Pool.QueryRow(ctx, `SELECT variants->>'full' FROM media_assets WHERE media_id=$1 AND status='ready'`, mediaID).Scan(&key)
-	if err != nil || key == nil || *key == "" {
+	if err != nil {
+		return "", mapped(err)
+	}
+	if key == nil || *key == "" {
 		return "", domain.ErrNotFound
 	}
 	return *key, nil
@@ -195,7 +198,10 @@ func (s *Store) AdminContentCase(ctx context.Context, caseID string) (AdminConte
 func (s *Store) HeldCaseKey(ctx context.Context, caseID string) (mediaID, key string, err error) {
 	var k *string
 	err = s.Pool.QueryRow(ctx, `SELECT media_id::text,full_key FROM content_cases WHERE case_id=$1`, caseID).Scan(&mediaID, &k)
-	if err != nil || k == nil {
+	if err != nil {
+		return "", "", mapped(err)
+	}
+	if k == nil {
 		return "", "", domain.ErrNotFound
 	}
 	return mediaID, *k, nil
@@ -205,14 +211,16 @@ func (s *Store) HeldCaseKey(ctx context.Context, caseID string) (mediaID, key st
 var ErrCaseClosed = &domain.PolicyError{Status: 409, Code: "CASE_STATE", Message: "This case is not in a state that allows that"}
 
 // ContentCaseStep moves a quarantine case: confirm needs an open case, reported needs an open or confirmed one
-// and a report reference (the NCMEC CyberTipline number or the authority's reference). A case is cleared only
-// by a proposal a second administrator approves (ProposeEvidenceStep), so Action "clear" is refused here.
-// legalHold, when not nil, can only be true: a legal hold is lifted by the same two-person route, and a
-// reported or confirmed case always carries one. hook runs in the same transaction, where the console writes
-// its audit entry.
+// and a report reference (the NCMEC CyberTipline number or the authority's reference). Both run as the
+// SECURITY DEFINER functions content_case_confirm and content_case_report (migration 0043): the console role has no
+// UPDATE on cases, and 'reported' moves hold_until to at least a year after the report, however late it is made.
+// A case is cleared only by a proposal a second administrator approves (ProposeEvidenceStep), so Action "clear"
+// is refused here. legalHold, when not nil, can only be true: a legal hold is lifted by the same two-person
+// route, and a reported or confirmed case always carries one. hook runs in the same transaction, where the
+// console writes its audit entry.
 type ContentCaseStep struct {
 	Action          string // confirm or reported
-	Operator        string
+	OperatorID      string // the acting administrator
 	Note            string
 	ReportReference string
 	LegalHold       *bool
@@ -227,27 +235,19 @@ func (s *Store) ResolveContentCase(ctx context.Context, caseID string, step Cont
 	if step.LegalHold != nil && !*step.LegalHold {
 		return ErrLegalHoldLiftRequiresApproval
 	}
+	if step.Action != "confirm" && step.Action != "reported" {
+		return ErrCaseClosed
+	}
 	return s.inTx(ctx, func(tx pgx.Tx) error {
-		var status, user string
-		if err := tx.QueryRow(ctx, `SELECT status,user_id::text FROM content_cases WHERE case_id=$1 FOR UPDATE`, caseID).Scan(&status, &user); err != nil {
-			return mapped(err)
+		var user string
+		var err error
+		if step.Action == "confirm" {
+			err = tx.QueryRow(ctx, `SELECT content_case_confirm($1::uuid,$2::uuid,$3)::text`, caseID, step.OperatorID, step.Note).Scan(&user)
+		} else {
+			err = tx.QueryRow(ctx, `SELECT content_case_report($1::uuid,$2::uuid,$3,$4)::text`, caseID, step.OperatorID, step.Note, step.ReportReference).Scan(&user)
 		}
-		var next string
-		switch {
-		case step.Action == "confirm" && status == "open":
-			next = "confirmed"
-		case step.Action == "reported" && (status == "open" || status == "confirmed") && step.ReportReference != "":
-			next = "reported"
-		default:
-			return ErrCaseClosed
-		}
-		// A confirmed or reported case is evidence: it is held until a person lifts the hold.
-		_, err := tx.Exec(ctx, `UPDATE content_cases SET status=$2,reviewed_by=$3,reviewed_at=now(),resolution_note=$4,
- report_reference=CASE WHEN $2='reported' THEN $5 ELSE report_reference END,reported_at=CASE WHEN $2='reported' THEN now() ELSE reported_at END,
- legal_hold=CASE WHEN $6::boolean IS NOT NULL THEN $6 WHEN $2 IN ('confirmed','reported') THEN true ELSE legal_hold END WHERE case_id=$1`,
-			caseID, next, step.Operator, step.Note, step.ReportReference, step.LegalHold)
 		if err != nil {
-			return err
+			return MapSafetyError(err)
 		}
 		if hook != nil {
 			return hook(ctx, tx, user)

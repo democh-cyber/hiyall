@@ -59,6 +59,10 @@ func run() error {
 	if err = enforceDBRole(ctx, db, cfg.Env); err != nil {
 		return err
 	}
+	grantsCheck, err := enforceGrants(ctx, db, cfg.Env)
+	if err != nil {
+		return err
+	}
 	if !cfg.AgeBandIsolation {
 		slog.Warn("age-band isolation is OFF: minors and adults can see and reach each other (AGE_BAND_ISOLATION=false)")
 	}
@@ -82,6 +86,7 @@ func run() error {
 	defer stopBackground()
 	api := httpapi.New(db, verify, cfg.DevAuth, cfg.Origin)
 	api.Migrations = expectedMigrations(cfg)
+	api.GrantsCheck = grantsCheck
 	api.SpacesEvents = cfg.SpacesEventsEnabled
 	api.ClientIP = cfg.ClientIPResolver()
 	logClientIPMode(cfg)
@@ -341,6 +346,11 @@ func maintenanceJobs(db *store.Store, objects, chatObjects media.Store, identiti
 		}, 0},
 		{"stale chat devices", func(ctx context.Context) (int64, error) {
 			return db.RevokeStaleDevices(ctx, store.StaleDeviceAfter, 500)
+		}, 0},
+		// A device idle for three days that holds more than half the undelivered-envelope cap is on its way to
+		// refusing its owner's inbound chat (audit CHAT-N1); the send path revokes one that is over the cap.
+		{"backlogged chat devices", func(ctx context.Context) (int64, error) {
+			return db.RevokeBackloggedDevices(ctx, domain.Free().ChatBacklogPerDevice, store.BackloggedDeviceIdle, 500)
 		}, 0},
 		{"session purge", func(ctx context.Context) (int64, error) { return db.PurgeSessions(ctx, 30*24*time.Hour, 5000) }, 0},
 		{"key claim purge", func(ctx context.Context) (int64, error) { return db.PurgeKeyClaims(ctx, 5000) }, 0},

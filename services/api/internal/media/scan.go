@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/disintegration/imaging"
+
+	"hiyall/services/api/internal/metrics"
 )
 
 // Upload scanning (docs/security/16-csam-and-illegal-content.md). Every photo that is NOT end-to-end
@@ -347,7 +349,21 @@ func NewHTTPProvider(rawURL, keyFile string, production bool) (*HTTPProvider, er
 
 func (p *HTTPProvider) Name() string { return "provider" }
 
+// scanUpstreamErrors counts provider calls that failed (unreachable, a non-200 answer or an answer that is not understood):
+// while they fail, uploads are not being screened. The alert rule HiyallScanUpstreamErrors reads it.
+var scanUpstreamErrors = metrics.NewCounter("hiyall_scan_upstream_errors_total", "Upload scan provider calls that failed, by scanner.", "scanner")
+
+func init() { scanUpstreamErrors.Preset("provider") }
+
 func (p *HTTPProvider) Scan(ctx context.Context, in ScanInput) (ScanResult, error) {
+	r, err := p.scan(ctx, in)
+	if err != nil {
+		scanUpstreamErrors.Inc(p.Name())
+	}
+	return r, err
+}
+
+func (p *HTTPProvider) scan(ctx context.Context, in ScanInput) (ScanResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.URL, bytes.NewReader(in.Full))
 	if err != nil {
 		return ScanResult{}, err

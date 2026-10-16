@@ -112,8 +112,12 @@ type API struct {
 	// Migrations are the migration files this release needs applied; /readyz refuses while the
 	// database is behind. Empty disables the check.
 	Migrations []string
-	ready      readyCache
-	routes     routeSet
+	// GrantsCheck lists what the API's database role lacks for this release (store.GrantProblems); /readyz turns red
+	// once the answer has been non-empty for a full check interval (ops.go). Nil disables the check.
+	GrantsCheck func(ctx context.Context) ([]string, error)
+	grants      grantsCache
+	ready       readyCache
+	routes      routeSet
 	// AppCheck verifies the X-Firebase-AppCheck token (appcheck.go); AppCheckMode says what to do with the answer.
 	// Nil or appcheck.Off: nothing is checked.
 	AppCheck     AppCheckVerifier
@@ -285,7 +289,12 @@ func (a *API) Handler() http.Handler {
 		if a.health(w, r) {
 			return
 		}
-		if !a.budget.Allow() || !a.clients.allow(a.clientAddress(r)) {
+		// The per-address bucket (an IPv6 client's whole /64) limits everyone. The instance budget is only for
+		// requests that carry no bearer token, and for tokens that then fail verification: a flood of
+		// anonymous requests must not use up what signed-in members need (round-3 audit API-3).
+		raw := r.Header.Get("Authorization")
+		hasBearer := strings.HasPrefix(raw, "Bearer ") && len(raw) <= 16384
+		if !a.clients.allow(a.clientBucket(r)) || (!hasBearer && !a.budget.Allow()) {
 			w.Header().Set("Retry-After", "1")
 			a.failure(w, r, 429, "RATE_LIMITED", "Try again shortly")
 			return
@@ -298,8 +307,7 @@ func (a *API) Handler() http.Handler {
 			a.devSession(w, r)
 			return
 		}
-		raw := r.Header.Get("Authorization")
-		if !strings.HasPrefix(raw, "Bearer ") || len(raw) > 16384 {
+		if !hasBearer {
 			a.failure(w, r, 401, "UNAUTHENTICATED", "Sign in to continue")
 			return
 		}
@@ -308,6 +316,11 @@ func (a *API) Handler() http.Handler {
 		}
 		p, err := a.Verify(r.Context(), strings.TrimPrefix(raw, "Bearer "))
 		if err != nil {
+			if !a.budget.Allow() {
+				w.Header().Set("Retry-After", "1")
+				a.failure(w, r, 429, "RATE_LIMITED", "Try again shortly")
+				return
+			}
 			a.authFailure(w, r, err)
 			return
 		}
@@ -320,6 +333,10 @@ func (a *API) Handler() http.Handler {
 // rightmost untrusted X-Forwarded-For hop (see clientip). A request from anyone else is keyed by its peer
 // whatever headers it sends.
 func (a *API) clientAddress(r *http.Request) string { return a.ClientIP.ClientIP(r) }
+
+// clientBucket is the key the per-address limiter and the Nearby per-address count use: clientAddress, with an
+// IPv6 address reduced to its /64 so that rotating through a customer's addresses is not a way round a limit.
+func (a *API) clientBucket(r *http.Request) string { return clientip.Bucket(a.clientAddress(r)) }
 
 // serverWriteTimeout is http.Server.WriteTimeout in cmd/api: a handler that outlives it must extend its
 // own write deadline.

@@ -148,63 +148,82 @@ const SearchCandidateCap = 5000
 // hidden fields cannot be inferred by changing search filters. A keyset page is
 // bounded and all privacy and block checks are repeated on every page.
 func (s *Store) SearchPeople(ctx context.Context, viewer string, f domain.PeopleFilters, after string, limit int, online Presence, sign Signer) ([]map[string]any, error) {
+	items, _, err := s.SearchPeoplePage(ctx, viewer, f, after, limit, online, sign)
+	return items, err
+}
+
+// SearchPeoplePage is SearchPeople that also says where to continue when the page ended because the candidate
+// cap was reached and not because the members ran out: resume is then the last candidate examined (the user id
+// the next page starts after), otherwise "". A page can be short, even empty, and still have more behind it (a
+// selective filter, or a minor viewer barred from most of the table); the caller offers resume as the next
+// cursor, so the list does not end early (round-3 audit D8 residual).
+func (s *Store) SearchPeoplePage(ctx context.Context, viewer string, f domain.PeopleFilters, after string, limit int, online Presence, sign Signer) (items []map[string]any, resume string, err error) {
 	if f.UsesAgeOrGender() {
 		minor, err := s.IsMinor(ctx, viewer)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if minor {
-			return nil, domain.ErrFilterNotAvailable
+			return nil, "", domain.ErrFilterNotAvailable
 		}
 		if ageFilterCannotMatch(s.AgeBandIsolation, minor, f) {
-			return []map[string]any{}, nil
+			return []map[string]any{}, "", nil
 		}
 	}
 	mine, err := s.viewerInterests(ctx, viewer)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	args := append([]any{viewer, after}, peopleFilterArgs(f).list()...)
+	// meta is one row whatever the page holds, so an empty page still learns whether the cap was reached.
 	rows, err := s.Pool.Query(ctx, `
  WITH cand AS MATERIALIZED (SELECT q0.user_id FROM privacy_settings q0 WHERE q0.user_id>$2::uuid AND q0.user_id<>$1::uuid
-  AND q0.data->>'discoverable'='true' AND q0.data->>'profileAudience'='public' ORDER BY q0.user_id LIMIT `+strconv.Itoa(SearchCandidateCap)+`)
- SELECT p.user_id::text,p.username,p.data,q.data,`+avatarThumbKey("av")+` FROM cand JOIN profiles p USING(user_id)
+  AND q0.data->>'discoverable'='true' AND q0.data->>'profileAudience'='public' ORDER BY q0.user_id LIMIT `+strconv.Itoa(SearchCandidateCap)+`),
+ meta AS (SELECT CASE WHEN count(*)=`+strconv.Itoa(SearchCandidateCap)+` THEN (SELECT user_id::text FROM cand ORDER BY user_id DESC LIMIT 1) END AS resume FROM cand),
+ res AS (SELECT p.user_id,p.username,p.data,q.data AS policy,`+avatarThumbKey("av")+` AS avatar FROM cand JOIN profiles p USING(user_id)
  JOIN users u USING(user_id) JOIN privacy_settings q USING(user_id)
  JOIN onboarding o ON o.user_id=p.user_id AND o.completed_at IS NOT NULL`+avatarJoin("av", "p")+`
  WHERE p.user_id<>$1 AND p.user_id>$2::uuid AND u.status='active'
  AND q.data->>'discoverable'='true' AND q.data->>'profileAudience'='public'
  AND `+notBarred("$1::uuid", "p.user_id")+`
  `+peopleFilterSQL(3)+`
- ORDER BY p.user_id LIMIT $11`, append(args, limit)...)
+ ORDER BY p.user_id LIMIT $11)
+ SELECT res.user_id::text,res.username,res.data,res.policy,res.avatar,meta.resume FROM meta LEFT JOIN res ON true ORDER BY res.user_id`, append(args, limit)...)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
 	result := make([]map[string]any, 0)
 	var audiences []string
 	for rows.Next() {
-		var id, username string
+		var id, username *string
 		var data, policy []byte
-		var avatar *string
-		if err = rows.Scan(&id, &username, &data, &policy, &avatar); err != nil {
-			return nil, err
+		var avatar, next *string
+		if err = rows.Scan(&id, &username, &data, &policy, &avatar, &next); err != nil {
+			return nil, "", err
+		}
+		if next != nil {
+			resume = *next
+		}
+		if id == nil {
+			continue // the one row of an empty page
 		}
 		var p domain.Profile
 		var q domain.Privacy
 		if err = json.Unmarshal(data, &p); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if err = json.Unmarshal(policy, &q); err != nil {
-			return nil, err
+			return nil, "", err
 		}
-		result = append(result, discoveryItem(id, username, p, q, avatarURL(sign, avatar), mine))
+		result = append(result, discoveryItem(*id, *username, p, q, avatarURL(sign, avatar), mine))
 		audiences = append(audiences, q.OnlineAudience)
 	}
 	if err = rows.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	rows.Close()
-	return result, s.addPresence(ctx, viewer, result, audiences, online)
+	return result, resume, s.addPresence(ctx, viewer, result, audiences, online)
 }
 
 // viewerInterests is the viewer's own interests as they typed them: one read of one profile row, used to

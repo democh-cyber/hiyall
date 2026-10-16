@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"hiyall/services/api/internal/config"
+	"hiyall/services/api/internal/logscrub"
 	"hiyall/services/api/internal/store"
 )
 
@@ -37,6 +38,48 @@ func enforceDBRole(ctx context.Context, db *store.Store, env string) error {
 		return nil
 	}
 	return fmt.Errorf("DATABASE_URL must use the least-privilege hiyall_api role (database/roles/roles.sql): %s. Set DB_ALLOW_OWNER_ROLE=true only to accept this knowingly", strings.Join(problems, "; "))
+}
+
+// enforceGrants checks at start that the role this process connects as has every grant the release needs
+// (store.GrantProblems; database/roles/grants.sql is what gives them, and cmd/migrate runs it with
+// MIGRATE_RUN_GRANTS=true). Without them a table the migrations added answers 500 on first use while /readyz stays
+// green. In production a gap refuses the start and names the missing privileges and the fix; elsewhere it is a
+// warning (a development database is owned by the developer's own role, which is not checked at all). It returns
+// the check /readyz repeats while the process runs (nil when the check does not apply): a role the production
+// check accepted as an owner (DB_ALLOW_OWNER_ROLE) has every privilege by being the owner, and one that is not
+// the least-privilege role is judged by enforceDBRole, not here.
+func enforceGrants(ctx context.Context, db *store.Store, env string) (func(context.Context) ([]string, error), error) {
+	role, err := db.CurrentRole(ctx)
+	if err != nil {
+		if env == "production" {
+			return nil, errors.New("database grants check failed; check DATABASE_URL and its role's rights")
+		}
+		slog.Warn("database grants not checked: the role could not be read", "reason", logscrub.Err(err))
+		return nil, nil
+	}
+	if env != "production" && role != store.GrantsRole {
+		return nil, nil // the developer's own role
+	}
+	if roleProblems, err := db.RoleProblems(ctx); err == nil && len(roleProblems) > 0 {
+		return nil, nil // enforceDBRole decided (refused, or the owner was accepted knowingly)
+	}
+	check := func(ctx context.Context) ([]string, error) { return db.GrantProblems(ctx, role) }
+	problems, err := check(ctx)
+	if err != nil {
+		if env == "production" {
+			return nil, errors.New("database grants check failed; check DATABASE_URL and its role's rights")
+		}
+		slog.Warn("database grants not checked", "reason", logscrub.Err(err))
+		return check, nil
+	}
+	if len(problems) == 0 {
+		return check, nil
+	}
+	if env != "production" {
+		slog.Warn("the database role is missing grants this release needs (production refuses to start): run database/roles/grants.sql as the table owner", "problems", problems)
+		return check, nil
+	}
+	return nil, fmt.Errorf("the database role %s is missing grants this release needs: %s. Run database/roles/grants.sql as the table owner (hiyall_migrate), or set MIGRATE_RUN_GRANTS=true on the release's migrate step, then start again", role, strings.Join(problems, "; "))
 }
 
 // reviewDatabase is `api check-config -db`: it connects with DATABASE_URL (read only, short timeouts) and checks

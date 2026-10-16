@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"hiyall/services/api/internal/domain"
 	"hiyall/services/api/internal/media"
 	"hiyall/services/api/internal/metrics"
 )
@@ -17,6 +18,9 @@ type safetyState struct {
 	// (development, or EVIDENCE_ALLOW_SHARED_BUCKET=true in production).
 	evidence      media.Store
 	retentionDays int
+	// nearbyAccounts is how many different accounts one source address may search Nearby for in a day
+	// (NEARBY_ACCOUNTS_PER_ADDRESS); 0 means domain.DefaultNearbyAccountsPerAddress.
+	nearbyAccounts int
 
 	exportOnce  sync.Once
 	exportSlots chan struct{}
@@ -27,6 +31,16 @@ type safetyState struct {
 // a new case's evidence is held (EVIDENCE_RETENTION_DAYS; 0 means store.DefaultEvidenceRetentionDays).
 func (a *API) SetEvidence(s media.Store, retentionDays int) {
 	a.safe.evidence, a.safe.retentionDays = s, retentionDays
+}
+
+// SetNearbyAccountsPerAddress sets the per-address ceiling of distinct accounts that may use Nearby in a day.
+func (a *API) SetNearbyAccountsPerAddress(n int) { a.safe.nearbyAccounts = n }
+
+func (a *API) nearbyAccountsPerAddress() int {
+	if a.safe.nearbyAccounts > 0 {
+		return a.safe.nearbyAccounts
+	}
+	return domain.DefaultNearbyAccountsPerAddress
 }
 
 // SetExportConcurrency sets how many data exports this node builds at once (EXPORT_CONCURRENCY, default 3).

@@ -13,7 +13,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -185,6 +187,23 @@ func (s *S3) Put(ctx context.Context, key string, data []byte, contentType strin
 	return err
 }
 
+// List returns at most limit objects under prefix.
+func (s *S3) List(ctx context.Context, prefix string, limit int) ([]ObjectInfo, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var out []ObjectInfo
+	for o := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
+		if o.Err != nil {
+			return nil, o.Err
+		}
+		out = append(out, ObjectInfo{Key: o.Key, LastModified: o.LastModified})
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (s *S3) Delete(ctx context.Context, keys ...string) error {
 	for _, key := range keys {
 		if err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}); err != nil {
@@ -244,12 +263,14 @@ func Process(data []byte) (Processed, error) {
 type Memory struct {
 	mu      sync.Mutex
 	Objects map[string][]byte
-	Sizes   map[string]int64
-	Signed  map[string]int64
+	// Modified overrides the modification time List reports for a key (Put records the time of the call).
+	Modified map[string]time.Time
+	Sizes    map[string]int64
+	Signed   map[string]int64
 }
 
 func NewMemory() *Memory {
-	return &Memory{Objects: map[string][]byte{}, Sizes: map[string]int64{}, Signed: map[string]int64{}}
+	return &Memory{Objects: map[string][]byte{}, Modified: map[string]time.Time{}, Sizes: map[string]int64{}, Signed: map[string]int64{}}
 }
 
 func (m *Memory) sign(key string, size int64) {
@@ -300,7 +321,28 @@ func (m *Memory) Put(_ context.Context, key string, data []byte, _ string) error
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Objects[key] = data
+	if m.Modified == nil {
+		m.Modified = map[string]time.Time{}
+	}
+	m.Modified[key] = time.Now()
 	return nil
+}
+
+// List reports the stored keys under prefix, in key order.
+func (m *Memory) List(_ context.Context, prefix string, limit int) ([]ObjectInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []ObjectInfo
+	for k := range m.Objects {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, ObjectInfo{Key: k, LastModified: m.Modified[k]})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 func (m *Memory) Delete(_ context.Context, keys ...string) error {
 	m.mu.Lock()
@@ -308,6 +350,7 @@ func (m *Memory) Delete(_ context.Context, keys ...string) error {
 	for _, k := range keys {
 		delete(m.Objects, k)
 		delete(m.Sizes, k)
+		delete(m.Modified, k)
 	}
 	return nil
 }

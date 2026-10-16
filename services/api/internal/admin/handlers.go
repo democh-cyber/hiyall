@@ -35,6 +35,7 @@ func (s *Server) routeAPI() {
 	s.handle("POST", "/admin/v1/users/{id}/restore", RoleModerator, s.restoreUser)
 
 	s.routeContent()
+	s.routeSafety()
 
 	s.handle("GET", "/admin/v1/audit", RoleAdmin, s.listAudit)
 	s.handle("POST", "/admin/v1/audit/prune", RoleAdmin, s.pruneAudit)
@@ -408,6 +409,21 @@ func (s *Server) setOperatorRole(w http.ResponseWriter, r *http.Request, p *Prin
 	role, ok := ParseRole(body.Role)
 	if !ok {
 		s.fail(w, r, &domain.ValidationError{Field: "role", Message: "must be viewer, moderator or admin"})
+		return
+	}
+	if role == RoleAdmin {
+		// Making someone an administrator takes a second administrator's approval (API-5): a proposal, not a change.
+		reason, err := Reason(body.Reason)
+		if err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		id := r.PathValue("id")
+		if !domain.IsID(id) {
+			s.fail(w, r, domain.ErrNotFound)
+			return
+		}
+		s.proposeAdminPromotion(w, r, p, id, reason)
 		return
 	}
 	s.operatorChange(w, r, p, body.Reason, func(a Actor, id, reason string) (Operator, error) {

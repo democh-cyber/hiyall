@@ -64,39 +64,55 @@ func (s *Store) Username(ctx context.Context, user string) (string, error) {
 // to close the account's live sockets (NOTIFY is transactional, as in suspend). Asking again while pending
 // changes nothing: the first request's due date stands.
 func (s *Store) ScheduleDeletion(ctx context.Context, user string) (DeletionState, error) {
+	return s.scheduleDeletion(ctx, user, nil)
+}
+
+// scheduleDeletion is ScheduleDeletion with a step that runs in the same transaction after the account is
+// scheduled (or was already pending), such as queueing a manual Apple revocation (deletion_apple.go).
+func (s *Store) scheduleDeletion(ctx context.Context, user string, also func(context.Context, pgx.Tx) error) (DeletionState, error) {
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		var status string
-		if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, user).Scan(&status); err != nil {
-			return mapped(err)
+		if err := scheduleDeletionTx(ctx, tx, user); err != nil {
+			return err
 		}
-		if status == "pending_deletion" {
-			return nil
+		if also != nil {
+			return also(ctx, tx)
 		}
-		if status != "active" {
-			return domain.ErrNotFound
-		}
-		for _, statement := range []string{
-			`UPDATE users SET status='pending_deletion',deletion_scheduled_at=now(),deletion_due_at=now()+$2::interval WHERE user_id=$1`,
-			`UPDATE sessions SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1`,
-			`UPDATE auth_identities SET sessions_revoked_before=now() WHERE user_id=$1`,
-			`UPDATE devices SET push_provider=NULL,push_token=NULL WHERE user_id=$1`,
-		} {
-			args := []any{user}
-			if strings.Contains(statement, "$2") {
-				args = append(args, domain.DeletionGrace)
-			}
-			if _, err := tx.Exec(ctx, statement, args...); err != nil {
-				return err
-			}
-		}
-		notice, _ := json.Marshal(realtime.DisconnectEvent(user))
-		_, err := tx.Exec(ctx, `SELECT pg_notify($1,$2)`, realtime.Channel, string(notice))
-		return err
+		return nil
 	})
 	if err != nil {
 		return DeletionState{}, err
 	}
 	return s.DeletionStatus(ctx, user)
+}
+
+func scheduleDeletionTx(ctx context.Context, tx pgx.Tx, user string) error {
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, user).Scan(&status); err != nil {
+		return mapped(err)
+	}
+	if status == "pending_deletion" {
+		return nil
+	}
+	if status != "active" {
+		return domain.ErrNotFound
+	}
+	for _, statement := range []string{
+		`UPDATE users SET status='pending_deletion',deletion_scheduled_at=now(),deletion_due_at=now()+$2::interval WHERE user_id=$1`,
+		`UPDATE sessions SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1`,
+		`UPDATE auth_identities SET sessions_revoked_before=now() WHERE user_id=$1`,
+		`UPDATE devices SET push_provider=NULL,push_token=NULL WHERE user_id=$1`,
+	} {
+		args := []any{user}
+		if strings.Contains(statement, "$2") {
+			args = append(args, domain.DeletionGrace)
+		}
+		if _, err := tx.Exec(ctx, statement, args...); err != nil {
+			return err
+		}
+	}
+	notice, _ := json.Marshal(realtime.DisconnectEvent(user))
+	_, err := tx.Exec(ctx, `SELECT pg_notify($1,$2)`, realtime.Channel, string(notice))
+	return err
 }
 
 // CancelDeletion returns a pending account to active while the grace period runs. After DueAt the purge
@@ -114,7 +130,11 @@ func (s *Store) CancelDeletion(ctx context.Context, user string) (DeletionState,
 		if !open {
 			return domain.ErrDeletionClosed
 		}
-		_, err := tx.Exec(ctx, `UPDATE users SET status='active',deletion_scheduled_at=NULL,deletion_due_at=NULL WHERE user_id=$1`, user)
+		if _, err := tx.Exec(ctx, `UPDATE users SET status='active',deletion_scheduled_at=NULL,deletion_due_at=NULL WHERE user_id=$1`, user); err != nil {
+			return err
+		}
+		// The account stays: nothing is left for an operator to revoke by hand (deletion_apple.go).
+		_, err := tx.Exec(ctx, `DELETE FROM apple_revocations WHERE user_id=$1 AND status='manual'`, user)
 		return err
 	})
 	if err != nil {
@@ -304,13 +324,16 @@ func (s *Store) PurgeDeletedIdentities(ctx context.Context, retain time.Duration
 //     pair by pair in row order and deadlock with a transaction that takes the same rows the other way round.
 //
 // The user rows come before the counter rows everywhere (a status change holds its user row while its trigger takes
-// counter rows), and the CTEs are MATERIALIZED and chained so they run in that order before the triggers fire,
-// which happens when the statement ends.
+// counter rows). The order is guaranteed by data dependency and not by the order the executor happens to start
+// the CTEs: "locked" reads "people" (its condition needs people's row count), and the DELETE reads "locked" (its
+// condition needs locked's row count; true for any count, so an empty "locked" still lets the delete run). A
+// data-modifying CTE runs to completion whether or not the statement reads it, and a CTE a node depends on is run
+// before that node, so people, then locked, then the delete (whose triggers fire when the statement ends).
 func deleteEdges(table, a, b string) string {
 	return `WITH picked AS MATERIALIZED (SELECT ctid AS tid,` + a + ` AS a,` + b + ` AS b FROM ` + table + ` WHERE ` + a + `=$1 OR ` + b + `=$1 LIMIT $2),
  people AS MATERIALIZED (SELECT u.user_id FROM users u WHERE u.user_id<>$1 AND u.user_id IN (SELECT a FROM picked UNION SELECT b FROM picked) ORDER BY u.user_id FOR NO KEY UPDATE),
  locked AS MATERIALIZED (SELECT c.user_id FROM social_counters c WHERE c.user_id IN (SELECT a FROM picked UNION SELECT b FROM picked) AND (SELECT count(*) FROM people)>=0 ORDER BY c.user_id FOR UPDATE),
- del AS (DELETE FROM ` + table + ` WHERE ctid IN (SELECT tid FROM picked) RETURNING 1)
+ del AS (DELETE FROM ` + table + ` WHERE ctid IN (SELECT tid FROM picked) AND (SELECT count(*) FROM locked)>=0 RETURNING 1)
  SELECT (SELECT count(*) FROM locked)*0+(SELECT count(*) FROM del)`
 }
 
@@ -445,8 +468,14 @@ func (s *Store) purgeContent(ctx context.Context, id string) error {
 		`DELETE FROM chat_blobs WHERE held_report_id IS NULL AND state='deleted' AND object_key IS NULL
  AND (uploader_id=$1 OR (conversation_id IN (`+memberConversations+`) AND created_at<now()-interval '2 days'))`,
 		// A message a report names (as its target or in its evidence) keeps its metadata row, like one with a held attachment.
-		`DELETE FROM messages m WHERE m.conversation_id IN (`+memberConversations+`) AND NOT EXISTS(SELECT 1 FROM chat_blobs b WHERE b.message_id=m.message_id)
- AND `+messageNotReported("m"),
+		// The ids named in report evidence are read once per statement (reportedMessageIDs); a message a report
+		// targets is found through reports_target.
+		`WITH `+reportedMessageIDs+`,
+ del AS (DELETE FROM messages m WHERE m.ctid IN (SELECT m2.ctid FROM messages m2 WHERE m2.conversation_id IN (`+memberConversations+`)
+  AND NOT EXISTS(SELECT 1 FROM chat_blobs b WHERE b.message_id=m2.message_id)
+  AND NOT EXISTS(SELECT 1 FROM reports er WHERE er.target_type='message' AND er.target_id=m2.message_id)
+  AND NOT EXISTS(SELECT 1 FROM evidence WHERE evidence.id=m2.message_id::text) LIMIT $2) RETURNING 1)
+ SELECT count(*) FROM del`,
 		`DELETE FROM conversation_members WHERE user_id=$1 OR peer_id=$1`,
 		`DELETE FROM conversations c WHERE $1::uuid IN (c.user_low_id,c.user_high_id)
  AND NOT EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.conversation_id) AND NOT EXISTS(SELECT 1 FROM chat_blobs b WHERE b.conversation_id=c.conversation_id)`,

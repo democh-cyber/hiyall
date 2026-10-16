@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"hiyall/services/api/internal/domain"
+	"hiyall/services/api/internal/metrics"
 	"hiyall/services/api/internal/store"
 )
 
@@ -26,7 +27,7 @@ func (a *API) recentlyAuthenticated(ctx context.Context, p store.Principal) (boo
 // Account deletion and the data export (docs/api/22-account-deletion-and-export.md).
 //
 //	GET    /v1/me/deletion   -> {pending, scheduledAt, dueAt, canCancel}   (also for a member in the grace period)
-//	POST   /v1/me/deletion   {confirmUsername}    403 REAUTH_REQUIRED when the sign-in is older than 5 minutes
+//	POST   /v1/me/deletion   {confirmUsername[, appleAuthorizationCode | appleCodeUnavailable:true]}    403 REAUTH_REQUIRED when the sign-in is older than 5 minutes
 //	DELETE /v1/me/deletion   cancels during the grace period (409 DELETION_WINDOW_CLOSED after it, 404 when none is scheduled)
 //	GET    /v1/me/export     a JSON download, once per 24 hours (429 RATE_LIMITED with Retry-After)
 func (a *API) deletionStatus(w http.ResponseWriter, r *http.Request, p store.Principal) {
@@ -50,14 +51,15 @@ func (a *API) cancelDeletion(w http.ResponseWriter, r *http.Request, p store.Pri
 func (a *API) scheduleDeletion(w http.ResponseWriter, r *http.Request, p store.Principal) {
 	ctx := r.Context()
 	body, err := decode(w, r)
-	var confirm, appleCode string
+	var req domain.DeletionRequest
 	if err == nil {
-		confirm, appleCode, err = domain.ParseDeletion(body)
+		req, err = domain.ParseDeletionBody(body)
 	}
 	if err != nil {
 		a.error(w, r, err)
 		return
 	}
+	confirm, appleCode := req.Confirm, req.AppleCode
 	username, err := a.Store.Username(ctx, p.UserID)
 	if err != nil {
 		a.error(w, r, err)
@@ -79,11 +81,23 @@ func (a *API) scheduleDeletion(w http.ResponseWriter, r *http.Request, p store.P
 	// Sign in with Apple: the app re-authenticated with Apple and sent the one-time authorization code. It
 	// is exchanged and revoked before the deletion is scheduled, so a failure leaves the account as it was
 	// and the member can try again (App Store guideline 5.1.1(v)).
+	manualApple := false
 	if appleCode != "" {
 		if err = a.revokeApple(ctx, p.UserID, appleCode); err != nil {
 			a.error(w, r, err)
 			return
 		}
+	} else if req.AppleCodeUnavailable {
+		// The app re-authenticated and could not get a code (the member signed in with Google again, or the web
+		// has none). The member must still be able to leave, so the deletion goes ahead and the Apple
+		// authorization is queued for an operator to revoke by hand (apple_revocations, status 'manual'; the
+		// console lists it). Only an account that holds an Apple authorization gets a row.
+		has, herr := a.Store.HasAppleAuthorization(ctx, p.UserID)
+		if herr != nil {
+			a.error(w, r, herr)
+			return
+		}
+		manualApple = has
 	} else if a.Apple != nil {
 		// The server knows how the account signs in: with Apple (or Apple linked), deleting without the code
 		// would leave the Apple authorization alive (App Store guideline 5.1.1(v)), so it is refused rather
@@ -98,7 +112,16 @@ func (a *API) scheduleDeletion(w http.ResponseWriter, r *http.Request, p store.P
 			return
 		}
 	}
-	state, err := a.Store.ScheduleDeletion(ctx, p.UserID)
+	var state store.DeletionState
+	if manualApple {
+		state, err = a.Store.ScheduleDeletionManualApple(ctx, p.UserID)
+		if err == nil {
+			appleManualRevocations.Inc()
+			slog.Warn("account deletion scheduled without Apple revocation: queued for an operator", "userId", p.UserID)
+		}
+	} else {
+		state, err = a.Store.ScheduleDeletion(ctx, p.UserID)
+	}
 	if err != nil {
 		a.error(w, r, err)
 		return
@@ -189,6 +212,10 @@ func (a *API) export(w http.ResponseWriter, r *http.Request, p store.Principal) 
 	}
 	slog.Error("export incomplete", "requestId", ctx.Value(requestIDKey{}), "reason", scrubURLs(err.Error()))
 }
+
+// appleManualRevocations counts deletions scheduled with appleCodeUnavailable for an account that holds an Apple
+// authorization: each is a row an operator must revoke by hand in the console (Apple revocations).
+var appleManualRevocations = metrics.NewCounter("hiyall_apple_manual_revocations_total", "Account deletions scheduled without a Sign in with Apple code; queued for an operator.")
 
 // ErrAppleCodeRequired is 422 APPLE_CODE_REQUIRED: this account signs in with Apple, so deleting it needs the
 // one-time authorization code from a fresh Sign in with Apple.

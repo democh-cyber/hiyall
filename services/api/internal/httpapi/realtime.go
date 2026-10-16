@@ -69,12 +69,13 @@ func (a *API) realtimeGateway(w http.ResponseWriter, r *http.Request) {
 		a.failure(w, r, 404, "NOT_FOUND", "Endpoint unavailable")
 		return
 	}
-	if !a.budget.Allow() || !a.clients.allow(a.clientAddress(r)) {
+	// As for every route: the instance budget is for requests without a bearer token only.
+	raw := r.Header.Get("Authorization")
+	if !a.clients.allow(a.clientBucket(r)) || (!(strings.HasPrefix(raw, "Bearer ") && len(raw) <= 16384) && !a.budget.Allow()) {
 		w.Header().Set("Retry-After", "2")
 		a.failure(w, r, 429, "RATE_LIMITED", "Try again shortly")
 		return
 	}
-	raw := r.Header.Get("Authorization")
 	if !strings.HasPrefix(raw, "Bearer ") || len(raw) > 16384 {
 		a.failure(w, r, 401, "UNAUTHENTICATED", "Sign in again")
 		return

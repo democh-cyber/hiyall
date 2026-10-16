@@ -151,7 +151,7 @@ export interface ContentCase {
   originalBytes: number
   contentType: string
   suspendedUser: boolean
-  status: 'open' | 'confirmed' | 'cleared' | 'reported'
+  status: 'pending' | 'open' | 'confirmed' | 'cleared' | 'reported'
   createdAt: string
   holdUntil: string
   legalHold: boolean
@@ -172,7 +172,7 @@ export interface ContentCase {
 export interface EvidenceApproval {
   approvalId: string
   caseId: string
-  kind: 'clear' | 'release' | 'legal_hold_lift'
+  kind: 'clear' | 'release' | 'legal_hold_lift' | 'promote_admin'
   status: 'pending' | 'approved' | 'rejected' | 'expired' | 'withdrawn'
   proposedBy: string
   proposedByEmail: string
@@ -184,18 +184,51 @@ export interface EvidenceApproval {
   decidedByEmail: string
   decidedAt: string | null
   decisionReason: string
+  /** For kind promote_admin: the operator the proposal would make an administrator (caseId is then empty). */
+  targetOperator?: string
+  targetOperatorEmail?: string
 }
 
 export interface ApprovalList {
   items: EvidenceApproval[]
   /** The signed-in operator, so the page can tell "mine" from "waiting for me". */
   operatorId: string
+  /** Active administrators. Below two, no two-person action can be completed (the Approvals page says so). */
+  activeAdmins?: number
+}
+
+/** The form of counsel's reference, the same rule the database enforces (safety_counsel_ok). */
+export const COUNSEL_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9 ._/-]{5,119}$/
+export const COUNSEL_HINT = '6 to 120 characters: letters, digits, spaces and . _ / - (no commas), starting with a letter or digit'
+
+/** A Sign in with Apple authorization of a deleted account that an operator revokes by hand in Apple's console. */
+export interface AppleRevocation {
+  revocationId: string
+  issuer: string
+  subject: string
+  userId: string
+  reason: string
+  createdAt: string
+}
+
+/** A held evidence object that no case names (see the evidence sweep). */
+export interface EvidenceOrphan {
+  key: string
+  mediaId: string
+  lastModified: string
+}
+
+export interface EvidenceOrphans {
+  checkedAt: string | null
+  items: EvidenceOrphan[]
+  complete: boolean
 }
 
 export const approvalKindText: Record<EvidenceApproval['kind'], string> = {
   clear: 'Clear the case (false positive)',
   release: 'Release the evidence hold',
   legal_hold_lift: 'Lift the legal hold',
+  promote_admin: 'Make an operator an administrator',
 }
 
 export interface Page<T> {

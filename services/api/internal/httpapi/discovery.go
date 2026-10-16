@@ -61,17 +61,22 @@ func (a *API) searchPeople(w http.ResponseWriter, r *http.Request, p store.Princ
 		after = c.After
 		page = c.Page
 	}
-	items, err := a.Store.SearchPeople(r.Context(), p.UserID, f, after, 21, a.presence, a.signer(r.Context()))
+	items, resume, err := a.Store.SearchPeoplePage(r.Context(), p.UserID, f, after, 21, a.presence, a.signer(r.Context()))
 	if err != nil {
 		a.error(w, r, err)
 		return
 	}
 	var next any
-	if len(items) > 20 {
+	switch {
+	case len(items) > 20:
 		items = items[:20]
 		if page < 9 {
 			next = a.peopleSign(peopleCursor{User: p.UserID, Query: query, After: items[19]["userId"].(string), Exp: time.Now().Add(15 * time.Minute).Unix(), Page: page + 1})
 		}
+	case resume != "" && page < 9:
+		// The page was cut by the candidate cap, not by running out of members: carry on after the last one examined
+		// (each page still counts against the day and the page limit).
+		next = a.peopleSign(peopleCursor{User: p.UserID, Query: query, After: resume, Exp: time.Now().Add(15 * time.Minute).Unix(), Page: page + 1})
 	}
 	a.ok(w, r, map[string]any{"items": items, "nextCursor": next})
 }

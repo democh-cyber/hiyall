@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
 	"hiyall/services/api/internal/domain"
 	"hiyall/services/api/internal/media"
+	"hiyall/services/api/internal/metrics"
 )
 
 // Quarantine records an upload the scanner matched or flagged (docs/security/16-csam-and-illegal-content.md).
@@ -32,11 +34,14 @@ const DefaultEvidenceRetentionDays = 365
 // ScannerActor is the actor recorded for what the scanner did on its own.
 const ScannerActor = "system:upload-scanner"
 
-// QuarantineMedia, in one transaction: marks the pending upload quarantined (never served, never
-// attachable, never cleaned up), opens the operator case with the evidence record and, for a match,
-// suspends the uploader and ends their sessions pending review. It returns the case id. The photo is
-// not sent anywhere: the objects stay in the bucket under the hold prefix.
-func (s *Store) QuarantineMedia(ctx context.Context, q Quarantine) (string, error) {
+// BeginQuarantine, in one transaction: marks the pending upload quarantined (never served, never attachable,
+// never cleaned up), opens the operator case as 'pending' with the evidence record and, for a match, suspends the
+// uploader and ends their sessions pending review. It returns the case id. The case is written BEFORE the evidence
+// objects, so an object in the evidence bucket never exists without a case that names it (round-3 audit API-6/7);
+// the caller writes the objects and then calls ActivateQuarantine. A case left pending (the objects could not be
+// written, or the process died) is swept by the console after an hour (SweepPendingCases). The photo is not sent
+// anywhere: the objects stay in the bucket under the hold prefix.
+func (s *Store) BeginQuarantine(ctx context.Context, q Quarantine) (string, error) {
 	caseID := newID()
 	signals, _ := json.Marshal(q.Signals)
 	if q.Signals == nil {
@@ -56,8 +61,8 @@ func (s *Store) QuarantineMedia(ctx context.Context, q Quarantine) (string, erro
 			return domain.ErrNotFound
 		}
 		suspended := q.Result == "match"
-		if _, err = tx.Exec(ctx, `INSERT INTO content_cases(case_id,media_id,user_id,purpose,result,scanner,signals,original_sha256,original_bytes,content_type,original_key,full_key,suspended_user,hold_until)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,nullif($12,''),$13,now()+make_interval(days=>$14::int))`,
+		if _, err = tx.Exec(ctx, `INSERT INTO content_cases(case_id,media_id,user_id,purpose,result,scanner,signals,original_sha256,original_bytes,content_type,original_key,full_key,suspended_user,hold_until,status)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,nullif($12,''),$13,now()+make_interval(days=>$14::int),'pending')`,
 			caseID, q.MediaID, q.Owner, q.Purpose, q.Result, q.Scanner, signals, q.OriginalSHA256, q.OriginalBytes, q.ContentType, q.OriginalKey, q.FullKey, suspended, days); err != nil {
 			return err
 		}
@@ -76,20 +81,38 @@ func (s *Store) QuarantineMedia(ctx context.Context, q Quarantine) (string, erro
 	return caseID, nil
 }
 
+// ActivateQuarantine opens a pending case once its evidence objects are stored (activate_quarantine_case; the API
+// role can run it and still cannot read or change a case).
+func (s *Store) ActivateQuarantine(ctx context.Context, caseID string) error {
+	_, err := s.Pool.Exec(ctx, `SELECT activate_quarantine_case($1::uuid)`, caseID)
+	return err
+}
+
+// QuarantineMedia is BeginQuarantine and ActivateQuarantine in one step, for a caller that has already written
+// the objects (tests, tools). The upload path writes the case first and the objects second.
+func (s *Store) QuarantineMedia(ctx context.Context, q Quarantine) (string, error) {
+	caseID, err := s.BeginQuarantine(ctx, q)
+	if err != nil {
+		return "", err
+	}
+	return caseID, s.ActivateQuarantine(ctx, caseID)
+}
+
 // Sign in with Apple revocations that could not be completed at deletion time. The token is sealed by the
 // caller; the store never sees it in the clear.
 
 // QueueAppleRevocation keeps a sealed refresh token for every identity of the account, to be retried by the purge.
 func (s *Store) QueueAppleRevocation(ctx context.Context, user string, sealed []byte) error {
 	_, err := s.Pool.Exec(ctx, `INSERT INTO apple_revocations(issuer,subject,token_sealed) SELECT issuer,subject,$2 FROM auth_identities WHERE user_id=$1
- ON CONFLICT (issuer,subject) DO UPDATE SET token_sealed=excluded.token_sealed,created_at=now()`, user, sealed)
+ ON CONFLICT (issuer,subject) DO UPDATE SET token_sealed=excluded.token_sealed,status='queued',reason=NULL,created_at=now()`, user, sealed)
 	return err
 }
 
 // PendingAppleRevocation returns the sealed token queued for an identity, or nil.
 func (s *Store) PendingAppleRevocation(ctx context.Context, issuer, subject string) ([]byte, error) {
 	var sealed []byte
-	err := s.Pool.QueryRow(ctx, `SELECT token_sealed FROM apple_revocations WHERE issuer=$1 AND subject=$2`, issuer, subject).Scan(&sealed)
+	// A 'manual' row has no token: the purge skips Apple for it and an operator revokes by hand.
+	err := s.Pool.QueryRow(ctx, `SELECT token_sealed FROM apple_revocations WHERE issuer=$1 AND subject=$2 AND status='queued'`, issuer, subject).Scan(&sealed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -98,7 +121,7 @@ func (s *Store) PendingAppleRevocation(ctx context.Context, issuer, subject stri
 
 // DoneAppleRevocation forgets a queued token once Apple has revoked it.
 func (s *Store) DoneAppleRevocation(ctx context.Context, issuer, subject string) error {
-	_, err := s.Pool.Exec(ctx, `DELETE FROM apple_revocations WHERE issuer=$1 AND subject=$2`, issuer, subject)
+	_, err := s.Pool.Exec(ctx, `DELETE FROM apple_revocations WHERE issuer=$1 AND subject=$2 AND status='queued'`, issuer, subject)
 	return err
 }
 
@@ -132,6 +155,7 @@ func (s *Store) PurgeReleasedHolds(ctx context.Context, objects HeldObjects, bat
 		return 0, err
 	}
 	var done int64
+cases:
 	for _, d := range work {
 		var keys []string
 		for _, k := range []string{d.original, d.full} {
@@ -142,8 +166,21 @@ func (s *Store) PurgeReleasedHolds(ctx context.Context, objects HeldObjects, bat
 				keys = append(keys, k)
 			}
 		}
-		if err = objects.Delete(ctx, keys...); err != nil {
-			return done, err
+		for _, k := range keys {
+			// A report or a second case can be opened, or a legal hold set, between the list above and this
+			// delete (round-3 audit API-6): ask the database again immediately before EACH object.
+			var still bool
+			if err = s.Pool.QueryRow(ctx, `SELECT hold_still_releasable($1::uuid)`, d.id).Scan(&still); err != nil {
+				return done, err
+			}
+			if !still {
+				slog.Warn("held evidence kept: the hold is no longer releasable", "caseId", d.id)
+				purgeRecheckKept.Inc()
+				continue cases
+			}
+			if err = objects.Delete(ctx, k); err != nil {
+				return done, err
+			}
 		}
 		var marked bool
 		if err = s.Pool.QueryRow(ctx, `SELECT mark_hold_purged($1)`, d.id).Scan(&marked); err != nil {
@@ -155,6 +192,8 @@ func (s *Store) PurgeReleasedHolds(ctx context.Context, objects HeldObjects, bat
 	}
 	return done, nil
 }
+
+var purgeRecheckKept = metrics.NewCounter("hiyall_evidence_purge_kept_total", "Held-evidence purges stopped because the hold stopped being releasable between the list and the delete.")
 
 // RecordSignInProvider stores how the person signed in (Firebase's sign_in_provider claim, such as apple.com or
 // google.com) and whether Apple is linked to the Firebase user, on the identity row. Account deletion needs it:

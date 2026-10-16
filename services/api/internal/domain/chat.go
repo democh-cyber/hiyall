@@ -28,9 +28,12 @@ var (
 	ErrConversationClosed = &PolicyError{403, "CONVERSATION_CLOSED", "This conversation is closed"}
 	// ErrRecipientBacklog answers a send when a device that must receive it already holds the most
 	// undelivered envelopes a device may (Entitlements.ChatBacklogPerDevice). The caller adds Retry-After.
-	// ErrOwnBacklog is the same when the full device is one of the sender's own other devices.
+	// The same code answers a sender who alone already has Entitlements.ChatBacklogPerSenderPerDevice envelopes
+	// waiting on a recipient device: nobody else is held back by it.
+	// ErrOwnBacklog is its own code (OWN_BACKLOG) when the full device is one of the sender's own other
+	// devices, because the person who can fix it is the sender, in Chat devices.
 	ErrRecipientBacklog = &PolicyError{429, "RECIPIENT_BACKLOG", "They haven't picked up their earlier messages yet. Try again later."}
-	ErrOwnBacklog       = &PolicyError{429, "RECIPIENT_BACKLOG", "One of your other devices has too many unread messages. Open Hiyall on it, or remove it in Devices."}
+	ErrOwnBacklog       = &PolicyError{429, "OWN_BACKLOG", "One of your other devices has too many unread messages. Open Hiyall on it, or remove it in Chat devices."}
 	// ErrChatDailyLimit is the per-conversation daily message quota (Entitlements.ChatMessagesPerConversationPerDay).
 	ErrChatDailyLimit = &PolicyError{429, "CHAT_DAILY_LIMIT", "You've sent a lot of messages in this chat today. Try again later."}
 	// ErrNewChatsQuota is the daily cap on starting conversations (Entitlements.NewConversationsPerDay);

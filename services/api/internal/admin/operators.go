@@ -125,6 +125,8 @@ type Service struct {
 	MaxFailures   int
 	FailureWindow time.Duration
 
+	sweep sweepState // the evidence sweep's last orphan list (sweep.go)
+
 	slots     chan struct{} // bounds concurrent password hashing (64 MiB each)
 	dummyHash string        // checked when the account is unknown, so timing does not tell
 	dummyKey  []byte
@@ -391,17 +393,24 @@ func (s *Service) SetDisabled(ctx context.Context, actor Actor, id string, disab
 	return out, err
 }
 
-// SetRole changes an account's role. The last active administrator cannot be demoted. Sessions stay
-// open: the role is read from the database on every request, so the change applies at once.
+// ActiveAdmins counts enabled administrators. Below two, no two-person action can be completed.
+func (s *Service) ActiveAdmins(ctx context.Context) (int, error) {
+	var n int
+	err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM operators WHERE role='admin' AND disabled_at IS NULL`).Scan(&n)
+	return n, err
+}
+
+// SetRole changes an account's role through the database function operator_set_role. The last active
+// administrator cannot be demoted. A promotion to administrator is refused here with APPROVAL_REQUIRED while any
+// other administrator is active: it is a proposal a second administrator approves (Server.proposeAdminPromotion,
+// evidence_approvals kind promote_admin); only when no administrator is active can the role be set directly
+// (bootstrap). Sessions stay open: the role is read from the database on every request, so the change applies at once.
 func (s *Service) SetRole(ctx context.Context, actor Actor, id string, role Role, reason string) (Operator, error) {
 	var out Operator
 	if role.rank() == 0 {
 		return out, &domain.ValidationError{Field: "role", Message: "must be viewer, moderator or admin"}
 	}
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, operatorLock); err != nil {
-			return err
-		}
 		target, err := s.operatorByID(ctx, tx, id)
 		if err != nil {
 			return err
@@ -409,14 +418,11 @@ func (s *Service) SetRole(ctx context.Context, actor Actor, id string, role Role
 		if target.Role == role {
 			return ErrNoChange
 		}
-		if target.Role == RoleAdmin && target.DisabledAt == nil {
-			if n, err := activeAdminsExcept(ctx, tx, id); err != nil {
-				return err
-			} else if n == 0 {
-				return ErrLastAdmin
-			}
+		actorID := ""
+		if actor.Operator != nil {
+			actorID = actor.Operator.ID
 		}
-		if _, err = tx.Exec(ctx, `UPDATE operators SET role=$2 WHERE operator_id=$1`, id, string(role)); err != nil {
+		if err = store.SetOperatorRole(ctx, tx, id, string(role), actorID); err != nil {
 			return err
 		}
 		if err = insertAudit(ctx, tx, actor.entry("operator_role", "operator", id, reason, map[string]any{"email": target.Email, "from": string(target.Role), "to": string(role)})); err != nil {

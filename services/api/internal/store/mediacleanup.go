@@ -33,19 +33,19 @@ const mediaChunk = 50
 // A non-nil error means some objects could not be removed; the rest of the work still happened.
 func (s *Store) PurgeMedia(ctx context.Context, objects MediaObjects, batch int) (int64, error) {
 	var finished int64
-	failed := []string{} // rows that failed this run: skipped, so one poisoned row cannot starve the rest
 	var failures int
+	cur := mediaCursor{at: "-infinity", id: "00000000-0000-0000-0000-000000000000"}
 	for finished < int64(batch) && ctx.Err() == nil {
-		n, bad, err := s.purgeMediaChunk(ctx, objects, failed)
+		n, bad, next, more, err := s.purgeMediaChunk(ctx, objects, cur)
 		if err != nil {
 			return finished, err
 		}
 		finished += n
-		failures += len(bad)
-		failed = append(failed, bad...)
-		if n == 0 {
-			break // nothing more could be finished (either nothing is left, or only failing rows)
+		failures += bad
+		if !more {
+			break // nothing is left after the cursor
 		}
+		cur = next
 	}
 	if failures > 0 {
 		return finished, errors.New("some photo objects were not removed; they are retried on the next run")
@@ -53,24 +53,59 @@ func (s *Store) PurgeMedia(ctx context.Context, objects MediaObjects, batch int)
 	return finished, ctx.Err()
 }
 
+// mediaCursor is the keyset position of a cleanup run: the (time, id) of the last row a chunk looked at. A row
+// that failed or that another node had locked is behind the cursor for the rest of this run and is found again by
+// the next one, so one poisoned row cannot starve the rest and no list of skipped ids has to be carried.
+type mediaCursor struct{ at, id string }
+
 type mediaRow struct {
 	id       string
 	keys     []string
 	finished bool
 }
 
-func (s *Store) purgeMediaChunk(ctx context.Context, objects MediaObjects, skip []string) (finished int64, failed []string, err error) {
+// purgeMediaChunk claims the next mediaChunk rows after cur. The two kinds of work are each read in index order
+// from the cursor (media_cleanup_expired and media_cleanup_deleted, migration 0044) and merged, so the chunk costs
+// its own size however large the backlog is; the old single query with an OR and ORDER BY coalesce(...) sorted the
+// whole backlog for every chunk of 50. Ordering is the same as before: oldest first, by expiry for an expired
+// upload and by deletion time for a deleted photo.
+func (s *Store) purgeMediaChunk(ctx context.Context, objects MediaObjects, cur mediaCursor) (finished int64, failed int, next mediaCursor, more bool, err error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
-		return 0, nil, err
+		return 0, 0, cur, false, err
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `SELECT media_id::text,upload_key,variants FROM media_assets
- WHERE ((status NOT IN ('deleted','quarantined') AND NOT attached AND expires_at<now()) OR (status='deleted' AND variants IS NOT NULL))
- AND media_id::text<>ALL($2::text[])
- ORDER BY coalesce(deleted_at,expires_at),media_id LIMIT $1 FOR UPDATE SKIP LOCKED`, mediaChunk, skip)
+	cand, err := tx.Query(ctx, `SELECT media_id::text,k::text FROM (
+  (SELECT media_id,expires_at AS k FROM media_assets WHERE status NOT IN ('deleted','quarantined') AND NOT attached AND expires_at<now()
+    AND (expires_at,media_id)>($2::timestamptz,$3::uuid) ORDER BY expires_at,media_id LIMIT $1)
+  UNION ALL
+  (SELECT media_id,deleted_at FROM media_assets WHERE status='deleted' AND variants IS NOT NULL
+    AND (deleted_at,media_id)>($2::timestamptz,$3::uuid) ORDER BY deleted_at,media_id LIMIT $1)) c
+ ORDER BY k,media_id LIMIT $1`, mediaChunk, cur.at, cur.id)
 	if err != nil {
-		return 0, nil, err
+		return 0, 0, cur, false, err
+	}
+	var ids []string
+	next = cur
+	for cand.Next() {
+		var id, k string
+		if err = cand.Scan(&id, &k); err != nil {
+			cand.Close()
+			return 0, 0, cur, false, err
+		}
+		ids = append(ids, id)
+		next = mediaCursor{at: k, id: id}
+	}
+	cand.Close()
+	if err = cand.Err(); err != nil || len(ids) == 0 {
+		return 0, 0, cur, false, err
+	}
+	// Claim them (a row another node holds is skipped) and read what is needed to remove the objects.
+	rows, err := tx.Query(ctx, `SELECT media_id::text,upload_key,variants FROM media_assets
+ WHERE media_id=ANY($1::uuid[]) AND ((status NOT IN ('deleted','quarantined') AND NOT attached AND expires_at<now()) OR (status='deleted' AND variants IS NOT NULL))
+ ORDER BY media_id FOR UPDATE SKIP LOCKED`, ids)
+	if err != nil {
+		return 0, 0, cur, false, err
 	}
 	var claimed []*mediaRow
 	for rows.Next() {
@@ -79,7 +114,7 @@ func (s *Store) purgeMediaChunk(ctx context.Context, objects MediaObjects, skip 
 		var variants map[string]string
 		if err = rows.Scan(&id, &upload, &variants); err != nil {
 			rows.Close()
-			return 0, nil, err
+			return 0, 0, cur, false, err
 		}
 		row := &mediaRow{id: id}
 		if upload != nil && *upload != "" {
@@ -92,10 +127,7 @@ func (s *Store) purgeMediaChunk(ctx context.Context, objects MediaObjects, skip 
 	}
 	rows.Close()
 	if err = rows.Err(); err != nil {
-		return 0, nil, err
-	}
-	if len(claimed) == 0 {
-		return 0, nil, nil
+		return 0, 0, cur, false, err
 	}
 	var done []string
 	for _, row := range claimed {
@@ -103,7 +135,7 @@ func (s *Store) purgeMediaChunk(ctx context.Context, objects MediaObjects, skip 
 			if derr := objects.Delete(ctx, row.keys...); derr != nil {
 				// The code is logged, never the error text: it can carry a URL.
 				slog.Warn("photo object not removed", "mediaId", row.id, "reason", media.ErrorCode(derr))
-				failed = append(failed, row.id)
+				failed++
 				continue
 			}
 		}
@@ -111,11 +143,11 @@ func (s *Store) purgeMediaChunk(ctx context.Context, objects MediaObjects, skip 
 	}
 	if len(done) > 0 {
 		if _, err = tx.Exec(ctx, `UPDATE media_assets SET status='deleted',deleted_at=coalesce(deleted_at,now()),variants=NULL WHERE media_id=ANY($1::uuid[])`, done); err != nil {
-			return 0, failed, err
+			return 0, failed, cur, false, err
 		}
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return 0, failed, err
+		return 0, failed, cur, false, err
 	}
-	return int64(len(done)), failed, nil
+	return int64(len(done)), failed, next, len(ids) == mediaChunk, nil
 }

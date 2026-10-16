@@ -27,3 +27,25 @@ func TestParseDeletionAcceptsAnOptionalAppleCode(t *testing.T) {
 		}
 	}
 }
+
+func TestParseDeletionBodyAcceptsAppleCodeUnavailableButNotWithACode(t *testing.T) {
+	parse := func(body string) (DeletionRequest, error) {
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(body), &m); err != nil {
+			t.Fatal(err)
+		}
+		return ParseDeletionBody(m)
+	}
+	if r, err := parse(`{"confirmUsername":"@Xan","appleCodeUnavailable":true}`); err != nil || r.Confirm != "xan" || !r.AppleCodeUnavailable || r.AppleCode != "" {
+		t.Fatal(r, err)
+	}
+	if r, err := parse(`{"confirmUsername":"xan","appleCodeUnavailable":false}`); err != nil || r.AppleCodeUnavailable {
+		t.Fatal(r, err)
+	}
+	for _, bad := range []string{`{"confirmUsername":"x","appleCodeUnavailable":"yes"}`, `{"confirmUsername":"x","appleCodeUnavailable":1}`,
+		`{"confirmUsername":"x","appleCodeUnavailable":true,"appleAuthorizationCode":"c.abc"}`, `{"appleCodeUnavailable":true}`, `{"confirmUsername":"x","appleCodeUnavailable":true,"other":1}`} {
+		if _, err := parse(bad); err == nil {
+			t.Fatalf("accepted %s", bad)
+		}
+	}
+}

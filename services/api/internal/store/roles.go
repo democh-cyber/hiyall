@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -11,8 +12,24 @@ import (
 // members own and cannot reach the operator tables, the audit log or case evidence. These checks say whether the
 // connection it was given is that role, and whether the grants a release applied are complete.
 
-// OperatorTables are never readable by the API role.
+// OperatorTables are never readable (or writable) by the API role.
+//
+// This file is the one Go source of truth for the tables and sequences that database/roles/grants.sql treats
+// specially (excluded from the blanket grant to hiyall_api, asserted at its end). TestSpecialTablesMatchGrantsScript
+// parses grants.sql and fails when the script and these lists differ, so a table added to one is not forgotten in
+// the other (round-3 audit DB-NEW-9).
 var OperatorTables = []string{"operators", "operator_sessions", "operator_login_attempts", "operator_audit", "evidence_approvals"}
+
+// CaseTable is the one table the API may INSERT into and read one column of (media_id), nothing else.
+const CaseTable = "content_cases"
+
+// SpecialTables are the OperatorTables and CaseTable: what GrantProblems expects the API role to be kept away from.
+func SpecialTables() []string { return append(append([]string{}, OperatorTables...), CaseTable) }
+
+// OperatorSequences are the sequences of operator tables; the API role has no USAGE on them.
+var OperatorSequences = []string{"operator_login_attempts_attempt_id_seq", "operator_audit_audit_id_seq"}
+
+func isSpecialTable(name string) bool { return slices.Contains(SpecialTables(), name) }
 
 // RoleProblems says what is wrong with the role this store's connections run as, for the production start and
 // `api check-config -db`: a superuser (or a role that bypasses row security or can create roles or databases),
@@ -38,7 +55,7 @@ func (s *Store) RoleProblems(ctx context.Context) ([]string, error) {
 		problems = append(problems, fmt.Sprintf("the database role %q owns tables (it could change a table, a trigger or a grant)", user))
 	}
 	var readable []string
-	rows, err := s.Pool.Query(ctx, `SELECT t FROM unnest($1::text[]) AS t WHERE coalesce(has_table_privilege(current_user::text, to_regclass('public.'||t), 'SELECT'),false)`, append(append([]string{}, OperatorTables...), "content_cases"))
+	rows, err := s.Pool.Query(ctx, `SELECT t FROM unnest($1::text[]) AS t WHERE coalesce(has_table_privilege(current_user::text, to_regclass('public.'||t), 'SELECT'),false)`, SpecialTables())
 	if err != nil {
 		return nil, err
 	}
@@ -67,6 +84,13 @@ func (s *Store) RoleProblems(ctx context.Context) ([]string, error) {
 	return problems, nil
 }
 
+// CurrentRole is the database role this store's connections run as.
+func (s *Store) CurrentRole(ctx context.Context) (string, error) {
+	var role string
+	err := s.Pool.QueryRow(ctx, `SELECT current_user::text`).Scan(&role)
+	return role, err
+}
+
 // GrantsRole is the role whose grants GrantProblems checks by default.
 const GrantsRole = "hiyall_api"
 
@@ -87,7 +111,6 @@ func (s *Store) GrantProblems(ctx context.Context, role string) ([]string, error
 	if !exists {
 		return []string{fmt.Sprintf("the database role %s does not exist (run database/roles/roles.sql once)", role)}, nil
 	}
-	special := map[string]bool{"content_cases": true, "operators": true, "operator_sessions": true, "operator_login_attempts": true, "operator_audit": true, "evidence_approvals": true}
 	rows, err := s.Pool.Query(ctx, `SELECT c.relname::text,c.relkind::text,has_table_privilege($1,c.oid,'SELECT'),has_table_privilege($1,c.oid,'INSERT'),
  has_table_privilege($1,c.oid,'UPDATE'),has_table_privilege($1,c.oid,'DELETE')
  FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m') ORDER BY c.relname`, role)
@@ -102,9 +125,9 @@ func (s *Store) GrantProblems(ctx context.Context, role string) ([]string, error
 			rows.Close()
 			return nil, err
 		}
-		if special[name] {
+		if isSpecialTable(name) {
 			// Operator tables: nothing. content_cases: INSERT only (plus the one column, checked below).
-			if (name == "content_cases" && (sel || upd || del)) || (name != "content_cases" && (sel || ins || upd || del)) {
+			if (name == CaseTable && (sel || upd || del)) || (name != CaseTable && (sel || ins || upd || del)) {
 				forbidden = append(forbidden, name)
 			}
 			continue
@@ -132,7 +155,7 @@ func (s *Store) GrantProblems(ctx context.Context, role string) ([]string, error
 	add("has access it must not have to", forbidden)
 	var seqMissing []string
 	seqRows, err := s.Pool.Query(ctx, `SELECT c.relname::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='S'
- AND c.relname NOT IN ('operator_login_attempts_attempt_id_seq','operator_audit_audit_id_seq') AND NOT coalesce(CASE WHEN c.relkind='S' THEN has_sequence_privilege($1,c.oid,'USAGE') END,false) ORDER BY c.relname`, role)
+ AND c.relname<>ALL($2::text[]) AND NOT coalesce(CASE WHEN c.relkind='S' THEN has_sequence_privilege($1,c.oid,'USAGE') END,false) ORDER BY c.relname`, role, OperatorSequences)
 	if err != nil {
 		return nil, err
 	}

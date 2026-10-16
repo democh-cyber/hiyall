@@ -249,7 +249,7 @@ func TestLegalHoldIsLiftedOnlyByTwoAdministratorsWithCounselsReference(t *testin
  SELECT gen_random_uuid(),$1,'legal_hold_lift',operator_id,'no counsel reference',now()+interval '1 day' FROM operators LIMIT 1`, caseID); err == nil || !strings.Contains(err.Error(), "evidence_approvals_counsel") {
 		t.Fatalf("the table accepted a lift without counsel's reference: %v", err)
 	}
-	r, ap := e.propose(one, caseID, "legal_hold_lift", "counsel has closed the matter", "Counsel M. Okafor, email of 2027-02-03")
+	r, ap := e.propose(one, caseID, "legal_hold_lift", "counsel has closed the matter", "Counsel M. Okafor email of 2027-02-03")
 	if r.status != 201 {
 		t.Fatalf("propose lift: %d %s", r.status, r.raw)
 	}

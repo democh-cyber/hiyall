@@ -140,7 +140,7 @@ func TestOwnOtherDeviceBacklogIsCappedToo(t *testing.T) {
 	h.expect(h.send(alice, "POST", path+"/messages", message(phone, bobPhone, tablet)), 200, "")
 	h.ackAll(bobPhone)
 	// The tablet holds two unread envelopes; the peer is fine, but the send is refused.
-	h.expect(h.send(alice, "POST", path+"/messages", message(phone, bobPhone, tablet)), 429, "RECIPIENT_BACKLOG")
+	h.expect(h.send(alice, "POST", path+"/messages", message(phone, bobPhone, tablet)), 429, "OWN_BACKLOG")
 	h.ackAll(tablet)
 	h.expect(h.send(alice, "POST", path+"/messages", message(phone, bobPhone, tablet)), 200, "")
 }
@@ -223,8 +223,8 @@ func TestDailyMessageQuotaPerSenderPerConversation(t *testing.T) {
 
 func TestFreeChatLimitsAreTheDocumentedNumbers(t *testing.T) {
 	e := domain.Free()
-	if e.ChatBacklogPerDevice != 2000 || e.ChatMessagesPerConversationPerDay != 2000 {
-		t.Fatalf("chat limits %d / %d", e.ChatBacklogPerDevice, e.ChatMessagesPerConversationPerDay)
+	if e.ChatBacklogPerDevice != 2000 || e.ChatMessagesPerConversationPerDay != 2000 || e.ChatBacklogPerSenderPerDevice != 300 {
+		t.Fatalf("chat limits %d / %d / %d", e.ChatBacklogPerDevice, e.ChatMessagesPerConversationPerDay, e.ChatBacklogPerSenderPerDevice)
 	}
 }
 

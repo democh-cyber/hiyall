@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"strconv"
@@ -94,7 +95,7 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		if limited(a.chatDevices) {
 			return true
 		}
-		byOther, err := a.Store.RevokeDevice(ctx, p.UserID, parts[2], sessionIDOrEmpty(p.SessionID))
+		byOther, callerDevice, err := a.Store.RevokeDevice(ctx, p.UserID, parts[2], sessionIDOrEmpty(p.SessionID))
 		if err == nil {
 			by := "self"
 			if byOther {
@@ -105,7 +106,8 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 				// A removal by a session that is not the device's own (another phone, or a stolen credential)
 				// is a security notice too: content-free, to the account's remaining devices, never
 				// silenced by a live socket (an attacker can hold one open) or the chat caps.
-				a.wake(push.Notice{Kind: "device-revoked", Actor: p.UserID, Recipient: p.UserID, Device: parts[2]})
+				// The device that asked already knows, so it is left out (CHAT-N7); the removed one holds no token.
+				a.wake(push.Notice{Kind: "device-revoked", Actor: p.UserID, Recipient: p.UserID, Device: callerDevice})
 			}
 		}
 		respond(map[string]bool{"revoked": true}, err)
@@ -294,6 +296,21 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		}
 		created, peer, quiet, err := a.Store.SendMessage(ctx, p.UserID, parts[2], m, a.entitlementsFor(ctx, p.UserID))
 		if err != nil {
+			var revoked *store.DevicesRevoked
+			if errors.As(err, &revoked) {
+				// The send found a dormant device over the backlog cap and revoked it (CHAT-N1): the owner's
+				// other devices are told, like any removal they did not make, and the sender is answered
+				// DEVICES_CHANGED below, which the client retries once.
+				for _, d := range revoked.Devices {
+					a.signal(ctx, "device", map[string]string{"deviceId": d.DeviceID, "change": "revoked", "by": "other", "reason": "inactive"}, d.UserID)
+					// The sender's own phone, which is mid-send, needs no push about it.
+					exclude := ""
+					if d.UserID == p.UserID {
+						exclude = m.SenderDeviceID
+					}
+					a.wake(push.Notice{Kind: "device-revoked", Actor: d.UserID, Recipient: d.UserID, Device: exclude})
+				}
+			}
 			a.error(w, r, err)
 			return true
 		}

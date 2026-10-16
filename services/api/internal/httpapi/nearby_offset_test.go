@@ -176,25 +176,32 @@ func TestNearbyProbesAreCappedPerAccountPerDay(t *testing.T) {
 	h.expect(search(5), 200, "")
 }
 
-// The same cap holds per source address across accounts, and the table keeps neither the account nor the address.
+// The address cap counts ACCOUNTS, not centres: a shared network where many people search from different places
+// works, and an address that drives too many accounts is stopped. The table keeps neither the account nor the address.
 func TestNearbyProbesAreCappedPerSourceAddress(t *testing.T) {
 	h := newSocialHarness(t)
 	ctx := h.ctx
 	h.exec(`DELETE FROM nearby_probe_centres`)
 	for i := 0; i < 5; i++ {
-		// Five different accounts behind one address, three centres each at most 4 centres in all.
+		// Five different accounts behind one address, at most 4 accounts allowed.
 		user := fmt.Sprintf("user-%d", i)
 		err := h.db.CountNearbyProbe(ctx, user, "203.0.113.7", fmt.Sprintf("centre-%d", i), 10, 4)
 		if i < 4 && err != nil {
-			t.Fatalf("centre %d refused: %v", i, err)
+			t.Fatalf("account %d refused: %v", i, err)
 		}
 		if i == 4 {
 			h.expectPolicy(err, 429, "DAILY_LIMIT")
 		}
 	}
-	// A refused probe leaves no half record: the first subject's insert rolled back with it.
+	// A refused probe leaves no half record: the account's own insert rolled back with it.
 	if n := h.count(`SELECT count(*) FROM nearby_probe_centres`); n != 8 {
-		t.Fatalf("%d rows, want 4 accounts + 4 for the address", n)
+		t.Fatalf("%d rows, want 4 account rows + 4 address rows", n)
+	}
+	// A counted account is free to search from many centres at the same address, and to come back.
+	for i := 0; i < 8; i++ {
+		if err := h.db.CountNearbyProbe(ctx, "user-0", "203.0.113.7", fmt.Sprintf("other-%d", i), 10, 4); err != nil {
+			t.Fatalf("a counted account refused at centre %d: %v", i, err)
+		}
 	}
 	// Another address is unaffected.
 	if err := h.db.CountNearbyProbe(ctx, "user-9", "203.0.113.8", "centre-0", 10, 4); err != nil {
@@ -210,7 +217,7 @@ func TestNearbyProbesAreCappedPerSourceAddress(t *testing.T) {
 		t.Fatalf("today's rows purged: %d %v", n, err)
 	}
 	h.exec(`UPDATE nearby_probe_centres SET day=day-5`)
-	if n, err := h.db.PurgeNearbyProbes(ctx, 3, 100); err != nil || n != 10 {
+	if n, err := h.db.PurgeNearbyProbes(ctx, 3, 100); err != nil || n != 18 {
 		t.Fatalf("old rows: %d %v", n, err)
 	}
 }

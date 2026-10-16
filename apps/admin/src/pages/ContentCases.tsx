@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router'
 import { api, query, type ContentCase, type Page } from '../api'
 import { Chip, ErrorNote, messageOf, Time, useLoad } from '../ui'
 
-const STATUSES = ['open', 'confirmed', 'reported', 'cleared', 'all'] as const
+const STATUSES = ['open', 'pending', 'confirmed', 'reported', 'cleared', 'all'] as const
 
 /** Uploads the scanner stopped. The list shows no imagery: only who, what the scanner said and where the case stands. */
 export function ContentCases() {

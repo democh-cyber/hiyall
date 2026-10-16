@@ -199,6 +199,12 @@ func (r *Registry) NewCounter(name, help string, labels ...string) *Counter {
 // Inc adds one.
 func (c *Counter) Inc(labelValues ...string) { c.f.get(labelValues).add(1) }
 
+// Preset creates the series for these label values at zero without counting anything. A series that exists only after
+// its first increment makes Prometheus' increase() and rate() miss that first event (there is no earlier sample to subtract),
+// so every counter an alert reads is preset at startup for the label values that are known in advance (no label values for an
+// unlabelled counter).
+func (c *Counter) Preset(labelValues ...string) { c.f.get(labelValues) }
+
 // Add adds v, which must not be negative.
 func (c *Counter) Add(v float64, labelValues ...string) {
 	if v < 0 {

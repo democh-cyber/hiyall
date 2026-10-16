@@ -839,7 +839,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId; 403 AWAITING_REPLY once you have sent 3 messages (reactions and the noop count too: the relay cannot tell kinds) in a conversation and the peer has sent no non-aux message; 429 RECIPIENT_BACKLOG (Retry-After 60) when a device that must receive it already holds 2000 undelivered envelopes; 429 CHAT_DAILY_LIMIT (Retry-After) after 2000 messages from you in this conversation in 24 hours */
+        /** Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId; 403 AWAITING_REPLY once you have sent 3 messages (reactions and the noop count too: the relay cannot tell kinds) in a conversation and the peer has sent no non-aux message; 429 RECIPIENT_BACKLOG (Retry-After 60) when a device that must receive it already holds 2000 undelivered envelopes, or 300 from you; 429 OWN_BACKLOG (Retry-After 60) when the full device is your own other device; 409 DEVICES_CHANGED also when the send revoked a dormant device that was over the cap (retry with the refreshed device list); 429 CHAT_DAILY_LIMIT (Retry-After) after 2000 messages from you in this conversation in 24 hours */
         post: operations["postMessageAccepted_v1_conversations_conversationId_messages"];
         delete?: never;
         options?: never;
@@ -2423,6 +2423,8 @@ export interface components {
                 deviceId: string;
                 /** Format: date-time */
                 removedAt: string;
+                /** @enum {string} */
+                reason?: "inactive";
             }[];
         };
         SignedKey: {
@@ -3514,8 +3516,10 @@ export interface components {
         DeletionRequest: {
             /** @description The member's own username, typed to confirm; compared without case and without a leading @. */
             confirmUsername: string;
-            /** @description Members who sign in with Apple only: the one-time authorization code from signing in with Apple again during deletion. The server exchanges it for a refresh token and revokes it at Apple (App Store guideline 5.1.1(v)) before the deletion is scheduled; 503 APPLE_REVOKE_FAILED when Apple cannot be reached or the code is stale, in which case nothing changed and the member signs in with Apple again to retry. Ignored with a warning when Apple revocation is not configured on the server. Required, as 422 APPLE_CODE_REQUIRED, when the server knows the account signs in with Apple (or has Apple linked) and revocation is configured. */
+            /** @description Members who sign in with Apple only: the one-time authorization code from signing in with Apple again during deletion. The server exchanges it for a refresh token and revokes it at Apple (App Store guideline 5.1.1(v)) before the deletion is scheduled; 503 APPLE_REVOKE_FAILED when Apple cannot be reached or the code is stale, in which case nothing changed and the member signs in with Apple again to retry. Ignored with a warning when Apple revocation is not configured on the server. Required, as 422 APPLE_CODE_REQUIRED, when the server knows the account signs in with Apple (or has Apple linked) and revocation is configured, unless appleCodeUnavailable is true. */
             appleAuthorizationCode?: string;
+            /** @description Members who sign in with Apple only: true when the app signed in with Apple again and still could not obtain an authorization code (the member re-authenticated with Google, or the web returns none). The deletion is scheduled anyway and the Apple authorization is queued for an operator to revoke by hand (apple_revocations, status manual). Ignored for an account that holds no Apple authorization. Never together with appleAuthorizationCode (422 VALIDATION). */
+            appleCodeUnavailable?: boolean;
         };
         DeletionState: {
             /** @description True while the account is scheduled for deletion. */
@@ -18248,7 +18252,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 422 VALIDATION: confirmUsername is missing, extra keys were sent, or it is not your username. Error 422 APPLE_CODE_REQUIRED: the account signs in with Apple (or has Apple linked) and appleAuthorizationCode was not sent; sign in with Apple again and retry with the code. */
+            /** @description Error 422 VALIDATION: confirmUsername is missing, extra keys were sent, or it is not your username. Error 422 APPLE_CODE_REQUIRED: the account signs in with Apple (or has Apple linked) and neither appleAuthorizationCode nor appleCodeUnavailable:true was sent; sign in with Apple again and retry with the code (or, if no code can be obtained, with appleCodeUnavailable:true). Error 422 VALIDATION also when both are sent. */
             422: {
                 headers: {
                     [name: string]: unknown;

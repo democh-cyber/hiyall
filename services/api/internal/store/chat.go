@@ -24,8 +24,29 @@ func (s *Store) RegisterDevice(ctx context.Context, d domain.Device) (domain.Dev
 // conversation before the other person has sent one of their own.
 const FirstContactMessages = 3
 
-// StaleDeviceAfter is how long a chat device may go unseen before maintenance revokes it.
-const StaleDeviceAfter = 90 * 24 * time.Hour
+// StaleDeviceAfter is how long a chat device may go unseen before maintenance revokes it (shortened from 90 days
+// by audit CHAT-N1: a dormant device otherwise holds undelivered ciphertext, and a slot, for a quarter).
+const StaleDeviceAfter = 14 * 24 * time.Hour
+
+// DormantDeviceAfter is how long a device that is over the undelivered-envelope cap may have gone without
+// polling before a send revokes it (inside the send's transaction), so one forgotten or orphaned device cannot
+// refuse every message addressed to its owner (CHAT-N1).
+const DormantDeviceAfter = 7 * 24 * time.Hour
+
+// BackloggedDeviceIdle is how long a device holding more than half the cap may have gone without polling before
+// the hourly sweep revokes it (RevokeBackloggedDevices).
+const BackloggedDeviceIdle = 3 * 24 * time.Hour
+
+// RevokedDevice names a device the relay revoked for being dormant, and its owner.
+type RevokedDevice struct{ DeviceID, UserID string }
+
+// DevicesRevoked is the answer to a send that found a dormant device over the backlog cap and revoked it. The
+// revocation is committed; the sender is told DEVICES_CHANGED (it errors.Is domain.ErrDevicesChanged) and
+// encrypts again for the remaining devices. The caller signals the owners of Devices.
+type DevicesRevoked struct{ Devices []RevokedDevice }
+
+func (*DevicesRevoked) Error() string { return domain.ErrDevicesChanged.Error() }
+func (*DevicesRevoked) Unwrap() error { return domain.ErrDevicesChanged }
 
 // RegisterDeviceNew is RegisterDevice that also reports whether the device is new to the account
 // (the caller then tells the owner's other devices).
@@ -33,7 +54,7 @@ func (s *Store) RegisterDeviceNew(ctx context.Context, d domain.Device) (domain.
 	created := false
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var active bool
-		if err := tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR UPDATE`, d.UserID).Scan(&active); err != nil || !active {
+		if err := tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, d.UserID).Scan(&active); err != nil || !active {
 			return domain.ErrNotFound
 		}
 		var owner, identity, signing string
@@ -94,17 +115,63 @@ func (s *Store) RevokeStaleDevices(ctx context.Context, olderThan time.Duration,
 		if err = rows.Err(); err != nil || len(ids) == 0 {
 			return err
 		}
-		for _, statement := range []string{
-			`DELETE FROM one_time_keys WHERE device_id=ANY($1::uuid[])`,
-			`DELETE FROM fallback_keys WHERE device_id=ANY($1::uuid[])`,
-			`DELETE FROM message_envelopes WHERE recipient_device_id=ANY($1::uuid[]) AND delivered_at IS NULL`,
-		} {
-			if _, err = tx.Exec(ctx, statement, ids); err != nil {
-				return err
-			}
+		if err = dropDeviceMaterial(ctx, tx, ids); err != nil {
+			return err
 		}
 		total = int64(len(ids))
 		return nil
+	})
+	return total, err
+}
+
+// dropDeviceMaterial deletes what a revoked device must not keep on the relay: its unclaimed keys and the
+// ciphertext nobody has picked up.
+func dropDeviceMaterial(ctx context.Context, tx pgx.Tx, ids []string) error {
+	for _, statement := range []string{
+		`DELETE FROM one_time_keys WHERE device_id=ANY($1::uuid[])`,
+		`DELETE FROM fallback_keys WHERE device_id=ANY($1::uuid[])`,
+		`DELETE FROM message_envelopes WHERE recipient_device_id=ANY($1::uuid[]) AND delivered_at IS NULL`,
+	} {
+		if _, err := tx.Exec(ctx, statement, ids); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RevokeBackloggedDevices revokes at most batch active devices that hold more than half of cap undelivered
+// envelopes and have not polled for idle (CHAT-N1): a device that is nearly full and silent is on its way to
+// refusing its owner's inbound chat, so it goes before it does. Like any revocation it drops the keys and the
+// ciphertext and frees the device slot; it is recorded as removed ("inactive") so the owner's other devices
+// show it.
+func (s *Store) RevokeBackloggedDevices(ctx context.Context, cap int, idle time.Duration, batch int) (int64, error) {
+	if cap <= 0 {
+		return 0, nil
+	}
+	var total int64
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `UPDATE devices SET revoked_at=now(),push_provider=NULL,push_token=NULL,revoked_by_other=true,revoked_reason='inactive' WHERE device_id IN (
+ SELECT d.device_id FROM devices d WHERE d.revoked_at IS NULL AND d.last_seen_at<now()-$1::interval
+ AND (SELECT count(*) FROM (SELECT 1 FROM message_envelopes WHERE recipient_device_id=d.device_id AND delivered_at IS NULL LIMIT $2) q)>=$2
+ ORDER BY d.last_seen_at LIMIT $3 FOR UPDATE OF d SKIP LOCKED) RETURNING device_id::text`, idle, cap/2+1, batch)
+		if err != nil {
+			return err
+		}
+		ids := []string{}
+		for rows.Next() {
+			var id string
+			if err = rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err = rows.Err(); err != nil || len(ids) == 0 {
+			return err
+		}
+		total = int64(len(ids))
+		return dropDeviceMaterial(ctx, tx, ids)
 	})
 	return total, err
 }
@@ -124,8 +191,9 @@ func (s *Store) device(ctx context.Context, user, id string) (domain.Device, err
 // RevokeDevice drops the device's unclaimed keys and undelivered ciphertext. bySession is the auth session that
 // asks for it: when that is not the session the device registered under (another phone of the account, or a
 // stolen credential), the removal is recorded in revoked_by_other so the owner's remaining devices can show it
-// (RemovedDevices), also when they missed the realtime signal. It reports that fact so the caller can push.
-func (s *Store) RevokeDevice(ctx context.Context, user, id, bySession string) (byOther bool, err error) {
+// (RemovedDevices), also when they missed the realtime signal. It reports that fact so the caller can push, and
+// the device that session registered (callerDevice, "" when none), which already knows and gets no push (CHAT-N7).
+func (s *Store) RevokeDevice(ctx context.Context, user, id, bySession string) (byOther bool, callerDevice string, err error) {
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		tag, err := tx.Exec(ctx, `UPDATE devices SET revoked_at=now(),push_provider=NULL,push_token=NULL,
  revoked_by_other=(session_id IS DISTINCT FROM NULLIF($3,'')::uuid) WHERE device_id=$1 AND user_id=$2 AND revoked_at IS NULL`, id, user, bySession)
@@ -135,24 +203,29 @@ func (s *Store) RevokeDevice(ctx context.Context, user, id, bySession string) (b
 		if tag.RowsAffected() == 0 {
 			return domain.ErrNotFound
 		}
-		for _, statement := range []string{
-			`DELETE FROM one_time_keys WHERE device_id=$1`,
-			`DELETE FROM fallback_keys WHERE device_id=$1`,
-			`DELETE FROM message_envelopes WHERE recipient_device_id=$1 AND delivered_at IS NULL`,
-		} {
-			if _, err = tx.Exec(ctx, statement, id); err != nil {
+		if err = dropDeviceMaterial(ctx, tx, []string{id}); err != nil {
+			return err
+		}
+		if bySession != "" {
+			// The device registered under the asking session, if it is still active (none: the caller has no chat
+			// device, or it is the one just revoked).
+			err = tx.QueryRow(ctx, `SELECT device_id::text FROM devices WHERE user_id=$1 AND session_id=$2::uuid AND revoked_at IS NULL ORDER BY created_at LIMIT 1`, user, bySession).Scan(&callerDevice)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return err
 			}
 		}
 		return tx.QueryRow(ctx, `SELECT revoked_by_other FROM devices WHERE device_id=$1`, id).Scan(&byOther)
 	})
-	return byOther, err
+	return byOther, callerDevice, err
 }
 
 // RemovedDevice is a device of the account that someone other than its own session removed.
 type RemovedDevice struct {
 	DeviceID  string    `json:"deviceId"`
 	RemovedAt time.Time `json:"removedAt"`
+	// Reason is "inactive" when the relay removed a device that had stopped polling while its backlog grew
+	// (CHAT-N1), omitted for a removal by one of the owner's other sessions.
+	Reason string `json:"reason,omitempty"`
 }
 
 // RemovedWindow is how long a removal stays listed.
@@ -161,13 +234,13 @@ const RemovedWindow = 30 * 24 * time.Hour
 // RemovedDevices lists the account's devices removed by another session in the last RemovedWindow, newest
 // first (at most 20). Only the owner reads it; it names ids and times, nothing else.
 func (s *Store) RemovedDevices(ctx context.Context, user string) ([]RemovedDevice, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT device_id::text,revoked_at FROM devices WHERE user_id=$1 AND revoked_by_other AND revoked_at>now()-$2::interval ORDER BY revoked_at DESC LIMIT 20`, user, RemovedWindow)
+	rows, err := s.Pool.Query(ctx, `SELECT device_id::text,revoked_at,coalesce(revoked_reason,'') FROM devices WHERE user_id=$1 AND revoked_by_other AND revoked_at>now()-$2::interval ORDER BY revoked_at DESC LIMIT 20`, user, RemovedWindow)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (RemovedDevice, error) {
 		var r RemovedDevice
-		return r, row.Scan(&r.DeviceID, &r.RemovedAt)
+		return r, row.Scan(&r.DeviceID, &r.RemovedAt, &r.Reason)
 	})
 }
 
@@ -211,11 +284,20 @@ func (s *Store) UploadKeys(ctx context.Context, user, deviceID string, upload do
 		if err := tx.QueryRow(ctx, `SELECT signing_key FROM devices WHERE device_id=$1 AND user_id=$2 AND revoked_at IS NULL FOR UPDATE`, deviceID, user).Scan(&signing); err != nil {
 			return mapped(err)
 		}
+		// The same key id twice in one request, or one the device already holds, adds nothing (ON CONFLICT DO
+		// NOTHING below), so neither counts toward the cap (CHAT-N7).
+		fresh := make([]domain.OneTimeKey, 0, len(upload.OneTimeKeys))
+		seen := map[string]bool{}
 		for _, k := range upload.OneTimeKeys {
 			if err := k.Validate(user, deviceID, signing); err != nil {
 				return err
 			}
+			if !seen[k.KeyID] {
+				seen[k.KeyID] = true
+				fresh = append(fresh, k)
+			}
 		}
+		upload.OneTimeKeys = fresh
 		if upload.FallbackKey != nil {
 			if err := upload.FallbackKey.Validate(user, deviceID, signing); err != nil {
 				return err
@@ -224,8 +306,18 @@ func (s *Store) UploadKeys(ctx context.Context, user, deviceID string, upload do
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM one_time_keys WHERE device_id=$1`, deviceID).Scan(&count); err != nil {
 			return err
 		}
-		if count+len(upload.OneTimeKeys) > maxOneTimeKeys {
-			return &domain.ValidationError{Field: "oneTimeKeys", Message: "a device holds at most 100 unclaimed keys"}
+		if len(upload.OneTimeKeys) > 0 {
+			ids := make([]string, len(upload.OneTimeKeys))
+			for i, k := range upload.OneTimeKeys {
+				ids[i] = k.KeyID
+			}
+			var held int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM one_time_keys WHERE device_id=$1 AND key_id=ANY($2::text[])`, deviceID, ids).Scan(&held); err != nil {
+				return err
+			}
+			if count+len(upload.OneTimeKeys)-held > maxOneTimeKeys {
+				return &domain.ValidationError{Field: "oneTimeKeys", Message: "a device holds at most 100 unclaimed keys"}
+			}
 		}
 		for _, k := range upload.OneTimeKeys {
 			tag, err := tx.Exec(ctx, `INSERT INTO one_time_keys(device_id,key_id,public_key,signature) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`, deviceID, k.KeyID, k.PublicKey, k.Signature)
@@ -518,6 +610,7 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 	if err != nil {
 		return created, "", false, mapped(err)
 	}
+	var dormant []RevokedDevice
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		if err := lockPair(ctx, tx, user, peer); err != nil {
 			return err
@@ -593,6 +686,7 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 		}
 		expected := []string{}
 		ownDevice := map[string]bool{}
+		deviceOwner := map[string]string{}
 		for rows.Next() {
 			var id, owner string
 			if err = rows.Scan(&id, &owner); err != nil {
@@ -601,6 +695,7 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 			}
 			expected = append(expected, id)
 			ownDevice[id] = owner == user
+			deviceOwner[id] = owner
 		}
 		rows.Close()
 		got := make([]string, 0, len(m.Envelopes))
@@ -616,38 +711,95 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 				return domain.ErrDevicesChanged
 			}
 		}
-		// Backlog cap: no device holds more than ChatBacklogPerDevice undelivered envelopes. lockPair holds the
-		// row of every account whose devices are named here (the sender's and the peer's) until commit, and
-		// every send that stores an envelope for one of them takes that lock, so the count below cannot be
-		// outrun by a concurrent send and the cap is exact. The count walks envelopes_inbox, partial on
-		// undelivered rows, and stops at the cap.
-		if limit := e.ChatBacklogPerDevice; limit > 0 {
-			full, err := tx.Query(ctx, `SELECT d.id FROM unnest($1::uuid[]) AS d(id)
- WHERE (SELECT count(*) FROM (SELECT 1 FROM message_envelopes WHERE recipient_device_id=d.id AND delivered_at IS NULL LIMIT $2) q)>=$2`, expected, limit)
+		// Backlog caps. No device holds more than ChatBacklogPerDevice undelivered envelopes, and no one sender
+		// has more than ChatBacklogPerSenderPerDevice waiting on one recipient device (so one account cannot
+		// fill a victim's device alone; the sender's own other devices are exempt from that second cap, they
+		// all belong to one person). Envelopes of senders barred from the device's owner (a block, or the age
+		// band) are never delivered (Inbox leaves them out), so they do not count. lockPair holds the row of
+		// every account whose devices are named here (the sender's and the peer's) until commit, and every
+		// send that stores an envelope for one of them takes that lock, so the counts below cannot be outrun
+		// by a concurrent send and the caps are exact. The counts walk envelopes_inbox, partial on
+		// undelivered rows, and stop at their cap.
+		total, perSender := e.ChatBacklogPerDevice, e.ChatBacklogPerSenderPerDevice
+		if total > 0 || perSender > 0 {
+			owners := make([]string, len(expected))
+			for i, id := range expected {
+				owners[i] = deviceOwner[id]
+			}
+			// A cap of 0 is "off": the count then stops at once and its result is not compared.
+			stop := func(limit int) int {
+				if limit <= 0 {
+					return 1
+				}
+				return limit
+			}
+			full, err := tx.Query(ctx, `SELECT d.id::text,
+ (SELECT count(*) FROM (SELECT 1 FROM message_envelopes e JOIN messages m ON m.message_id=e.message_id WHERE e.recipient_device_id=d.id AND e.delivered_at IS NULL AND m.sender_id=$3 LIMIT $4) q),
+ (SELECT count(*) FROM (SELECT 1 FROM message_envelopes e JOIN messages m ON m.message_id=e.message_id WHERE e.recipient_device_id=d.id AND e.delivered_at IS NULL AND NOT interaction_barred(d.owner,m.sender_id) LIMIT $2) q)
+ FROM unnest($1::uuid[],$5::uuid[]) AS d(id,owner)`, expected, stop(total), user, stop(perSender), owners)
 			if err != nil {
 				return err
 			}
-			var fullDevice string
-			var peerFull, ownFull bool
+			var peerFull, ownFull, senderFull bool
+			var overCap []string
 			for full.Next() {
-				if err = full.Scan(&fullDevice); err != nil {
+				var id string
+				var mine, all int
+				if err = full.Scan(&id, &mine, &all); err != nil {
 					full.Close()
 					return err
 				}
-				if ownDevice[fullDevice] {
-					ownFull = true
-				} else {
-					peerFull = true
+				switch {
+				case total > 0 && all >= total:
+					overCap = append(overCap, id)
+					if ownDevice[id] {
+						ownFull = true
+					} else {
+						peerFull = true
+					}
+				case perSender > 0 && !ownDevice[id] && mine >= perSender:
+					senderFull = true
 				}
 			}
 			full.Close()
 			if err = full.Err(); err != nil {
 				return err
 			}
-			if peerFull {
-				return domain.RetryAfter(domain.ErrRecipientBacklog, time.Minute)
+			if len(overCap) > 0 {
+				// A device that is over the cap and has not polled for DormantDeviceAfter is not coming back soon
+				// (a reinstall leaves such a device behind, a phone in a drawer is one): revoke it here, in the
+				// send, instead of refusing every message to its owner. The send is answered DEVICES_CHANGED and
+				// the client, which already retries once, encrypts for the devices that remain. The revocation
+				// commits (this function returns nil); a device that polled in the meantime is left alone.
+				gone, err := tx.Query(ctx, `UPDATE devices SET revoked_at=now(),push_provider=NULL,push_token=NULL,revoked_by_other=true,revoked_reason='inactive'
+ WHERE device_id=ANY($1::uuid[]) AND revoked_at IS NULL AND last_seen_at<now()-$2::interval RETURNING device_id::text,user_id::text`, overCap, DormantDeviceAfter)
+				if err != nil {
+					return err
+				}
+				for gone.Next() {
+					var d RevokedDevice
+					if err = gone.Scan(&d.DeviceID, &d.UserID); err != nil {
+						gone.Close()
+						return err
+					}
+					dormant = append(dormant, d)
+				}
+				gone.Close()
+				if err = gone.Err(); err != nil {
+					return err
+				}
+				if len(dormant) > 0 {
+					ids := make([]string, len(dormant))
+					for i, d := range dormant {
+						ids[i] = d.DeviceID
+					}
+					return dropDeviceMaterial(ctx, tx, ids)
+				}
 			}
-			if ownFull {
+			switch {
+			case peerFull || senderFull:
+				return domain.RetryAfter(domain.ErrRecipientBacklog, time.Minute)
+			case ownFull:
 				return domain.RetryAfter(domain.ErrOwnBacklog, time.Minute)
 			}
 		}
@@ -702,6 +854,9 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 		}
 		return err
 	})
+	if err == nil && len(dormant) > 0 {
+		return time.Time{}, peer, false, &DevicesRevoked{Devices: dormant}
+	}
 	return created, peer, quiet, err
 }
 

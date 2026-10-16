@@ -460,13 +460,10 @@ func (a *API) quarantineUpload(ctx context.Context, owner, id string, upload sto
 	// The evidence bucket's token can write but not read or delete, so the API cannot be made to destroy
 	// what it just kept. In development it is the media bucket under hold/.
 	evidence := a.evidenceStore()
-	if err := evidence.Put(ctx, originalKey, original, upload.ContentType); err != nil {
-		return err
-	}
-	if err := evidence.Put(ctx, fullKey, out.Full, "image/jpeg"); err != nil {
-		return err
-	}
-	caseID, err := a.Store.QuarantineMedia(ctx, store.Quarantine{
+	// The case row goes first, as 'pending', and the objects second: an object in the bucket then never exists
+	// without a case that names it. If a write fails the case stays pending and the console's sweep drops it once an
+	// hour has passed and the objects are missing (round-3 audit API-6/7).
+	caseID, err := a.Store.BeginQuarantine(ctx, store.Quarantine{
 		MediaID: id, Owner: owner, Purpose: upload.Purpose, Result: string(res.Verdict), Scanner: res.Scanner, Signals: res.Signals,
 		OriginalSHA256: media.SHA256Hex(original), OriginalBytes: int64(len(original)), ContentType: upload.ContentType, OriginalKey: originalKey, FullKey: fullKey,
 		RetentionDays: a.safe.retentionDays,
@@ -474,12 +471,22 @@ func (a *API) quarantineUpload(ctx context.Context, owner, id string, upload sto
 	if err != nil {
 		return err
 	}
+	if res.Verdict == media.Match {
+		// The uploader is already suspended in the database; close their live sockets whatever happens next.
+		defer a.endSessions(ctx, owner, "", "")
+	}
+	if err := evidence.Put(ctx, originalKey, original, upload.ContentType); err != nil {
+		return err
+	}
+	if err := evidence.Put(ctx, fullKey, out.Full, "image/jpeg"); err != nil {
+		return err
+	}
+	if err = a.Store.ActivateQuarantine(ctx, caseID); err != nil {
+		return err
+	}
 	a.quarantineAlert(ctx, caseID, id, string(res.Verdict))
 	if err = a.Media.Delete(ctx, upload.Key); err != nil {
 		slog.Warn("quarantined upload not removed from the upload prefix", "mediaId", id, "reason", err.Error())
-	}
-	if res.Verdict == media.Match {
-		a.endSessions(ctx, owner, "", "")
 	}
 	return &domain.PolicyError{Status: 422, Code: "UPLOAD_REJECTED", Message: "That photo can’t be used."}
 }

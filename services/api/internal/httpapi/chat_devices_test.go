@@ -55,8 +55,8 @@ func TestStaleDevicesAreRevokedAndFreeTheCap(t *testing.T) {
 	h.expect(h.send(alice, "POST", "/v1/devices", newTestDevice(alice).registration()), 409, "TOO_MANY_DEVICES")
 	keys := []map[string]string{old[0].oneTimeKey("k1")}
 	h.expect(h.send(alice, "POST", "/v1/devices/"+old[0].id+"/keys", map[string]any{"oneTimeKeys": keys}), 200, "")
-	h.exec(`UPDATE devices SET last_seen_at=now()-interval '91 days' WHERE device_id=$1`, old[0].id)
-	h.exec(`UPDATE devices SET last_seen_at=now()-interval '89 days' WHERE device_id=$1`, old[1].id)
+	h.exec(`UPDATE devices SET last_seen_at=now()-interval '15 days' WHERE device_id=$1`, old[0].id)
+	h.exec(`UPDATE devices SET last_seen_at=now()-interval '13 days' WHERE device_id=$1`, old[1].id)
 
 	n, err := h.db.RevokeStaleDevices(h.ctx, store.StaleDeviceAfter, 100)
 	if err != nil || n != 1 {
