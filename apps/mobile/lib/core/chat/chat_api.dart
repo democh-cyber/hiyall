@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+
+import '../api_config.dart';
 
 /// A chat API failure with the server's stable error code.
 class ChatFailure implements Exception {
@@ -86,6 +87,14 @@ class ChatApi {
     Object? body,
     String? retryToken,
   ]) async {
+    // The bearer token travels over https only (plain http to this machine in a debug build), like every
+    // other client of the API (see isSecureTransport).
+    if (!isSecureTransport(Uri.tryParse(_dio.options.baseUrl))) {
+      throw const ChatFailure(
+        'INSECURE_TRANSPORT',
+        'The chat service is not configured yet.',
+      );
+    }
     final sent = retryToken ?? tokenOf?.call() ?? token;
     try {
       final response = await _dio.request<Map<String, dynamic>>(
@@ -240,14 +249,9 @@ class ChatApi {
         headers = data['headers'];
     final uri = url is String ? Uri.tryParse(url) : null;
     // Ciphertext may travel over plain http only in a debug build, to this machine's own storage.
-    final secure =
-        uri?.scheme == 'https' ||
-        (uri?.scheme == 'http' &&
-            kDebugMode &&
-            const ['localhost', '127.0.0.1', '10.0.2.2'].contains(uri?.host));
     if (id is! String ||
         headers is! Map ||
-        !secure ||
+        !isSecureTransport(uri) ||
         (data['method'] ?? 'PUT') != 'PUT') {
       throw const ChatFailure(
         'BAD_SLOT',
@@ -274,7 +278,8 @@ class ChatApi {
       '/v1/conversations/$conversationId/blobs/$blobId/url',
     ) as Map;
     final url = data['url'], uri = url is String ? Uri.tryParse(url) : null;
-    if (uri == null || !(uri.scheme == 'https' || uri.scheme == 'http')) {
+    // The same rule as the upload: https, or this machine's own storage in a debug build.
+    if (!isSecureTransport(uri)) {
       throw const ChatFailure(
         'BAD_SLOT',
         'The photo couldn’t be opened. Try again.',

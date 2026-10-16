@@ -6,7 +6,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart'
+    show IOSOptions, KeychainAccessibility;
 import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -20,9 +21,12 @@ import '../core/chat/chat_engine.dart';
 import '../core/chat/chat_local_data.dart';
 import '../core/chat/chat_reactions.dart';
 import '../core/chat/chat_snapshot.dart';
+import '../core/chat/chat_storage_health.dart';
 import '../core/chat/chat_store.dart';
 import '../core/chat_peers.dart';
+import '../core/chat_wipe_hook.dart' show chatOwnerToWipe, chatWipeSettled;
 import '../core/presence.dart';
+import '../core/secure_storage.dart';
 import '../core/state.dart';
 import '../shared/chat_tokens.dart';
 import '../shared/person_link.dart';
@@ -43,22 +47,40 @@ import 'safety.dart';
 /// why the first launch after a reinstall erases what it finds (see
 /// [ChatLocalData.eraseAfterReinstall]).
 class SecureChatStore implements ChatStore {
-  static const _storage = FlutterSecureStorage(
-    iOptions: IOSOptions(
+  static final _storage = createSecureStorage(
+    iOptions: const IOSOptions(
       accessibility: KeychainAccessibility.first_unlock_this_device,
     ),
   );
+
   @override
-  Future<String?> read(String key) => _storage.read(key: key);
+  Future<String?> read(String key) => _guard(() => _storage.read(key: key));
   @override
   Future<void> write(String key, String value) =>
-      _storage.write(key: key, value: value);
+      _guard(() => _storage.write(key: key, value: value));
   @override
-  Future<void> delete(String key) => _storage.delete(key: key);
+  Future<void> delete(String key) => _guard(() => _storage.delete(key: key));
   @override
-  Future<List<String>> keys() async => (await _storage.readAll()).keys.toList();
+  Future<List<String>> keys() =>
+      _guard(() async => (await _storage.readAll()).keys.toList());
   @override
   Future<T> batch<T>(Future<T> Function() work) => work();
+
+  /// Erases everything this app keeps in the platform keystore. The last resort of "Reset chat on this phone"
+  /// when single entries cannot be removed because the keystore will not open them.
+  static Future<void> eraseEverything() => _guard(_storage.deleteAll);
+
+  /// Any platform failure of the keystore is [ChatStorageUnavailable]: an error to try again, which nothing
+  /// above may answer by deleting or regenerating keys (audit CHAT-N4).
+  static Future<T> _guard<T>(Future<T> Function() operation) async {
+    try {
+      return await operation();
+    } on ChatStorageUnavailable {
+      rethrow;
+    } catch (error) {
+      throw ChatStorageUnavailable(error);
+    }
+  }
 }
 
 /// Encrypted chat runs only where keys can be held by the platform keystore.
@@ -105,20 +127,128 @@ final thisChatDeviceProvider = FutureProvider<String?>((ref) async {
   );
 });
 
+/// Set when [ChatStorageUnavailable] stopped the engine on enough launches in a row that the person may
+/// choose "Reset chat on this phone" (see [ChatStorageHealth]).
+final chatStorageResetOfferedProvider =
+    NotifierProvider<ChatResetOffered, bool>(ChatResetOffered.new);
+
+/// Holds whether the explicit reset is offered; public so tests can stand in for it.
+class ChatResetOffered extends Notifier<bool> {
+  @override
+  bool build() => false;
+  void set(bool value) => state = value;
+}
+
+/// Waits before the engine is opened again after the keystore could not be opened; after the last one the
+/// person's "Try again" is what retries.
+const chatStorageRetryDelays = [
+  Duration(seconds: 3),
+  Duration(seconds: 10),
+  Duration(seconds: 30),
+  Duration(seconds: 60),
+  Duration(minutes: 2),
+];
+bool _storageFailureCounted = false;
+int _storageRetries = 0;
+
+/// The notice the next engine starts with, set by the explicit reset ([resetChatOnThisPhone]).
+DeviceNoticeKind? _nextStartNotice;
+
+/// "Reset chat on this phone", the explicit, destructive way out when the platform keystore cannot be opened
+/// launch after launch: this account's chat data goes (snapshot, photos, keys; when single entries cannot be
+/// removed, the whole keystore), a new chat identity is made, and a notice says so. The old device stays on
+/// the account's device list until it is removed there or goes stale.
+Future<void> resetChatOnThisPhone(WidgetRef ref) async {
+  final session = ref.read(sessionProvider).asData?.value;
+  if (session == null) return;
+  final root = await getApplicationSupportDirectory();
+  await _previousEngine;
+  await ChatLocalData.resetAfterStorageFailure(
+    root: root,
+    store: SecureChatStore(),
+    userId: session.userId,
+    eraseEverything: SecureChatStore.eraseEverything,
+  );
+  await ChatStorageHealth(root).clear();
+  _nextStartNotice = DeviceNoticeKind.storage;
+  _storageFailureCounted = false;
+  _storageRetries = 0;
+  ref.read(chatStorageResetOfferedProvider.notifier).set(false);
+  ref.invalidate(chatEngineProvider);
+}
+
 final chatEngineProvider = FutureProvider<ChatEngine?>((ref) async {
+  try {
+    final engine = await _openChatEngine(ref);
+    if (engine != null) {
+      _storageFailureCounted = false;
+      _storageRetries = 0;
+      ref.read(chatStorageResetOfferedProvider.notifier).set(false);
+      try {
+        await ChatStorageHealth(await getApplicationSupportDirectory()).clear();
+      } catch (_) {}
+    }
+    return engine;
+  } on ChatStorageUnavailable {
+    await _noteStorageFailure(ref);
+    rethrow;
+  }
+}, retry: _chatEngineRetry);
+
+/// Riverpod retries a failed provider on its own. A keystore that cannot be opened is retried by
+/// [_noteStorageFailure] instead (growing waits, counted once per launch, the error stays on screen while it
+/// waits); everything else keeps Riverpod's default.
+Duration? _chatEngineRetry(int attempt, Object error) =>
+    error is ChatStorageUnavailable
+    ? null
+    : ProviderContainer.defaultRetry(attempt, error);
+
+/// The keystore could not be opened. Nothing is deleted or regenerated. The launch is counted once (however
+/// often it is retried), the engine is opened again after a growing wait, and once enough launches in a row
+/// have failed the reset is offered.
+Future<void> _noteStorageFailure(Ref ref) async {
+  try {
+    final health = ChatStorageHealth(await getApplicationSupportDirectory());
+    if (!_storageFailureCounted) {
+      _storageFailureCounted = true;
+      await health.recordFailedLaunch();
+    }
+    if (!ref.mounted) return;
+    ref
+        .read(chatStorageResetOfferedProvider.notifier)
+        .set(await health.resetOffered());
+    if (_storageRetries < chatStorageRetryDelays.length && ref.mounted) {
+      final timer = Timer(chatStorageRetryDelays[_storageRetries++], () {
+        if (ref.mounted) ref.invalidateSelf();
+      });
+      ref.onDispose(timer.cancel);
+    }
+  } catch (_) {
+    // Only the bookkeeping failed; the error itself is still shown.
+  }
+}
+
+Future<ChatEngine?> _openChatEngine(Ref ref) async {
   final sessionState = ref.watch(sessionProvider);
   final session = sessionState.asData?.value;
   if (!chatSupported) return null;
+  // A sign-out wipe that is still running (it may have outlived its hook's time limit) finishes before
+  // anything is opened, so it cannot delete what this engine writes.
+  await chatWipeSettled();
   final secure = SecureChatStore();
   var previous = _mediaOwner;
   // Signed out for certain (not still starting up): whatever this device
   // holds, even from a run before this one, goes.
   final signedOut = sessionState is AsyncData<Session?> && session == null;
-  if (session == null && previous == null) {
-    if (!signedOut) return null;
-    previous = await secure.read(ChatLocalData.ownerKey);
-    if (previous == null) return null;
-  }
+  if (session == null && previous == null && !signedOut) return null;
+  // Data of another account is erased before this one's engine opens. A fresh process has no previous
+  // owner of its own, so the owner recorded in the keystore stands in for it.
+  previous = await chatOwnerToWipe(
+    store: secure,
+    lastSeen: previous,
+    sessionUser: session?.userId,
+  );
+  if (session == null && previous == null) return null;
   final root = await getApplicationSupportDirectory();
   await _previousEngine;
   if (previous != null && previous != session?.userId) {
@@ -160,7 +290,9 @@ final chatEngineProvider = FutureProvider<ChatEngine?>((ref) async {
     store: store,
     platform: defaultTargetPlatform == TargetPlatform.iOS ? 'ios' : 'android',
     mediaRoot: root,
+    startNotice: _nextStartNotice,
   );
+  _nextStartNotice = null;
   // Signing out removes this phone's chat device on the server while the
   // credential still works; if that fails the id is remembered and removed on a
   // later launch. The server also drops the device when the session ends.
@@ -190,7 +322,7 @@ final chatEngineProvider = FutureProvider<ChatEngine?>((ref) async {
     engine.pause();
   }
   return engine;
-});
+}
 
 /// Words for the reasons a photo could not be sent, or null for any other code.
 String? photoFailureText(String? code) => switch (code) {
@@ -215,6 +347,7 @@ String? photoFailureText(String? code) => switch (code) {
 String chatError(Object error) =>
     (error is ChatFailure ? photoFailureText(error.code) : null) ??
     switch (error) {
+      ChatStorageUnavailable() => 'Couldn’t open secure storage. Nothing was deleted. We’ll try again in a moment.',
       ChatFailure(code: 'MESSAGES_NOT_ALLOWED') =>
         'They aren’t accepting messages from you right now.',
       ChatFailure(code: 'CONVERSATION_CLOSED' || 'NOT_FOUND') =>
@@ -228,11 +361,30 @@ String chatError(Object error) =>
         'You’re sending a lot. Wait a moment.',
       ChatFailure(code: 'RECIPIENT_BACKLOG') =>
         'They haven’t picked up their earlier messages yet. Try again later.',
+      ChatFailure(code: 'OWN_BACKLOG') => 'One of your other devices has too many unread messages. Open Chat devices (Profile, Chat devices), open Hiyall on that device or remove it.',
       ChatFailure(code: 'CHAT_DAILY_LIMIT') =>
         'You’ve sent a lot of messages in this chat today. Try again later.',
       ChatFailure(:final message) => message,
       _ => 'Something went wrong with encryption on this device.',
     };
+
+/// The relay refused a send because one of the sender's own other devices holds too many unread messages
+/// (`OWN_BACKLOG`): the words say to open Chat devices, and the button goes there. The message stays "Not
+/// sent" and can be tried again once that device picked its messages up or was removed.
+void showOwnBacklogMessage(BuildContext context) =>
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          key: const Key('own-backlog-message'),
+          content: Text(chatError(const ChatFailure('OWN_BACKLOG', ''))),
+          duration: const Duration(seconds: 10),
+          action: SnackBarAction(
+            label: 'Chat devices',
+            onPressed: () => context.go('/profile/devices'),
+          ),
+        ),
+      );
 
 /// What the small notice says when a reaction could not be sent.
 String reactionFailureText(Object error) {
@@ -356,11 +508,20 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
       );
     }
     if (state.hasError) {
+      final storage = state.error is ChatStorageUnavailable;
       return _ChatNotice(
         icon: Icons.lock_reset_rounded,
-        title: 'Couldn’t set up encryption',
+        title: storage
+            ? 'Couldn’t open secure storage'
+            : 'Couldn’t set up encryption',
         body: chatError(state.error!),
         action: () => ref.invalidate(chatEngineProvider),
+        // Only after several launches in a row have failed, and only on purpose: it erases the chats on
+        // this phone.
+        secondaryLabel: storage && ref.watch(chatStorageResetOfferedProvider)
+            ? 'Reset chat on this phone'
+            : null,
+        onSecondary: () => confirmChatReset(context, ref),
       );
     }
     final now = ref.watch(chatClockProvider)();
@@ -488,12 +649,15 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
 class _ChatNotice extends StatelessWidget {
   final IconData icon;
   final String title, body;
-  final VoidCallback? action;
+  final VoidCallback? action, onSecondary;
+  final String? secondaryLabel;
   const _ChatNotice({
     required this.icon,
     required this.title,
     required this.body,
     this.action,
+    this.secondaryLabel,
+    this.onSecondary,
   });
   @override
   Widget build(BuildContext context) => ChatMessageCard(
@@ -503,7 +667,39 @@ class _ChatNotice extends StatelessWidget {
     body: body,
     primaryLabel: action == null ? null : 'Try again',
     onPrimary: action,
+    secondaryLabel: secondaryLabel,
+    onSecondary: onSecondary,
   );
+}
+
+/// Asks, in plain words, before "Reset chat on this phone" erases this phone's chats.
+Future<void> confirmChatReset(BuildContext context, WidgetRef ref) async {
+  final yes = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Reset chat on this phone?'),
+      content: const Text(
+        'This phone couldn’t open its secure storage several times in a row. Resetting erases the chats stored on this phone and its chat keys, and starts again with a new chat identity. Messages already on this phone can’t be recovered. Chats on your other devices are not affected.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('chat-reset-confirm'),
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Reset chat'),
+        ),
+      ],
+    ),
+  );
+  if (yes != true) return;
+  try {
+    await resetChatOnThisPhone(ref);
+  } catch (e) {
+    if (context.mounted) showMessage(context, chatError(e));
+  }
 }
 
 /// What the new-device banner says for the most pressing notice in [notices]: this phone's own data could
@@ -515,9 +711,11 @@ class _ChatNotice extends StatelessWidget {
   final kind =
       [
         DeviceNoticeKind.locked,
+        DeviceNoticeKind.storage,
         DeviceNoticeKind.reset,
         DeviceNoticeKind.added,
         DeviceNoticeKind.removed,
+        DeviceNoticeKind.inactive,
         DeviceNoticeKind.review,
       ].firstWhere(
         (k) => notices.any((n) => n.kind == k),
@@ -529,6 +727,16 @@ class _ChatNotice extends StatelessWidget {
           'Couldn’t unlock your encrypted data on this device. Starting fresh.',
       body: 'Chats you had on this phone are gone, and earlier encrypted messages can’t be opened here. New chats work as usual.',
       action: 'Manage devices',
+    ),
+    DeviceNoticeKind.storage => (
+      title: 'Chat was reset on this phone',
+      body: 'Secure storage couldn’t be opened, so you started chat again here. Chats that were on this phone are gone and earlier encrypted messages can’t be opened here. New chats work as usual.',
+      action: 'Manage devices',
+    ),
+    DeviceNoticeKind.inactive => (
+      title: 'A device you hadn’t used for a while was removed',
+      body: 'Its messages had piled up, which would have held back messages to your account. If it was yours, sign in on it again. If it wasn’t, review your devices.',
+      action: 'Review devices',
     ),
     DeviceNoticeKind.reset => (
       title: 'This phone started a new secure chat identity',
@@ -1178,6 +1386,9 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
       if (e is ChatFailure && e.code == 'AWAITING_REPLY') {
         setState(() => serverAwaiting = true);
       }
+      if (e is ChatFailure && e.code == 'OWN_BACKLOG') {
+        showOwnBacklogMessage(context);
+      }
       if (!isTransientChatFailure(e)) {
         if (input.text.isEmpty) {
           input.value = TextEditingValue(
@@ -1197,6 +1408,9 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
       if (!mounted) return;
       if (e is ChatFailure && e.code == 'AWAITING_REPLY') {
         setState(() => serverAwaiting = true);
+      }
+      if (e is ChatFailure && e.code == 'OWN_BACKLOG') {
+        showOwnBacklogMessage(context);
       }
       if (!isTransientChatFailure(e)) showMessage(context, chatError(e));
     }

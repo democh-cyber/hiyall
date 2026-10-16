@@ -85,10 +85,10 @@ void main() {
         ..body = {
           'data': {'oneTimeKeyCount': 3},
         };
-      final dio = Dio(BaseOptions(baseUrl: 'http://x'))
+      final dio = Dio(BaseOptions(baseUrl: 'http://127.0.0.1:8080'))
         ..httpClientAdapter = adapter;
       final api = ChatApi(
-        'http://x',
+        'http://127.0.0.1:8080',
         't',
         dio: dio,
         clientVersion: '1.2.3',
@@ -110,9 +110,10 @@ void main() {
           'data': {'oneTimeKeyCount': 3},
         };
       final api = ChatApi(
-        'http://x',
+        'http://127.0.0.1:8080',
         't',
-        dio: Dio(BaseOptions(baseUrl: 'http://x'))..httpClientAdapter = adapter,
+        dio: Dio(BaseOptions(baseUrl: 'http://127.0.0.1:8080'))
+          ..httpClientAdapter = adapter,
       );
       await api.keyCount('d');
       expect(
@@ -131,9 +132,9 @@ void main() {
           };
         var blocked = 0;
         final api = ChatApi(
-          'http://x',
+          'http://127.0.0.1:8080',
           't',
-          dio: Dio(BaseOptions(baseUrl: 'http://x'))
+          dio: Dio(BaseOptions(baseUrl: 'http://127.0.0.1:8080'))
             ..httpClientAdapter = adapter,
           onUpgradeRequired: () => blocked++,
         );
@@ -157,9 +158,10 @@ void main() {
         };
       var blocked = 0;
       final api = ChatApi(
-        'http://x',
+        'http://127.0.0.1:8080',
         't',
-        dio: Dio(BaseOptions(baseUrl: 'http://x'))..httpClientAdapter = adapter,
+        dio: Dio(BaseOptions(baseUrl: 'http://127.0.0.1:8080'))
+          ..httpClientAdapter = adapter,
         onUpgradeRequired: () => blocked++,
       );
       await expectLater(api.keyCount('d'), throwsA(isA<ChatFailure>()));

@@ -11,6 +11,7 @@ import 'package:hiyall/core/chat/chat_api.dart';
 import 'package:hiyall/core/chat/chat_backup_exclusion.dart';
 import 'package:hiyall/core/chat/chat_engine.dart';
 import 'package:hiyall/core/chat/chat_local_data.dart';
+import 'package:hiyall/core/chat/chat_store.dart' show ChatStorageUnavailable;
 import 'package:hiyall/core/realtime/realtime_client.dart';
 import 'package:hiyall/core/state.dart';
 import 'package:hiyall/core/theme.dart';
@@ -119,6 +120,60 @@ void main() {
     }
   });
 
+  group('a keystore that cannot be opened (CHAT-N4)', () {
+    Future<void> pumpError(WidgetTester tester, {required bool offered}) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(390, 844);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      addTearDown(tester.view.resetPhysicalSize);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            chatEngineProvider.overrideWith(
+              (ref) async => throw const ChatStorageUnavailable(),
+            ),
+            chatStorageResetOfferedProvider.overrideWith(
+              () => _Offered(offered),
+            ),
+            sessionProvider.overrideWith(SignedIn.new),
+            chatClockProvider.overrideWithValue(() => fixedNow),
+          ],
+          child: MaterialApp(
+            theme: hiyallTheme(Brightness.light),
+            home: Scaffold(body: ChatsScreen()),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('it is retryable and offers no reset at first', (tester) async {
+      await pumpError(tester, offered: false);
+      expect(find.text('Couldn’t open secure storage'), findsOneWidget);
+      expect(find.text('Try again'), findsOneWidget);
+      expect(find.text('Reset chat on this phone'), findsNothing);
+    });
+
+    testWidgets(
+      'after several failed launches the reset is offered, and asks first',
+      (tester) async {
+        await pumpError(tester, offered: true);
+        expect(find.text('Reset chat on this phone'), findsOneWidget);
+        await tester.tap(find.text('Reset chat on this phone'));
+        await tester.pumpAndSettle();
+        expect(find.text('Reset chat on this phone?'), findsOneWidget);
+        expect(
+          find.textContaining('erases the chats stored on this phone'),
+          findsOneWidget,
+        );
+        await tester.tap(find.text('Cancel'));
+        await tester.pumpAndSettle();
+        expect(find.text('Reset chat on this phone?'), findsNothing);
+        expect(find.text('Reset chat on this phone'), findsOneWidget);
+      },
+    );
+  });
+
   group('the device list is looked at again', () {
     Future<(DevicesEngine, List<FakeSocket>)> pump(WidgetTester tester) async {
       final engine = DevicesEngine(UiCloud());
@@ -218,6 +273,32 @@ void main() {
       );
     });
 
+    test('an own device that is full has its own words, which point to Chat devices (CHAT-N2)', () {
+      final own = chatError(const ChatFailure('OWN_BACKLOG', 'x', 429));
+      expect(own, contains('Chat devices'));
+      expect(
+        own,
+        isNot(contains('picked up')),
+        reason: 'not the recipient text',
+      );
+      // The recipient text is unchanged.
+      expect(
+        chatError(const ChatFailure('RECIPIENT_BACKLOG', 'x', 429)),
+        'They haven’t picked up their earlier messages yet. Try again later.',
+      );
+      expect(
+        isTransientChatFailure(const ChatFailure('OWN_BACKLOG', 'x', 429)),
+        isTrue,
+        reason: 'the message stays as not sent and can be retried',
+      );
+    });
+
+    test('a keystore that cannot be opened has its own words and says nothing was deleted', () {
+      final words = chatError(const ChatStorageUnavailable());
+      expect(words, contains('secure storage'));
+      expect(words, contains('Nothing was deleted'));
+    });
+
     test('a notice survives being written and read back', () {
       for (final kind in DeviceNoticeKind.values) {
         final back = DeviceNotice.fromJson(
@@ -288,4 +369,11 @@ void main() {
       },
     );
   });
+}
+
+class _Offered extends ChatResetOffered {
+  _Offered(this.initial);
+  final bool initial;
+  @override
+  bool build() => initial;
 }

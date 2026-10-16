@@ -106,12 +106,22 @@ class SnapshotOpenInfo {
   /// Snapshot files existed but none could be opened (the key is gone, or the
   /// files are damaged): the account starts empty and registers a new device.
   final bool lost;
+
+  /// The snapshot that opened was the previous generation (`.snap.prev`): the current file and any newer
+  /// one were missing or damaged, so this is an older state than the one last committed. The saved ratchets
+  /// may be behind what peers have already seen, so the engine treats it like [lost] and starts a new
+  /// identity (audit CHAT-N8).
+  final bool rolledBack;
   const SnapshotOpenInfo({
     required this.generation,
     required this.loadedFrom,
     required this.migrated,
     required this.lost,
+    this.rolledBack = false,
   });
+
+  /// The engine must not carry on with the saved identity.
+  bool get identityUntrusted => lost || rolledBack;
 }
 
 /// A [ChatStore] for one account whose entries live in one sealed file.
@@ -186,11 +196,27 @@ class SnapshotChatStore implements ChatStore {
     final keyName = '${prefix}snapKey';
     final base = _fileSafe(userId);
     final names = ['$base.snap', '$base.snap.tmp', '$base.snap.prev'];
-    final saved = await secure.read(keyName);
-    final key = saved == null
-        ? (newKey ?? native.generateSealKey)()
-        : base64Decode(saved);
-    if (saved == null) await secure.write(keyName, base64Encode(key));
+    // A keystore that cannot be read is an error to try again, never a missing key: a key made now would not
+    // open the snapshot that is already on disk, and the account would start empty (audit CHAT-N4).
+    final String? saved;
+    try {
+      saved = await secure.read(keyName);
+    } on ChatStorageUnavailable {
+      rethrow;
+    } catch (error) {
+      throw ChatStorageUnavailable(error);
+    }
+    List<int>? decoded;
+    if (saved != null) {
+      try {
+        decoded = base64Decode(saved);
+      } on FormatException {
+        // Bytes were read and are not a key (a damaged entry): nothing opens with it, so it is replaced and
+        // the files it protected count as lost, like any lost key.
+      }
+    }
+    final key = decoded ?? (newKey ?? native.generateSealKey)();
+    if (decoded == null) await secure.write(keyName, base64Encode(key));
     final sealer = (sealerFor ?? RustSnapshotSealer.new)(key);
 
     // The newest generation that authenticates wins.
@@ -256,6 +282,7 @@ class SnapshotChatStore implements ChatStore {
       loadedFrom: loadedFrom,
       migrated: migrated,
       lost: existed && entries == null && migrated == 0,
+      rolledBack: loadedFrom == store.previousName,
     );
     return store;
   }
