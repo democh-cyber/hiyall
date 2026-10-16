@@ -50,7 +50,7 @@ Teens in Hiyall are still on an open, public-by-default service, so parents and 
 
 - A teen's profile can be found by other teens in Discover. It shows their name, username, photo, bio and whatever details they add.
 - Their **age in years** is shown on their profile to other teens who open it. The app has no setting to hide it.
-- **Other teens can message them** without being friends first. To limit unwanted contact, a person can send only 3 messages to someone who has not yet replied, and starting new chats is rate-limited. Teens can block and report.
+- **Other teens can message them** without being friends first. To limit unwanted contact, a person can send only 3 messages to someone who has not yet replied (reactions and quiet messages count too), and starting new chats is rate-limited. Teens can block and report.
 - **Members can see who viewed their profile.**
 - Posts, stories and discussions in spaces are not end-to-end encrypted and may be seen by Hiyall staff when needed for safety.
 
@@ -71,9 +71,9 @@ Age groups, stricter defaults, blocking, reporting and limits make harm less lik
 
 ## Illegal images of children
 
-[COUNSEL: scanning status at launch. Keep the first paragraph below only if a hash list or scanning provider is live; if photos are not scanned at launch, replace it with: "We do not currently check uploaded photos against lists of known illegal images. We rely on reports."] Profile, post and story photos are checked when they are uploaded against a list of known illegal images, using a digital fingerprint of the photo. The check finds known images only. It cannot find a new image, and it cannot check photos in end-to-end encrypted chats.
+[COUNSEL: scanning status at launch. Keep this paragraph and the next only if a hash list or scanning provider is live; if photos are not scanned at launch, replace them with: "We do not currently check uploaded photos against lists of known illegal images. We rely on reports." Wording if live: Profile, post and story photos are checked when they are uploaded against a list of known illegal images, using a digital fingerprint of the photo. The check finds known images only. It cannot find a new image, and it cannot check photos in end-to-end encrypted chats.]
 
-If a photo is flagged or matches, it is not shown, the upload is refused with a general message, and we open a safety case. The photo is kept as evidence in a separate restricted storage area, even if the account or the post is later deleted, for [COUNSEL: evidence retention period, default currently 365 days] from detection, or longer if the case is confirmed or reported, or an authority or the law requires it. A match can suspend the account and sign it out of every device. We do not tell the member why. Only authorised staff can see a case; the photo opens blurred for administrators only, and every view is logged. We may report suspected child sexual abuse material to the authorities where the law requires. If you come across it, do not share it: report it in the app or write to [SAFETY EMAIL].
+[COUNSEL: scanning status at launch. Keep this paragraph only if photos are scanned at launch; if not, a photo can still reach a case through a report, so rewrite it for reports.] If a photo is flagged or matches, it is not shown, the upload is refused with a general message, and we open a safety case. The photo is kept as evidence in a separate restricted storage area, even if the account or the post is later deleted, for [COUNSEL: evidence retention period, default currently 365 days] from detection, or longer if the case is confirmed or reported, or an authority or the law requires it. A match can suspend the account and sign it out of every device. We do not tell the member why. Only authorised staff can see a case; the photo opens blurred for administrators only, and every view is logged. We may report suspected child sexual abuse material to the authorities where the law requires. If you come across it, do not share it: report it in the app or write to [SAFETY EMAIL].
 
 ## Tips for teens
 

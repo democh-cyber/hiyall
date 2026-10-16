@@ -187,10 +187,38 @@ Breadcrumb? scrubBreadcrumb(Breadcrumb? crumb, Hint hint) {
   return crumb;
 }
 
+/// [value] with every string in it (also inside maps and lists) run through [scrubText]. Typed
+/// objects (a device or app context) hold no free text and pass unchanged.
+Object? _scrubValue(Object? value) => switch (value) {
+  String() => scrubText(value),
+  Map() => {for (final e in value.entries) e.key: _scrubValue(e.value)},
+  List() => [for (final v in value) _scrubValue(v)],
+  _ => value,
+};
+
 /// Last stop before an event leaves the device.
 SentryEvent? scrubEvent(SentryEvent event, Hint hint) {
   event.user = null;
   event.serverName = null;
+  // Tags, extra data and custom contexts are free text a caller attached; they are scrubbed like
+  // messages (a scope tag holding a route or an address must not leave the phone).
+  final tags = event.tags;
+  if (tags != null) {
+    event.tags = {for (final e in tags.entries) e.key: scrubText(e.value)};
+  }
+  // ignore: deprecated_member_use
+  final extra = event.extra;
+  if (extra != null) {
+    // ignore: deprecated_member_use
+    event.extra = {for (final e in extra.entries) e.key: _scrubValue(e.value)};
+  }
+  final contexts = event.contexts;
+  for (final key in contexts.keys.toList()) {
+    final value = contexts[key];
+    if (value is String || value is Map || value is List) {
+      contexts[key] = _scrubValue(value);
+    }
+  }
   final request = event.request;
   if (request != null) {
     event.request = SentryRequest(

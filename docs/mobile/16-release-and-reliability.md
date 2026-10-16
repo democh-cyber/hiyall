@@ -265,8 +265,16 @@ with an App Store distribution profile, so leave it. The things only Xcode and a
    local work, and confirm the two capabilities show without errors. The deployment target is iOS 15.
 3. App Store Connect: create the app (bundle id above, SKU free text), fill the listing from `store-listing.md`,
    answer App Privacy and the encryption questions, set the age rating, add the reviewer notes and an account.
-4. Build the archive with `scripts/build-release.sh ios` (the CI job does, after importing the certificate and
-   profile), or Product > Archive in Xcode. Run Product > Archive > Generate Privacy Report and compare it with
+4. **Rehearse the first archive on a Mac before the first tag.** On a Mac, `scripts/build-release.sh ios` signs
+   automatically with the Apple account signed in to Xcode. CI has no account, so with `IOS_TEAM_ID` and `IOS_PROFILE_NAME` set (the
+   workflow reads both from the installed provisioning profile) the script signs **manually**, and only in CI: it runs
+   `flutter build ios --config-only`, writes the git-ignored `ios/Flutter/Signing.xcconfig` (`CODE_SIGN_STYLE=Manual`, team, profile,
+   Apple Distribution), which `ios/Flutter/Release.xcconfig` includes, so only the Runner target takes the settings (a command-line
+   override would also hit the Swift package targets, which cannot take a profile); it then proves that with `xcodebuild
+   -showBuildSettings` (`scripts/ios_signing_check.py`), runs `xcodebuild archive` and `xcodebuild -exportArchive` with
+   `ios/ExportOptions.plist`. The Xcode project file is never edited. This path has never run: do it once by hand on a Mac with a
+   manual App Store profile (`IOS_TEAM_ID=... IOS_PROFILE_NAME=... CI=true scripts/build-release.sh ios`, then delete
+   `ios/Flutter/Signing.xcconfig` if the run was interrupted) and fix what it shows before relying on CI. Or archive with Product > Archive in Xcode. Run Product > Archive > Generate Privacy Report and compare it with
    `PrivacyInfo.xcprivacy` (store-listing.md explains why this matters). Upload through Xcode Organizer or Transporter.
 5. TestFlight: install on a real iPhone, sign up with a real email, send a chat photo and receive a push before
    submitting for review.

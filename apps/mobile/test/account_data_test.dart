@@ -22,6 +22,7 @@ import 'support/fixtures.dart';
 class AccountFake extends FakeApi {
   final scheduled = <String>[];
   final appleCodes = <String?>[];
+  final unavailableFlags = <bool>[];
   var cancelled = 0, exports = 0;
   final scheduleFailures = <ApiFailure>[];
   ApiFailure? exportFailure, cancelFailure;
@@ -36,10 +37,12 @@ class AccountFake extends FakeApi {
     Session s,
     String name, {
     String? appleAuthorizationCode,
+    bool appleCodeUnavailable = false,
   }) async {
     if (scheduleFailures.isNotEmpty) throw scheduleFailures.removeAt(0);
     scheduled.add(name);
     appleCodes.add(appleAuthorizationCode);
+    unavailableFlags.add(appleCodeUnavailable);
     return DeletionStatus(
       pending: true,
       scheduledAt: DateTime.utc(2026, 10, 13),
@@ -67,8 +70,17 @@ class FakeReauth extends Reauthenticator {
   AuthMethod? kind;
   AuthFailure? failure;
   final passwords = <String?>[];
+  final withAppleCalls = <bool>[];
   String? appleCode;
+
+  /// Apple is among the providers although [kind] says otherwise (Google first).
+  bool alsoApple = false;
+
+  /// Hands out [appleCode] on every Apple sign-in, like a platform that returns one.
+  String? codeOnApple;
   FakeReauth(this.kind);
+  @override
+  bool get linksApple => alsoApple || kind == AuthMethod.apple;
   @override
   String? takeAppleAuthorizationCode() {
     final code = appleCode;
@@ -79,9 +91,14 @@ class FakeReauth extends Reauthenticator {
   @override
   AuthMethod? get method => kind;
   @override
-  Future<void> reauthenticate({String? password}) async {
+  Future<void> reauthenticate({
+    String? password,
+    bool withApple = false,
+  }) async {
     passwords.add(password);
+    withAppleCalls.add(withApple);
     if (failure != null) throw failure!;
+    if (withApple && codeOnApple != null) appleCode = codeOnApple;
   }
 }
 
@@ -483,6 +500,145 @@ void main() {
       expect(find.text('Contact support'), findsOneWidget);
       expect(api.scheduled, isEmpty);
     });
+
+    Future<ProviderContainer> toDelete(
+      WidgetTester tester,
+      AccountFake api,
+      FakeReauth reauth,
+    ) async {
+      final container = await openAccount(tester, api, reauth: reauth);
+      await container.read(profileProvider.future);
+      await start(tester);
+      await press(tester, 'delete-continue');
+      await tester.enterText(
+        find.byKey(const Key('delete-username')),
+        'anjali',
+      );
+      await tester.pump();
+      await press(tester, 'delete-confirm');
+      return container;
+    }
+
+    testWidgets(
+      'A Google account that also lists Apple signs in with Apple, not Google (multi-provider)',
+      (tester) async {
+        final api = AccountFake();
+        final reauth = FakeReauth(AuthMethod.google)
+          ..alsoApple = true
+          ..codeOnApple = 'apple-code-g';
+        await toDelete(tester, api, reauth);
+        expect(find.text('Continue with Apple'), findsOneWidget);
+        expect(find.text('Continue with Google'), findsNothing);
+        expect(api.scheduled, isEmpty, reason: 'Apple comes before the server');
+        await press(tester, 'delete-reauth');
+        expect(reauth.withAppleCalls, [true]);
+        expect(api.appleCodes, ['apple-code-g']);
+        expect(api.unavailableFlags, [false]);
+      },
+    );
+
+    testWidgets(
+      'A password account that lists Apple is asked for Apple, with no password field',
+      (tester) async {
+        final api = AccountFake();
+        final reauth = FakeReauth(AuthMethod.password)
+          ..alsoApple = true
+          ..codeOnApple = 'c';
+        await toDelete(tester, api, reauth);
+        expect(find.byKey(const Key('delete-password')), findsNothing);
+        await press(tester, 'delete-reauth');
+        expect(reauth.withAppleCalls, [true]);
+        expect(api.appleCodes, ['c']);
+      },
+    );
+
+    testWidgets(
+      'APPLE_CODE_REQUIRED for a Google-only account makes the retry an Apple sign-in',
+      (tester) async {
+        final api = AccountFake()
+          ..scheduleFailures.add(
+            const ApiFailure('Check', 422, 'APPLE_CODE_REQUIRED'),
+          );
+        final reauth = FakeReauth(AuthMethod.google)..codeOnApple = 'late-code';
+        await toDelete(tester, api, reauth);
+        // The server was asked first (Google accounts list no Apple) and refused.
+        expect(find.byKey(const Key('delete-apple-explain')), findsOneWidget);
+        expect(reauth.withAppleCalls, isEmpty);
+        await press(tester, 'delete-apple-retry');
+        expect(reauth.withAppleCalls, [true]);
+        expect(api.appleCodes, ['late-code']);
+        expect(api.unavailableFlags, [false]);
+      },
+    );
+
+    testWidgets(
+      'Two empty Apple answers (a web popup returns no code) end in an honest, optional way out that sends appleCodeUnavailable',
+      (tester) async {
+        final api = AccountFake();
+        final reauth = FakeReauth(AuthMethod.apple);
+        await toDelete(tester, api, reauth);
+        await press(tester, 'delete-reauth');
+        // First miss: no way to skip yet.
+        expect(find.byKey(const Key('delete-apple-continue')), findsNothing);
+        await press(tester, 'delete-apple-retry');
+        expect(reauth.withAppleCalls, [true, true]);
+        // Second miss: the explanation says what will happen, and the member chooses.
+        expect(find.byKey(const Key('delete-apple-explain')), findsOneWidget);
+        expect(find.textContaining('by hand'), findsOneWidget);
+        expect(find.text('Try Apple again'), findsNothing);
+        expect(api.scheduled, isEmpty, reason: 'nothing is sent on its own');
+        await press(tester, 'delete-apple-continue');
+        expect(api.scheduled, ['anjali']);
+        expect(api.appleCodes, [null]);
+        expect(api.unavailableFlags, [true]);
+      },
+    );
+
+    testWidgets('The miss count survives leaving the screen and coming back', (
+      tester,
+    ) async {
+      final api = AccountFake();
+      final reauth = FakeReauth(AuthMethod.apple);
+      final container = await toDelete(tester, api, reauth);
+      await press(tester, 'delete-reauth');
+      await press(tester, 'delete-apple-retry');
+      expect(reauth.withAppleCalls, hasLength(2));
+      expect(
+        container.read(appleDeletionMissesProvider)[anjaliId],
+        2,
+        reason: 'kept per user',
+      );
+      await press(tester, 'delete-close');
+      await start(tester);
+      await press(tester, 'delete-continue');
+      await tester.enterText(
+        find.byKey(const Key('delete-username')),
+        'anjali',
+      );
+      await tester.pump();
+      await press(tester, 'delete-confirm');
+      // No third Apple sheet: straight to the way out.
+      expect(reauth.withAppleCalls, hasLength(2));
+      expect(find.byKey(const Key('delete-apple-continue')), findsOneWidget);
+    });
+
+    testWidgets(
+      'A server that still says APPLE_CODE_REQUIRED after the choice shows its message and does not loop',
+      (tester) async {
+        final api = AccountFake();
+        final reauth = FakeReauth(AuthMethod.apple);
+        await toDelete(tester, api, reauth);
+        await press(tester, 'delete-reauth');
+        await press(tester, 'delete-apple-retry');
+        api.scheduleFailures.add(
+          const ApiFailure('Apple needs a code.', 422, 'APPLE_CODE_REQUIRED'),
+        );
+        await press(tester, 'delete-apple-continue');
+        expect(api.scheduled, isEmpty);
+        expect(find.text('Apple needs a code.'), findsOneWidget);
+        expect(reauth.withAppleCalls, hasLength(2));
+      },
+    );
 
     testWidgets(
       'Contact support opens a mail draft to the Help & Safety address',

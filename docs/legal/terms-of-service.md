@@ -41,7 +41,7 @@ Hiyall is a place to meet people and make friends. It is open by design. Here is
 - **Followers can see connections.** For members aged 18 and over, anyone who follows them can open their followers and following lists. For members under 18, only their friends can.
 - **Online status and last seen.** Others can see when you are online and when you were last active, unless you turn this off in Settings. If you are under 18 it starts switched off.
 - **Nearby.** Nearby is off until you turn it on. Only if you do, and let the app read your location, can you appear in other members' Nearby lists, shown only as a rough distance. You can turn it off at any time. See the Privacy Policy for the detail.
-- **Anyone in your age group can message you.** There is no friend step, but a person can send only 3 messages to someone who has not replied yet. You can block or report anyone at any time.
+- **Anyone in your age group can message you.** There is no friend step, but a person can send only 3 messages to someone who has not replied yet (reactions and quiet messages count too). You can block or report anyone at any time.
 - **Posts, stories and spaces are not private.** Posts, stories and the discussions inside spaces can be read by the people who are allowed to see them, and by us. They are not end-to-end encrypted.
 - **Chats are different.** One-to-one chats are end-to-end encrypted. See the Privacy Policy for what that means and what it does not mean.
 
@@ -70,7 +70,7 @@ You must not:
 
 - You can block, mute or restrict any member, and report people, chats and messages from the app.
 - Reports are looked at by people. Reports about serious harm go to the front of the queue. We can warn an account, remove content, or suspend an account.
-- Photos you upload for your profile, posts and stories are checked for known illegal images. If a photo is flagged, we do not show it, we keep it as evidence (even if you delete it or your account), we may suspend the account without telling you why, and we may report it to the authorities. The Privacy Policy and Data Retention document explain what is kept and for how long. [COUNSEL: scanning status at launch; if photos are not scanned at launch, replace the first sentence with: "We do not currently check uploaded photos against lists of known illegal images."]
+- [COUNSEL: scanning status at launch. Keep this item's first sentence only if photos are scanned at launch; if not, replace it with: "We do not currently check uploaded photos against lists of known illegal images." Wording if live: Photos you upload for your profile, posts and stories are checked for known illegal images.] If a photo is flagged, we do not show it, we keep it as evidence (even if you delete it or your account), we may suspend the account without telling you why, and we may report it to the authorities. The Privacy Policy and Data Retention document explain what is kept and for how long.
 - Because chats are end-to-end encrypted, we cannot read them. A report about a chat only includes the messages and photos that you choose to include. Sending them is your choice.
 - If you think we got a decision wrong, write to [APPEALS EMAIL] and tell us what happened. A person will look again. [OPERATOR: set a target response time.]
 - We may share information with the authorities or with others where the law requires, or where it is needed to protect someone from serious harm. [LEGAL REVIEW]

@@ -101,6 +101,145 @@ void main() {
     );
   });
 
+  test(
+    'Apple twice without a code sends appleCodeUnavailable instead',
+    () async {
+      final seen = <String>[];
+      final api = clientWith(
+        seen,
+        (o) => json(o, 200, {
+          'success': true,
+          'data': {'pending': true, 'canCancel': true},
+        }),
+      );
+      await api.scheduleDeletion(session, 'anjali', appleCodeUnavailable: true);
+      expect(
+        seen.single,
+        'POST /v1/me/deletion Bearer tok {"confirmUsername":"anjali","appleCodeUnavailable":true}',
+      );
+    },
+  );
+
+  test('APPLE_CODE_REQUIRED (422) keeps its code', () async {
+    final api = clientWith(
+      [],
+      (o) => failure(o, 422, 'APPLE_CODE_REQUIRED', 'Apple code needed'),
+    );
+    await expectLater(
+      api.scheduleDeletion(session, 'anjali'),
+      throwsA(
+        isA<ApiFailure>()
+            .having((e) => e.status, 'status', 422)
+            .having((e) => e.code, 'code', 'APPLE_CODE_REQUIRED'),
+      ),
+    );
+  });
+
+  group('503 busy answers (APP-N9)', () {
+    Future<ApiFailure> busy(
+      String code, {
+      Map<String, List<String>> headers = const {},
+      String path = '/v1/me/export',
+    }) async {
+      final api = clientWith(
+        [],
+        (o) => failure(o, 503, code, 'raw server words', headers),
+      );
+      try {
+        await api.exportData(session);
+      } on ApiFailure catch (f) {
+        return f;
+      }
+      fail('expected a failure');
+    }
+
+    for (final (code, text) in [
+      ('EXPORT_BUSY', 'Data exports are busy right now.'),
+      ('MEDIA_BUSY', 'Photo uploads are busy right now.'),
+      ('APPLE_REVOKE_FAILED', 'nothing was deleted.'),
+      ('TEMPORARILY_UNAVAILABLE', 'briefly unavailable.'),
+    ]) {
+      test('$code has friendly words and no raw server text', () async {
+        final f = await busy(code);
+        expect(f.status, 503);
+        expect(f.code, code);
+        expect(f.displayMessage, contains(text));
+        expect(f.displayMessage, endsWith('Try again in a moment.'));
+        expect(f.displayMessage, isNot(contains('raw server words')));
+        expect(f.retryAfter, isNull);
+      });
+    }
+
+    test('Retry-After is honoured in seconds', () async {
+      final f = await busy(
+        'EXPORT_BUSY',
+        headers: {
+          'retry-after': ['20'],
+        },
+      );
+      expect(f.retryAfter, const Duration(seconds: 20));
+      expect(
+        f.displayMessage,
+        'Data exports are busy right now. Try again in 20 seconds.',
+      );
+    });
+
+    test(
+      'a long Retry-After reads in minutes, and one second is singular',
+      () async {
+        final long = await busy(
+          'MEDIA_BUSY',
+          headers: {
+            'retry-after': ['300'],
+          },
+        );
+        expect(long.displayMessage, endsWith('Try again in 5 minutes.'));
+        final one = await busy(
+          'TEMPORARILY_UNAVAILABLE',
+          headers: {
+            'retry-after': ['1'],
+          },
+        );
+        expect(one.displayMessage, endsWith('Try again in 1 second.'));
+      },
+    );
+
+    test(
+      'an unknown 503 keeps the generic words and also honours Retry-After',
+      () async {
+        final f = await busy(
+          'SOMETHING_NEW',
+          headers: {
+            'retry-after': ['7'],
+          },
+        );
+        expect(
+          f.displayMessage,
+          'Something went wrong on our side. Try again in 7 seconds.',
+        );
+      },
+    );
+
+    test('other 5xx answers are unchanged', () async {
+      final api = clientWith(
+        [],
+        (o) => failure(o, 500, 'INTERNAL', 'x', {
+          'retry-after': ['9'],
+        }),
+      );
+      await expectLater(
+        api.exportData(session),
+        throwsA(
+          isA<ApiFailure>().having(
+            (e) => e.displayMessage,
+            'message',
+            'Something went wrong on our side. Try again in a moment.',
+          ),
+        ),
+      );
+    });
+  });
+
   test('A stale sign-in is REAUTH_REQUIRED with the server\'s words', () async {
     final api = clientWith(
       [],

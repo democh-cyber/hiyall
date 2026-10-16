@@ -296,4 +296,42 @@ void main() {
       },
     );
   });
+
+  group('tags, extra data and contexts are scrubbed too (APP-N10)', () {
+    test('free text a caller attached does not leave with addresses, tokens or query strings', () {
+      final event = SentryEvent(
+        tags: {
+          'route': '/chats/019a4000-0000-7000-8000-000000000001?peer=ana@example.com',
+          'screen': 'Settings',
+        },
+        // ignore: deprecated_member_use
+        extra: {
+          'note': 'user ana@example.com failed',
+          'nested': {
+            'url': 'https://r2.example/p.jpg?X-Amz-Signature=zzz',
+            'list': ['Bearer abc.def.ghi', 5],
+          },
+          'count': 3,
+        },
+      );
+      event.contexts['custom'] = {'who': 'ana@example.com', 'n': 1};
+      event.contexts['label'] = 'mail ana@example.com';
+      final out = scrubEvent(event, Hint())!;
+      expect(out.tags!['route'], '/chats/:id');
+      expect(out.tags!['screen'], 'Settings');
+      // ignore: deprecated_member_use
+      final extra = out.extra!;
+      expect(extra['note'], 'user [email] failed');
+      expect(extra['count'], 3);
+      final nested = extra['nested'] as Map;
+      expect(nested['url'], 'https://r2.example/p.jpg');
+      expect(nested['list'], ['Bearer [redacted]', 5]);
+      expect(out.contexts['custom'], {'who': '[email]', 'n': 1});
+      expect(out.contexts['label'], 'mail [email]');
+    });
+
+    test('an event without tags or extra passes', () {
+      expect(scrubEvent(SentryEvent(), Hint()), isNotNull);
+    });
+  });
 }

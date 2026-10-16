@@ -30,8 +30,9 @@ abstract final class HelpContacts {
   );
   static bool isPlaceholder(String address) => address.endsWith('.example');
 
-  /// Debug and test builds only: show placeholder addresses instead of hiding
-  /// them. A release build never lists an address that cannot receive mail.
+  /// Tests only: show placeholder addresses instead of hiding them. Nothing in the app sets it, so a
+  /// release build never lists an address that cannot receive mail.
+  @visibleForTesting
   static bool showPlaceholders = false;
 
   /// Whether [address] may be listed for a person to write to.

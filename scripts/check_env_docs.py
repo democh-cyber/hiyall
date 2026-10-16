@@ -25,7 +25,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Literals that look like variable names but are not.
-NOT_ENV = {"CHANGE_ME", "REPLACE_ME"}
+# TEST_DATABASE_URL is read by internal/dbtest, the helper of the Go tests; it is never part of a deployed environment.
+NOT_ENV = {"CHANGE_ME", "REPLACE_ME", "TEST_DATABASE_URL"}
 # Read by the Go runtime or the platform, not by our code, but legitimately in the example files.
 NON_GO = {"GOMEMLIMIT", "GOGC"}
 LITERAL = re.compile(r'"([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)"')
@@ -36,7 +37,8 @@ DECL = re.compile(r"(?m)^\s*#?\s*([A-Z][A-Z0-9_]{2,})=")
 API_DOC = "infrastructure/docker/api.example.env"
 ADMIN_DOCS = ("infrastructure/docker/admin.example.env", "config/admin.production.example.env")
 ALL_DOCS = ("infrastructure/docker/api.example.env", "infrastructure/docker/admin.example.env", "config/admin.production.example.env",
-            "config/api.production.example.env", "config/api.staging.example.env", "config/chat-media.example.env", "config/media.example.env")
+            "config/api.production.example.env", "config/api.staging.example.env", "config/migrate.production.example.env", "config/migrate.staging.example.env",
+            "config/chat-media.example.env", "config/media.example.env")
 
 
 def read(rel, root=ROOT):

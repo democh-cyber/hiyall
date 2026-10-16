@@ -4,9 +4,15 @@ name: Release
 # waits for a reviewer to approve the `production` environment. Owner setup (environment, secrets, variables) is in
 # docs/deployment/11-environments.md, section "GitHub". Rehearse this pipeline first with release-dryrun.yml.
 #
-# Which platforms ship is decided by the repository variable RELEASE_PLATFORMS (default "android,ios"). A platform
-# that is listed MUST have its signing secrets: its job fails when they are missing (it is never silently skipped),
-# and the preflight (gates e and r) fails first. Leave a platform out of the variable to release without it.
+# Which platforms ship is decided by the repository variable RELEASE_PLATFORMS (default "android,ios"). The `platforms`
+# job normalises it once (spaces, case) and rejects an unknown name; every other job reads its output. A platform that is
+# listed MUST have its signing secrets: its job fails when they are missing (it is never silently skipped). Leave a
+# platform out of the variable to release without it.
+#
+# Store signing secrets live in the `release` ENVIRONMENT, not in repository secrets, so only the android and ios jobs can
+# read them and only after a required reviewer approves (docs/deployment/11-environments.md item 9). Protect the v* tags
+# too (Settings > Rules > Rulesets: only the owner may create or move them), or anyone with write access could start this
+# pipeline by pushing a tag.
 on:
   push:
     tags: ['v*']
@@ -17,12 +23,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  platforms:
+    # RELEASE_PLATFORMS="android, ios" used to match nothing in the job conditions below, and the platform was skipped without
+    # a word. Normalise once, fail on a name nobody knows, and let every job read the result.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      list: ${{ steps.p.outputs.list }}
+      android: ${{ steps.p.outputs.android }}
+      ios: ${{ steps.p.outputs.ios }}
+    steps:
+      - id: p
+        env:
+          RAW: ${{ vars.RELEASE_PLATFORMS }}
+        run: |
+          set -euo pipefail
+          norm="$(printf '%s' "${RAW:-android,ios}" | tr -d ' \t\r\n' | tr 'A-Z' 'a-z')"
+          android=false; ios=false
+          IFS=',' read -r -a items <<< "$norm"
+          for x in "${items[@]}"; do
+            case "$x" in
+              android) android=true ;;
+              ios) ios=true ;;
+              "") ;;
+              *) echo "::error::RELEASE_PLATFORMS contains '$x'; the known platforms are android and ios"; exit 1 ;;
+            esac
+          done
+          if [ "$android" = false ] && [ "$ios" = false ]; then echo "::error::RELEASE_PLATFORMS names no platform"; exit 1; fi
+          list=""
+          if [ "$android" = true ]; then list="android"; fi
+          if [ "$ios" = true ]; then list="${list:+$list,}ios"; fi
+          { echo "list=$list"; echo "android=$android"; echo "ios=$ios"; } >> "$GITHUB_OUTPUT"
+          echo "Mobile platforms in this release: $list" >> "$GITHUB_STEP_SUMMARY"
+
   release-preflight:
     # Every release gate in one place (scripts/release-preflight.sh): the Foundation checks green on this commit, legal
-    # text final, release inputs set, owner placeholders gone, contract current, go vet, govulncheck, the production
-    # GitHub environment has reviewers. It fails the run before anything is built. Gate d (the production API
-    # environment) needs secrets that live on the host, not in GitHub, so it is skipped here and run
-    # by hand against staging and production (docs/deployment/12-release-runbook.md, step 3).
+    # text final, release inputs set, owner placeholders gone, contract current, go vet, govulncheck, the production and
+    # release GitHub environments have reviewers. It fails the run before anything is built. Gate d (the production API
+    # environment) needs secrets that live on the host, not in GitHub, so it cannot run here: it is skipped only while the
+    # repository variable PREFLIGHT_HOST_CHECK equals this tag, which the owner sets after running `api check-config
+    # -release` on the production host (docs/deployment/12-release-runbook.md, step 5). Any other skip needs
+    # PREFLIGHT_SKIP_REASON. Gate o fails when it cannot read the environments (set RELEASE_GATE_TOKEN).
+    needs: platforms
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -30,14 +72,21 @@ jobs:
       checks: read   # gate n reads the check runs of the tagged commit
       actions: read  # gate o reads the `production` environment's protection rules
     env:
-      PREFLIGHT_SKIP: d
+      # `python3 -I` ignores this variable, so the scripts also set sys.dont_write_bytecode; either way scripts/__pycache__
+      # must not appear, or gate a sees an uncommitted change on every tag run.
+      PYTHONDONTWRITEBYTECODE: '1'
+      PREFLIGHT_SKIP: d,${{ vars.PREFLIGHT_SKIP }}
+      PREFLIGHT_HOST_CHECK: ${{ vars.PREFLIGHT_HOST_CHECK }}
+      PREFLIGHT_SKIP_REASON: ${{ vars.PREFLIGHT_SKIP_REASON }}
       GH_TOKEN: ${{ github.token }}
-      # Optional fine-grained token with Administration: read, when the default token cannot see the environment rules
-      # (gate o prints NOT VERIFIED when neither works). Never required to be a write token.
+      # Fine-grained token with Administration: read (read only): the default token cannot see environment rules, so
+      # without it gate o fails in CI unless it is skipped with a reason. Never a write token.
       GH_ADMIN_TOKEN: ${{ secrets.RELEASE_GATE_TOKEN }}
-      RELEASE_PLATFORMS: ${{ vars.RELEASE_PLATFORMS || 'android,ios' }}
-      PREFLIGHT_ANDROID_SIGNING_IN_CI: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && secrets.ANDROID_STORE_PASSWORD != '' && secrets.ANDROID_KEY_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' }}
-      PREFLIGHT_IOS_SIGNING_IN_CI: ${{ secrets.IOS_CERTIFICATE_BASE64 != '' && secrets.IOS_CERTIFICATE_PASSWORD != '' && secrets.IOS_PROVISIONING_PROFILE_BASE64 != '' }}
+      RELEASE_PLATFORMS: ${{ needs.platforms.outputs.list }}
+      # The signing secrets live in the `release` environment, which this job cannot read: the android and ios jobs refuse
+      # to run without them.
+      PREFLIGHT_ANDROID_SIGNING_IN_CI: deferred
+      PREFLIGHT_IOS_SIGNING_IN_CI: deferred
       # Mirror of the production API setting: set SCAN_ALLOW_NONE=true here ONLY if production runs without an upload
       # scanner, and then also RELEASE_ACK_UNSCANNED=I_ACCEPT_UNSCANNED_PHOTOS (gate q; docs/deployment/12, step 0).
       SCAN_ALLOW_NONE: ${{ vars.SCAN_ALLOW_NONE }}
@@ -68,6 +117,9 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: The preflight's own tests
         run: python3 scripts/test-release-preflight.py
+      - name: The tree must still be clean (the tests write nothing)
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then git status --porcelain; echo "::error::the preflight tests changed the working tree"; exit 1; fi
       - run: scripts/release-preflight.sh
 
   checks:
@@ -228,12 +280,13 @@ jobs:
             admin-sbom.spdx.json
 
   android:
-    # Runs when RELEASE_PLATFORMS lists android (the default). Then the signing secrets are REQUIRED: the job fails
-    # without them. The preflight (gate e) already refused the release in that case.
-    needs: checks
-    if: ${{ contains(format(',{0},', vars.RELEASE_PLATFORMS || 'android,ios'), ',android,') }}
+    # Runs when RELEASE_PLATFORMS lists android (the default). Then the signing secrets, which live in the `release`
+    # environment (required reviewers), are REQUIRED: the job fails without them.
+    needs: [checks, platforms]
+    if: ${{ needs.platforms.outputs.android == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    environment: release
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Signing secrets are present
@@ -303,16 +356,25 @@ jobs:
             apps/mobile/build/app/outputs/bundle/release/*.aab
             apps/mobile/build/symbols/**
           if-no-files-found: error
+      - name: R8 mapping (deobfuscates Java and Kotlin stack traces; Play and Sentry want it for every build)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: android-r8-mapping
+          path: apps/mobile/build/app/outputs/mapping/release/mapping.txt
+          if-no-files-found: error
 
   ios:
     # Runs when RELEASE_PLATFORMS lists ios (the default). Signing is MANUAL: the certificate and the App Store
     # provisioning profile are installed into a temporary keychain, and scripts/build-release.sh archives with
-    # `xcodebuild` and exports with apps/mobile/ios/ExportOptions.plist (team and profile name filled from the
-    # profile). The first archive must be rehearsed on a Mac (docs/mobile/16-release-and-reliability.md).
-    needs: checks
-    if: ${{ contains(format(',{0},', vars.RELEASE_PLATFORMS || 'android,ios'), ',ios,') }}
+    # `xcodebuild` (signing settings reach the Runner target only, through the git-ignored ios/Flutter/Signing.xcconfig)
+    # and exports with apps/mobile/ios/ExportOptions.plist (team and profile name filled from the
+    # profile). The first archive must be rehearsed on a Mac (docs/mobile/16-release-and-reliability.md). The secrets live
+    # in the `release` environment (required reviewers).
+    needs: [checks, platforms]
+    if: ${{ needs.platforms.outputs.ios == 'true' }}
     runs-on: macos-15
     timeout-minutes: 60
+    environment: release
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Signing secrets are present
@@ -398,9 +460,13 @@ jobs:
 
   draft-release:
     # Attaches whatever was built to a DRAFT release; a human publishes it. A platform that is not in
-    # RELEASE_PLATFORMS is skipped on purpose; one that is listed and failed blocks the draft.
-    needs: [api-image, admin-image, sbom, android, ios]
-    if: ${{ !cancelled() && needs.api-image.result == 'success' && needs.admin-image.result == 'success' && needs.sbom.result == 'success' && needs.android.result != 'failure' && needs.ios.result != 'failure' }}
+    # RELEASE_PLATFORMS is skipped on purpose (result "skipped"); one that is listed must have succeeded: failed, cancelled
+    # (a reviewer rejected the release environment, or the run was cancelled) and skipped all block the draft.
+    needs: [platforms, api-image, admin-image, sbom, android, ios]
+    if: >-
+      ${{ !cancelled() && needs.api-image.result == 'success' && needs.admin-image.result == 'success' && needs.sbom.result == 'success'
+      && (needs.android.result == 'success' || (needs.platforms.outputs.android != 'true' && needs.android.result == 'skipped'))
+      && (needs.ios.result == 'success' || (needs.platforms.outputs.ios != 'true' && needs.ios.result == 'skipped')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -413,7 +479,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           API_IMAGE: ${{ needs.api-image.outputs.image }}@${{ needs.api-image.outputs.digest }}
           ADMIN_IMAGE: ${{ needs.admin-image.outputs.image }}@${{ needs.admin-image.outputs.digest }}
-          PLATFORMS: ${{ vars.RELEASE_PLATFORMS || 'android,ios' }}
+          PLATFORMS: ${{ needs.platforms.outputs.list }}
           SCAN_ALLOW_NONE: ${{ vars.SCAN_ALLOW_NONE }}
           RELEASE_ACK_UNSCANNED: ${{ vars.RELEASE_ACK_UNSCANNED }}
         run: |
@@ -432,9 +498,15 @@ jobs:
 
   migrate-production:
     # Waits for a required reviewer on the `production` environment (owner setup; the preflight's gate o checks it exists
-    # with reviewers). Runs the image's own /migrate against the production database as the migration role, with
-    # MIGRATE_RUN_GRANTS=true so the same step then refreshes the grants of the API and admin roles
-    # (database/roles/grants.sql). It does not start or replace the API.
+    # with reviewers). Runs the image's own /migrate against the production database as the MIGRATION role
+    # (MIGRATE_DATABASE_URL, hiyall_migrate, the table owner), with MIGRATE_RUN_GRANTS=true so the same step then refreshes the
+    # grants of the API and admin roles (database/roles/grants.sql). The API's own DATABASE_URL is hiyall_api and the migration
+    # URL is never an application secret. It does not start or replace the API.
+    #
+    # NETWORK: a GitHub-hosted runner has no fixed address. This job works only when the production database accepts
+    # connections from it (an allowlist that includes GitHub's runner ranges, or a self-hosted runner / tunnel). If it cannot
+    # connect, do not widen the database firewall for it: run the same command from your laptop or a one-off machine that
+    # can reach the database (docs/deployment/10-deploy-guide.md section 5) and let this job fail.
     needs: [api-image, draft-release]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -450,9 +522,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Migrate and refresh role grants
         env:
-          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          PRODUCTION_MIGRATE_DATABASE_URL: ${{ secrets.PRODUCTION_MIGRATE_DATABASE_URL }}
           IMAGE: ${{ needs.api-image.outputs.image }}@${{ needs.api-image.outputs.digest }}
         run: |
           set -euo pipefail
-          test -n "$PRODUCTION_DATABASE_URL" || { echo "PRODUCTION_DATABASE_URL is not set on the production environment"; exit 1; }
-          docker run --rm -e DATABASE_URL="$PRODUCTION_DATABASE_URL" -e MIGRATE_RUN_GRANTS=true --entrypoint /migrate "$IMAGE"
+          test -n "$PRODUCTION_MIGRATE_DATABASE_URL" || { echo "PRODUCTION_MIGRATE_DATABASE_URL (the hiyall_migrate role) is not set on the production environment"; exit 1; }
+          docker run --rm -e MIGRATE_DATABASE_URL="$PRODUCTION_MIGRATE_DATABASE_URL" -e MIGRATE_RUN_GRANTS=true --entrypoint /migrate "$IMAGE"

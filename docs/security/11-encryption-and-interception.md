@@ -1,6 +1,6 @@
 # Encryption and interception resistance
 
-**Status:** mandatory security requirement added on 7 October 2026; design only. This supersedes the earlier server-visible direct-chat default. The profile/privacy foundation now exists; chat encryption and certificate pinning are not implemented. See [the development record](../development.md). The library evaluation and recommendation are in [E2EE library evaluation](12-e2ee-library-evaluation.md). The first implementation and its verification are recorded in [encrypted chat implementation](13-encrypted-chat-implementation.md).
+**Status:** mandatory security requirement added on 7 October 2026. This supersedes the earlier server-visible direct-chat default. End-to-end encrypted direct chat and attachments are implemented (see the implementation record linked below); certificate pinning is not implemented and remains an open decision. See [the development record](../development.md). The library evaluation and recommendation are in [E2EE library evaluation](12-e2ee-library-evaluation.md). The first implementation and its verification are recorded in [encrypted chat implementation](13-encrypted-chat-implementation.md).
 
 ## Requirement and honest boundary
 

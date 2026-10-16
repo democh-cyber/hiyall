@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:go_router/go_router.dart';
 
 import 'core/theme.dart';
 import 'core/account_state.dart';
 import 'core/activity_state.dart';
 import 'core/home_prefs.dart';
+import 'core/secure_storage.dart';
 import 'core/legal_documents.dart';
 import 'core/app_info.dart';
 import 'core/deep_link.dart';
@@ -370,7 +370,7 @@ final themeProvider = NotifierProvider<ThemeController, ThemeMode>(
 /// The appearance choice, kept on this device.
 class ThemeController extends Notifier<ThemeMode> {
   static const _key = 'appearance';
-  static const _storage = FlutterSecureStorage();
+  static final _storage = createSecureStorage();
 
   @override
   ThemeMode build() {

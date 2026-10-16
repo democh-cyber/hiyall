@@ -6,7 +6,9 @@ on:
   pull_request:
 concurrency:
   group: foundation-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push cancels an older PR run, never a run on main: the release preflight (gate n) reads the check runs of the
+  # exact commit that is tagged, and a cancelled run is not a success.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
@@ -60,9 +62,9 @@ jobs:
       - name: Requests and jobs on the restricted hiyall_api role ran (a skipped one fails the job)
         run: |
           set -o pipefail
-          go test -race -count=1 -v -run 'TestRequestsAndJobsRunOnTheRestrictedAPIRole|TestEveryMaintenanceJobRunsOnTheRestrictedAPIRole|TestProductionStartRefusesARoleThatIsTooPowerful|TestRoleProblemsAndGrantProblemsSeeWhatIsWrong|TestCheckConfigDatabaseFlag|TestMigrateRunsGrantsAfterTheMigrations' ./internal/httpapi ./cmd/api ./cmd/migrate | tee "$RUNNER_TEMP/role-tests.log"
+          go test -race -count=1 -v -run 'TestRequestsAndJobsRunOnTheRestrictedAPIRole|TestEveryMaintenanceJobRunsOnTheRestrictedAPIRole|TestProductionStartRefusesARoleThatIsTooPowerful|TestRoleProblemsAndGrantProblemsSeeWhatIsWrong|TestCheckConfigDatabaseFlag|TestMigrateRunsGrantsAfterTheMigrations|TestOwnerPathWithoutSuperuser|TestProductionStartRefusesMissingGrants' ./internal/httpapi ./cmd/api ./cmd/migrate | tee "$RUNNER_TEMP/role-tests.log"
           if grep -E -- '--- SKIP' "$RUNNER_TEMP/role-tests.log"; then echo "::error::restricted role tests were skipped"; exit 1; fi
-          for t in TestRequestsAndJobsRunOnTheRestrictedAPIRole TestEveryMaintenanceJobRunsOnTheRestrictedAPIRole TestProductionStartRefusesARoleThatIsTooPowerful TestMigrateRunsGrantsAfterTheMigrations; do
+          for t in TestRequestsAndJobsRunOnTheRestrictedAPIRole TestEveryMaintenanceJobRunsOnTheRestrictedAPIRole TestProductionStartRefusesARoleThatIsTooPowerful TestMigrateRunsGrantsAfterTheMigrations TestOwnerPathWithoutSuperuser TestProductionStartRefusesMissingGrants; do
             grep -q -- "--- PASS: $t" "$RUNNER_TEMP/role-tests.log"
           done
         working-directory: services/api
@@ -113,6 +115,7 @@ jobs:
         run: |
           python3 scripts/test-release-preflight.py
           scripts/test-build-release.sh
+          scripts/test-backup-db.sh
           python3 scripts/check_env_docs.py
           scripts/validate-alerts.sh
       - run: git diff --exit-code -- docs/api/openapi-foundation.json packages/api-contracts/foundation.d.ts

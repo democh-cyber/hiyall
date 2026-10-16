@@ -31,6 +31,13 @@ updates:
     schedule: { interval: weekly, day: monday }
     groups:
       admin-npm-minor-patch: { update-types: [minor, patch] }
+  # The Android build (Gradle plugins and AndroidX libraries). iOS has no Podfile or Package.swift of its own: Flutter generates
+  # the Swift package under ios/Flutter/ephemeral, so the pub entry above is what moves iOS dependencies.
+  - package-ecosystem: gradle
+    directory: /apps/mobile/android
+    schedule: { interval: weekly, day: monday }
+    groups:
+      gradle-minor-patch: { update-types: [minor, patch] }
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly, day: monday }

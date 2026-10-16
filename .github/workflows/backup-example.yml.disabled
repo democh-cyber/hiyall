@@ -2,10 +2,12 @@
 # .github/workflows/backup.yml. Read docs/deployment/10-deploy-guide.md section 6 first.
 #
 # What it does: a nightly encrypted logical backup of the production database to a SEPARATE bucket through
-# scripts/backup-db.sh, and a monthly restore drill into a scratch Postgres service. It needs a database role with SELECT
-# only, an age PUBLIC key (the private key must not be stored in GitHub), and a bucket token limited to write and list on
-# the backup bucket. If you would rather not give GitHub a production database URL, run the same script from cron on a
-# machine you control:
+# scripts/backup-db.sh, and an on-demand restore drill into a scratch Postgres service. It needs a database role with SELECT
+# only, an age PUBLIC key, and a bucket token limited to write and list on the backup bucket. The age PRIVATE key is never
+# stored in GitHub, not as a secret and not in an environment: a repository that can decrypt its own backups gives up the
+# point of encrypting them. The restore drill therefore runs only on demand, with the private key pasted into a
+# workflow_dispatch input at run time (see the drill job for what that does and does not protect).
+# If you would rather not give GitHub a production database URL, run the same script from cron on a machine you control:
 #
 #   17 2 * * *  cd /opt/hiyall && BACKUP_DATABASE_URL=... BACKUP_S3_BUCKET=... BACKUP_S3_ENDPOINT=... \
 #               BACKUP_AGE_RECIPIENT=age1... AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... scripts/backup-db.sh >> /var/log/hiyall-backup.log 2>&1
@@ -15,7 +17,13 @@ name: Backup
 on:
   schedule:
     - cron: '17 2 * * *'   # every night, 02:17 UTC (off the hour on purpose: scheduled runs bunch up at :00)
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      age_identity:
+        description: 'Restore drill only: the age PRIVATE key (AGE-SECRET-KEY-...), pasted from your password manager or offline copy. Leave empty to run only the backup.'
+        required: false
+        default: ''
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -45,8 +53,14 @@ jobs:
         run: scripts/backup-db.sh
 
   restore-drill:
-    # First day of the month only; proves the newest backup restores, roles and grants included.
+    # On demand only, and only when a key was pasted into the dispatch input: no schedule can run it, because nothing in
+    # GitHub holds the private key. Be clear about what the input is: it is masked in the logs from the first step, but a
+    # workflow_dispatch input is part of the run's event record, which anyone who can read this repository's Actions runs
+    # can see. So use it only on a private repository whose readers you trust, and prefer running
+    # `scripts/restore-drill.sh --latest` on a machine of your own with the key in a file there. Rotate the age key after a
+    # drill done this way if you have any doubt who could read the run.
     needs: backup
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.age_identity != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: production-backup
@@ -55,20 +69,24 @@ jobs:
         image: postgres:16.15
         env:
           POSTGRES_PASSWORD: drill-only-disposable
-        ports: [5432:5432]
+        ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
+      - name: Mask the pasted key before anything else can print it
+        env:
+          AGE_IDENTITY: ${{ inputs.age_identity }}
+        run: |
+          set -euo pipefail
+          # Each line of the key file is masked on its own (a multi-line value is only masked line by line).
+          while IFS= read -r line; do
+            if [ -n "$line" ]; then echo "::add-mask::$line"; fi
+          done <<< "$AGE_IDENTITY"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends postgresql-client age awscli
-      - name: Skip unless it is the first of the month (or a manual run)
-        id: when
-        run: |
-          if [ "${{ github.event_name }}" = workflow_dispatch ] || [ "$(date -u +%d)" = 01 ]; then echo "go=true" >> "$GITHUB_OUTPUT"; fi
       - name: Restore the newest backup into the scratch database and check it
-        if: steps.when.outputs.go == 'true'
         env:
           DRILL_ADMIN_URL: postgresql://postgres:drill-only-disposable@127.0.0.1:5432/postgres
           BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
@@ -77,8 +95,10 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.DRILL_S3_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
           AGE_IDENTITY_FILE: ${{ runner.temp }}/age-identity.txt
-          AGE_IDENTITY: ${{ secrets.DRILL_AGE_IDENTITY }}               # the PRIVATE key: only this drill job may hold it
+          AGE_IDENTITY: ${{ inputs.age_identity }}                       # supplied at run time; never a repository secret
         run: |
+          set -euo pipefail
           umask 077
+          trap 'shred -u "$AGE_IDENTITY_FILE" 2>/dev/null || rm -f "$AGE_IDENTITY_FILE"' EXIT
           printf '%s\n' "$AGE_IDENTITY" > "$AGE_IDENTITY_FILE"
           scripts/restore-drill.sh --latest

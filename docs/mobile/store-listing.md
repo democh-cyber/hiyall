@@ -45,11 +45,11 @@ Unfinished fields are marked with the word in capitals that gate i searches for;
 | Posts, comments, story text, space discussions and members | Posting | Yes | `core/pulse.dart`, `core/spaces.dart` |
 | Chat messages and chat photos | Sending a chat | Ciphertext only (end-to-end encrypted); the server also sees who talks to whom and when | `core/chat/*` |
 | Approximate location | Only after the person opens Nearby, reads the explainer and chooses to turn it on (off by default for everyone), or turns it on in Settings | Offset and rounded server-side (about 1 km; about 11 km under 18), shared for 24 h, deleted after 7 days if not refreshed, deleted at once when Nearby is turned off or the person signs out in the app. A session ended elsewhere stops showing the position within 24 h and deletes it within 7 days | `core/nearby.dart`, `features/nearby_optin.dart` |
-| Push token, chat device key, platform | Notifications consent, first chat | Yes, until signed out or the token is rejected | `core/push/*` |
+| Push token, chat device key, platform | Notifications consent, first chat | Yes, until signed out or the token is rejected; chat devices unused for 14 days are removed | `core/push/*` |
 | Follows, friend requests, blocks, mutes, reports, notification settings, online-visibility choice | Using the app | Yes | `core/api.dart` |
 | Crash and error reports | Only in builds with a Sentry DSN (Sentry, a service provider; the API sends scrubbed server errors to the same provider) | Scrubbed: no URLs, bodies, chat text, emails or ids; no user | `core/error_reporting.dart`, `internal/errreport` |
 | Photos checked for known illegal images | Server side, when a profile, post or story photo is uploaded | A flagged photo and a case record (account id, fingerprint, size, times, decision) are kept as evidence for the period the legal text states, even after account deletion. Chat photos are end-to-end encrypted and are not checked | `internal/media/scan.go`, `internal/store/mediascan.go` <!-- claim:scanned --> |
-| Abuse-prevention records | Using the app | Counters (rate limits, daily limits), a 24 hour idempotency key on posting | `internal/ratelimit`, `internal/store/idempotency.go` |
+| Abuse-prevention records | Using the app | Counters (rate limits, daily limits), a 24 hour idempotency key on posting, keyed hashes of the account, the network address and the Nearby search centre for 3 days (also used to cap how many accounts search Nearby from one address), a short-lived queue of account ids for recounting follower numbers (normally cleared within an hour) | `internal/ratelimit`, `internal/store/idempotency.go` |
 | IP address, user agent | Every request | In server logs only (retention is the host's) | uncertain: confirm host log retention |
 
 Not collected: contacts, calendar, microphone, advertising id, browsing history, precise GPS history,
@@ -128,14 +128,16 @@ Data safety form. None exists. Minimum: a page at `https://<domain>/delete-accou
 in-app route, and a way to request deletion for someone who has lost the app (a form that emails
 `PRIVACY_EMAIL`, answered within a stated time, after verifying ownership of the email). Apple also requires
 in-app deletion (done) and, for Sign in with Apple accounts, token revocation (`identity/apple_revoke.go`,
-needs the owner's Apple key).
+needs the owner's Apple key). When the app cannot obtain Apple's authorization code it tells the member before they confirm,
+and an operator can revoke the authorization afterwards from the console (audited); support can also delete an account on request
+with the operator tool `admin schedule-deletion`, which is audited.
 
 ## Review notes to include
 
 - Test accounts for reviewers (email + password) with a note that email verification is pre-completed.
 - UGC safeguards (Apple 1.2): report and block in every profile and chat (Settings > Help & Safety explains
-  them), published contact details (Help & Safety), a moderation team and a 24-hour response target
-  (`docs/security/`). Photo scanning, choose exactly ONE of the next two lines and delete the other (preflight gate q fails an unscanned release while the line that carries the hidden scanned-claim comment is still here):
+  them), published contact details (Help & Safety), a moderation team and a stated response target
+  [COUNSEL/OPERATOR: response target]. No document in `docs/security/` states a number of hours, so none is claimed until the operator sets one and a person is on call to meet it (the marker keeps gate i red until then). Photo scanning, choose exactly ONE of the next two lines and delete the other (preflight gate q fails an unscanned release while the line that carries the hidden scanned-claim comment is still here):
   - Scanner configured: profile, post and story photos are compared, on upload, against a list of known illegal images (a hash list or provider); there is no filtering for nudity or any other content, and chat photos are end-to-end encrypted and are not checked. <!-- claim:scanned -->
   - Unscanned at launch (`SCAN_ALLOW_NONE=true` with `RELEASE_ACK_UNSCANNED=I_ACCEPT_UNSCANNED_PHOTOS`): uploaded photos are NOT scanned; moderation relies on member reports and staff review.
 - Location is opt-in (off by default for everyone, read only after the in-app explainer and only while Nearby is open),

@@ -243,4 +243,97 @@ void main() {
       );
     });
   });
+
+  group(
+    'the storage address is checked like every other connection (APP-N6)',
+    () {
+      test('https is accepted anywhere', () {
+        expect(
+          checkedUploadUrl('https://storage.example/u?sig=1', debug: false),
+          'https://storage.example/u?sig=1',
+        );
+      });
+
+      test('plain http to this machine is accepted in a debug build only', () {
+        expect(
+          checkedUploadUrl('http://127.0.0.1:9000/u', debug: true),
+          'http://127.0.0.1:9000/u',
+        );
+        expect(
+          () => checkedUploadUrl('http://127.0.0.1:9000/u', debug: false),
+          throwsA(isA<ApiFailure>()),
+        );
+      });
+
+      test('plain http to another host, junk and empty are refused with a clear message and no address', () {
+        for (final bad in [
+          'http://storage.example/u?sig=secret',
+          'ftp://storage.example/u',
+          'not a url',
+          '',
+          '//storage.example/u',
+        ]) {
+          try {
+            checkedUploadUrl(bad, debug: true);
+            fail('$bad should be refused');
+          } on ApiFailure catch (f) {
+            expect(f.code, 'INSECURE_UPLOAD_URL');
+            expect(f.message, contains('couldn’t be sent safely'));
+            expect(f.message, isNot(contains('secret')));
+          }
+        }
+      });
+
+      test('an upload whose server-given address is plain http to another host sends nothing to storage', () async {
+        final insecure = ApiClient(
+          dio: Dio(BaseOptions(baseUrl: 'http://127.0.0.1:8080'))
+            ..httpClientAdapter = _InsecureUrlAdapter(),
+          uploads: Dio()..httpClientAdapter = storage,
+        );
+        await expectLater(
+          insecure.uploadPhoto(
+            session,
+            Uint8List(10),
+            contentType: 'image/jpeg',
+            purpose: 'post',
+          ),
+          throwsA(
+            isA<ApiFailure>().having(
+              (f) => f.code,
+              'code',
+              'INSECURE_UPLOAD_URL',
+            ),
+          ),
+        );
+        expect(storage.requests, isEmpty);
+      });
+    },
+  );
+}
+
+/// An API that hands out a plain-http storage address.
+class _InsecureUrlAdapter implements HttpClientAdapter {
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async => ResponseBody.fromString(
+    jsonEncode({
+      'success': true,
+      'data': {
+        'mediaId': 'm1',
+        'uploadUrl': 'http://storage.invalid/uploads/x?X-Amz-Signature=s',
+        'method': 'PUT',
+        'headers': {'Content-Type': 'image/jpeg'},
+      },
+    }),
+    201,
+    headers: {
+      Headers.contentTypeHeader: ['application/json'],
+    },
+  );
+
+  @override
+  void close({bool force = false}) {}
 }

@@ -1,3 +1,6 @@
 #include "Generated.xcconfig"
 // Written by scripts/firebase-setup.sh; holds FIREBASE_IOS_URL_SCHEME for Google sign-in.
 #include? "Firebase.xcconfig"
+// Written by scripts/build-release.sh in CI only: manual signing (team, profile, Apple Distribution) for the Runner target.
+// This file is this target's base configuration, so nothing else in the build sees the settings. Absent everywhere else.
+#include? "Signing.xcconfig"

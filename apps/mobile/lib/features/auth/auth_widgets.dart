@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../core/api.dart';
 import '../../core/auth/auth_gateway.dart';
 import '../../core/auth/firebase_config.dart';
+import '../../core/error_reporting.dart';
 import '../../core/state.dart';
 import '../../core/theme.dart';
 import '../../shared/widgets.dart';
@@ -409,11 +410,13 @@ mixin AuthActions<T extends ConsumerStatefulWidget> on ConsumerState<T> {
         setState(() => error = failure.message);
       }
     } on ApiFailure catch (failure) {
-      if (mounted) setState(() => error = failure.message);
+      if (mounted) setState(() => error = failure.displayMessage);
     } catch (error, stack) {
       // Anything else (a provider or network exception the gateway didn't map) must
       // still reach the person: swallowing it leaves a button that does nothing.
-      debugPrint('Auth action failed: $error\n$stack');
+      // Reported (scrubbed) and, in a debug build only, printed by ErrorReporting itself: no console
+      // line in a release build, where the text of a provider error can carry an address.
+      ErrorReporting.capture(error, stack);
       if (mounted) {
         setState(
           () => this.error =
