@@ -18,10 +18,14 @@ import (
 //	GET  /admin/v1/approvals?status=pending       every proposal waiting for a second administrator
 //	POST /admin/v1/approvals/{id}/approve|reject  {reason}   by a DIFFERENT administrator, within 24 hours
 //	POST /admin/v1/approvals/{id}/withdraw        {reason}   by the proposer
+//	POST /admin/v1/operators/{id}/role  {role:"admin", reason}   202: proposes the promotion (kind promote_admin); a
+//	                                    different administrator approves it here. Only when no administrator is active
+//	                                    can the role be set directly (bootstrap).
 //
 // Approving applies the step in the same transaction. Every proposal and decision is audited there, with both
 // operators' names, so neither can later say the other did it alone. A legal hold is only ever lifted here, with
-// counsel's reference.
+// counsel's reference (6 to 120 characters: letters, digits, spaces and . _ / -). The transitions are SQL functions
+// (migration 0043) the console role alone may run; it has no UPDATE on cases, proposals or operator roles.
 
 func (s *Server) approvalHook(p *Principal, action string) store.ApprovalHook {
 	return func(ctx context.Context, tx pgx.Tx, a store.EvidenceApproval, subject string) error {
@@ -35,11 +39,20 @@ func (s *Server) approvalHook(p *Principal, action string) store.ApprovalHook {
 			reason = a.DecisionReason
 			detail["decidedBy"] = a.DecidedByEmail
 		}
-		if err := insertAudit(ctx, tx, AuditEntry{OperatorID: &opID, Actor: p.Operator.Email, Action: action, TargetType: "content_case", TargetID: a.CaseID, Reason: reason, IP: p.IP, Detail: detail}); err != nil {
+		targetType, targetID := "content_case", a.CaseID
+		if a.Kind == store.StepPromoteAdmin {
+			targetType, targetID = "operator", a.TargetOperator
+			detail["targetEmail"] = a.TargetOperatorEmail
+		}
+		if err := insertAudit(ctx, tx, AuditEntry{OperatorID: &opID, Actor: p.Operator.Email, Action: action, TargetType: targetType, TargetID: targetID, Reason: reason, IP: p.IP, Detail: detail}); err != nil {
 			return err
 		}
 		if action != "evidence_approved" {
 			return nil
+		}
+		if a.Kind == store.StepPromoteAdmin {
+			return insertAudit(ctx, tx, AuditEntry{OperatorID: &opID, Actor: p.Operator.Email, Action: "operator_role", TargetType: "operator", TargetID: a.TargetOperator,
+				Reason: a.DecisionReason, IP: p.IP, Detail: map[string]any{"email": a.TargetOperatorEmail, "to": "admin", "approvalId": a.ApprovalID, "proposedBy": a.ProposedByEmail, "approvedBy": a.DecidedByEmail, "proposalReason": a.Reason}})
 		}
 		// The step itself, under the name it always had, so the audit log reads the same as before and now
 		// carries both operators.
@@ -73,11 +86,8 @@ func (s *Server) proposeEvidenceStep(w http.ResponseWriter, r *http.Request, p *
 	case body.Kind != store.StepClear && body.Kind != store.StepRelease && body.Kind != store.StepLegalHoldLift:
 		s.fail(w, r, &domain.ValidationError{Field: "kind", Message: "must be clear, release or legal_hold_lift"})
 		return
-	case body.Kind == store.StepLegalHoldLift && (len(counsel) < 3 || len(counsel) > 200):
-		s.fail(w, r, &domain.ValidationError{Field: "counselReference", Message: "name counsel's instruction: who, and a date or reference (3 to 200 characters)"})
-		return
-	case len(counsel) > 200:
-		s.fail(w, r, &domain.ValidationError{Field: "counselReference", Message: "at most 200 characters"})
+	case counsel != "" && !store.CounselReferencePattern.MatchString(counsel), body.Kind == store.StepLegalHoldLift && counsel == "":
+		s.fail(w, r, &domain.ValidationError{Field: "counselReference", Message: "name counsel's instruction: 6 to 120 characters of letters, digits, spaces and . _ / -, starting with a letter or digit (who, and a date or reference)"})
 		return
 	}
 	a, err := s.svc.Store.ProposeEvidenceStep(r.Context(), id, body.Kind, p.Operator.ID, reason, counsel, s.approvalHook(p, "evidence_proposed"))
@@ -115,7 +125,13 @@ func (s *Server) listApprovals(w http.ResponseWriter, r *http.Request, p *Princi
 		s.fail(w, r, err)
 		return
 	}
-	s.ok(w, r, map[string]any{"items": items, "operatorId": p.Operator.ID})
+	admins, err := s.svc.ActiveAdmins(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	// activeAdmins below two means nothing can ever be approved: the console says so.
+	s.ok(w, r, map[string]any{"items": items, "operatorId": p.Operator.ID, "activeAdmins": admins})
 }
 
 func (s *Server) decideEvidenceStep(decision, action string) handlerFunc {
@@ -135,7 +151,7 @@ func (s *Server) decideEvidenceStep(decision, action string) handlerFunc {
 			s.fail(w, r, domain.ErrNotFound)
 			return
 		}
-		a, err := s.svc.Store.DecideEvidenceStep(r.Context(), id, p.Operator.ID, p.Operator.Email, decision, reason, s.approvalHook(p, action))
+		a, err := s.svc.Store.DecideEvidenceStep(r.Context(), id, p.Operator.ID, decision, reason, s.approvalHook(p, action))
 		if err != nil {
 			s.fail(w, r, err)
 			return
@@ -154,4 +170,15 @@ func (s *Server) rejectEvidenceStep(w http.ResponseWriter, r *http.Request, p *P
 
 func (s *Server) withdrawEvidenceStep(w http.ResponseWriter, r *http.Request, p *Principal) {
 	s.decideEvidenceStep(store.DecisionWithdraw, "evidence_withdrawn")(w, r, p)
+}
+
+// proposeAdminPromotion is POST /admin/v1/operators/{id}/role with role "admin" while another administrator is
+// active: it opens a proposal (202) instead of changing the role. A different administrator approves it.
+func (s *Server) proposeAdminPromotion(w http.ResponseWriter, r *http.Request, p *Principal, target, reason string) {
+	a, err := s.svc.Store.ProposeAdminPromotion(r.Context(), target, p.Operator.ID, reason, s.approvalHook(p, "evidence_proposed"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	s.write(w, r, http.StatusAccepted, map[string]any{"success": true, "data": map[string]any{"pending": true, "approval": a}})
 }

@@ -28,13 +28,19 @@ func TestSocialCountersEqualARecountAfterConcurrentChanges(t *testing.T) {
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 	var ops, contended int64
+	var deadlocks []string
 	var mu sync.Mutex
 	note := func(err error) {
 		mu.Lock()
 		defer mu.Unlock()
 		ops++
-		if store.ContentionCode(err) != "" {
+		if code := store.ContentionCode(err); code != "" {
 			contended++ // rolled back whole: no drift, and the API answers 503
+			if code == "40P01" {
+				// inTx already ran the transaction a second time; a deadlock that is still here means the lock
+				// order is not guaranteed (round-3 audit DB-NEW-6), so it fails the test and is not just counted.
+				deadlocks = append(deadlocks, err.Error())
+			}
 		}
 	}
 	pairs := append(append([]string{}, users...), victim)
@@ -150,6 +156,9 @@ func TestSocialCountersEqualARecountAfterConcurrentChanges(t *testing.T) {
 	// Quiet now: a full reconcile finds nothing to repair.
 	if n, err := h.db.ReconcileSocialCounters(ctx, 0); err != nil || n != 0 {
 		t.Errorf("final reconcile repaired %d (%v)", n, err)
+	}
+	if len(deadlocks) > 0 {
+		t.Errorf("%d deadlocks survived the retry, first: %s", len(deadlocks), deadlocks[0])
 	}
 	t.Logf("%d operations, %d lost a lock race and were rolled back", ops, contended)
 }

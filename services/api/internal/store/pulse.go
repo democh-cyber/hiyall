@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -250,8 +249,11 @@ func (s *Store) Post(ctx context.Context, viewer, id string, sign Signer) (domai
 		return domain.Post{}, err
 	}
 	posts, err := s.hydrate(ctx, viewer, []string{id}, sign)
-	if err != nil || len(posts) == 0 {
-		return domain.Post{}, mapped(errors.Join(err, domain.ErrNotFound))
+	if err != nil {
+		return domain.Post{}, mapped(err)
+	}
+	if len(posts) == 0 {
+		return domain.Post{}, domain.ErrNotFound
 	}
 	return posts[0], nil
 }

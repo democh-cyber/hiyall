@@ -450,8 +450,26 @@ func TestOperatorManagementRules(t *testing.T) {
 	if e.post(vs, "/admin/v1/reports/"+uuid.NewString()+"/resolve", with(map[string]any{"action": "dismiss"})).status != 403 {
 		t.Fatal("viewer resolved")
 	}
-	if r := e.post(s, "/admin/v1/operators/"+viewer.ID+"/role", with(map[string]any{"role": "admin"})); r.status != 200 {
-		t.Fatal(r.raw)
+	// Making someone an administrator is a proposal a different administrator approves (round-3 API-5).
+	second := e.operator(RoleAdmin)
+	secondSession := e.session(second)
+	r := e.post(s, "/admin/v1/operators/"+viewer.ID+"/role", with(map[string]any{"role": "admin"}))
+	var proposal struct {
+		Pending  bool
+		Approval struct{ ApprovalID, Kind, TargetOperator string }
+	}
+	r.data(&proposal)
+	if r.status != 202 || !proposal.Pending || proposal.Approval.Kind != "promote_admin" || proposal.Approval.TargetOperator != viewer.ID {
+		t.Fatalf("promotion must be a proposal: %d %s", r.status, r.raw)
+	}
+	if e.get(vs, "/admin/v1/operators").status != 403 {
+		t.Fatal("the proposal alone promoted the operator")
+	}
+	if r = e.decide(s, proposal.Approval.ApprovalID, "approve", "approving my own proposal"); r.status != 403 || r.code() != "SECOND_APPROVER_REQUIRED" {
+		t.Fatalf("self approval: %d %s", r.status, r.raw)
+	}
+	if r = e.decide(secondSession, proposal.Approval.ApprovalID, "approve", "second administrator checked the request"); r.status != 200 {
+		t.Fatalf("approval: %d %s", r.status, r.raw)
 	}
 	if e.get(vs, "/admin/v1/operators").status != 200 {
 		t.Fatal("promotion did not apply to the open session")
@@ -474,7 +492,7 @@ func TestOperatorManagementRules(t *testing.T) {
 		t.Fatal("cli action not audited")
 	}
 	// Listing never carries credentials.
-	r := e.get(e.session(e.operator(RoleAdmin)), "/admin/v1/operators")
+	r = e.get(e.session(e.operator(RoleAdmin)), "/admin/v1/operators")
 	if r.status != 200 {
 		t.Fatal(r.status)
 	}

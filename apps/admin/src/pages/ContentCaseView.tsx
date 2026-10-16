@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router'
-import { api, approvalKindText, type ApprovalList, type ContentCase, type EvidenceApproval } from '../api'
+import { api, approvalKindText, COUNSEL_HINT, COUNSEL_REFERENCE, type ApprovalList, type ContentCase, type EvidenceApproval } from '../api'
 import { useOperator } from '../auth'
 import { Chip, ErrorNote, formatBytes, ReasonDialog, Time, useLoad } from '../ui'
 
@@ -81,7 +81,7 @@ export function ContentCaseView() {
     }
   }
 
-  const open = c.status === 'open'
+  const open = c.status === 'open' || c.status === 'pending'
   return (
     <article aria-labelledby="ccase-title">
       <p><Link to="/content">← Quarantined uploads</Link></p>
@@ -95,6 +95,9 @@ export function ContentCaseView() {
       </h1>
       {notice && <p role="status" className="notice">{notice}</p>}
       <ErrorNote error={error} />
+      {c.status === 'pending' && (
+        <p role="note" className="hint">This case is pending: the evidence objects have not been confirmed yet. If the upload is still being stored it opens by itself; the console sweep opens it, or drops it when the objects were never written, once it is an hour old. Nothing can be decided on a pending case.</p>
+      )}
 
       <dl className="facts">
         <dt>Uploader</dt><dd><Link to={`/users/${c.userId}`}>@{c.username || 'unknown'}</Link> ({c.accountStatus}){c.suspendedUser && ' · suspended by the scanner pending review'}</dd>
@@ -229,7 +232,7 @@ export function ContentCaseView() {
           onSubmit={(reason) => propose('release', reason, '')} onClose={() => setPending(null)} />
       )}
       {pending === 'propose-lift' && (
-        <ReasonDialog title="Propose lifting the legal hold" confirmLabel="Propose lifting" danger referenceLabel="Counsel’s instruction (who, and a date or reference)"
+        <ReasonDialog title="Propose lifting the legal hold" confirmLabel="Propose lifting" danger referenceLabel="Counsel’s instruction (who, and a date or reference)" referencePattern={COUNSEL_REFERENCE} referenceHint={COUNSEL_HINT}
           intro={<p>A legal hold is lifted only on counsel’s instruction. Name it here; a different administrator has to approve, and both of you are recorded.</p>}
           onSubmit={(reason, reference) => propose('legal_hold_lift', reason, reference)} onClose={() => setPending(null)} />
       )}

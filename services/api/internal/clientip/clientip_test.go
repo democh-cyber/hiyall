@@ -97,3 +97,24 @@ func TestUnparsablePeer(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestBucketKeysIPv6ByItsSlash64AndIPv4ByTheAddress(t *testing.T) {
+	for in, want := range map[string]string{
+		"203.0.113.7":                      "203.0.113.7",
+		"::ffff:203.0.113.7":               "203.0.113.7",
+		"2001:db8:1:2:aaaa:bbbb:cccc:dddd": "2001:db8:1:2::/64",
+		"2001:db8:1:2::1":                  "2001:db8:1:2::/64",
+		"2001:db8:1:2:ffff:ffff:ffff:ffff": "2001:db8:1:2::/64",
+		"[2001:db8:1:3::1]":                "2001:db8:1:3::/64",
+		"fe80::1%eth0":                     "fe80::/64",
+		"not an address":                   "not an address",
+		"":                                 "",
+	} {
+		if got := Bucket(in); got != want {
+			t.Errorf("Bucket(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if Bucket("2001:db8:1:2::1") == Bucket("2001:db8:1:3::1") {
+		t.Error("two /64s share a bucket")
+	}
+}

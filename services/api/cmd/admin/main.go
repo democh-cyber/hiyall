@@ -5,6 +5,7 @@
 //	admin operator-add -email E -role R [-name N]   create a staff account; prints the one-time authenticator enrolment
 //	admin operator-reset -email E          new password and authenticator for an account; ends its sessions
 //	admin operator-disable -email E -reason TEXT    disable an account at once, even the last administrator
+//	admin schedule-deletion -user ID -reason TEXT   schedule a member's account deletion (support-driven; audited)
 //
 // Staff accounts exist only because this command created them. The password is read from a terminal
 // prompt, or from the first line of stdin when stdin is not a terminal; it is never taken from a flag,
@@ -33,6 +34,7 @@ import (
 	"golang.org/x/term"
 
 	"hiyall/services/api/internal/admin"
+	"hiyall/services/api/internal/domain"
 	"hiyall/services/api/internal/logscrub"
 	"hiyall/services/api/internal/maintenance"
 	"hiyall/services/api/internal/media"
@@ -69,6 +71,7 @@ const usageText = `usage:
   admin operator-add -email EMAIL -role viewer|moderator|admin [-name NAME]
   admin operator-reset -email EMAIL
   admin operator-disable -email EMAIL -reason TEXT
+  admin schedule-deletion -user MEMBER_ID -reason TEXT
   admin healthcheck
   admin purge-holds [-batch N]`
 
@@ -90,6 +93,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdin i
 		return nil
 	case "purge-holds":
 		return purgeHoldsCommand(ctx, args, getenv, stdout)
+	case "schedule-deletion":
+		return scheduleDeletionCommand(ctx, args, getenv, stdout, stderr)
 	case "operator-add", "operator-reset", "operator-disable":
 		return operatorCommand(ctx, command, args, getenv, stdin, stdout, stderr)
 	}
@@ -145,6 +150,11 @@ func serve(ctx context.Context, getenv func(string) string) error {
 	if operators == 0 {
 		slog.Warn("no operators exist; create one with: admin operator-add -email EMAIL -role admin")
 	}
+	// Clearing a case, releasing or lifting a hold and promoting an administrator each need a second administrator.
+	// With fewer than two active ones none of it can ever be completed.
+	if admins, aerr := svc.ActiveAdmins(startup); aerr == nil && admins < 2 {
+		slog.Warn("fewer than two active administrators: two-person actions (clearing a quarantine case, releasing or lifting an evidence hold, promoting an administrator) cannot be completed; create a second one with: admin operator-add -email EMAIL -role admin", "activeAdministrators", admins)
+	}
 	if _, err = os.Stat(cfg.StaticDir); err != nil {
 		slog.Warn("console build not found; the API works but the UI answers 503", "dir", cfg.StaticDir)
 	}
@@ -152,12 +162,15 @@ func serve(ctx context.Context, getenv func(string) string) error {
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
 	shutdown, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Hourly, by one console instance at a time: the evidence sweep (pending cases, objects without a case), expiry
+	// of proposals past their 24 hours and, with the delete credential, released evidence holds whose window is over.
+	jobs := svc.SweepJobs()
 	if svc.EvidenceDelete != nil {
-		// Released evidence holds whose window is over, hourly, by one console instance at a time.
-		go maintenance.Run(shutdown, db.NewLeader(admin.PurgeLockKey), svc.PurgeJobs(), time.Hour, 50)
+		jobs = append(jobs, svc.PurgeJobs()...)
 	} else if svc.Evidence != nil {
 		slog.Warn("held evidence is never removed: ADMIN_EVIDENCE_DELETE_* is not set (run `admin purge-holds` where it is)")
 	}
+	go maintenance.Run(shutdown, db.NewLeader(admin.PurgeLockKey), jobs, time.Hour, 50)
 	done := make(chan error, 1)
 	go func() {
 		slog.Info("admin console listening", "address", cfg.Addr, "tls", cfg.TLSCert != "", "trustProxy", cfg.TrustProxy, "environment", cfg.Env)
@@ -331,5 +344,44 @@ func purgeHoldsCommand(ctx context.Context, args []string, getenv func(string) s
 		}
 	}
 	fmt.Fprintf(stdout, "Removed the objects of %d released hold(s).\n", total)
+	return nil
+}
+
+// scheduleDeletionCommand is `admin schedule-deletion -user ID -reason TEXT`: the support-driven way to delete a
+// member's account (the same 30 day grace period as the member's own request: sessions end at once, the purge
+// runs when it is due). It is for an operator at a terminal, never an HTTP route, and is audited with the
+// operator's OS user and the reason. A member who signs in with Apple gets a manual revocation to do in the
+// console's Apple revocations list. Nothing here needs the member's code or password.
+func scheduleDeletionCommand(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("schedule-deletion", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	userID := flags.String("user", "", "the member's id")
+	reason := flags.String("reason", "", "why (recorded in the audit log)")
+	if err := flags.Parse(args); err != nil || *userID == "" || *reason == "" {
+		return usageError(usageText)
+	}
+	if !domain.IsID(*userID) {
+		return errors.New("-user must be a member id (a UUID)")
+	}
+	reasonText, err := admin.Reason(*reason)
+	if err != nil {
+		return err
+	}
+	cfg, err := admin.LoadConfig(getenv)
+	if err != nil {
+		return err
+	}
+	timeout, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	db, err := store.New(timeout, cfg.DatabaseURL)
+	if err != nil {
+		return errors.New("database connection failed; check configuration without logging credentials")
+	}
+	defer db.Pool.Close()
+	due, err := db.AdminScheduleDeletion(timeout, *userID, "cli:"+osUser(), reasonText)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Deletion scheduled. Their sessions have ended. The account is removed on %s unless the member signs in and cancels before then.\nIf they signed in with Apple, revoke the authorization by hand and mark it done in the console (Apple revocations).\n", due.UTC().Format(time.RFC3339))
 	return nil
 }

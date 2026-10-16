@@ -274,6 +274,56 @@ func (a *API) readiness(ctx context.Context) (code, msg string) {
 			code, msg = "NOT_READY", "Database schema is behind this release"
 		}
 	}
+	if code == "" && a.GrantsCheck != nil && a.grantsMissing(ctx) {
+		code, msg = "NOT_READY", "Database privileges are behind this release"
+	}
 	a.ready.checkedAt, a.ready.code, a.ready.msg = time.Now(), code, msg
 	return code, msg
+}
+
+// grantsCache remembers the last answer of GrantsCheck. The check reads the catalogue (a few queries over the
+// public schema), so it runs at most once per interval, however often /readyz is probed.
+type grantsCache struct {
+	mu        sync.Mutex
+	ttl       time.Duration // zero: grantsInterval
+	checkedAt time.Time
+	badSince  time.Time
+	red       bool
+}
+
+// grantsInterval is how often grants are checked, and how long a missing grant is tolerated before readiness
+// turns red: a release runs the migrations and then grants.sql, and for the moments between them every running
+// node would otherwise drop out of the pool at once. A node that starts without its grants refuses to start
+// instead (cmd/api/dbrole.go), so this only has to catch a database that changed under a running node.
+const grantsInterval = 60 * time.Second
+
+// grantsMissing is true when the grants have been incomplete for at least one full interval. An error from the
+// check (it could not ask) keeps the previous verdict. What is missing goes to the log, not to the probe.
+func (a *API) grantsMissing(ctx context.Context) bool {
+	g := &a.grants
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	ttl := g.ttl
+	if ttl == 0 {
+		ttl = grantsInterval
+	}
+	if !g.checkedAt.IsZero() && time.Since(g.checkedAt) < ttl {
+		return g.red
+	}
+	now := time.Now()
+	problems, err := a.GrantsCheck(ctx)
+	g.checkedAt = now
+	switch {
+	case err != nil:
+		slog.Warn("grants check failed; readiness keeps its last verdict", "reason", logscrub.Err(err))
+	case len(problems) == 0:
+		g.badSince, g.red = time.Time{}, false
+	default:
+		if g.badSince.IsZero() {
+			g.badSince = now
+		}
+		g.red = now.Sub(g.badSince) >= ttl
+		slog.Warn("not ready: database privileges are behind this release; run database/roles/grants.sql as the table owner (cmd/migrate with MIGRATE_RUN_GRANTS=true)", "problems", problems, "red", g.red)
+	}
+	return g.red
 }

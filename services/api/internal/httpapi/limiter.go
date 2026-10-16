@@ -81,6 +81,7 @@ func (a *API) nameLimiters() {
 		if l != nil {
 			l.name = name
 		}
+		rateLimitErrors.Preset(name) // an alert on the first failure after a restart needs the series to exist at zero
 	}
 }
 

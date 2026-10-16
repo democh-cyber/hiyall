@@ -146,3 +146,75 @@ func TestDebugLogPeerParses(t *testing.T) {
 		t.Fatal("accepted 1")
 	}
 }
+
+// Round-3 audit API-4: the schema owner's and the console's credentials never sit in the API's environment.
+func TestProductionRefusesConsoleAndMigrationSettingsInTheAPIEnvironment(t *testing.T) {
+	for _, name := range []string{"MIGRATE_DATABASE_URL", "ADMIN_DATABASE_URL", "ADMIN_EVIDENCE_DELETE_SECRET_KEY", "ADMIN_DATA_KEY", "MIGRATE_RUN_GRANTS", "ADMIN_EVIDENCE_ACCESS_KEY"} {
+		t.Run(name, func(t *testing.T) {
+			firebaseEnv(t, "hiyall-prod-1")
+			t.Setenv(name, "x-secret-value-1234")
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("production started with %s in the environment: %v", name, err)
+			}
+			if strings.Contains(err.Error(), "x-secret-value-1234") {
+				t.Fatalf("the refusal printed a value: %v", err)
+			}
+			// Development (and a test shell) may carry them: the console and migrate read their own.
+			t.Setenv("APP_ENV", "development")
+			t.Setenv("DATABASE_URL", "postgresql://db.example/app?sslmode=disable")
+			if _, err = Load(); err != nil && strings.Contains(err.Error(), name) {
+				t.Fatalf("development refused %s: %v", name, err)
+			}
+		})
+	}
+	firebaseEnv(t, "hiyall-prod-1")
+	t.Setenv("ADMIN_TEST_DATABASE_URL", "postgresql://x/hiyall_test_admin")
+	if _, err := Load(); err != nil {
+		t.Fatalf("the test-suite variable must not block a start: %v", err)
+	}
+	if got := OwnerVariables([]string{"ADMIN_A=1", "MIGRATE_B=2", "ADMIN_EMPTY=", "ADMIN_TEST_C=3", "DATABASE_URL=z", "MY_ADMIN_D=4"}); strings.Join(got, ",") != "ADMIN_A,MIGRATE_B" {
+		t.Fatalf("OwnerVariables: %v", got)
+	}
+}
+
+// Round-3 audit API-8: evidence is held for at least a year in production.
+func TestProductionRefusesAnEvidenceRetentionUnderAYear(t *testing.T) {
+	firebaseEnv(t, "hiyall-prod-1")
+	t.Setenv("EVIDENCE_RETENTION_DAYS", "364")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "EVIDENCE_RETENTION_DAYS") {
+		t.Fatalf("a 364 day retention started in production: %v", err)
+	}
+	t.Setenv("EVIDENCE_RETENTION_DAYS", "365")
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+	// Development may use a short one to test the purge.
+	t.Setenv("EVIDENCE_RETENTION_DAYS", "30")
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("DATABASE_URL", "postgresql://db.example/app?sslmode=disable")
+	if c, err := Load(); err != nil || c.EvidenceRetentionDays != 30 {
+		t.Fatalf("development: %v", err)
+	}
+}
+
+func TestEvidenceCanaryAndNearbyAddressSettings(t *testing.T) {
+	firebaseEnv(t, "hiyall-prod-1")
+	c, err := Load()
+	if err != nil || c.EvidenceCanary || c.EvidenceAllowAPIDelete || c.NearbyAccountsPerAddress != 200 {
+		t.Fatalf("defaults: %+v %v", c.Safety, err)
+	}
+	t.Setenv("EVIDENCE_CANARY", "true")
+	t.Setenv("EVIDENCE_ALLOW_API_DELETE", "true")
+	t.Setenv("NEARBY_ACCOUNTS_PER_ADDRESS", "500")
+	if c, err = Load(); err != nil || !c.EvidenceCanary || !c.EvidenceAllowAPIDelete || c.NearbyAccountsPerAddress != 500 {
+		t.Fatalf("%+v %v", c.Safety, err)
+	}
+	for _, kv := range [][2]string{{"EVIDENCE_CANARY", "yes"}, {"EVIDENCE_ALLOW_API_DELETE", "1"}, {"NEARBY_ACCOUNTS_PER_ADDRESS", "0"}, {"NEARBY_ACCOUNTS_PER_ADDRESS", "many"}} {
+		firebaseEnv(t, "hiyall-prod-1")
+		t.Setenv(kv[0], kv[1])
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), kv[0]) {
+			t.Fatalf("%s=%s: %v", kv[0], kv[1], err)
+		}
+	}
+}

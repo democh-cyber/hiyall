@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"hiyall/services/api/internal/dbtest"
+	"hiyall/services/api/internal/domain"
 	"hiyall/services/api/internal/media"
 	"hiyall/services/api/internal/ratelimit"
 	"hiyall/services/api/internal/store"
@@ -158,6 +159,9 @@ func TestRequestsAndJobsRunOnTheRestrictedAPIRole(t *testing.T) {
 		{"space reconcile", func() (int64, error) { return rdb.ReconcileSpaceMemberCounts(ctx, 0) }},
 		{"envelopes", func() (int64, error) { return rdb.ExpireEnvelopes(ctx, 0, 0, 5000) }},
 		{"stale devices", func() (int64, error) { return rdb.RevokeStaleDevices(ctx, store.StaleDeviceAfter, 500) }},
+		{"backlogged devices", func() (int64, error) {
+			return rdb.RevokeBackloggedDevices(ctx, domain.Free().ChatBacklogPerDevice, store.BackloggedDeviceIdle, 500)
+		}},
 		{"sessions", func() (int64, error) { return rdb.PurgeSessions(ctx, 0, 5000) }},
 		{"key claims", func() (int64, error) { return rdb.PurgeKeyClaims(ctx, 5000) }},
 		{"stories", func() (int64, error) { return rdb.PurgeStories(ctx, 5000) }},

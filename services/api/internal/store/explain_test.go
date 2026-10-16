@@ -43,6 +43,9 @@ func seedMembers(t *testing.T, tx pgx.Tx, n int) (viewer string) {
 		`INSERT INTO nearby_prefs(user_id,visible) SELECT id,true FROM seeded`,
 		`INSERT INTO user_locations(user_id,latitude,longitude,updated_at) SELECT id, 12.0+random()*3, 77.0+random()*3, now() FROM seeded`,
 		`ANALYZE user_locations`,
+		// Without statistics for nearby_prefs the planner drives the join from it on a database that has not seen
+		// 20000 rows before (a fresh one, as in CI) and never reaches the GiST index.
+		`ANALYZE nearby_prefs`,
 	} {
 		if _, err := tx.Exec(ctx, q); err != nil {
 			t.Fatalf("%s: %v", q, err)

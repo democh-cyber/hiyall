@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"hiyall/services/api/internal/metrics"
 )
@@ -59,5 +61,34 @@ func TestDatabaseContentionAnswers503WithRetryAfter(t *testing.T) {
 	a.authFailure(w, httptest.NewRequest("GET", "/v1/feed", nil), errors.New("keys down"))
 	if w.Code != 503 || w.Header().Get("Retry-After") != "" {
 		t.Errorf("auth outage: %d retry-after %q", w.Code, w.Header().Get("Retry-After"))
+	}
+}
+
+type captureReporter struct{ reports []ErrorReport }
+
+func (c *captureReporter) Report(_ context.Context, r ErrorReport) { c.reports = append(c.reports, r) }
+
+// A statement timeout is counted on its own, by route, and reported to the error tracker; the other contention
+// errors are neither.
+func TestStatementTimeoutIsCountedSeparatelyAndReported(t *testing.T) {
+	rep := &captureReporter{}
+	a := &API{Reporter: rep}
+	for _, code := range []string{"55P03", "40P01", "40001"} {
+		a.error(httptest.NewRecorder(), httptest.NewRequest("GET", "/v1/feed", nil), &pgconn.PgError{Code: code})
+	}
+	if len(rep.reports) != 0 {
+		t.Fatalf("ordinary contention was reported: %+v", rep.reports)
+	}
+	w := httptest.NewRecorder()
+	a.error(w, httptest.NewRequest("GET", "/v1/users/"+uuid.NewString()+"/posts", nil), &pgconn.PgError{Code: "57014", Message: "canceling statement due to statement timeout"})
+	if w.Code != 503 || len(rep.reports) != 1 || rep.reports[0].Route != "/v1/users/:id/posts" || rep.reports[0].Err == nil {
+		t.Fatalf("%d %+v", w.Code, rep.reports)
+	}
+	var out bytes.Buffer
+	if _, err := metrics.Default.WriteTo(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `hiyall_db_statement_timeouts_total{route="/v1/users/:id/posts"} 1`) {
+		t.Fatalf("no per-route statement timeout counter:\n%s", out.String())
 	}
 }

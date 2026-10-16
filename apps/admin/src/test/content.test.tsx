@@ -299,7 +299,7 @@ describe('quarantined uploads', () => {
       ...signedIn('admin'),
       ...noProposals(),
       [`GET /content-cases/${caseId}`]: () => ({ data: { case: contentCase({ status: 'reported', legalHold: true, releaseBlocker: 'LEGAL_HOLD' }), mediaAvailable: false } }),
-      [`POST /content-cases/${caseId}/proposals`]: () => ({ status: 201, data: { approval: proposal({ kind: 'legal_hold_lift', proposedBy: 'op-1', counselReference: 'Counsel M. Okafor, 2027-02-03' }) } }),
+      [`POST /content-cases/${caseId}/proposals`]: () => ({ status: 201, data: { approval: proposal({ kind: 'legal_hold_lift', proposedBy: 'op-1', counselReference: 'Counsel M. Okafor 2027-02-03' }) } }),
     })
     renderAt(`/content/${caseId}`)
     await user.click(await screen.findByRole('button', { name: 'Propose lifting the legal hold…' }))
@@ -307,10 +307,10 @@ describe('quarantined uploads', () => {
     const submit = within(dialog).getByRole('button', { name: 'Propose lifting' })
     await user.type(within(dialog).getByLabelText(/Reason/), 'counsel has closed the matter')
     expect(submit).toBeDisabled() // counsel's reference is required
-    await user.type(within(dialog).getByLabelText(/Counsel’s instruction/), 'Counsel M. Okafor, 2027-02-03')
+    await user.type(within(dialog).getByLabelText(/Counsel’s instruction/), 'Counsel M. Okafor 2027-02-03')
     await user.click(submit)
     await waitFor(() => expect(calls.some((c) => c.path.endsWith('/proposals') && c.method === 'POST')).toBe(true))
-    expect(calls.find((c) => c.path.endsWith('/proposals') && c.method === 'POST')!.body).toEqual({ kind: 'legal_hold_lift', reason: 'counsel has closed the matter', counselReference: 'Counsel M. Okafor, 2027-02-03' })
+    expect(calls.find((c) => c.path.endsWith('/proposals') && c.method === 'POST')!.body).toEqual({ kind: 'legal_hold_lift', reason: 'counsel has closed the matter', counselReference: 'Counsel M. Okafor 2027-02-03' })
     // Resolving can never switch a legal hold off: the case page has no such control.
     expect(screen.queryByRole('checkbox', { name: /legal hold/i })).not.toBeInTheDocument()
   })

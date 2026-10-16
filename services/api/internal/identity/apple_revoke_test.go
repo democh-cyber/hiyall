@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -201,5 +202,39 @@ func TestPurgeDropsATokenSealedUnderAnotherAppleKey(t *testing.T) {
 	queue, inner := &fakeQueue{sealed: other.Seal("old")}, &fakeInner{}
 	if err := (AppleDeleter{Inner: inner, Revoker: r, Queue: queue}).DeleteIdentity(context.Background(), "i", "s"); err != nil || inner.calls != 1 || !queue.done {
 		t.Fatal(err, inner.calls, queue.done)
+	}
+}
+
+// Round-3 audit API-1: check-config asks Apple to exchange a deliberately invalid code. invalid_grant means the
+// client credentials are good; invalid_client means every deletion would fail; no network is only a warning.
+func TestAppleProbeTellsGoodCredentialsFromBadOnes(t *testing.T) {
+	f, r := newFakeApple(t)
+	f.failCode = true // Apple dislikes the made-up code
+	if err := r.Probe(context.Background()); err != nil {
+		t.Fatalf("invalid_grant is a configured client: %v", err)
+	}
+	if len(f.exchanged) != 0 {
+		t.Fatal("the probe exchanged a code")
+	}
+	// A client id Apple does not know: invalid_client.
+	bad := *r
+	bad.clientID = "app.someone.else"
+	if err := bad.Probe(context.Background()); !errors.Is(err, ErrAppleClientRejected) {
+		t.Fatalf("invalid_client: %v", err)
+	}
+	// Other answers are surfaced for the caller to word.
+	odd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"unsupported_grant_type"}`, http.StatusBadRequest)
+	}))
+	defer odd.Close()
+	var ae *AppleError
+	if err := r.WithEndpoints(odd.URL, odd.URL).Probe(context.Background()); !errors.As(err, &ae) || ae.Code != "unsupported_grant_type" {
+		t.Fatalf("unexpected answer: %v", err)
+	}
+	// No network.
+	dead := httptest.NewServer(http.NotFoundHandler())
+	dead.Close()
+	if err := r.WithEndpoints(dead.URL, dead.URL).Probe(context.Background()); !errors.Is(err, ErrAppleUnreachable) {
+		t.Fatalf("unreachable: %v", err)
 	}
 }

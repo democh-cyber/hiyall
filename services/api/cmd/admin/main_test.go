@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"hiyall/services/api/internal/admin"
 	"hiyall/services/api/internal/store"
 )
@@ -147,5 +149,64 @@ func TestServeRefusesToStartOnANonLoopbackAddress(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "ADMIN_") {
 			t.Fatalf("%s: %v", name, err)
 		}
+	}
+}
+
+// Round-3 audit API-1: support can delete an account that cannot get an Apple code, from a terminal, audited.
+func TestScheduleDeletionCommandSchedulesAuditsAndQueuesTheAppleRevocation(t *testing.T) {
+	getenv, db, ctx := testEnv(t)
+	id := uuid.NewString()
+	subject := "apple-" + id
+	for _, q := range []string{
+		`INSERT INTO users(user_id) VALUES('` + id + `')`,
+		`INSERT INTO auth_identities(issuer,subject,user_id,sign_in_provider,apple_linked) VALUES('https://securetoken.google.com/test','` + subject + `','` + id + `','apple.com',true)`,
+	} {
+		if _, err := db.Pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out, errOut bytes.Buffer
+	for _, bad := range [][]string{{"schedule-deletion"}, {"schedule-deletion", "-user", id}, {"schedule-deletion", "-reason", "support ticket 4411"}} {
+		if err := run(ctx, bad, getenv, strings.NewReader(""), &out, &errOut); err == nil {
+			t.Fatalf("accepted %v", bad)
+		}
+	}
+	if err := run(ctx, []string{"schedule-deletion", "-user", "not-an-id", "-reason", "support ticket 4411"}, getenv, strings.NewReader(""), &out, &errOut); err == nil {
+		t.Fatal("accepted a bad id")
+	}
+	if err := run(ctx, []string{"schedule-deletion", "-user", id, "-reason", "short"}, getenv, strings.NewReader(""), &out, &errOut); err == nil {
+		t.Fatal("accepted a short reason")
+	}
+	if err := run(ctx, []string{"schedule-deletion", "-user", uuid.NewString(), "-reason", "support ticket 4411"}, getenv, strings.NewReader(""), &out, &errOut); err == nil {
+		t.Fatal("scheduled an unknown member")
+	}
+	out.Reset()
+	if err := run(ctx, []string{"schedule-deletion", "-user", id, "-reason", "support ticket 4411: member cannot sign in with Apple"}, getenv, strings.NewReader(""), &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Deletion scheduled") || !strings.Contains(out.String(), "Apple") {
+		t.Fatalf("output: %s", out.String())
+	}
+	var status string
+	var due *time.Time
+	if err := db.Pool.QueryRow(ctx, `SELECT status,deletion_due_at FROM users WHERE user_id=$1`, id).Scan(&status, &due); err != nil || status != "pending_deletion" || due == nil || time.Until(*due) < 29*24*time.Hour {
+		t.Fatalf("status %s due %v %v", status, due, err)
+	}
+	var n int
+	db.Pool.QueryRow(ctx, `SELECT count(*) FROM apple_revocations WHERE subject=$1 AND status='manual' AND token_sealed IS NULL AND user_id=$2`, subject, id).Scan(&n)
+	if n != 1 {
+		t.Fatal("no manual Apple revocation queued")
+	}
+	var actor, reason string
+	if err := db.Pool.QueryRow(ctx, `SELECT actor,reason FROM operator_audit WHERE action='account_deletion_scheduled' AND target_id=$1`, id).Scan(&actor, &reason); err != nil || !strings.HasPrefix(actor, "cli:") || !strings.Contains(reason, "ticket 4411") {
+		t.Fatalf("audit %q %q %v", actor, reason, err)
+	}
+	// Again: the first due date stands and nothing is duplicated.
+	if err := run(ctx, []string{"schedule-deletion", "-user", id, "-reason", "support ticket 4411 again"}, getenv, strings.NewReader(""), &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	db.Pool.QueryRow(ctx, `SELECT count(*) FROM apple_revocations WHERE user_id=$1`, id).Scan(&n)
+	if n != 1 {
+		t.Fatalf("%d revocation rows", n)
 	}
 }

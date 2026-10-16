@@ -153,3 +153,104 @@ func TestCheckConfigDatabaseFlag(t *testing.T) {
 		t.Fatalf("usage: %d", code)
 	}
 }
+
+// The production start checks the grants of the role it runs as (round-3 audit DB-NEW-1): a release whose migrations
+// ran without grants.sql refuses to start and says what to run; development only warns; a complete role starts and
+// hands /readyz the check to repeat.
+func TestProductionStartRefusesMissingGrants(t *testing.T) {
+	owner, api, _ := testStores(t)
+	ctx := context.Background()
+	t.Setenv("DB_ALLOW_OWNER_ROLE", "")
+	check, err := enforceGrants(ctx, api, "production")
+	if err != nil || check == nil {
+		t.Fatalf("hiyall_api with its grants: %v (check %v)", err, check != nil)
+	}
+	if p, err := check(ctx); err != nil || len(p) != 0 {
+		t.Fatalf("readiness check on a complete role: %v %v", p, err)
+	}
+	// A role of the right shape (no operator tables, not an owner, not a superuser) that lacks one view.
+	probe := "hiyall_grants_start_probe"
+	for _, q := range []string{`DROP OWNED BY ` + probe, `DROP ROLE IF EXISTS ` + probe} {
+		_, _ = owner.Pool.Exec(ctx, q)
+	}
+	setup := []string{`CREATE ROLE ` + probe + ` NOLOGIN`, `GRANT USAGE ON SCHEMA public TO ` + probe,
+		`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ` + probe,
+		`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ` + probe,
+		`REVOKE ALL ON profile_social_counts FROM ` + probe}
+	for _, table := range store.SpecialTables() {
+		setup = append(setup, `REVOKE ALL ON `+table+` FROM `+probe)
+	}
+	setup = append(setup, `REVOKE ALL ON SEQUENCE `+strings.Join(store.OperatorSequences, ",")+` FROM `+probe,
+		`GRANT INSERT ON content_cases TO `+probe, `GRANT SELECT (media_id) ON content_cases TO `+probe,
+		`GRANT EXECUTE ON FUNCTION held_objects_due(integer), mark_hold_purged(uuid) TO `+probe)
+	for _, q := range setup {
+		if _, err := owner.Pool.Exec(ctx, q); err != nil {
+			t.Skipf("cannot create a probe role: %v (%s)", err, q)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = owner.Pool.Exec(context.Background(), `DROP OWNED BY `+probe)
+		_, _ = owner.Pool.Exec(context.Background(), `DROP ROLE `+probe)
+	})
+	s, err := store.New(ctx, dbtest.RoleDSN(t, os.Getenv("TEST_DATABASE_URL"), probe))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Pool.Close()
+	if p, err := s.RoleProblems(ctx); err != nil || len(p) != 0 {
+		t.Fatalf("the probe role should have the right shape: %v %v", p, err)
+	}
+	_, err = enforceGrants(ctx, s, "production")
+	if err == nil || !strings.Contains(err.Error(), "profile_social_counts") || !strings.Contains(err.Error(), "grants.sql") || !strings.Contains(err.Error(), "MIGRATE_RUN_GRANTS") {
+		t.Fatalf("production must refuse a role with a missing grant, naming it and the fix: %v", err)
+	}
+	if strings.Contains(err.Error(), "postgresql://") {
+		t.Fatalf("the refusal must not carry credentials: %v", err)
+	}
+	// Development: a role that is not hiyall_api is the developer's own and is not checked.
+	if check, err := enforceGrants(ctx, s, "development"); err != nil || check != nil {
+		t.Fatalf("development with another role: %v (check %v)", err, check != nil)
+	}
+	// The grant arrives (the release ran grants.sql): the same role starts.
+	if _, err = owner.Pool.Exec(ctx, `GRANT SELECT ON profile_social_counts TO `+probe); err != nil {
+		t.Fatal(err)
+	}
+	if check, err := enforceGrants(ctx, s, "production"); err != nil || check == nil {
+		t.Fatalf("complete grants: %v", err)
+	}
+	// An owner role is judged by enforceDBRole, not here.
+	if check, err := enforceGrants(ctx, owner, "production"); err != nil || check != nil {
+		t.Fatalf("owner role: %v (check %v)", err, check != nil)
+	}
+}
+
+// The counter fix-up job (migration 0044) reads and writes only tables hiyall_api has and works on a queued account
+// on the restricted role, with a neighbour to recount.
+func TestCounterFixupJobRunsOnTheRestrictedAPIRole(t *testing.T) {
+	owner, api, denials := testStores(t)
+	ctx := context.Background()
+	const hub, other = "00000000-0000-0000-0000-00000000fa01", "00000000-0000-0000-0000-00000000fa02"
+	clean := func() {
+		for _, q := range []string{`DELETE FROM counter_fixups WHERE user_id=ANY($1::uuid[])`, `DELETE FROM follows WHERE follower_id=ANY($1::uuid[]) OR followee_id=ANY($1::uuid[])`,
+			`DELETE FROM social_counters WHERE user_id=ANY($1::uuid[])`, `DELETE FROM users WHERE user_id=ANY($1::uuid[])`} {
+			_, _ = owner.Pool.Exec(context.Background(), q, []string{hub, other})
+		}
+	}
+	clean()
+	t.Cleanup(clean)
+	for _, q := range []string{`INSERT INTO users(user_id) VALUES('` + hub + `'),('` + other + `')`,
+		`INSERT INTO follows(follower_id,followee_id,state) VALUES('` + other + `','` + hub + `','active')`,
+		`INSERT INTO counter_fixups(user_id) VALUES('` + hub + `')`} {
+		if _, err := owner.Pool.Exec(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if n, err := api.ApplyCounterFixups(ctx, 10); err != nil || n < 1 {
+		t.Fatalf("the job on hiyall_api: %d neighbours, %v", n, err)
+	}
+	var left int
+	if err := owner.Pool.QueryRow(ctx, `SELECT count(*) FROM counter_fixups WHERE user_id=$1`, hub).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("the queue row is still there: %d %v", left, err)
+	}
+	denials.Check(t)
+}

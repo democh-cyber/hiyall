@@ -187,3 +187,26 @@ func TestGoRuntimeSeriesAreRegistered(t *testing.T) {
 		}
 	}
 }
+
+func TestPresetCreatesAZeroSeriesWithoutCounting(t *testing.T) {
+	r := NewRegistry()
+	c := r.NewCounter("preset_total", "h", "result")
+	c.Preset("flagged")
+	u := r.NewCounter("preset_plain_total", "h")
+	u.Preset()
+	var sb strings.Builder
+	if _, err := r.WriteTo(&sb); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`preset_total{result="flagged"} 0`, "preset_plain_total 0"} {
+		if !strings.Contains(sb.String(), want) {
+			t.Errorf("missing %q in:\n%s", want, sb.String())
+		}
+	}
+	c.Inc("flagged")
+	sb.Reset()
+	_, _ = r.WriteTo(&sb)
+	if !strings.Contains(sb.String(), `preset_total{result="flagged"} 1`) {
+		t.Errorf("an increment after Preset must count from zero:\n%s", sb.String())
+	}
+}

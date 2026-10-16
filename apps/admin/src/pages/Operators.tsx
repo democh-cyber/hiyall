@@ -10,12 +10,14 @@ export function Operators() {
   const { data, error, loading, reload } = useLoad(() => api<{ items: Operator[] }>('GET', '/operators'), 'operators')
   const [change, setChange] = useState<Change>(null)
   const [roleFor, setRoleFor] = useState<Record<string, Role>>({})
+  const [notice, setNotice] = useState<string | null>(null)
 
   if (loading && !data) return <p role="status">Loading…</p>
   return (
     <section aria-labelledby="ops-title">
       <h1 id="ops-title">Operators</h1>
-      <p className="hint">Accounts are created on the server with <code>admin operator-add</code>. Each change here needs a reason and is audited.</p>
+      <p className="hint">Accounts are created on the server with <code>admin operator-add</code>. Each change here needs a reason and is audited. Making someone an administrator is a proposal that a different administrator approves under Approvals.</p>
+      {notice && <p role="status" className="notice">{notice}</p>}
       <ErrorNote error={error} />
       <div className="table-wrap">
         <table>
@@ -50,13 +52,16 @@ export function Operators() {
       {change && (
         <ReasonDialog
           title={change.kind === 'role' ? `Change role of ${change.op.email} to ${change.role}` : `${change.kind === 'disable' ? 'Disable' : 'Enable'} ${change.op.email}`}
-          intro={change.kind === 'disable' ? <p>Their sessions end immediately.</p> : undefined}
-          confirmLabel={change.kind === 'role' ? 'Change role' : change.kind === 'disable' ? 'Disable operator' : 'Enable operator'}
+          intro={change.kind === 'disable' ? <p>Their sessions end immediately.</p> : change.kind === 'role' && change.role === 'admin' ? <p>This only proposes the promotion. A different administrator has to approve it within 24 hours, and both of you are recorded.</p> : undefined}
+          confirmLabel={change.kind === 'role' ? (change.role === 'admin' ? 'Propose promotion' : 'Change role') : change.kind === 'disable' ? 'Disable operator' : 'Enable operator'}
           danger={change.kind === 'disable'}
           onSubmit={async (reason) => {
             const base = `/operators/${change.op.operatorId}`
-            if (change.kind === 'role') await api('POST', `${base}/role`, { role: change.role, reason })
-            else await api('POST', `${base}/${change.kind}`, { reason })
+            setNotice(null)
+            if (change.kind === 'role') {
+              const out = await api<{ pending?: boolean }>('POST', `${base}/role`, { role: change.role, reason })
+              if (out?.pending) setNotice(`Proposal recorded: ${change.op.email} becomes an administrator when a different administrator approves it under Approvals (within 24 hours).`)
+            } else await api('POST', `${base}/${change.kind}`, { reason })
             setChange(null)
             setRoleFor({})
             await reload()

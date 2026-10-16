@@ -114,7 +114,7 @@ func (a *AppleRevoker) post(ctx context.Context, endpoint string, form url.Value
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return nil, errors.New("apple unreachable")
+		return nil, ErrAppleUnreachable
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
@@ -124,9 +124,51 @@ func (a *AppleRevoker) post(ctx context.Context, endpoint string, form url.Value
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(body, &e)
-		return nil, fmt.Errorf("apple answered %d %s", resp.StatusCode, e.Error)
+		return nil, &AppleError{Status: resp.StatusCode, Code: e.Error}
 	}
 	return body, nil
+}
+
+// ErrAppleUnreachable is a network failure talking to Apple.
+var ErrAppleUnreachable = errors.New("apple unreachable")
+
+// AppleError is an answer from Apple that is not 200: its HTTP status and OAuth error code (invalid_grant,
+// invalid_client, ...). Its text holds no secret.
+type AppleError struct {
+	Status int
+	Code   string
+}
+
+func (e *AppleError) Error() string { return fmt.Sprintf("apple answered %d %s", e.Status, e.Code) }
+
+// WithEndpoints points the revoker at other token and revoke URLs (tests, or a sandbox). It returns a.
+func (a *AppleRevoker) WithEndpoints(tokenURL, revokeURL string) *AppleRevoker {
+	a.tokenURL, a.revokeURL = tokenURL, revokeURL
+	return a
+}
+
+// ErrAppleClientRejected is returned by Probe when Apple does not accept the configured team, key and client.
+var ErrAppleClientRejected = errors.New("apple rejected the client credentials (invalid_client)")
+
+// Probe checks the APPLE_* configuration against Apple without touching any member: it asks /auth/token to
+// exchange a deliberately invalid code. Apple answers invalid_grant when the client credentials are good (the
+// code is what it dislikes): that is nil. invalid_client (or 401) means the team id, key id, client id or key file
+// is wrong and every Apple account deletion would fail: ErrAppleClientRejected. A network failure is
+// ErrAppleUnreachable; anything else is returned as an *AppleError for the caller to word.
+func (a *AppleRevoker) Probe(ctx context.Context) error {
+	_, err := a.post(ctx, a.tokenURL, url.Values{"code": {"hiyall-config-probe-not-a-real-code"}, "grant_type": {"authorization_code"}})
+	var ae *AppleError
+	switch {
+	case err == nil:
+		return nil
+	case !errors.As(err, &ae):
+		return err
+	case ae.Code == "invalid_grant":
+		return nil
+	case ae.Code == "invalid_client" || ae.Status == http.StatusUnauthorized:
+		return ErrAppleClientRejected
+	}
+	return ae
 }
 
 // ExchangeCode trades the one-time authorization code from the app's Apple re-sign-in for a refresh token.

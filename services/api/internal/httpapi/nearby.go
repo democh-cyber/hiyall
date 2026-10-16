@@ -184,10 +184,11 @@ func (a *API) nearby(w http.ResponseWriter, r *http.Request, p store.Principal) 
 		return
 	}
 	tag, query := a.nearbyCentreTag(centre), nearbyQueryHash(req.Filters)
-	// How many different centres this account, and this source address, have searched from today: the
-	// stored point is the centre, so moving it around a member is the way to triangulate them (audit API-4).
-	// A centre already used today is free, so ordinary use from one place is never counted twice.
-	if err = a.Store.CountNearbyProbe(r.Context(), p.UserID, a.clientAddress(r), tag, domain.NearbyCentresPerAccount, domain.NearbyCentresPerAddress); err != nil {
+	// How many different centres this account has searched from today, and how many different accounts this
+	// source address (an IPv6 /64) has searched for: the stored point is the centre, so moving it around a member
+	// is the way to triangulate them (audit API-4), and an address that drives many accounts is a farm (round-3
+	// API-3). A centre or an account already counted today is free, so ordinary use is never counted twice.
+	if err = a.Store.CountNearbyProbe(r.Context(), p.UserID, a.clientBucket(r), tag, domain.NearbyCentresPerAccount, a.nearbyAccountsPerAddress()); err != nil {
 		a.error(w, r, err)
 		return
 	}

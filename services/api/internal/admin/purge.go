@@ -29,7 +29,9 @@ func (s *Service) PurgeHolds(ctx context.Context, batch int) (int64, error) {
 	return s.Store.PurgeReleasedHolds(ctx, s.EvidenceDelete, batch)
 }
 
-// PurgeJobs is the timer's job list.
+// PurgeJobs is the timer's job list for the delete credential. Each hold is re-checked in the database
+// immediately before every object is deleted (store.PurgeReleasedHolds), so a report opened after the list was read
+// keeps its evidence.
 func (s *Service) PurgeJobs() []maintenance.Job {
 	return []maintenance.Job{{Name: "released hold purge", Run: func(ctx context.Context) (int64, error) { return s.PurgeHolds(ctx, 50) }}}
 }

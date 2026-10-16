@@ -194,3 +194,84 @@ func TestPurgeLeavesQuarantinedEvidenceAndStillFinishes(t *testing.T) {
 		t.Fatalf("account %s, media %s, original held %v", status, mediaStatus, store.Has(original))
 	}
 }
+
+// evidenceProbe is an evidence store that looks at the database each time an object is written.
+type evidenceProbe struct {
+	*media.Memory
+	onPut func(key string) error
+}
+
+func (e *evidenceProbe) Put(ctx context.Context, key string, data []byte, contentType string) error {
+	if err := e.onPut(key); err != nil {
+		return err
+	}
+	return e.Memory.Put(ctx, key, data, contentType)
+}
+
+// Round-3 audit API-6/7: the case row is written first, as 'pending', and the objects second, so an evidence
+// object never exists without a case; a failed write leaves a pending case for the console's sweep, never an
+// open case with no photo behind it.
+func TestQuarantineWritesTheCaseBeforeTheEvidenceObjects(t *testing.T) {
+	h := newSocialHarness(t)
+	withMedia(h)
+	pic := photo(t, 90, 71)
+	h.api.Scanner = &scriptedScanner{verdicts: map[string]media.Verdict{media.SHA256Hex(pic): media.Flagged}}
+	var seen []string
+	evidence := &evidenceProbe{Memory: media.NewMemory()}
+	evidence.onPut = func(key string) error {
+		var status string
+		id := strings.Split(key, "/")[1]
+		if err := h.db.Pool.QueryRow(h.ctx, `SELECT status FROM content_cases WHERE media_id=$1`, id).Scan(&status); err != nil {
+			return errors.New("an evidence object was written before its case: " + err.Error())
+		}
+		seen = append(seen, status)
+		return nil
+	}
+	h.api.SetEvidence(evidence, 365)
+	t.Cleanup(func() { h.api.SetEvidence(nil, 365) })
+	store := h.api.Media.(*media.Memory)
+	id, _ := h.beginUpload(store, alice, "post", pic)
+	h.expect(h.call(alice, "POST", "/v1/media/"+id+"/complete"), 422, "UPLOAD_REJECTED")
+	if len(seen) != 2 || seen[0] != "pending" || seen[1] != "pending" {
+		t.Fatalf("case status at each write: %v", seen)
+	}
+	var status string
+	h.db.Pool.QueryRow(h.ctx, `SELECT status FROM content_cases WHERE media_id=$1`, id).Scan(&status)
+	if status != "open" {
+		t.Fatalf("the case is %s after both objects were stored", status)
+	}
+}
+
+func TestAFailedEvidenceWriteLeavesAPendingCaseNotAnOpenOne(t *testing.T) {
+	h := newSocialHarness(t)
+	withMedia(h)
+	pic := photo(t, 90, 72)
+	h.api.Scanner = &scriptedScanner{verdicts: map[string]media.Verdict{media.SHA256Hex(pic): media.Match}}
+	evidence := &evidenceProbe{Memory: media.NewMemory(), onPut: func(key string) error {
+		if strings.HasSuffix(key, "full.jpg") {
+			return errors.New("evidence bucket unavailable")
+		}
+		return nil
+	}}
+	h.api.SetEvidence(evidence, 365)
+	t.Cleanup(func() { h.api.SetEvidence(nil, 365) })
+	store := h.api.Media.(*media.Memory)
+	id, _ := h.beginUpload(store, alice, "post", pic)
+	got := h.call(alice, "POST", "/v1/media/"+id+"/complete")
+	if got.status < 500 {
+		t.Fatalf("a failed evidence write was answered as %d", got.status)
+	}
+	var status string
+	if err := h.db.Pool.QueryRow(h.ctx, `SELECT status FROM content_cases WHERE media_id=$1`, id).Scan(&status); err != nil || status != "pending" {
+		t.Fatalf("case %q %v: it must stay pending for the sweep", status, err)
+	}
+	// A match's suspension does not wait for the evidence copy.
+	var userStatus string
+	h.db.Pool.QueryRow(h.ctx, `SELECT status FROM users WHERE user_id=$1`, alice).Scan(&userStatus)
+	if userStatus != "suspended" {
+		t.Fatalf("uploader %s", userStatus)
+	}
+	if h.count(`SELECT count(*) FROM content_cases WHERE status='open' AND media_id=$1`, id) != 0 {
+		t.Fatal("an open case with no evidence")
+	}
+}

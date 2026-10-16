@@ -481,7 +481,11 @@ func (s *Store) updateProfile(ctx context.Context, id string, expected int64, pa
 	}
 	defer tx.Rollback(ctx)
 	var active bool
-	if err = tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, id).Scan(&active); err != nil || !active {
+	// Only "no such account" and "not active" are a 404; a lock timeout, a cancelled statement or a broken
+	// connection keeps its class (the central mapping answers 503 for the first three).
+	if err = tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, id).Scan(&active); err != nil {
+		return mapped(err)
+	} else if !active {
 		return domain.ErrNotFound
 	}
 	p, err := scanProfile(tx.QueryRow(ctx, `SELECT p.user_id::text,p.username,p.data,p.version,p.created_at,p.updated_at FROM profiles p JOIN users u USING(user_id) WHERE p.user_id=$1 AND u.status='active' FOR NO KEY UPDATE OF u,p`, id))
@@ -574,7 +578,9 @@ func (s *Store) UpdatePrivacy(ctx context.Context, id string, expected int64, pa
 	}
 	defer tx.Rollback(ctx)
 	var active bool
-	if err = tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, id).Scan(&active); err != nil || !active {
+	if err = tx.QueryRow(ctx, `SELECT status='active' FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, id).Scan(&active); err != nil {
+		return domain.Privacy{}, mapped(err)
+	} else if !active {
 		return domain.Privacy{}, domain.ErrNotFound
 	}
 	var data []byte

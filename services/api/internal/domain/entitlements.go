@@ -61,6 +61,10 @@ type Entitlements struct {
 	// a send that would push any recipient device past it is refused with 429 RECIPIENT_BACKLOG.
 	ChatMessagesPerConversationPerDay int
 	ChatBacklogPerDevice              int
+	// ChatBacklogPerSenderPerDevice caps how many of those one sender may have waiting on one recipient device
+	// (429 RECIPIENT_BACKLOG for that sender only), so one account cannot fill a victim's device alone. It does
+	// not apply to the sender's own other devices.
+	ChatBacklogPerSenderPerDevice int
 }
 
 // EntitlementsFor returns the limits of a plan. An unknown plan gets Free, so a bad value can only
@@ -92,6 +96,7 @@ func EntitlementsFor(plan Plan) Entitlements {
 
 		ChatMessagesPerConversationPerDay: 2000,
 		ChatBacklogPerDevice:              2000,
+		ChatBacklogPerSenderPerDevice:     300,
 	}
 	switch plan {
 	case PlanFree:

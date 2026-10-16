@@ -35,21 +35,50 @@ func ParseDeletionRequest(body map[string]json.RawMessage) (string, error) {
 	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(confirm), "@")), nil
 }
 
-// ParseDeletion reads the body of POST /v1/me/deletion: {confirmUsername} and, for a member who signs in
-// with Apple, {appleAuthorizationCode}, the one-time code from re-authenticating with Apple.
-func ParseDeletion(body map[string]json.RawMessage) (confirm, appleCode string, err error) {
-	if code, ok := body["appleAuthorizationCode"]; ok {
-		if json.Unmarshal(code, &appleCode) != nil || appleCode == "" || len(appleCode) > 2048 {
-			return "", "", &ValidationError{Field: "appleAuthorizationCode", Message: "send the code Apple returned"}
-		}
-		rest := map[string]json.RawMessage{}
-		for k, v := range body {
-			if k != "appleAuthorizationCode" {
-				rest[k] = v
+// DeletionRequest is the body of POST /v1/me/deletion.
+type DeletionRequest struct {
+	// Confirm is the username typed to confirm, lower-cased and without a leading "@".
+	Confirm string
+	// AppleCode is the one-time Sign in with Apple authorization code from re-authenticating with Apple.
+	AppleCode string
+	// AppleCodeUnavailable is the client's statement that it re-authenticated and still could not obtain a code
+	// (appleCodeUnavailable: true). The server then schedules the deletion anyway and queues a manual revocation
+	// for an operator, so a member is never locked out of leaving.
+	AppleCodeUnavailable bool
+}
+
+// ParseDeletionBody reads the body of POST /v1/me/deletion: {confirmUsername} and, for a member who signs in with
+// Apple, either {appleAuthorizationCode} or {appleCodeUnavailable: true}, never both.
+func ParseDeletionBody(body map[string]json.RawMessage) (DeletionRequest, error) {
+	var r DeletionRequest
+	rest := map[string]json.RawMessage{}
+	for k, v := range body {
+		switch k {
+		case "appleAuthorizationCode":
+			if json.Unmarshal(v, &r.AppleCode) != nil || r.AppleCode == "" || len(r.AppleCode) > 2048 {
+				return r, &ValidationError{Field: "appleAuthorizationCode", Message: "send the code Apple returned"}
 			}
+		case "appleCodeUnavailable":
+			if json.Unmarshal(v, &r.AppleCodeUnavailable) != nil {
+				return r, &ValidationError{Field: "appleCodeUnavailable", Message: "must be true or false"}
+			}
+		default:
+			rest[k] = v
 		}
-		body = rest
 	}
-	confirm, err = ParseDeletionRequest(body)
-	return confirm, appleCode, err
+	if r.AppleCode != "" && r.AppleCodeUnavailable {
+		return r, &ValidationError{Field: "appleCodeUnavailable", Message: "send the authorization code or say it is unavailable, not both"}
+	}
+	var err error
+	r.Confirm, err = ParseDeletionRequest(rest)
+	return r, err
+}
+
+// ParseDeletion is ParseDeletionBody for a caller that does not use appleCodeUnavailable.
+func ParseDeletion(body map[string]json.RawMessage) (confirm, appleCode string, err error) {
+	r, err := ParseDeletionBody(body)
+	if err != nil {
+		return "", "", err
+	}
+	return r.Confirm, r.AppleCode, nil
 }

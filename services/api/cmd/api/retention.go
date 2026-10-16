@@ -30,6 +30,11 @@ func retentionJobs(db *store.Store) []maintenance.Job {
 		{Name: "media tombstone purge", Run: func(ctx context.Context) (int64, error) {
 			return db.PurgeMediaTombstones(ctx, store.MediaTombstoneRetention)
 		}},
+		// Recounts the neighbours of an account with more than 20000 edges that was suspended, restored or
+		// deactivated (counter_fixups, migration 0044). 20000 chunks of 500 is far beyond any queue.
+		{Name: "counter fixups", Timeout: longJob, Run: func(ctx context.Context) (int64, error) {
+			return db.ApplyCounterFixups(ctx, 20000)
+		}},
 		{Name: "social counter reconcile", Timeout: longJob, Run: func(ctx context.Context) (int64, error) {
 			return db.ReconcileSocialCounters(ctx, store.ReconcileEvery)
 		}},

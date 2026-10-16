@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"strings"
+	"time"
 
 	"hiyall/services/api/internal/appcheck"
 	"hiyall/services/api/internal/config"
 	"hiyall/services/api/internal/identity"
+	"hiyall/services/api/internal/media"
 	"hiyall/services/api/internal/push"
 )
 
@@ -17,21 +21,24 @@ import (
 // read and parse the key files) and reports what a start would refuse, without opening the database (unless -db) or the
 // network. It never prints a value, only the variable name and the rule.
 //
-// With -release it also applies the V1 release requirements that a start tolerates (push, error reporting, a
+// With -net it also writes a probe object to the evidence bucket and proves that the API's token cannot read or
+// delete it (media.EvidenceCanary); the Apple probe runs with -release, -db or -net. With -release it also applies the V1 release requirements that a start tolerates (push, error reporting, a
 // minimum client version, Apple revocation and real media buckets), because a server that starts is not
 // necessarily one that is fit to ship. With -db it also connects to DATABASE_URL and checks the database role
 // and the grants of database/roles/grants.sql (dbrole.go). Exit 0: nothing to fix (warnings may print). 1: problems. 2: usage.
 // config.Load stops at its first complaint, so fix and rerun until it is clean.
 func checkConfig(args []string, stdout, stderr io.Writer) int {
-	release, database := false, false
+	release, database, network := false, false, false
 	for _, a := range args {
 		switch a {
 		case "-release", "--release":
 			release = true
 		case "-db", "--db":
 			database = true
+		case "-net", "--net":
+			network = true
 		default:
-			fmt.Fprintln(stderr, "usage: api check-config [-release] [-db]")
+			fmt.Fprintln(stderr, "usage: api check-config [-release] [-db] [-net]")
 			return 2
 		}
 	}
@@ -40,7 +47,7 @@ func checkConfig(args []string, stdout, stderr io.Writer) int {
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer slog.SetDefault(previous)
 
-	problems, warnings := reviewConfig(release)
+	problems, warnings := reviewConfig(release, database, network)
 	if database {
 		// -db opens DATABASE_URL (read only): the role's shape and the grants of database/roles/grants.sql.
 		p, w := reviewDatabase()
@@ -60,8 +67,29 @@ func checkConfig(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// reviewConfig returns what must be fixed and what deserves a look.
-func reviewConfig(release bool) (problems, warnings []string) {
+// appleProbe asks Apple whether the APPLE_* values are accepted (identity.AppleRevoker.Probe). A variable so a
+// test can point it at a fake.
+var appleProbe = func(r *identity.AppleRevoker) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return r.Probe(ctx)
+}
+
+// evidenceProbe opens the API's evidence credential and runs the canary (-net). A variable for tests.
+var evidenceProbe = func(cfg config.Config) (problem, warning string, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	evidence, err := media.NewS3(ctx, media.S3Config{Endpoint: cfg.EvidenceEndpoint, AccessKey: cfg.EvidenceAccessKey, SecretKey: cfg.EvidenceSecretKey, Bucket: cfg.EvidenceBucket, Region: cfg.EvidenceRegion, Secure: cfg.EvidenceSecure, NoCreate: true})
+	if err != nil {
+		return "", "", errors.New("evidence storage unavailable; check EVIDENCE_* configuration")
+	}
+	return evidenceCanary(ctx, cfg, evidence)
+}
+
+// reviewConfig returns what must be fixed and what deserves a look. release, database and network are the
+// -release, -db and -net flags: any of the first two, or -net, also asks Apple whether the APPLE_* values work,
+// and -net runs the evidence-token canary (it writes a tiny probe object).
+func reviewConfig(release, database, network bool) (problems, warnings []string) {
 	cfg, err := config.Load()
 	if err != nil {
 		return []string{err.Error()}, nil
@@ -74,15 +102,38 @@ func reviewConfig(release bool) (problems, warnings []string) {
 	if _, err := uploadScanner(cfg); err != nil {
 		problems = append(problems, err.Error())
 	}
-	if _, err := appleRevoker(cfg); err != nil {
+	apple, err := appleRevoker(cfg)
+	if err != nil {
 		problems = append(problems, err.Error())
+	}
+	if apple != nil && (release || database || network) {
+		switch perr := appleProbe(apple); {
+		case perr == nil:
+		case errors.Is(perr, identity.ErrAppleClientRejected):
+			problems = append(problems, "Apple rejected APPLE_TEAM_ID, APPLE_KEY_ID, APPLE_CLIENT_ID and APPLE_PRIVATE_KEY_FILE (invalid_client): every Apple account deletion would fail. Check that the key id matches the .p8 file, the team id is the developer team's and the client id is the app's bundle id (or the Services ID on the web)")
+		case errors.Is(perr, identity.ErrAppleUnreachable):
+			warnings = append(warnings, "could not reach Apple to check APPLE_*: the configuration was not verified (run again with network access)")
+		default:
+			warnings = append(warnings, "Apple answered the APPLE_* probe with an unexpected error ("+perr.Error()+"): the configuration was not verified")
+		}
+	}
+	if network && cfg.MediaEndpoint != "" && cfg.EvidenceSeparate() {
+		problem, warning, perr := evidenceProbe(cfg)
+		switch {
+		case perr != nil:
+			warnings = append(warnings, "evidence token canary did not run: "+perr.Error())
+		case problem != "":
+			problems = append(problems, problem)
+		case warning != "":
+			warnings = append(warnings, warning)
+		}
 	}
 	if cfg.FirebaseServiceAccountFile != "" {
 		if _, err := identity.NewFirebaseDeleter(cfg.FirebaseProjectID, cfg.FirebaseServiceAccountFile); err != nil {
 			problems = append(problems, err.Error())
 		}
 	}
-	warnings = advisories(cfg)
+	warnings = append(warnings, advisories(cfg)...)
 	if release {
 		problems = append(problems, releaseProblems(cfg, sender)...)
 	}

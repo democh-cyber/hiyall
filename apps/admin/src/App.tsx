@@ -3,11 +3,13 @@ import { Link, NavLink, Route, Routes } from 'react-router'
 import { AuthProvider, useAuth } from './auth'
 import type { Role } from './api'
 import { Account } from './pages/Account'
+import { AppleRevocations } from './pages/AppleRevocations'
 import { Approvals } from './pages/Approvals'
 import { Audit } from './pages/Audit'
 import { Case } from './pages/Case'
 import { ContentCases } from './pages/ContentCases'
 import { ContentCaseView } from './pages/ContentCaseView'
+import { EvidenceOrphans } from './pages/EvidenceOrphans'
 import { Login } from './pages/Login'
 import { Operators } from './pages/Operators'
 import { Queue } from './pages/Queue'
@@ -50,6 +52,8 @@ function Shell() {
           <NavLink to="/" end>Reports</NavLink>
           {op.role !== 'viewer' && <NavLink to="/content">Quarantine</NavLink>}
           {op.role === 'admin' && <NavLink to="/approvals">Approvals</NavLink>}
+          {op.role === 'admin' && <NavLink to="/apple-revocations">Apple revocations</NavLink>}
+          {op.role === 'admin' && <NavLink to="/evidence-orphans">Evidence orphans</NavLink>}
           {op.role === 'admin' && <NavLink to="/audit">Audit log</NavLink>}
           {op.role === 'admin' && <NavLink to="/operators">Operators</NavLink>}
           <NavLink to="/account">Account</NavLink>
@@ -65,6 +69,8 @@ function Shell() {
           <Route path="/content" element={<MinRole min="moderator"><ContentCases /></MinRole>} />
           <Route path="/content/:id" element={<MinRole min="moderator"><ContentCaseView /></MinRole>} />
           <Route path="/approvals" element={<Guard role="admin"><Approvals /></Guard>} />
+          <Route path="/apple-revocations" element={<Guard role="admin"><AppleRevocations /></Guard>} />
+          <Route path="/evidence-orphans" element={<Guard role="admin"><EvidenceOrphans /></Guard>} />
           <Route path="/audit" element={<Guard role="admin"><Audit /></Guard>} />
           <Route path="/operators" element={<Guard role="admin"><Operators /></Guard>} />
           <Route path="/account" element={<Account />} />

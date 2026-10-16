@@ -22,7 +22,11 @@ func productionBasics(t *testing.T) {
 	t.Setenv("DIRECT_LISTENER", "true")
 	t.Setenv("DEBUG_LOG_PEER", "")
 	t.Setenv("NEARBY_OFFSET_KEY", testCursorKey)
-	for _, k := range []string{"NEARBY_OFFSET_KEY_PREVIOUS", "EVIDENCE_BUCKET", "EVIDENCE_ENDPOINT", "EVIDENCE_ACCESS_KEY", "EVIDENCE_SECRET_KEY", "EVIDENCE_SECURE", "EVIDENCE_REGION", "EVIDENCE_ALLOW_SHARED_BUCKET", "EVIDENCE_RETENTION_DAYS", "MEDIA_PROCESS_SLOTS", "EXPORT_CONCURRENCY"} {
+	for _, k := range []string{"NEARBY_OFFSET_KEY_PREVIOUS", "EVIDENCE_BUCKET", "EVIDENCE_ENDPOINT", "EVIDENCE_ACCESS_KEY", "EVIDENCE_SECRET_KEY", "EVIDENCE_SECURE", "EVIDENCE_REGION", "EVIDENCE_ALLOW_SHARED_BUCKET", "EVIDENCE_RETENTION_DAYS", "EVIDENCE_CANARY", "EVIDENCE_ALLOW_API_DELETE", "NEARBY_ACCOUNTS_PER_ADDRESS", "MEDIA_PROCESS_SLOTS", "EXPORT_CONCURRENCY"} {
+		t.Setenv(k, "")
+	}
+	// A developer's shell may carry console or migration settings; production refuses them in the API's environment.
+	for _, k := range OwnerVariables(os.Environ()) {
 		t.Setenv(k, "")
 	}
 }
