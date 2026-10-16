@@ -109,7 +109,13 @@ void main() {
     var now = DateTime.utc(2026, 10, 15, 12);
     final spare = <ChatEngine>[];
 
-    ChatEngine make(String user, Api api, ChatStore store, {Directory? root}) {
+    ChatEngine make(
+      String user,
+      Api api,
+      ChatStore store, {
+      Directory? root,
+      List<Duration> keyRetryDelays = const [Duration(hours: 1)],
+    }) {
       final engine = ChatEngine(
         userId: user,
         api: api,
@@ -117,6 +123,7 @@ void main() {
         platform: 'test',
         mediaRoot: root,
         reactionRetryDelays: const [Duration.zero, Duration.zero],
+        keyRetryDelays: keyRetryDelays,
         clock: () => now,
       );
       spare.add(engine);
@@ -173,10 +180,8 @@ void main() {
             ..plan.add(const ChatFailure('NETWORK', 'offline'));
           final store = MemoryChatStore();
           final first = make(meId, api, store);
-          await expectLater(
-            first.start(poll: Duration.zero),
-            throwsA(isA<ChatFailure>()),
-          );
+          // The failed upload does not fail the start (audit CHAT-N5): the device is registered and chat opens.
+          await first.start(poll: Duration.zero);
           final offered = api.attempts.single;
           expect(offered, hasLength(50));
           // The app is restarted: the keys come back from the saved account, not from new ones.
@@ -198,10 +203,7 @@ void main() {
         final store = MemoryChatStore();
         for (var i = 0; i < 3; i++) {
           final e = make(meId, api, store);
-          await expectLater(
-            e.start(poll: Duration.zero),
-            throwsA(isA<ChatFailure>()),
-          );
+          await e.start(poll: Duration.zero);
           e.dispose();
         }
         // Three failed runs on one account left no growing pile of keys: every attempt offered the same 50.
@@ -217,10 +219,7 @@ void main() {
           ..plan.addAll([null, const ChatFailure('NETWORK', 'offline')]);
         final store = MemoryChatStore();
         final first = make(meId, api, store);
-        await expectLater(
-          first.start(poll: Duration.zero),
-          throwsA(isA<ChatFailure>()),
-        );
+        await first.start(poll: Duration.zero);
         final device = first.deviceId;
         expect(relayKeys(meId, device), 50);
         first.dispose();

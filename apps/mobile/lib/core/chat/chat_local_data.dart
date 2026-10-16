@@ -98,6 +98,41 @@ class ChatLocalData {
     await wipeFiles(root);
   }
 
+  /// The explicit "Reset chat on this phone" for a platform keystore that cannot be opened on launch after
+  /// launch (audit CHAT-N4): erases [userId]'s chat data like [wipeAccount], but without trusting the keystore
+  /// to answer. The files go first. Then the account's entries are deleted one by one; when the keystore will
+  /// not do that, [eraseEverything] clears all of it (that also signs the person out of anything else kept
+  /// there, which is why it is the last resort). The old device id is remembered for removal on the server when
+  /// the keystore still says what it was; otherwise the device stays on the account's list until it is removed
+  /// there or goes stale. Throws [ChatStorageUnavailable] when nothing worked.
+  static Future<void> resetAfterStorageFailure({
+    required Directory root,
+    required ChatStore store,
+    required String userId,
+    Future<void> Function()? eraseEverything,
+  }) async {
+    final drain = _drains.remove(userId);
+    if (drain != null) {
+      try {
+        await drain();
+      } catch (_) {}
+    }
+    try {
+      final deviceId = await store.read('${prefix(userId)}deviceId');
+      if (deviceId != null) await rememberRevoke(store, userId, deviceId);
+    } catch (_) {
+      // The keystore is what is broken.
+    }
+    await wipeFiles(root);
+    try {
+      await deleteKeysWithPrefix(store, prefix(userId));
+      if (await store.read(ownerKey) == userId) await store.delete(ownerKey);
+    } catch (_) {
+      if (eraseEverything == null) throw const ChatStorageUnavailable();
+      await eraseEverything();
+    }
+  }
+
   /// Removes the photo cache and unsent uploads; best effort.
   static Future<void> wipeFiles(Directory root) async {
     for (final name in folders) {

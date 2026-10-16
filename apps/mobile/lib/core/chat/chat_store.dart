@@ -96,3 +96,20 @@ class ChatStoreClosed implements Exception {
   @override
   String toString() => 'The chat was closed.';
 }
+
+/// The platform keystore could not be read or written (it is locked, busy or briefly unavailable). This is
+/// never a reason to throw away what is stored: nothing is deleted or regenerated because of it. The app says
+/// "Couldn't open secure storage", tries again with growing waits, and only after [attemptsBeforeReset]
+/// launches in a row have failed offers the person the explicit "Reset chat on this phone" action (see
+/// `ChatStorageHealth`).
+class ChatStorageUnavailable implements Exception {
+  /// What the platform said, for the log only; never shown.
+  final Object? cause;
+  const ChatStorageUnavailable([this.cause]);
+
+  /// Launches in a row that must fail before the reset is offered.
+  static const attemptsBeforeReset = 3;
+
+  @override
+  String toString() => 'Couldn’t open secure storage.';
+}

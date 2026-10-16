@@ -807,6 +807,34 @@ void main() {
         },
       );
 
+      test('a noop the relay refuses with AWAITING_REPLY is dropped quietly and tried again after the hour (CHAT-N9)', () async {
+        await alice.send(conv, peerId, 'one');
+        await bob.pollNow();
+        await bob.send(conv, meId, 'two');
+        await alice.pollNow();
+        await bobLosesHisSessions();
+        int noops() =>
+            relay.stored.values.where((m) => m['aux'] == true).length;
+
+        await alice.send(conv, peerId, 'three');
+        // The first-contact cap refuses the quiet message (it counts like any message).
+        relay.failNext = const ChatFailure('AWAITING_REPLY', 'wait', 403);
+        await bob.pollNow(); // never throws
+        expect(await notices(bob), 1, reason: 'three could not be read');
+        expect(noops(), 0, reason: 'the refused noop was not stored');
+
+        // Within the hour nothing more is tried, however many messages fail.
+        await alice.send(conv, peerId, 'four');
+        await bob.pollNow();
+        expect(noops(), 0);
+
+        // An hour later it is allowed once more, and now goes through.
+        now = now.add(const Duration(minutes: 61));
+        await alice.send(conv, peerId, 'five');
+        await bob.pollNow();
+        expect(noops(), 1);
+      });
+
       test('the noop is invisible: no bubble, no unread, no notice', () async {
         await alice.send(conv, peerId, 'one');
         await bob.pollNow();

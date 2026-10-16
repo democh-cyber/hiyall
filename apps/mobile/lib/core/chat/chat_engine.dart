@@ -14,11 +14,13 @@ import 'chat_blob_cache.dart';
 import 'chat_blob_codec.dart';
 import 'chat_blob_transport.dart';
 import 'chat_history.dart';
+import 'chat_key_upload.dart';
 import 'chat_local_data.dart';
 import 'chat_media.dart';
 import 'chat_padding.dart';
 import 'chat_outbox.dart';
 import 'chat_reactions.dart';
+import 'chat_snapshot.dart' show SnapshotChatStore;
 import 'chat_store.dart';
 import 'chat_text.dart';
 
@@ -301,12 +303,20 @@ enum DeviceNoticeKind {
 
   /// This phone's encrypted data could not be unlocked, so it started again with a new identity.
   locked,
+
+  /// The person chose "Reset chat on this phone" after the platform keystore could not be opened on several
+  /// launches in a row: this phone's chat data was erased and a new identity made.
+  storage,
+
+  /// The relay removed a device of this account that had not been used for days while its undelivered
+  /// messages piled up (so it would not stop other people's messages reaching the account).
+  inactive,
 }
 
 /// Something about this account's devices that the person should see, noticed by this phone. Kept until
 /// dismissed, across restarts.
 class DeviceNotice {
-  /// The device it is about; empty for [DeviceNoticeKind.review], [reset] and [locked].
+  /// The device it is about; empty for [DeviceNoticeKind.review], [reset], [locked] and [storage].
   final String deviceId;
   final DateTime at;
   final DeviceNoticeKind kind;
@@ -445,6 +455,16 @@ class ChatEngine {
   /// (the message id stays the same, so a retry never duplicates). Tests pass
   /// zeros.
   final List<Duration> reactionRetryDelays;
+
+  /// Waits between the attempts to top up this device's keys on the relay after one failed (the engine starts
+  /// and sends from the keys it already has meanwhile). The last wait repeats. Tests pass short ones.
+  final List<Duration> keyRetryDelays;
+
+  /// A notice to show once this engine has started with a fresh identity: the explicit reset the person chose
+  /// after the keystore could not be opened ([DeviceNoticeKind.storage]).
+  final DeviceNoticeKind? startNotice;
+  Timer? _keyRetry;
+  int _keyFailures = 0;
   ChatMedia? _media;
   PhotoOutbox? _outbox;
 
@@ -461,6 +481,14 @@ class ChatEngine {
       Duration(milliseconds: 800),
       Duration(seconds: 2),
     ],
+    this.keyRetryDelays = const [
+      Duration(seconds: 5),
+      Duration(seconds: 15),
+      Duration(minutes: 1),
+      Duration(minutes: 5),
+      Duration(minutes: 15),
+    ],
+    this.startNotice,
     DateTime Function()? clock,
     ChatMedia? media,
   }) : _clock = clock ?? DateTime.now {
@@ -560,6 +588,14 @@ class ChatEngine {
       _locked(() async {
         if (_started) return;
         await _loadNotes();
+        // The snapshot files existed and none opened (the key is gone, or they are damaged), or only the
+        // previous generation did (an older state than the one last committed: its ratchets may be behind what
+        // peers already saw). Neither is an identity to carry on with: start a new one and say so, never
+        // silently (audit CHAT-N8). Also checked for the keystore that was wiped with files left behind.
+        final opened = store;
+        if (opened is SnapshotChatStore && opened.info.identityUntrusted) {
+          await _resetIdentity(because: DeviceNoticeKind.locked);
+        }
         try {
           await _loadIdentity();
         } on _StateLocked {
@@ -573,11 +609,17 @@ class ChatEngine {
         } on ChatFailure catch (failure) {
           // The relay says this device id or key belongs to something else, or
           // was revoked (removed from the device list, signed out elsewhere,
-          // unused for 90 days). The old identity is of no use: make a new one.
+          // unused for 14 days). The old identity is of no use: make a new one.
           if (failure.code != 'DEVICE_CONFLICT') rethrow;
           await _resetIdentity(because: DeviceNoticeKind.reset);
           await _loadIdentity();
           await _register();
+        }
+        final reason = startNotice;
+        if (reason != null) {
+          _addOwnNotice(DeviceNotice('', _clock().toUtc(), reason));
+          await _saveNotes();
+          if (!_ownDeviceChanges.isClosed) _ownDeviceChanges.add(null);
         }
         _started = true;
         // A wipe (sign-out) closes this engine first and waits for what it was doing.
@@ -627,6 +669,8 @@ class ChatEngine {
     _disposed = true;
     _timer?.cancel();
     _timer = null;
+    _keyRetry?.cancel();
+    _keyRetry = null;
     final outbox = _outbox;
     outbox?.dispose();
     _media?.cache.close();
@@ -736,7 +780,33 @@ class ChatEngine {
         ),
       ),
     });
-    await _replenishKeys();
+    // The device is registered; topping up its keys is housekeeping that never stops chat from starting: a
+    // failure is retried with growing waits, and sends that need keys work from the ones already on the
+    // relay (audit CHAT-N5).
+    await _replenishQuietly();
+  }
+
+  /// [_replenishKeys] that never throws: a failure schedules another attempt (see [keyRetryDelays]).
+  Future<void> _replenishQuietly() async {
+    try {
+      await _replenishKeys();
+      _keyFailures = 0;
+    } on ChatStoreClosed {
+      // Disposed meanwhile.
+    } catch (_) {
+      _scheduleKeyRetry();
+    }
+  }
+
+  void _scheduleKeyRetry() {
+    if (_disposed || _keyRetry != null || keyRetryDelays.isEmpty) return;
+    final delay = keyRetryDelays[min(_keyFailures, keyRetryDelays.length - 1)];
+    _keyFailures++;
+    _keyRetry = Timer(delay, () {
+      _keyRetry = null;
+      if (_disposed) return;
+      unawaited(_locked(_replenishQuietly).catchError((_) {}));
+    });
   }
 
   /// Forgets this device's identity (account, sessions, id) so a new one is
@@ -908,57 +978,48 @@ class ChatEngine {
   /// become claimable, and the rotation is only recorded once the relay has the
   /// new fallback key (the old one keeps working until then).
   ///
-  /// Keys go up in chunks of at most [uploadChunk], one generate-upload-publish
-  /// cycle each. The core makes only the shortfall, so after any failure the
-  /// unpublished keys are those of the one chunk that did not arrive, and the
-  /// retry sends exactly them: it can never exceed what the relay accepts, so
-  /// a failed upload (offline, a refusal) cannot wedge every later start
-  /// (re-audit CHAT-1). A chunk is marked published only after the relay has
-  /// it. The fallback key travels with the first request, so it is not held
-  /// back by the one-time keys, and when only the fallback is due it goes alone.
+  /// Keys go up in requests of at most [uploadChunk] (see [publishOneTimeKeys]).
+  /// The core makes only the shortfall, so after any failure the unpublished
+  /// keys are those that did not arrive, and the retry sends exactly them: it
+  /// can never exceed what the relay accepts, so a failed upload (offline, a
+  /// refusal) cannot wedge every later start (re-audit CHAT-1). Everything the
+  /// core holds unpublished is uploaded, also when an older build left more than
+  /// one request's worth, and is marked published only after the relay has it
+  /// all (audit CHAT-N9). The fallback key travels with the first request, so it
+  /// is not held back by the one-time keys, and when only the fallback is due it
+  /// goes alone.
   Future<void> _replenishKeys() async {
     final count = await api.keyCount(deviceId);
     final rotate = _fallbackDue;
     if (count >= oneTimeLow && !rotate) return;
-    var want = count >= oneTimeLow ? 0 : max(0, oneTimeTarget - count);
+    final want = count >= oneTimeLow ? 0 : max(0, oneTimeTarget - count);
     // A fallback key made by an attempt that did not reach the relay is
     // offered again; making another would push the published one out.
     final fallback = rotate
         ? _account.unpublishedFallbackKey() ?? _account.generateFallbackKey()
         : null;
-    Map<String, String> signed(PublicKeyEntry k) => {
-      'keyId': k.keyId,
-      'publicKey': k.publicKey,
-      'signature': _account.sign(
-        message: oneTimeKeyStatement(userId, deviceId, k.keyId, k.publicKey),
-      ),
-    };
-    var first = true;
-    do {
-      // Never more than one request's worth, whatever an older build left unpublished.
-      final keys = _account
-          .generateOneTimeKeys(count: min(want, uploadChunk))
-          .take(uploadChunk)
-          .toList();
-      final withFallback = first ? fallback : null;
-      if (keys.isEmpty && withFallback == null) break;
-      // Persist the private halves before the public halves become claimable.
-      await _saveState();
-      await api.uploadKeys(
-        deviceId,
-        keys.map(signed).toList(),
-        withFallback == null ? null : signed(withFallback),
-      );
-      _account.markKeysAsPublished();
-      if (withFallback != null) {
+    await publishOneTimeKeys(
+      onRelay: count,
+      want: want,
+      fallback: fallback,
+      generate: (n) => _account.generateOneTimeKeys(count: n),
+      sign: (k) => {
+        'keyId': k.keyId,
+        'publicKey': k.publicKey,
+        'signature': _account.sign(
+          message: oneTimeKeyStatement(userId, deviceId, k.keyId, k.publicKey),
+        ),
+      },
+      save: _saveState,
+      upload: (keys, fallbackKey) =>
+          api.uploadKeys(deviceId, keys, fallbackKey),
+      markPublished: _account.markKeysAsPublished,
+      fallbackPublished: () async {
         final now = _clock().toUtc();
         _fbRotated = now;
         _fbForgetAt = now.add(fallbackGrace);
-      }
-      await _saveState();
-      first = false;
-      want = max(0, want - keys.length);
-    } while (want > 0);
+      },
+    );
   }
 
   /// Rotates the fallback key if it is due and forgets the previous one once
@@ -1068,11 +1129,15 @@ class ChatEngine {
       }
     }
     _trust[user] = known;
-    // Nothing new to pin is the usual case: do not rewrite the store for it.
-    if (!wasKnown || fetched.unpinned.isNotEmpty) {
-      await _store.write(_k('trust'), jsonEncode(_trust));
-    }
-    await _checkVerified(user, fetched.list, saveNotes: notes);
+    // The pins and the notices about them are one commit: a stop between two writes must never leave a device
+    // pinned without the "review" or "added" notice that says it appeared (audit CHAT-N6).
+    await _store.batch(() async {
+      // Nothing new to pin is the usual case: do not rewrite the store for it.
+      if (!wasKnown || fetched.unpinned.isNotEmpty) {
+        await _store.write(_k('trust'), jsonEncode(_trust));
+      }
+      await _checkVerified(user, fetched.list, saveNotes: notes);
+    });
     return fetched.list;
   }
 
@@ -1145,14 +1210,19 @@ class ChatEngine {
         DeviceNotice(
           id,
           DateTime.tryParse('${r['removedAt']}') ?? _clock().toUtc(),
-          DeviceNoticeKind.removed,
+          r['reason'] == 'inactive'
+              ? DeviceNoticeKind.inactive
+              : DeviceNoticeKind.removed,
         ),
       );
       changed = true;
     }
     if (!changed) return;
-    await _store.write(_k('trust'), jsonEncode(_trust));
-    await _saveNotes();
+    // The dropped pins and their notices land together (audit CHAT-N6).
+    await _store.batch(() async {
+      await _store.write(_k('trust'), jsonEncode(_trust));
+      await _saveNotes();
+    });
     if (!_ownDeviceChanges.isClosed) _ownDeviceChanges.add(null);
   }
 
@@ -1732,7 +1802,7 @@ class ChatEngine {
     try {
       items = await api.inbox(deviceId);
     } on ChatFailure catch (failure) {
-      // This device was removed on the relay (revoked, unused for 90 days):
+      // This device was removed on the relay (revoked, unused for 14 days):
       // start over with a new identity.
       if (failure.status == 404 && failure.code == 'NOT_FOUND') {
         await _resetIdentity(because: DeviceNoticeKind.reset);
@@ -1749,6 +1819,9 @@ class ChatEngine {
       rethrow;
     }
     final delivered = <String>[];
+    // A one-time key is only used up by a message that starts a session (a pre-key message), so the relay's
+    // key count only needs a look after one arrived.
+    var sawPreKey = false;
     // Each sender's devices are fetched once per page. A failure here is kept
     // per sender so it never turns into a decryption error for every message.
     final senders = <String, Future<List<_Device>>>{};
@@ -1757,6 +1830,7 @@ class ChatEngine {
         final conversationId = item['conversationId'] as String;
         final senderId = item['senderId'] as String;
         final messageId = item['messageId'] as String;
+        if (item['type'] == 0) sawPreKey = true;
         final devices = senders[senderId] ??= _devices(
           senderId,
           conversationId: conversationId,
@@ -1869,7 +1943,7 @@ class ChatEngine {
       // since its ratchet state has already been saved.
       if (delivered.isNotEmpty) {
         await api.ack(deviceId, delivered);
-        await _replenishKeys();
+        if (sawPreKey) await _replenishQuietly();
       }
     }
     return items.length;
