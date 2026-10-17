@@ -26,6 +26,14 @@ const clientVersionHeader = 'X-Client-Version';
 /// With HTTP 426, the server's answer to a version it no longer accepts.
 const upgradeRequiredCode = 'UPGRADE_REQUIRED';
 
+/// With HTTP 401, the server's answer when it could not tie the request to the real app (App Check). The
+/// session is fine; only the app has to be updated or verified. Never a reason to sign out.
+const appCheckRequiredCode = 'APP_CHECK_REQUIRED';
+
+/// With HTTP 401, the server's answer when the credential is no longer accepted: the one code that
+/// ends the session on this phone.
+const unauthenticatedCode = 'UNAUTHENTICATED';
+
 class ApiFailure implements Exception {
   final String message;
   final int? status;
@@ -455,6 +463,10 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
   /// Called when the server refuses this app version (426 UPGRADE_REQUIRED);
   /// the app then shows only the "Update Hiyall" screen.
   void Function()? onUpgradeRequired;
+
+  /// Called when the server answers 401 APP_CHECK_REQUIRED: the app, not the session, is what it
+  /// refuses. The app then shows "Update or verify this app" and keeps the session and its data.
+  void Function()? onAppCheckRequired;
   @override
   Future<dynamic> _request(
     String method,
@@ -511,6 +523,15 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
           ? reply['error'] as Map
           : const {};
       final code = failure['code'] as String?;
+      if (status == 401 && code == appCheckRequiredCode) {
+        // Not about the credential: no token refresh, no sign-out.
+        onAppCheckRequired?.call();
+        throw ApiFailure(
+          'Hiyall couldn’t confirm this app. Update it, or open the real app from the store.',
+          status,
+          code,
+        );
+      }
       if (status == 401 && token != null && !retried) {
         final fresh = await tokenRefresher?.call();
         if (fresh != null && fresh != token) {
@@ -526,7 +547,11 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
           );
         }
       }
-      if (status == 401 && token != null) onUnauthorized?.call();
+      // Only the server's explicit "unauthenticated" ends the session. Any other 401 (a proxy's, one
+      // without the error envelope) proves nothing about the credential.
+      if (status == 401 && token != null && code == unauthenticatedCode) {
+        onUnauthorized?.call();
+      }
       if (status == 426 && code == upgradeRequiredCode) {
         onUpgradeRequired?.call();
         throw ApiFailure(
@@ -797,6 +822,7 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
           tokenOf: () => s.token,
           refreshToken: () async => tokenRefresher?.call(),
           onSessionEnded: () => onUnauthorized?.call(),
+          onAppCheckRequired: () => onAppCheckRequired?.call(),
         );
 
   // Social graph. Each call returns the server's resulting state.

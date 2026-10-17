@@ -53,6 +53,11 @@ String? authRedirect(Ref ref, String location, [Uri? uri]) {
   if (ref.read(upgradeRequiredProvider)) {
     return location == '/update' ? null : '/update';
   }
+  // The server refuses this copy of the app (not the session): only the screen that says so, until a
+  // retry is accepted. Nothing is signed out or wiped for it.
+  if (ref.read(appCheckRequiredProvider)) {
+    return location == '/verify-app' ? null : '/verify-app';
+  }
   final memory = ref.read(deepLinkMemoryProvider);
   final active = ref.read(sessionProvider).asData?.value;
   if (active != null) memory.sessionActive(active.userId);
@@ -94,6 +99,7 @@ String? _authTarget(Ref ref, String location) {
         '/splash',
         '/account-deletion',
         '/update',
+        '/verify-app',
       }.contains(location)) {
     return '/home';
   }
@@ -106,6 +112,7 @@ final routerProvider = Provider<GoRouter>((ref) {
   ref.listen(awaitingVerificationProvider, (_, _) => refresh.value++);
   ref.listen(pendingAccountProvider, (_, _) => refresh.value++);
   ref.listen(upgradeRequiredProvider, (_, _) => refresh.value++);
+  ref.listen(appCheckRequiredProvider, (_, _) => refresh.value++);
   final router = GoRouter(
     initialLocation: '/home',
     refreshListenable: refresh,
@@ -116,6 +123,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/update',
         builder: (context, state) => const UpdateRequiredScreen(),
+      ),
+      GoRoute(
+        path: '/verify-app',
+        builder: (context, state) => const AppCheckRequiredScreen(),
       ),
       GoRoute(
         path: '/splash',

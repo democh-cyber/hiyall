@@ -11,6 +11,7 @@ import 'chat_wipe_hook.dart';
 import 'data_delivery.dart' show exportWipeProvider;
 import 'deep_link.dart';
 import 'error_reporting.dart';
+import 'last_user.dart';
 import 'location_service.dart';
 import 'pending_revoke.dart';
 import 'signout_residue.dart';
@@ -29,6 +30,8 @@ final apiProvider = Provider<ApiClient>(
     ..onUnauthorized = (() => ref.read(sessionProvider.notifier).expire())
     ..onUpgradeRequired = (() =>
         ref.read(upgradeRequiredProvider.notifier).set())
+    ..onAppCheckRequired = (() =>
+        ref.read(appCheckRequiredProvider.notifier).set(true))
     ..tokenRefresher = (() => ref.read(authGatewayProvider).refreshToken()),
 );
 
@@ -42,6 +45,19 @@ class UpgradeRequired extends Notifier<bool> {
   @override
   bool build() => false;
   void set() => state = true;
+}
+
+/// True while the server refuses this app instead of the session (401 APP_CHECK_REQUIRED). The router
+/// then shows "Update or verify this app"; the session, the chat data and everything else stay as they
+/// are, and "Try again" clears it.
+final appCheckRequiredProvider = NotifierProvider<AppCheckRequired, bool>(
+  AppCheckRequired.new,
+);
+
+class AppCheckRequired extends Notifier<bool> {
+  @override
+  bool build() => false;
+  void set(bool value) => state = value;
 }
 
 /// The device's location. Replaced by a fake in tests.
@@ -104,9 +120,14 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
   /// remove (the state is already empty when a session expires).
   Session? _departing;
 
-  /// The account that was signed in last in this process, for the clean-up of a sign-out that has no
-  /// session left to name it.
+  /// The account that was signed in last, for the clean-up of a sign-out that has no session left to name
+  /// it. Also kept in a small file ([LastUserStore]) so that a start-up the server refuses in a new
+  /// process still finds it.
   String? _lastUserId;
+
+  /// Bumped every time a session is installed. A departure that finishes after a new sign-in leaves what
+  /// that sign-in remembered alone.
+  int _sessionSerial = 0;
 
   /// True while [logout] or [signOutProvider] runs, so the 401 that a revoked
   /// credential answers with does not start a second, "expired" sign-out.
@@ -124,6 +145,63 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
         );
       }
     }
+  }
+
+  /// Reads the file that remembers the last account into [_lastUserId], in the background from launch on.
+  /// Sign-out hooks then use the in-memory value and never wait for the disk.
+  Future<void> _loadRemembered() async {
+    try {
+      final stored = await ref.read(lastUserStoreProvider).read();
+      _lastUserId ??= stored;
+    } catch (_) {}
+  }
+
+  Future<void>? _remembered;
+
+  /// Notes that [userId] holds this phone now (memory and file). When the file still named another account
+  /// (a sign-out that never finished), what that account left is cleaned up too.
+  Future<void> _remember(String userId) async {
+    _lastUserId = userId;
+    _sessionSerial++;
+    try {
+      final store = ref.read(lastUserStoreProvider);
+      final previous = await store.read();
+      if (previous != null && previous != userId) {
+        await accountResidueHook(ref, () => previous)();
+      }
+      await store.write(userId);
+    } catch (_) {
+      // Best effort: the in-memory id still serves this process.
+    }
+  }
+
+  /// The local clean-up of [departing] is over. Clears what names it, but only what is still its own: a
+  /// sign-in that happened meanwhile ([serial] changed) keeps the id it remembered.
+  void _finishDeparture(Session? departing, int serial) {
+    if (identical(_departing, departing)) _departing = null;
+    if (serial != _sessionSerial) return;
+    _lastUserId = null;
+    // The file is cleared in the background: nothing about signing out waits for the disk.
+    unawaited(
+      Future<void>.sync(() => ref.read(lastUserStoreProvider).clear())
+          .catchError((Object _) {}),
+    );
+  }
+
+  /// Ends [session] on this phone without asking the server: the state is empty at once and the clean-up
+  /// hooks run for it. For a session the server (or the identity provider) ended.
+  Future<void> _endSession(Session session) {
+    _accountEpoch++;
+    final serial = _sessionSerial;
+    _departing = session;
+    ref.read(sessionExpiredProvider.notifier).set(true);
+    _forgetAccount();
+    state = const AsyncData(null);
+    // The credential is already dead, so server calls in hooks fail quietly; the local clean-up (chat
+    // data, export files) is what this is for.
+    return _runSignOutHooks().whenComplete(
+      () => _finishDeparture(session, serial),
+    );
   }
 
   /// Forgets everything that belonged to the account that just left: a page it
@@ -153,6 +231,10 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
       ..add(chatWipeHook(ref, () => _departing))
       ..add(() => ref.read(exportWipeProvider)())
       ..add(accountResidueHook(ref, () => _departing?.userId ?? _lastUserId));
+    _remembered = _loadRemembered();
+    // Chat entries a sign-out could not erase because the keystore would not answer go now, before the
+    // chat engine opens (it waits for this, see chatWipeSettled).
+    unawaited(retryPendingChatWipe(ref));
     // A sign-out that couldn't reach the server last time is sent now.
     unawaited(
       ref
@@ -181,6 +263,14 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
     if (user == null) {
       awaiting.set(null);
       booting = false;
+      final live = state.asData?.value;
+      if (live != null && !_signingOut) {
+        // The identity provider ended the sign-in by itself (disabled or deleted account, a revoked
+        // refresh token, a sign-out from elsewhere), not this app: that is a sign-out like any other, and
+        // the chat data and drafts of the account go with it.
+        await _endSession(live);
+        return;
+      }
       state = const AsyncData(null);
       return;
     }
@@ -200,13 +290,19 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
     _endedByServer = false;
     final result = await AsyncValue.guard(() => _establish(gateway));
     if (generation != _generation) return;
-    _lastUserId = result.asData?.value?.userId ?? _lastUserId;
+    final established = result.asData?.value?.userId;
+    if (established != null) unawaited(_remember(established));
     if (_endedByServer && result.hasError) {
       // The server refused the credential of this start-up for good: that is a sign-out too, and
       // this phone's chat data goes with it (the same clean-up as an expiry while signed in).
       // The person stays on the error screen, which offers a retry and "use a different account".
+      // Whose data that is comes from the file that remembers the last account (new process).
       _departing = null;
+      final serial = _sessionSerial;
+      // The account of an earlier run comes from the file; its read started at launch and is long done.
+      await _remembered;
       await _runSignOutHooks();
+      _finishDeparture(null, serial);
       if (generation != _generation) return;
     }
     booting = false;
@@ -228,8 +324,10 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
       profile = await api.profile(Session(token, '', live: live));
     } on ApiFailure catch (error) {
       // A member in the deletion grace period is refused everything but the deletion routes: they get
-      // the screen that offers to keep the account instead of being signed out.
-      if (error.status == 401) {
+      // the screen that offers to keep the account instead of being signed out. Only the server's explicit
+      // UNAUTHENTICATED counts: a 401 APP_CHECK_REQUIRED says the app is not trusted, nothing about the
+      // member's session, and must never wipe anything.
+      if (error.status == 401 && error.code == unauthenticatedCode) {
         final probe = Session(token, '', live: live);
         try {
           final status = await api.deletionStatus(probe);
@@ -242,7 +340,8 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
           _endedByServer = true;
         } on ApiFailure catch (check) {
           // The same refusal for the check: the credential is dead. Any other answer (offline) proves nothing.
-          _endedByServer = check.status == 401;
+          _endedByServer =
+              check.status == 401 && check.code == unauthenticatedCode;
         } catch (_) {
           _endedByServer = false;
         }
@@ -292,7 +391,8 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
       return session.copyWith(onboarded: status.completed);
     });
     booting = false;
-    _lastUserId = result.asData?.value?.userId ?? _lastUserId;
+    final resumed = result.asData?.value?.userId;
+    if (resumed != null) unawaited(_remember(resumed));
     state = result;
   }
 
@@ -307,19 +407,10 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
   void expire() {
     final session = state.asData?.value;
     if (session == null || _signingOut) return;
-    _departing = session;
-    ref.read(sessionExpiredProvider.notifier).set(true);
-    unawaited(ref.read(authGatewayProvider).signOut());
-    _forgetAccount();
-    state = const AsyncData(null);
-    // The credential is already dead, so server calls in hooks fail quietly;
-    // the local clean-up (chat data, export files) is what this is for.
     unawaited(
-      _runSignOutHooks().whenComplete(() {
-        _departing = null;
-        _lastUserId = null;
-      }),
+      ref.read(authGatewayProvider).signOut().catchError((Object _) {}),
     );
+    unawaited(_endSession(session));
   }
 
   /// Signs out. Always finishes on this device, even offline: if the server
@@ -327,14 +418,14 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
   /// next launch.
   Future<void> logout() async {
     final session = state.asData?.value;
+    final serial = _sessionSerial;
     _signingOut = true;
     _departing = session;
     try {
       await _logout(session);
     } finally {
       _signingOut = false;
-      _departing = null;
-      _lastUserId = null;
+      _finishDeparture(session, serial);
     }
   }
 
@@ -388,15 +479,19 @@ class SessionController extends Notifier<AsyncValue<Session?>> {
   /// session they act on the account this phone's chat data belongs to.
   Future<void> signOutProvider() async {
     final session = state.asData?.value;
+    final serial = _sessionSerial;
     _signingOut = true;
     _departing = session;
     try {
       await _runSignOutHooks();
-      await ref.read(authGatewayProvider).signOut();
+      try {
+        await ref.read(authGatewayProvider).signOut();
+      } catch (_) {
+        // The provider's local sign-out failing must not leave the app signed in (as in [logout]).
+      }
     } finally {
       _signingOut = false;
-      _departing = null;
-      _lastUserId = null;
+      _finishDeparture(session, serial);
     }
     ref.read(awaitingVerificationProvider.notifier).set(null);
     _forgetAccount();

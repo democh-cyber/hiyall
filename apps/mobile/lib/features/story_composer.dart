@@ -8,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../core/api.dart';
 import '../core/feed_state.dart';
+import '../core/picked_file.dart';
 import '../core/state.dart';
 import '../core/story_draft.dart';
 import '../shared/widgets.dart';
@@ -185,7 +186,8 @@ class _StoryComposerScreenState extends ConsumerState<StoryComposerScreen> {
       return;
     }
     if (file == null) return;
-    final p = PendingPhoto(await file.readAsBytes());
+    final p = PendingPhoto(await readAndDeletePick(file));
+    unawaited(sweepPickerTemp());
     if (!mounted) return;
     setState(() {
       photo = p;

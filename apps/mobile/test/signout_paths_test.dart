@@ -15,6 +15,8 @@ import 'package:hiyall/core/chat/chat_store.dart';
 import 'package:hiyall/core/chat_wipe_hook.dart';
 import 'package:hiyall/core/data_delivery.dart';
 import 'package:hiyall/core/home_prefs.dart';
+import 'package:hiyall/core/last_user.dart';
+import 'package:hiyall/core/picked_file.dart';
 import 'package:hiyall/core/push/push_prefs.dart';
 import 'package:hiyall/core/say_hi_prefs.dart';
 import 'package:hiyall/core/signout_residue.dart';
@@ -60,19 +62,22 @@ class QuietApi extends ApiClient {
 
 /// What the server says to a start-up with a dead credential.
 class ColdApi extends ApiClient {
-  ColdApi({this.statusAnswer});
+  ColdApi({this.statusAnswer, this.code = 'UNAUTHENTICATED'});
+
+  /// The error code the server answers the profile read with (a dead credential: UNAUTHENTICATED).
+  final String? code;
 
   /// Null: the deletion check itself answers 401. Otherwise what it returns.
   final Object? statusAnswer;
 
   @override
   Future<Profile> profile(Session s) async =>
-      throw const ApiFailure('Your session has expired.', 401);
+      throw ApiFailure('Your session has expired.', 401, code);
 
   @override
   Future<DeletionStatus> deletionStatus(Session s) async {
     final answer = statusAnswer;
-    if (answer == null) throw const ApiFailure('expired', 401);
+    if (answer == null) throw ApiFailure('expired', 401, code);
     if (answer is DeletionStatus) return answer;
     throw answer;
   }
@@ -89,7 +94,9 @@ class Rig {
     ChatStore? chat,
     FakeGateway? gateway,
     String owner = anjaliId,
+    String? lastUser,
   }) : store = chat ?? MemoryChatStore() {
+    lastUsers.value = lastUser;
     final mem = store;
     if (mem is MemoryChatStore) {
       mem.values['hiyall.chat.$owner.deviceId'] = 'dev-1';
@@ -121,10 +128,14 @@ class Rig {
         sayHiPrefsStoreProvider.overrideWithValue(sayHi),
         pushPrefsStoreProvider.overrideWithValue(push),
         imageCachesWipeProvider.overrideWithValue(() async => imageWipes++),
+        lastUserStoreProvider.overrideWithValue(lastUsers),
+        pickerTempSweepProvider.overrideWithValue(() async => pickerSweeps++),
       ],
     );
   }
 
+  final lastUsers = MemoryLastUserStore();
+  int pickerSweeps = 0;
   final Directory root;
   final ChatStore store;
   final drafts = MemoryStoryDraftStore();
@@ -161,7 +172,8 @@ class Rig {
       sayHi.sentBy[anjaliId] == null &&
       !push.off.contains(anjaliId) &&
       push.notNow[anjaliId] == null &&
-      imageWipes >= 1;
+      imageWipes >= 1 &&
+      pickerSweeps >= 1;
 }
 
 void main() {

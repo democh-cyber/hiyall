@@ -310,6 +310,34 @@ class ScanAckTests(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("line 2", problems[0][0])
 
+    def test_legal_scanner_wording_outside_brackets_blocks(self):
+        legal = {"docs/legal/privacy-policy.md": "# P\n\nThe photo's fingerprint (SHA-256) is kept in a case record.\n"}
+        problems, _ = rp.scan_ack_problems(True, self.ACK, {}, legal)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("docs/legal/privacy-policy.md line 3", problems[0][0])
+
+    def test_legal_scanner_wording_inside_counsel_brackets_passes(self):
+        legal = {"a.md": "[COUNSEL: scanning status at launch. Wording if live: A flagged photo is kept as evidence\nin restricted storage, with its case record.]\n"
+                         "We do not currently check uploaded photos against lists of known illegal images. We rely on reports.\n"
+                         "> **DRAFT: placeholders in [BRACKETS] hash list**\n"}
+        self.assertEqual(rp.scan_ack_problems(True, self.ACK, {}, legal)[0], [])
+
+    def test_legal_scanner_wording_is_free_when_scanning_is_on(self):
+        legal = {"a.md": "Flagged photos are kept in restricted storage.\n"}
+        self.assertEqual(rp.scan_ack_problems(False, "", {}, legal), ([], []))
+
+    def test_legal_hidden_marker_blocks(self):
+        problems, _ = rp.scan_ack_problems(True, self.ACK, {}, {"a.md": "Photos are scanned. <!-- claim:scanned -->\n"})
+        self.assertEqual(len(problems), 1)
+
+    def test_real_legal_documents_make_no_scanner_claim_outside_counsel_brackets(self):
+        # An unscanned release must be able to pass once counsel has chosen the unscanned wording; until then every
+        # scanner sentence sits inside a bracket that gate b refuses.
+        for d in ("docs/legal", "apps/mobile/assets/legal"):
+            for n in sorted(os.listdir(os.path.join(rp.ROOT, d))):
+                if n.endswith(".md"):
+                    self.assertEqual(rp.legal_scan_claims(slurp("%s/%s" % (d, n))), [], "%s/%s" % (d, n))
+
     def test_real_documents_carry_marked_claims(self):
         # The store listing is where the claim lives; the gate can only work if the marker is really there.
         text = slurp("docs/mobile/store-listing.md")

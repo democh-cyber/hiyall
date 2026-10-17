@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'api.dart';
+import 'picked_file.dart';
 
 /// The most the API accepts for one photo.
 const maxPhotoBytes = 15 * 1024 * 1024;
@@ -124,7 +127,8 @@ class AvatarUploadController extends ChangeNotifier {
         imageQuality: 85,
       );
       if (file == null) return null;
-      final bytes = await file.readAsBytes();
+      final bytes = await readAndDeletePick(file);
+      unawaited(sweepPickerTemp());
       final type = sniffImageType(bytes);
       if (type == null) throw AvatarError.of(AvatarProblem.unsupportedType);
       if (bytes.length > maxPhotoBytes) {

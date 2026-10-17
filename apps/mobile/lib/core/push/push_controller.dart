@@ -138,7 +138,15 @@ class PushController extends Notifier<PushState> {
     session.signOutHooks.add(beforeSignOut);
     ref.onDispose(() => session.signOutHooks.remove(beforeSignOut));
     ref.listen(chatEngineSourceProvider, (_, next) {
-      next.asData?.value?.api.onSent = () => unawaited(engaged());
+      final engine = next.asData?.value;
+      engine?.api.onSent = () => unawaited(engaged());
+      // The relay forgets this device's token when it signs the device out as idle: send it again on return.
+      engine?.onReregistered = () {
+        _sentToken = null;
+        if (state.permission == PushPermission.granted && !state.switchedOff) {
+          unawaited(_register());
+        }
+      };
     }, fireImmediately: true);
     scheduleMicrotask(_start);
     return const PushState();

@@ -23,7 +23,7 @@ Hiyall is a place to find your people. These guidelines keep it a place people w
 
 **Threats and violence.** No threats, no encouraging violence, no showing violence to shock or celebrate it.
 
-**Sexual content.** No nudity or sexual content in profiles, photos, posts, stories or spaces. [COUNSEL: scanning status at launch. Keep this sentence only if photos are scanned at launch, otherwise delete it: Photos you upload are checked for known illegal images; a flagged photo is not shown, is kept as evidence, and can lead to the account being suspended without notice.] Never send sexual messages or images to anyone who has not clearly asked for them. **Never send sexual content to, or about, anyone under 18. Never ask a minor for sexual content or for a meeting. This is zero tolerance, and we will remove the account and, where the law requires, report it.**
+**Sexual content.** No nudity or sexual content in profiles, photos, posts, stories or spaces. [COUNSEL: scanning status at launch. Keep this sentence only if photos are scanned at launch, otherwise delete it. Wording if live: Photos you upload are checked for known illegal images; a flagged photo is not shown, is kept as evidence, and can lead to the account being suspended without notice.] Never send sexual messages or images to anyone who has not clearly asked for them. **Never send sexual content to, or about, anyone under 18. Never ask a minor for sexual content or for a meeting. This is zero tolerance, and we will remove the account and, where the law requires, report it.**
 
 **Child safety.** Adults and teens are kept apart on Hiyall. Do not try to get around that, for example by lying about your age or by contacting teens somewhere else after meeting them here.
 

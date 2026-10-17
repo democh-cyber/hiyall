@@ -949,8 +949,30 @@ ACK_VALUE = "I_ACCEPT_UNSCANNED_PHOTOS"
 CLAIM_MARK = "claim:scanned"
 
 
-def scan_ack_problems(allow_none, ack, claim_files):
-    """allow_none: SCAN_ALLOW_NONE is true. ack: the RELEASE_ACK_UNSCANNED value. claim_files: {relpath: text}.
+# The legal texts are rendered as they are inside the app, so they cannot carry the hidden comment above. Their scanning
+# sentences live inside [COUNSEL: scanning status ...] brackets until counsel resolves them; once resolved for an unscanned
+# release no sentence outside a bracket may use the vocabulary of a scanner (hash lists, fingerprints, flagged photos, case
+# records, restricted storage). The one allowed sentence says we do not check.
+LEGAL_SCAN_CLAIM = re.compile(r"(?i)\bchecked (when|for known)\b|known illegal images|\bhash list\b|digital fingerprint|\bSHA-256\b|\bcase records?\b"
+                              r"|\bsafety cases?\b|\bflagged photos?\b|\bphoto is flagged\b|restricted storage|evidence hold")
+LEGAL_NOT_CHECKED = re.compile(r"(?i)\b(do not|does not|not) currently (check|scan)\b")
+
+
+def legal_scan_claims(text):
+    """Lines of a legal document, outside every [bracket] and the draft banner, that speak as if uploaded photos were scanned.
+    Returns [(line number, trimmed line)]."""
+    blanked = re.sub(r"\[[^\[\]]*\]", lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+    found = []
+    for i, line in enumerate(blanked.splitlines(), 1):
+        if line.lstrip().startswith(">") or not LEGAL_SCAN_CLAIM.search(line) or LEGAL_NOT_CHECKED.search(line):
+            continue
+        found.append((i, line.strip()[:100]))
+    return found
+
+
+def scan_ack_problems(allow_none, ack, claim_files, legal_files=None):
+    """allow_none: SCAN_ALLOW_NONE is true. ack: the RELEASE_ACK_UNSCANNED value. claim_files: {relpath: text} checked for the
+    hidden marker. legal_files: {relpath: text} of the legal documents, checked for scanner wording outside [brackets].
     Returns (problems, notes) as lists of (message, fix) and message."""
     problems, notes = [], []
     if not allow_none:
@@ -965,6 +987,12 @@ def scan_ack_problems(allow_none, ack, claim_files):
             if CLAIM_MARK in line:
                 problems.append(("%s line %d still claims photos are scanned (%s) while the release is unscanned" % (rel, i, CLAIM_MARK),
                                  "delete or reword every line marked <!-- %s -->, in the store listing and the runbook review notes, so no document says photos are scanned" % CLAIM_MARK))
+    for rel, text in sorted((legal_files or {}).items()):
+        for i, line in legal_scan_claims(text):
+            problems.append(("%s line %d speaks as if uploaded photos were scanned while the release is unscanned: %s" % (rel, i, line),
+                             "counsel replaces the [COUNSEL: scanning status ...] wording with the unscanned wording (\"We do not currently check uploaded photos ...\"); nothing outside a bracket may describe hashes, flagged photos, safety cases or restricted evidence storage; keep docs/legal and apps/mobile/assets/legal identical"))
+        if CLAIM_MARK in text:
+            problems.append(("%s carries the %s marker while the release is unscanned" % (rel, CLAIM_MARK), "remove it and the sentence it marks"))
     return problems, notes
 
 
@@ -976,9 +1004,17 @@ def gate_scan_ack(g):
     files = {}
     for rel in ("docs/mobile/store-listing.md", "docs/deployment/12-release-runbook.md"):
         files[rel] = read(p(rel))
-    # The legal texts are rendered as they are inside the app, so they carry no markers: their scanning wording is a
-    # [COUNSEL: ...] placeholder that gate b refuses until counsel has resolved it.
-    problems, notes = scan_ack_problems(allow_none, ack, files)
+    # The legal texts are rendered as they are inside the app, so they carry no hidden marker: scan_ack_problems reads their
+    # scanning wording itself (outside [COUNSEL: ...] brackets, which gate b refuses until counsel has resolved them).
+    legal = {}
+    for d in ("docs/legal", "apps/mobile/assets/legal"):
+        for n in sorted(os.listdir(p(d))):
+            if n.endswith(".md"):
+                text = read(p(d, n))
+                if d.startswith("apps") and legal.get("docs/legal/" + n) == text:
+                    continue  # an identical copy would repeat every finding
+                legal["%s/%s" % (d, n)] = text
+    problems, notes = scan_ack_problems(allow_none, ack, files, legal)
     for msg, fix in problems:
         g.bad(msg, fix)
     for n in notes:

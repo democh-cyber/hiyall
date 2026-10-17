@@ -23,6 +23,7 @@ The preflight fails loudly on each of these; nothing in the repository fakes the
 | Real GitHub owner and security contact | `.github/CODEOWNERS`, `SECURITY.md` | h |
 | Foundation checks green on the commit that is tagged | GitHub Actions | n |
 | Photo scanning: a hash list or provider, **or** the written acknowledgement below | API environment | q, d |
+| Evidence bucket (owner action before launch): a bucket of its own with three separate credentials (the API's, meant to be write-only; the console's read-only one; the console purge job's delete one), and an **R2 bucket-lock retention rule of at least `EVIDENCE_RETENTION_DAYS` (365)** because R2 cannot make the API's token write-only. `EVIDENCE_ALLOW_API_DELETE=true` is your statement that the lock is in place, and the canary verifies it (the probe must survive a delete by the API's credential; the rule must cover `canary/` too) | Cloudflare R2, production API and console environments | d (`check-config -release -net` runs the canary) |
 | A production Firebase project and buckets that are not the development ones | `config/environments.json` lists the development values | c, d |
 | Store listing fields, privacy answers, reviewer accounts | `docs/mobile/store-listing.md` | i |
 | Production Firebase project, buckets, database, DNS and TLS, separate from development | [environments](11-environments.md) | d |
@@ -35,8 +36,10 @@ The preflight fails loudly on each of these; nothing in the repository fakes the
 `RELEASE_ACK_UNSCANNED=I_ACCEPT_UNSCANNED_PHOTOS` (gate q; in GitHub as repository variables `SCAN_ALLOW_NONE` and
 `RELEASE_ACK_UNSCANNED`, mirrors of the production setting). It is a deliberate decision of yours: the draft release
 notes print "UNSCANNED PHOTOS ACKNOWLEDGED", and gate q fails while any line of the store listing or of the review notes below that
-carries the hidden scanned-claim comment still says photos are scanned. The legal texts carry a `[COUNSEL: scanning status
-at launch ...]` placeholder that gate b refuses until counsel has chosen the true wording.
+carries the hidden scanned-claim comment still says photos are scanned. The legal texts carry `[COUNSEL: scanning status
+at launch ...]` placeholders around every sentence that describes the scanner (case records, fingerprints, restricted storage, two-person approvals); gate b
+refuses them until counsel has chosen the true wording, and gate q also fails an unscanned release while any legal text outside those brackets
+still speaks of hash lists, flagged photos, safety cases or restricted evidence storage.
 
 ## 1. Preflight
 
@@ -74,7 +77,9 @@ skip needs `PREFLIGHT_SKIP_REASON`, and gate o can be skipped only while no `REL
 2. On the machine: `fly ssh console -a <staging-app> -C "/api check-config -release"` (any platform: run the image's
    `/api check-config -release` with the same environment). It loads the environment exactly as a start does, parses the
    key files, applies the release requirements, prints `problem:` lines and warnings, never a value, and exits 1 on any
-   problem. It does not touch the database or the network. Where the binary has it, `/api check-config -db` also checks the
+   problem. Without a flag it touches neither the database nor the network; **`-release`, `-db` and `-net` do call out**: they
+   probe Apple's `/auth/token` with a deliberately invalid code (when `APPLE_*` is configured), `-net` also writes a probe object to
+   the evidence bucket (a write error there is a problem with `-release -net`), and `-db` connects to the database. Where the binary has it, `/api check-config -db` also checks the
    role grants against the real database.
 3. `curl https://api.staging.<domain>/readyz`, and check `hiyall_build_info{commit,version}` shows this commit (the first 12
    characters of the sha) and, for a tag build, the tag as the version (for example `v1.0.0`). A build without the stamp says
@@ -92,9 +97,9 @@ Tick every line; each has failed in some app before it shipped. Record date, bui
 4. Chat between the two devices: first message from both at the same moment, text, a photo, a reaction, a reply, and
    reading it after a force-quit; after a reinstall check the behaviour described in
    `docs/security/13-encrypted-chat-implementation.md`.
-5. Push: a message while the app is closed, on both platforms; the notification shows the Hiyall icon, opens the chat.
+5. Push: a message while the app is closed, on both platforms; the notification shows the Hiyall icon, the title "Hiyall" and the line "New message" (no text, no name) and opens the chat; a friend request or follow may show the other member's display name, and that is expected.
 6. Nearby: off by default; the explainer; opt in; permission prompt asks for approximate location only; another
-   account sees only a rounded distance; sign out removes the location. A 13 to 17 account has the teen filters off.
+   account sees only a rounded distance; sign out asks the server to remove the location (best effort: otherwise it stops showing within 24 hours and is deleted within 7 days); the app reads the location only when Nearby is turned on or refreshed by hand. A 13 to 17 account has the teen filters off.
 7. Pulse: post with a photo, comment, react, story; delete the post.
 8. Account export and deletion: request both; confirm the 30-day grace period and cancel; for a throwaway account let
    the purge run and confirm the Firebase user is gone.
@@ -226,7 +231,7 @@ Submit only after step 6: the review notes and the store forms name reviewer acc
    > (Unscanned release: delete the line above and write instead: "Uploaded photos are not scanned; moderation relies on reports and staff review.")
    > Members under 18 and adults are kept apart (no discovery or messaging between them); Nearby is off until a member turns it
    > on, shows only a rounded distance, and the age and gender filters are not available to teens. Account deletion is in Settings > Account (30-day grace, then
-   > erased); Sign in with Apple tokens are revoked on deletion. Notifications ask permission after a first message
+   > erased); Sign in with Apple is revoked on deletion when the app can obtain Apple's code; otherwise the app tells the member to remove Hiyall in Settings > Apple ID > Sign in with Apple, because nobody at Hiyall can revoke it for them. Notifications ask permission after a first message
    > or follow, never at launch.
 
 5. Submit for review with manual release. After approval, release on the chosen day.

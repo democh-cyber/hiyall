@@ -9,6 +9,7 @@ import 'core/auth/firebase_config.dart';
 import 'core/data_delivery.dart' show wipeLeftoverExports;
 import 'core/error_reporting.dart';
 import 'core/licenses.dart';
+import 'core/picked_file.dart' show sweepPickerTemp;
 import 'core/push/push_service.dart' show registerPushBackgroundHandler;
 
 Future<void> main() async {
@@ -28,6 +29,8 @@ Future<void> main() async {
     registerAppLicenses();
     // An export left by an interrupted share (or an older build) does not survive a launch.
     unawaited(wipeLeftoverExports().catchError((_) {}));
+    // Plaintext copies image_picker made of photos picked in an earlier run do not survive a launch either.
+    unawaited(sweepPickerTemp().catchError((_) => 0));
     runApp(ProviderScope(overrides: appBindings(), child: const HiyallApp()));
   });
 }

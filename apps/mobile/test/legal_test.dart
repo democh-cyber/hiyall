@@ -423,37 +423,53 @@ Second line
     );
 
     for (final brightness in Brightness.values) {
-      testWidgets(
-        'every page fits 320 px at text scale 2 (${brightness.name})',
-        (tester) async {
-          tester.view.devicePixelRatio = 1;
-          tester.view.physicalSize = const Size(320, 640);
-          addTearDown(tester.view.resetPhysicalSize);
-          addTearDown(tester.view.resetDevicePixelRatio);
-          for (final doc in LegalDoc.values) {
-            await tester.pumpWidget(
-              host(doc, brightness: brightness, scale: 2, reduceMotion: true),
-            );
-            await tester.pumpAndSettle();
-            final scroll = find.byKey(const Key('legal-scroll'));
-            expect(scroll, findsOneWidget);
-            // Read to the end; any overflow would be reported as an exception.
-            for (var i = 0; i < 400; i++) {
-              if (find
-                  .text('More from Hiyall')
-                  .hitTestable()
-                  .evaluate()
-                  .isNotEmpty) {
-                break;
-              }
-              await tester.drag(scroll, const Offset(0, -500));
-              await tester.pump();
-            }
-            expect(find.text('More from Hiyall').hitTestable(), findsOneWidget);
-            expect(tester.takeException(), isNull, reason: doc.name);
-          }
-        },
-      );
+      testWidgets('every page fits 320 px at text scale 2 (${brightness.name})', (
+        tester,
+      ) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = const Size(320, 640);
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        for (final doc in LegalDoc.values) {
+          await tester.pumpWidget(
+            host(doc, brightness: brightness, scale: 2, reduceMotion: true),
+          );
+          await tester.pumpAndSettle();
+          final scroll = find.byKey(const Key('legal-scroll'));
+          expect(scroll, findsOneWidget);
+          // Read to the end; any overflow would be reported as an exception.
+          // The scroll view says when it is at its end, so a longer document
+          // can never stop the loop early and leave the last section unread.
+          final position = tester
+              .state<ScrollableState>(
+                find.descendant(of: scroll, matching: find.byType(Scrollable)),
+              )
+              .position;
+          var drags = 0;
+          do {
+            await tester.drag(scroll, const Offset(0, -500));
+            await tester.pump();
+            drags++;
+          } while (!position.atEdge && drags < 2000);
+          expect(
+            position.atEdge,
+            isTrue,
+            reason:
+                '${doc.name} did not reach its end after $drags drags of 500 px '
+                '(at ${position.pixels.round()} of ${position.maxScrollExtent.round()} px)',
+          );
+          // At the very end the last link of the closing section is on screen.
+          final lastLink = LegalDoc.values.where((d) => d != doc).last;
+          expect(
+            find.byKey(Key('legal-more-${lastLink.name}')).hitTestable(),
+            findsOneWidget,
+            reason:
+                '${doc.name}: reached the end (extent ${position.maxScrollExtent.round()} px) '
+                'but the closing "More from Hiyall" links are not visible',
+          );
+          expect(tester.takeException(), isNull, reason: doc.name);
+        }
+      });
     }
 
     for (final brightness in Brightness.values) {

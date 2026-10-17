@@ -51,6 +51,17 @@ class DeletionScheduled extends Notifier<DateTime?> {
   void set(DateTime? due) => state = due;
 }
 
+/// What the member still has to do about Apple after deleting without Apple's confirmation (see
+/// [DeletionStatus.appleAction]), shown on the confirmation screen they land on once signed out.
+final deletionAppleActionProvider =
+    NotifierProvider<DeletionAppleAction, String?>(DeletionAppleAction.new);
+
+class DeletionAppleAction extends Notifier<String?> {
+  @override
+  String? build() => null;
+  void set(String? action) => state = action;
+}
+
 /// How the member confirms it's them again. Replaced by a fake in tests.
 final reauthenticatorProvider = Provider<Reauthenticator>(
   (ref) => FirebaseConfig.isConfigured

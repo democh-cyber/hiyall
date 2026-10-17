@@ -6,10 +6,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/core/api.dart';
 import 'package:hiyall/core/chat/chat_api.dart';
 
-/// Records each request and refuses the first [refusals] as unauthenticated.
+/// Records each request and refuses the first [refusals] with a 401 of error code [code].
 class Recorder implements HttpClientAdapter {
-  Recorder([this.refusals = 1]);
+  Recorder([this.refusals = 1, this.code = 'UNAUTHENTICATED']);
   final int refusals;
+
+  /// The error code of the refusal; null answers a bare 401 with no JSON (a proxy).
+  final String? code;
   final bodies = <String>[];
   final auths = <String?>[];
   @override
@@ -27,12 +30,15 @@ class Recorder implements HttpClientAdapter {
     bodies.add(utf8.decode(chunks));
     auths.add(options.headers['Authorization'] as String?);
     final first = bodies.length <= refusals;
+    if (first && code == null) {
+      return ResponseBody.fromString('Unauthorized', 401);
+    }
     return ResponseBody.fromString(
       jsonEncode(
         first
             ? {
                 'success': false,
-                'error': {'code': 'UNAUTHENTICATED', 'message': 'expired'},
+                'error': {'code': code, 'message': 'expired'},
               }
             : {
                 'success': true,
@@ -143,5 +149,75 @@ void main() {
     );
     expect(revoked.auths, hasLength(2));
     expect(expired, 1);
+  });
+
+  group('which 401 ends the session (round 4, NEW-2)', () {
+    ApiClient client(Recorder adapter) => ApiClient(
+      dio: Dio(
+        BaseOptions(
+          baseUrl: 'http://127.0.0.1:8080',
+          contentType: 'application/json',
+        ),
+      )..httpClientAdapter = adapter,
+    );
+
+    test('401 APP_CHECK_REQUIRED asks for an update, refreshes nothing, ends nothing', () async {
+      var ended = 0, appCheck = 0, refreshed = 0;
+      final adapter = Recorder(9, appCheckRequiredCode);
+      final api = client(adapter)
+        ..onUnauthorized = (() => ended++)
+        ..onAppCheckRequired = (() => appCheck++)
+        ..tokenRefresher = () async {
+          refreshed++;
+          return 'fresh';
+        };
+      await expectLater(
+        api.shareLocation(const Session('tok', 'u'), 12.97, 77.59),
+        throwsA(
+          isA<ApiFailure>()
+              .having((f) => f.status, 'status', 401)
+              .having((f) => f.code, 'code', appCheckRequiredCode)
+              .having((f) => f.message, 'message', isNot(contains('expired'))),
+        ),
+      );
+      expect(ended, 0);
+      expect(refreshed, 0);
+      expect(appCheck, 1);
+      expect(adapter.auths, hasLength(1), reason: 'not retried');
+    });
+
+    test('401 APP_CHECK_REQUIRED without a token (signed out) also raises the flag', () async {
+      var appCheck = 0;
+      final api = client(Recorder(9, appCheckRequiredCode))
+        ..onAppCheckRequired = () => appCheck++;
+      await expectLater(
+        api.usernameAvailable(const Session('', ''), 'someone'),
+        throwsA(isA<ApiFailure>()),
+      );
+      expect(appCheck, 1);
+    });
+
+    test(
+      '401 with no error code (a proxy page) does not end the session',
+      () async {
+        var ended = 0;
+        final api = client(Recorder(9, null))..onUnauthorized = () => ended++;
+        await expectLater(
+          api.shareLocation(const Session('tok', 'u'), 1, 2),
+          throwsA(isA<ApiFailure>().having((f) => f.status, 'status', 401)),
+        );
+        expect(ended, 0);
+      },
+    );
+
+    test('401 UNAUTHENTICATED ends it, as before', () async {
+      var ended = 0;
+      final api = client(Recorder(9))..onUnauthorized = () => ended++;
+      await expectLater(
+        api.shareLocation(const Session('tok', 'u'), 1, 2),
+        throwsA(isA<ApiFailure>()),
+      );
+      expect(ended, 1);
+    });
   });
 }

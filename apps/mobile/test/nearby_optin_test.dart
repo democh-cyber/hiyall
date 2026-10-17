@@ -42,11 +42,9 @@ void main() {
       expect(find.text('Who can see it'), findsOneWidget);
       expect(find.text('How long'), findsOneWidget);
       expect(find.text('How to stop'), findsOneWidget);
-      // Discover refreshing the rough area while Nearby is on is disclosed.
+      // The area is read only on opt-in or an explicit refresh, and that is disclosed.
       expect(
-        find.textContaining(
-          'Discover also refreshes your approximate area automatically',
-        ),
+        find.textContaining('only when you turn Nearby on or tap to refresh'),
         findsOneWidget,
       );
       expect(find.byKey(const Key('nearby-explainer-minor')), findsNothing);

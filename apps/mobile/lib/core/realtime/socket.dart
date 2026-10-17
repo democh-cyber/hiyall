@@ -9,10 +9,14 @@ abstract class RealtimeSocket {
   int? get closeCode;
 }
 
-/// The server refused the handshake because the token isn't accepted.
+/// The server refused the handshake (HTTP [status]). [code] is the error code of its answer when it could
+/// be read (`UNAUTHENTICATED`: the token is not accepted; `APP_CHECK_REQUIRED`: the app, not the session,
+/// is refused), null when it could not.
 class RealtimeUnauthorized implements Exception {
   final int? status;
-  const RealtimeUnauthorized([this.status]);
+  final String? code;
+  const RealtimeUnauthorized([this.status, this.code]);
   @override
-  String toString() => 'Realtime refused the session ($status)';
+  String toString() =>
+      'Realtime refused the session ($status${code == null ? '' : ' $code'})';
 }

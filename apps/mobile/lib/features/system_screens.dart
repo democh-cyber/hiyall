@@ -1,9 +1,11 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/app_info.dart';
+import '../core/state.dart';
 import '../shared/widgets.dart';
 
 /// A full-screen, centred message with the brand mark: the frame for the
@@ -122,6 +124,69 @@ class UpdateRequiredScreen extends StatelessWidget {
                 }
               },
             ),
+          const SizedBox(height: 12),
+          Text(
+            'You have version ${AppInfo.display}.',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Shown, and nothing else, while the server refuses this copy of the app rather than the member's session
+/// (HTTP 401, code APP_CHECK_REQUIRED). It is not a sign-out: the member stays signed in and no chat data
+/// or draft is touched. "Update now" opens the store; "Try again" clears the refusal and asks again.
+class AppCheckRequiredScreen extends ConsumerWidget {
+  const AppCheckRequiredScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final store = storeUrlFor();
+    return PopScope(
+      canPop: false,
+      child: _SystemPage(
+        title: 'Update or verify this app',
+        body: kIsWeb
+            ? 'Hiyall couldn’t confirm this page is the real app. Reload it, or open Hiyall from its own address. You’re still signed in and nothing was lost.'
+            : 'Hiyall couldn’t confirm this copy of the app. Update it from the store, or install the app from the App Store or Google Play if it came from somewhere else. You’re still signed in, and your account and chats are safe.',
+        actions: [
+          if (store.isNotEmpty) ...[
+            FilledButton.icon(
+              key: const Key('verify-open-store'),
+              icon: const Icon(Icons.system_update_rounded),
+              label: const Text('Update now'),
+              onPressed: () async {
+                final ok = await launchUrl(
+                  Uri.parse(store),
+                  mode: LaunchMode.externalApplication,
+                ).catchError((_) => false);
+                if (!ok && context.mounted) {
+                  showMessage(
+                    context,
+                    'Couldn’t open the store. Search for Hiyall there instead.',
+                  );
+                }
+              },
+            ),
+            const SizedBox(height: 12),
+          ],
+          OutlinedButton(
+            key: const Key('verify-try-again'),
+            onPressed: () {
+              ref.read(appCheckRequiredProvider.notifier).set(false);
+              final session = ref.read(sessionProvider);
+              if (session.hasError && !session.isLoading) {
+                ref
+                    .read(sessionProvider.notifier)
+                    .refreshAuth()
+                    .catchError((_) {});
+              }
+            },
+            child: const Text('Try again'),
+          ),
           const SizedBox(height: 12),
           Text(
             'You have version ${AppInfo.display}.',
