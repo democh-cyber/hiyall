@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"hiyall/services/api/internal/maintenance"
 	"hiyall/services/api/internal/media"
@@ -22,9 +23,15 @@ var ErrNoEvidenceDelete = errors.New("ADMIN_EVIDENCE_DELETE_* is not set: no cre
 const PurgeLockKey int64 = 4917305
 
 // PurgeHolds removes the objects of up to batch due holds and records each. It returns how many cases it finished.
+// It does nothing, and says so loudly, while EvidenceProbe cannot show that this console reads the evidence bucket the
+// API writes to (round-4 N-7). Each hold's case row is locked across its object deletes (store.PurgeReleasedHolds).
 func (s *Service) PurgeHolds(ctx context.Context, batch int) (int64, error) {
 	if s.EvidenceDelete == nil {
 		return 0, ErrNoEvidenceDelete
+	}
+	if err := s.EvidenceProbe(ctx); err != nil {
+		slog.Error("held evidence purge skipped: it cannot be shown that this console reads the evidence bucket the API writes to", "reason", err.Error())
+		return 0, err
 	}
 	return s.Store.PurgeReleasedHolds(ctx, s.EvidenceDelete, batch)
 }

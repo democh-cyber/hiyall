@@ -12,6 +12,17 @@ import (
 	"hiyall/services/api/internal/store"
 )
 
+// apiFunctions are the functions grants.sql lets hiyall_api execute (store.ExpectedGrants).
+func apiFunctions() []string {
+	var out []string
+	for _, g := range store.ExpectedGrants {
+		if g.Role == store.GrantsRole && g.Kind == "function" {
+			out = append(out, g.Objects...)
+		}
+	}
+	return out
+}
+
 // testStores opens the test database as its own user (a superuser or the owner) and as hiyall_api.
 func testStores(t *testing.T) (owner, api *store.Store, denials *dbtest.Denials) {
 	t.Helper()
@@ -115,7 +126,7 @@ func TestRoleProblemsAndGrantProblemsSeeWhatIsWrong(t *testing.T) {
 		t.Fatal(err)
 	}
 	all := strings.Join(got, " | ")
-	for _, want := range []string{"has no SELECT on: profile_social_counts", "has access it must not have to:", "operator_audit", "content_cases.media_id", "cannot insert into content_cases"} {
+	for _, want := range []string{"has no SELECT on: profile_social_counts", "has access it must not have to:", "operator_audit", "SELECT on content_cases.media_id", "INSERT on content_cases", "lacks EXECUTE on function:", "held_objects_due(integer)", "safety_queue_stats()"} {
 		if !strings.Contains(all, want) {
 			t.Errorf("GrantProblems missed %q in: %s", want, all)
 		}
@@ -182,7 +193,7 @@ func TestProductionStartRefusesMissingGrants(t *testing.T) {
 	}
 	setup = append(setup, `REVOKE ALL ON SEQUENCE `+strings.Join(store.OperatorSequences, ",")+` FROM `+probe,
 		`GRANT INSERT ON content_cases TO `+probe, `GRANT SELECT (media_id) ON content_cases TO `+probe,
-		`GRANT EXECUTE ON FUNCTION held_objects_due(integer), mark_hold_purged(uuid) TO `+probe)
+		`GRANT EXECUTE ON FUNCTION `+strings.Join(apiFunctions(), ", ")+` TO `+probe)
 	for _, q := range setup {
 		if _, err := owner.Pool.Exec(ctx, q); err != nil {
 			t.Skipf("cannot create a probe role: %v (%s)", err, q)
@@ -215,8 +226,26 @@ func TestProductionStartRefusesMissingGrants(t *testing.T) {
 	if _, err = owner.Pool.Exec(ctx, `GRANT SELECT ON profile_social_counts TO `+probe); err != nil {
 		t.Fatal(err)
 	}
-	if check, err := enforceGrants(ctx, s, "production"); err != nil || check == nil {
+	probeCheck, err := enforceGrants(ctx, s, "production")
+	if err != nil || probeCheck == nil {
 		t.Fatalf("complete grants: %v", err)
+	}
+	// One function missing (round-4 audit N1: only two were checked): the start refuses and names it, and the check
+	// /readyz repeats reports it.
+	if _, err = owner.Pool.Exec(ctx, `REVOKE EXECUTE ON FUNCTION activate_quarantine_case(uuid) FROM `+probe); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = enforceGrants(ctx, s, "production"); err == nil || !strings.Contains(err.Error(), "activate_quarantine_case(uuid)") {
+		t.Fatalf("production must refuse a role without EXECUTE on activate_quarantine_case: %v", err)
+	}
+	if p, err := probeCheck(ctx); err != nil || len(p) != 1 || !strings.Contains(p[0], "activate_quarantine_case(uuid)") {
+		t.Fatalf("the readiness check on a role missing one function: %v %v", p, err)
+	}
+	if _, err = owner.Pool.Exec(ctx, `GRANT EXECUTE ON FUNCTION activate_quarantine_case(uuid) TO `+probe); err != nil {
+		t.Fatal(err)
+	}
+	if probeCheck, err = enforceGrants(ctx, s, "production"); err != nil || probeCheck == nil {
+		t.Fatalf("grants given back: %v", err)
 	}
 	// An owner role is judged by enforceDBRole, not here.
 	if check, err := enforceGrants(ctx, owner, "production"); err != nil || check != nil {

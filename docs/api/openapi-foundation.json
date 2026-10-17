@@ -7154,7 +7154,7 @@
         "tags": [
           "Chat"
         ],
-        "summary": "Register this device's public identity; idempotent; 409 DEVICE_CONFLICT (revoked or keys belong to another device: the client makes a new identity) or TOO_MANY_DEVICES; a new device is signalled to the account's other devices (realtime event device); the device is linked to the registering auth session and revoked with it; devices unseen for 90 days are revoked; 429 RATE_LIMITED (per account, shared with the device list, revoke, key and inbox routes)",
+        "summary": "Register this device's public identity; idempotent; 409 DEVICE_CONFLICT (revoked, or keys belong to another device: the client makes a new identity) or TOO_MANY_DEVICES; a new device is signalled to the account's other devices (realtime event device) and pushed; a device the relay removed as idle (unseen for 35 days, or idle for 48 hours while one sender had filled its share) registers again with the same device id and keys: its row becomes active again, nothing is signalled as added and peers see no change (realtime event device, change returned), and if the account is full it is 409 TOO_MANY_DEVICES; the device is linked to the registering auth session and revoked with it; 429 RATE_LIMITED (per account, shared with the device list, revoke, key and inbox routes)",
         "security": [
           {
             "bearerAuth": []
@@ -7300,7 +7300,7 @@
         "tags": [
           "Chat"
         ],
-        "summary": "Your active devices, plus removed: devices of the account that another session (another phone, or a stolen credential) took out in the last 30 days, newest first, so a device that missed the realtime event still learns of it",
+        "summary": "Your active devices, plus removed: devices of the account that another session (another phone, or a stolen credential) or the relay took out in the last 30 days, newest first, so a device that missed the realtime event still learns of it; reason inactive is a dormant device whose backlog grew (its ciphertext was dropped), idle a device not used for 35 days (or a ghost for one sender after 48 hours) whose unexpired ciphertext was kept and which can return with the same keys, and a returned device is no longer listed",
         "security": [
           {
             "bearerAuth": []
@@ -8643,7 +8643,7 @@
         "tags": [
           "Chat"
         ],
-        "summary": "Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId; 403 AWAITING_REPLY once you have sent 3 messages (reactions and the noop count too: the relay cannot tell kinds) in a conversation and the peer has sent no non-aux message; 429 RECIPIENT_BACKLOG (Retry-After 60) when a device that must receive it already holds 2000 undelivered envelopes, or 300 from you; 429 OWN_BACKLOG (Retry-After 60) when the full device is your own other device; 409 DEVICES_CHANGED also when the send revoked a dormant device that was over the cap (retry with the refreshed device list); 429 CHAT_DAILY_LIMIT (Retry-After) after 2000 messages from you in this conversation in 24 hours",
+        "summary": "Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId; 403 AWAITING_REPLY once you have sent 3 messages (reactions and the noop count too: the relay cannot tell kinds) in a conversation and the peer has sent no non-aux message; 429 RECIPIENT_BACKLOG (Retry-After 60) when a device that must receive it already holds 2000 undelivered envelopes, or 300 from you while the device is in use; 429 OWN_BACKLOG (Retry-After 60) when the full device is your own other device; 409 DEVICES_CHANGED also when the send revoked a dormant device that was over the cap, or an idle (48 hours) device that one sender alone had filled to 300 (retry with the refreshed device list); 409 PEER_NO_DEVICES when the other person has no active device (every one was removed as idle or signed out): nothing can be encrypted for them yet, try again when they open Hiyall; 429 CHAT_DAILY_LIMIT (Retry-After) after 2000 messages from you in this conversation in 24 hours",
         "security": [
           {
             "bearerAuth": []
@@ -18146,11 +18146,11 @@
         }
       },
       "post": {
-        "operationId": "postDeletionState_v1_me_deletion",
+        "operationId": "postDeletionScheduled_v1_me_deletion",
         "tags": [
           "Account"
         ],
-        "summary": "Schedule deletion of your account in 30 days. Needs a sign-in from the last 5 minutes (Firebase auth_time) and your username as confirmation. At once: the account leaves Discover, Nearby, search, lists, Pulse and everyone's counts; every session is revoked and live sockets are closed; push tokens are cleared. Idempotent while pending. Allowed before onboarding",
+        "summary": "Schedule deletion of your account in 30 days. Needs a sign-in from the last 5 minutes (Firebase auth_time) and your username as confirmation. At once: the account leaves Discover, Nearby, search, lists, Pulse and everyone's counts; every session is revoked and live sockets are closed; one content-free push (kind deletion, body Account deletion scheduled) goes to every device that had a push token, and then the tokens are cleared. Idempotent while pending. Allowed before onboarding",
         "security": [
           {
             "bearerAuth": []
@@ -18162,7 +18162,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DeletionStateResponse"
+                  "$ref": "#/components/schemas/DeletionScheduledResponse"
                 }
               }
             }
@@ -21158,7 +21158,8 @@
                 "reason": {
                   "type": "string",
                   "enum": [
-                    "inactive"
+                    "inactive",
+                    "idle"
                   ]
                 }
               },
@@ -25001,7 +25002,7 @@
           },
           "appleCodeUnavailable": {
             "type": "boolean",
-            "description": "Members who sign in with Apple only: true when the app signed in with Apple again and still could not obtain an authorization code (the member re-authenticated with Google, or the web returns none). The deletion is scheduled anyway and the Apple authorization is queued for an operator to revoke by hand (apple_revocations, status manual). Ignored for an account that holds no Apple authorization. Never together with appleAuthorizationCode (422 VALIDATION)."
+            "description": "Members who sign in with Apple only: true when the app signed in with Apple again and still could not obtain an authorization code (the member re-authenticated with Google, or the web returns none). The deletion is scheduled anyway. Hiyall cannot revoke the Apple authorization for the member (Apple's revoke call needs the member's own token), so the response carries appleAction remove_in_apple_settings: the app tells the member to remove the app's access in Settings > Apple ID > Sign in with Apple > Hiyall > Stop using Apple ID. Ignored for an account that holds no Apple authorization. Never together with appleAuthorizationCode (422 VALIDATION)."
           }
         },
         "required": [
@@ -25043,6 +25044,48 @@
           "canCancel"
         ]
       },
+      "DeletionScheduled": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "pending": {
+            "type": "boolean",
+            "description": "True while the account is scheduled for deletion."
+          },
+          "scheduledAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "dueAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "End of the 30 day grace period; the account is purged on the first hourly run after it."
+          },
+          "canCancel": {
+            "type": "boolean",
+            "description": "True while pending and before dueAt."
+          },
+          "appleAction": {
+            "type": "string",
+            "enum": [
+              "remove_in_apple_settings"
+            ],
+            "description": "Only in the answer to POST /v1/me/deletion made with appleCodeUnavailable:true for an account that holds a Sign in with Apple authorization. Nobody at Hiyall can revoke it for the member: they remove the app's access themselves in Apple ID settings (Settings > Apple ID > Sign in with Apple > Hiyall > Stop using Apple ID). Absent otherwise."
+          }
+        },
+        "required": [
+          "pending",
+          "scheduledAt",
+          "dueAt",
+          "canCancel"
+        ]
+      },
       "DeletionStateResponse": {
         "type": "object",
         "additionalProperties": false,
@@ -25052,6 +25095,26 @@
           },
           "data": {
             "$ref": "#/components/schemas/DeletionState"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "meta"
+        ]
+      },
+      "DeletionScheduledResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/DeletionScheduled"
           },
           "meta": {
             "$ref": "#/components/schemas/Meta"

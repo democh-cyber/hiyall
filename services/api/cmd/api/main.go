@@ -342,7 +342,7 @@ func maintenanceJobs(db *store.Store, objects, chatObjects media.Store, identiti
 	}
 	jobs := []job{
 		{"ciphertext expiry", func(ctx context.Context) (int64, error) {
-			return db.ExpireEnvelopes(ctx, 7*24*time.Hour, 30*24*time.Hour, 5000)
+			return db.ExpireEnvelopes(ctx, 7*24*time.Hour, store.UndeliveredEnvelopeTTL, 5000)
 		}, 0},
 		{"stale chat devices", func(ctx context.Context) (int64, error) {
 			return db.RevokeStaleDevices(ctx, store.StaleDeviceAfter, 500)
@@ -370,6 +370,14 @@ func maintenanceJobs(db *store.Store, objects, chatObjects media.Store, identiti
 			}
 			return db.PurgeMedia(ctx, objects, 5000)
 		}, 20 * time.Minute},
+		// The original of a quarantined photo that could not be removed from the upload prefix when it was quarantined
+		// (round-4 N-7; recorded in quarantine_upload_leftovers).
+		{"quarantine upload leftovers", func(ctx context.Context) (int64, error) {
+			if objects == nil {
+				return 0, nil
+			}
+			return db.PurgeUploadLeftovers(ctx, objects, 500)
+		}, 0},
 		// Held evidence (quarantined uploads) whose hold an administrator released and whose retention window is over.
 		// Only with evidence kept in the media bucket (EVIDENCE_ALLOW_SHARED_BUCKET, development): the API's token
 		// there can delete. With an evidence bucket the API cannot, and the console's `admin purge-holds` does it.

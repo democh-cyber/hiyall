@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -61,8 +62,10 @@ func (s *Store) BeginQuarantine(ctx context.Context, q Quarantine) (string, erro
 			return domain.ErrNotFound
 		}
 		suspended := q.Result == "match"
-		if _, err = tx.Exec(ctx, `INSERT INTO content_cases(case_id,media_id,user_id,purpose,result,scanner,signals,original_sha256,original_bytes,content_type,original_key,full_key,suspended_user,hold_until,status)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,nullif($12,''),$13,now()+make_interval(days=>$14::int),'pending')`,
+		// Only the columns the API role may insert (grants.sql): the status is 'pending' by default and a trigger
+		// forces it, and the release, report and legal-hold columns cannot be named (migration 0046).
+		if _, err = tx.Exec(ctx, `INSERT INTO content_cases(case_id,media_id,user_id,purpose,result,scanner,signals,original_sha256,original_bytes,content_type,original_key,full_key,suspended_user,hold_until)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,nullif($12,''),$13,now()+make_interval(days=>$14::int))`,
 			caseID, q.MediaID, q.Owner, q.Purpose, q.Result, q.Scanner, signals, q.OriginalSHA256, q.OriginalBytes, q.ContentType, q.OriginalKey, q.FullKey, suspended, days); err != nil {
 			return err
 		}
@@ -166,31 +169,54 @@ cases:
 				keys = append(keys, k)
 			}
 		}
-		for _, k := range keys {
-			// A report or a second case can be opened, or a legal hold set, between the list above and this
-			// delete (round-3 audit API-6): ask the database again immediately before EACH object.
-			var still bool
-			if err = s.Pool.QueryRow(ctx, `SELECT hold_still_releasable($1::uuid)`, d.id).Scan(&still); err != nil {
-				return done, err
-			}
-			if !still {
-				slog.Warn("held evidence kept: the hold is no longer releasable", "caseId", d.id)
-				purgeRecheckKept.Inc()
-				continue cases
-			}
-			if err = objects.Delete(ctx, k); err != nil {
-				return done, err
-			}
-		}
-		var marked bool
-		if err = s.Pool.QueryRow(ctx, `SELECT mark_hold_purged($1)`, d.id).Scan(&marked); err != nil {
+		// The case row is locked FOR SHARE (hold_lock_for_purge) from before the first object delete until the case is
+		// marked purged, in one transaction: a report or a legal hold, which update the row, wait for it, so none can
+		// land between the check and the delete (round-4 DB N8). A report opened in the reports table does not touch
+		// the row, so the check is also repeated before each object.
+		finished, err := s.purgeHeldCase(ctx, objects, d.id, keys)
+		if err != nil {
 			return done, err
 		}
-		if marked {
+		if finished {
 			done++
+		} else {
+			continue cases
 		}
 	}
 	return done, nil
+}
+
+// purgeHeldCase deletes the objects of one case under the row lock and marks it purged; false when the hold stopped
+// being releasable (nothing was deleted for the objects after that point).
+func (s *Store) purgeHeldCase(ctx context.Context, objects HeldObjects, caseID string, keys []string) (bool, error) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	for _, k := range keys {
+		var still bool
+		// The first call takes the lock; the later ones (the lock is held) are the per-object re-check.
+		if err = tx.QueryRow(ctx, `SELECT hold_lock_for_purge($1::uuid)`, caseID).Scan(&still); err != nil {
+			return false, err
+		}
+		if !still {
+			slog.Warn("held evidence kept: the hold is no longer releasable", "caseId", caseID)
+			purgeRecheckKept.Inc()
+			return false, nil
+		}
+		if err = objects.Delete(ctx, k); err != nil {
+			return false, err
+		}
+	}
+	var marked bool
+	if err = tx.QueryRow(ctx, `SELECT mark_hold_purged($1)`, caseID).Scan(&marked); err != nil {
+		return false, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return marked, nil
 }
 
 var purgeRecheckKept = metrics.NewCounter("hiyall_evidence_purge_kept_total", "Held-evidence purges stopped because the hold stopped being releasable between the list and the delete.")
@@ -212,4 +238,91 @@ func (s *Store) HasAppleAuthorization(ctx context.Context, user string) (bool, e
 	var has bool
 	err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM auth_identities WHERE user_id=$1 AND (sign_in_provider='apple.com' OR apple_linked))`, user).Scan(&has)
 	return has, err
+}
+
+// OrphanItem is an object under hold/ that no case row names (the evidence sweep's finding).
+type OrphanItem struct {
+	Key          string    `json:"key"`
+	MediaID      string    `json:"mediaId"`
+	LastModified time.Time `json:"lastModified"`
+}
+
+// OrphanReport is the console's last orphan check, kept in the database so every console node answers alike.
+type OrphanReport struct {
+	CheckedAt *time.Time   `json:"checkedAt"`
+	Items     []OrphanItem `json:"items"`
+	Complete  bool         `json:"complete"`
+}
+
+// SaveOrphanReport replaces the stored report (evidence_orphan_report, one row).
+func (s *Store) SaveOrphanReport(ctx context.Context, r OrphanReport) error {
+	items, err := json.Marshal(r.Items)
+	if err != nil {
+		return err
+	}
+	if r.Items == nil {
+		items = []byte(`[]`)
+	}
+	_, err = s.Pool.Exec(ctx, `INSERT INTO evidence_orphan_report(id,checked_at,complete,items) VALUES(true,coalesce($1,now()),$2,$3)
+ ON CONFLICT (id) DO UPDATE SET checked_at=excluded.checked_at,complete=excluded.complete,items=excluded.items`, r.CheckedAt, r.Complete, items)
+	return err
+}
+
+// LoadOrphanReport reads the stored report; before the first sweep it is empty and not checked.
+func (s *Store) LoadOrphanReport(ctx context.Context) (OrphanReport, error) {
+	r := OrphanReport{Items: []OrphanItem{}}
+	var raw []byte
+	err := s.Pool.QueryRow(ctx, `SELECT checked_at,complete,items FROM evidence_orphan_report WHERE id`).Scan(&r.CheckedAt, &r.Complete, &raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return r, nil
+	}
+	if err != nil {
+		return r, err
+	}
+	if err = json.Unmarshal(raw, &r.Items); err != nil {
+		return r, err
+	}
+	if r.Items == nil {
+		r.Items = []OrphanItem{}
+	}
+	return r, nil
+}
+
+// RecordUploadLeftover remembers an object in the upload prefix that could not be removed after the photo was
+// quarantined: the media row no longer names it (its upload key now points at the evidence), so without this record
+// nothing would ever remove it.
+func (s *Store) RecordUploadLeftover(ctx context.Context, key, mediaID string) error {
+	_, err := s.Pool.Exec(ctx, `INSERT INTO quarantine_upload_leftovers(object_key,media_id) VALUES($1,$2::uuid) ON CONFLICT DO NOTHING`, key, mediaID)
+	return err
+}
+
+// PurgeUploadLeftovers removes the recorded objects (a delete of an absent object succeeds) and forgets them. It
+// returns how many it finished.
+func (s *Store) PurgeUploadLeftovers(ctx context.Context, objects HeldObjects, batch int) (int64, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT object_key FROM quarantine_upload_leftovers ORDER BY recorded_at LIMIT $1`, batch)
+	if err != nil {
+		return 0, err
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return 0, err
+	}
+	var done int64
+	for _, k := range keys {
+		if strings.HasPrefix(k, media.HoldPrefix) {
+			// Never the evidence: a recorded key must be an upload key.
+			if _, err = s.Pool.Exec(ctx, `DELETE FROM quarantine_upload_leftovers WHERE object_key=$1`, k); err != nil {
+				return done, err
+			}
+			continue
+		}
+		if err = objects.Delete(ctx, k); err != nil {
+			return done, err
+		}
+		if _, err = s.Pool.Exec(ctx, `DELETE FROM quarantine_upload_leftovers WHERE object_key=$1`, k); err != nil {
+			return done, err
+		}
+		done++
+	}
+	return done, nil
 }

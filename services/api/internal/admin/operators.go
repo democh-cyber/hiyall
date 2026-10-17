@@ -82,8 +82,6 @@ var (
 	ErrCurrentWrong = &domain.PolicyError{Status: 403, Code: "CURRENT_PASSWORD", Message: "The current password is not right"}
 )
 
-const operatorLock = 4917303 // serializes changes to the set of operators (last-admin rule)
-
 // Reason is the mandatory justification of every action. It is trimmed and must be 10 to 1000
 // characters of ordinary text.
 func Reason(s string) (string, error) {
@@ -233,8 +231,13 @@ func checkPassword(p string) error {
 	return nil
 }
 
-// CreateOperator adds a staff account (the CLI is the only caller). The password is hashed here and never
-// logged; the TOTP seed is returned for one-time display. actor names who ran the command.
+// ErrAdminExists is answered when an administrator is asked for while another is active.
+var ErrAdminExists = &domain.PolicyError{Status: 409, Code: "APPROVAL_REQUIRED", Message: "An administrator is already active: create this account as a moderator, then promote it (a second administrator approves the promotion)"}
+
+// CreateOperator adds a staff account (the CLI is the only caller) through the database function operator_create, which
+// refuses an administrator while another is active (the first one, the bootstrap, is allowed) and writes the audit entry
+// itself. The password is hashed here and never logged; the TOTP seed is returned for one-time display. actor names who
+// ran the command.
 func (s *Service) CreateOperator(ctx context.Context, email, displayName string, role Role, password, actor string) (Enrolment, error) {
 	var e Enrolment
 	email, ok := NormalizeEmail(email)
@@ -259,16 +262,20 @@ func (s *Service) CreateOperator(ctx context.Context, email, displayName string,
 	id := uuid.Must(uuid.NewV7()).String()
 	seed := NewTOTPSecret()
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO operators(operator_id,email,display_name,role,password_hash,totp_secret) VALUES($1,$2,$3,$4,$5,$6)`,
-			id, email, displayName, string(role), hash, s.keys.seal(seed, id)); err != nil {
-			var pe *pgconn.PgError
-			if errors.As(err, &pe) && pe.Code == "23505" {
+		if err := store.SetSafetyContext(ctx, tx); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `SELECT operator_create($1::uuid,$2,$3,$4,$5,$6,NULL,$7)`, id, email, displayName, string(role), hash, s.keys.seal(seed, id), actor); err != nil {
+			err = store.MapSafetyError(err)
+			if errors.Is(err, store.ErrApprovalRequired) {
+				return ErrAdminExists
+			}
+			if errors.Is(err, store.ErrEmailTakenSQL) {
 				return ErrEmailTaken
 			}
 			return err
 		}
-		return insertAudit(ctx, tx, AuditEntry{Actor: actor, Action: "operator_create", TargetType: "operator", TargetID: id,
-			Detail: map[string]any{"email": email, "role": string(role)}})
+		return nil
 	})
 	if err != nil {
 		return e, err
@@ -337,60 +344,37 @@ func (a Actor) entry(action, targetType, targetID, reason string, detail map[str
 	return e
 }
 
-// activeAdminsExcept counts enabled admins other than id.
-func activeAdminsExcept(ctx context.Context, tx pgx.Tx, id string) (int, error) {
-	var n int
-	err := tx.QueryRow(ctx, `SELECT count(*) FROM operators WHERE role='admin' AND disabled_at IS NULL AND operator_id<>$1`, id).Scan(&n)
-	return n, err
+// SetDisabled disables or re-enables an account (operator_set_disabled). Disabling ends its sessions and withdraws the
+// proposals it made, in the same transaction, and the function writes the audit entry. Over HTTP an administrator cannot
+// disable themselves or the last active administrator (the function refuses); the CLI (guards=false) can, because a
+// stolen administrator device must be shut out even if it was the only one.
+func (s *Service) SetDisabled(ctx context.Context, actor Actor, id string, disable bool, reason string, guards bool) (Operator, error) {
+	o, _, err := s.SetDisabledCount(ctx, actor, id, disable, reason, guards)
+	return o, err
 }
 
-// SetDisabled disables or re-enables an account. Disabling ends its sessions in the same transaction.
-// Over HTTP an administrator cannot disable themselves or the last active administrator; the CLI
-// (guards=false) can, because a stolen administrator device must be shut out even if it was the only one.
-func (s *Service) SetDisabled(ctx context.Context, actor Actor, id string, disable bool, reason string, guards bool) (Operator, error) {
+// SetDisabledCount is SetDisabled that also returns how many administrators are active afterwards. Below two, no
+// two-person action can be completed: the console says so.
+func (s *Service) SetDisabledCount(ctx context.Context, actor Actor, id string, disable bool, reason string, guards bool) (Operator, int, error) {
 	var out Operator
+	var remaining int
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, operatorLock); err != nil {
+		if err := store.SetSafetyContext(store.WithSafetyContext(ctx, store.SafetyContext{IP: actor.IP}), tx); err != nil {
 			return err
 		}
-		target, err := s.operatorByID(ctx, tx, id)
-		if err != nil {
-			return err
+		var operatorID any
+		label := actor.Label
+		if actor.Operator != nil {
+			operatorID, label = actor.Operator.ID, actor.Operator.Email
 		}
-		if disable == (target.DisabledAt != nil) {
-			return ErrNoChange
+		if err := tx.QueryRow(ctx, `SELECT operator_set_disabled($1::uuid,$2,$3::uuid,$4,$5,$6)`, id, disable, operatorID, label, reason, !guards).Scan(&remaining); err != nil {
+			return store.MapSafetyError(err)
 		}
-		if disable && guards {
-			if actor.Operator != nil && actor.Operator.ID == id {
-				return ErrSelfDisable
-			}
-			if target.Role == RoleAdmin {
-				if n, err := activeAdminsExcept(ctx, tx, id); err != nil {
-					return err
-				} else if n == 0 {
-					return ErrLastAdmin
-				}
-			}
-		}
-		action := "operator_enable"
-		if disable {
-			action = "operator_disable"
-			if _, err = tx.Exec(ctx, `UPDATE operators SET disabled_at=now() WHERE operator_id=$1`, id); err != nil {
-				return err
-			}
-			if _, err = tx.Exec(ctx, `UPDATE operator_sessions SET revoked_at=now() WHERE operator_id=$1 AND revoked_at IS NULL`, id); err != nil {
-				return err
-			}
-		} else if _, err = tx.Exec(ctx, `UPDATE operators SET disabled_at=NULL WHERE operator_id=$1`, id); err != nil {
-			return err
-		}
-		if err = insertAudit(ctx, tx, actor.entry(action, "operator", id, reason, map[string]any{"email": target.Email})); err != nil {
-			return err
-		}
+		var err error
 		out, err = s.operatorByID(ctx, tx, id)
 		return err
 	})
-	return out, err
+	return out, remaining, err
 }
 
 // ActiveAdmins counts enabled administrators. Below two, no two-person action can be completed.
@@ -418,14 +402,14 @@ func (s *Service) SetRole(ctx context.Context, actor Actor, id string, role Role
 		if target.Role == role {
 			return ErrNoChange
 		}
-		actorID := ""
+		actorID, label := "", actor.Label
 		if actor.Operator != nil {
-			actorID = actor.Operator.ID
+			actorID, label = actor.Operator.ID, actor.Operator.Email
 		}
-		if err = store.SetOperatorRole(ctx, tx, id, string(role), actorID); err != nil {
-			return err
-		}
-		if err = insertAudit(ctx, tx, actor.entry("operator_role", "operator", id, reason, map[string]any{"email": target.Email, "from": string(target.Role), "to": string(role)})); err != nil {
+		// The function writes the audit entry; it takes the reason, the client address and the CLI actor from the
+		// transaction's settings.
+		sctx := store.WithSafetyContext(ctx, store.SafetyContext{IP: actor.IP, Reason: reason, Actor: label})
+		if err = store.SetOperatorRole(sctx, tx, id, string(role), actorID); err != nil {
 			return err
 		}
 		out, err = s.operatorByID(ctx, tx, id)

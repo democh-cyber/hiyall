@@ -74,9 +74,31 @@ type EvidenceApproval struct {
 	TargetOperatorEmail string     `json:"targetOperatorEmail"`
 }
 
-// ApprovalHook runs in the transaction of a proposal or a decision, where the console writes its audit
-// entries. subject is the member the case is about (the operator id for an admin promotion).
+// ApprovalHook runs in the transaction of a proposal or a decision, after the function has written its own audit entry
+// (migration 0046: the two-person functions audit inside the function, with the operator the console named). The console
+// passes nil; a hook is for a caller that wants something more in the same transaction. subject is the member the case
+// is about (the operator id for an admin promotion).
 type ApprovalHook func(ctx context.Context, tx pgx.Tx, a EvidenceApproval, subject string) error
+
+// SafetyContext is what a two-person function records in the audit entry it writes that its arguments do not carry: the
+// caller's truncated client address, the reason (for a role change) and, for the CLI, who ran it. It travels in the
+// context and is set as transaction-local settings (hiyall.ip, hiyall.reason, hiyall.actor) just before the call.
+type SafetyContext struct{ IP, Reason, Actor string }
+
+type safetyContextKey struct{}
+
+// WithSafetyContext attaches sc to ctx for the two-person functions called with it.
+func WithSafetyContext(ctx context.Context, sc SafetyContext) context.Context {
+	return context.WithValue(ctx, safetyContextKey{}, sc)
+}
+
+// SetSafetyContext writes the context's settings into tx. Every transaction that calls a function that audits calls it
+// first; a context without one sets empty values.
+func SetSafetyContext(ctx context.Context, tx pgx.Tx) error {
+	sc, _ := ctx.Value(safetyContextKey{}).(SafetyContext)
+	_, err := tx.Exec(ctx, `SELECT set_config('hiyall.ip',$1,true),set_config('hiyall.reason',$2,true),set_config('hiyall.actor',$3,true)`, sc.IP, sc.Reason, sc.Actor)
+	return err
+}
 
 // SafetyErrorCode is the tag a two-person function raised (SQLSTATE HY001, message "hiyall:CODE"), or "".
 func SafetyErrorCode(err error) string {
@@ -93,6 +115,10 @@ var (
 	ErrNoChange       = &domain.PolicyError{Status: 409, Code: "NO_CHANGE", Message: "The operator is already in that state"}
 	ErrTargetDisabled = &domain.PolicyError{Status: 409, Code: "TARGET_DISABLED", Message: "A disabled operator cannot be promoted"}
 	ErrLastAdminSQL   = &domain.PolicyError{Status: 409, Code: "LAST_ADMIN", Message: "There must always be at least one active administrator"}
+	ErrSelfDisableSQL = &domain.PolicyError{Status: 409, Code: "SELF_DISABLE", Message: "You cannot disable your own account"}
+	ErrEmailTakenSQL  = &domain.PolicyError{Status: 409, Code: "EMAIL_TAKEN", Message: "An operator with this email already exists"}
+	// ErrProposerNotAdmin refuses approving a proposal whose proposer was disabled or demoted since.
+	ErrProposerNotAdmin = &domain.PolicyError{Status: 409, Code: "PROPOSER_NOT_ADMIN", Message: "The administrator who proposed this is no longer an active administrator. Propose it again"}
 )
 
 // MapSafetyError turns what a two-person function raised into the API's error; any other error is returned as is.
@@ -126,6 +152,16 @@ func MapSafetyError(err error) error {
 		return ErrTargetDisabled
 	case "LAST_ADMIN":
 		return ErrLastAdminSQL
+	case "SELF_DISABLE":
+		return ErrSelfDisableSQL
+	case "EMAIL_TAKEN":
+		return ErrEmailTakenSQL
+	case "PROPOSER_NOT_ADMIN":
+		return ErrProposerNotAdmin
+	case "VALIDATION_EMAIL":
+		return &domain.ValidationError{Field: "email", Message: "not a valid address"}
+	case "VALIDATION_ACTOR", "VALIDATION_CREDENTIALS", "FORCE_FORBIDDEN":
+		return &domain.ValidationError{Field: "actor", Message: "the request is not valid"}
 	case "COUNSEL_REFERENCE":
 		return &domain.ValidationError{Field: "counselReference", Message: "name counsel's instruction: 6 to 120 characters of letters, digits, spaces and . _ / -, starting with a letter or digit"}
 	case "VALIDATION_KIND":
@@ -196,9 +232,14 @@ func (s *Store) EvidenceApproval(ctx context.Context, id string) (EvidenceApprov
 func (s *Store) ProposeEvidenceStep(ctx context.Context, caseID, kind, operatorID, reason, counselRef string, hook ApprovalHook) (EvidenceApproval, error) {
 	var out EvidenceApproval
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := SetSafetyContext(ctx, tx); err != nil {
+			return err
+		}
 		var user string
-		if err := tx.QueryRow(ctx, `SELECT user_id::text FROM content_cases WHERE case_id=$1`, caseID).Scan(&user); err != nil {
-			return mapped(err)
+		if hook != nil {
+			if err := tx.QueryRow(ctx, `SELECT user_id::text FROM content_cases WHERE case_id=$1`, caseID).Scan(&user); err != nil {
+				return mapped(err)
+			}
 		}
 		id := newID()
 		if _, err := tx.Exec(ctx, `SELECT evidence_propose($1::uuid,$2::uuid,$3,$4::uuid,$5,$6)`, id, caseID, kind, operatorID, reason, strings.TrimSpace(counselRef)); err != nil {
@@ -222,6 +263,9 @@ func (s *Store) ProposeEvidenceStep(ctx context.Context, caseID, kind, operatorI
 func (s *Store) ProposeAdminPromotion(ctx context.Context, targetOperator, operatorID, reason string, hook ApprovalHook) (EvidenceApproval, error) {
 	var out EvidenceApproval
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := SetSafetyContext(ctx, tx); err != nil {
+			return err
+		}
 		id := newID()
 		if _, err := tx.Exec(ctx, `SELECT operator_promotion_propose($1::uuid,$2::uuid,$3::uuid,$4)`, id, targetOperator, operatorID, reason); err != nil {
 			return MapSafetyError(err)
@@ -256,6 +300,9 @@ func (s *Store) DecideEvidenceStep(ctx context.Context, approvalID, operatorID, 
 	expired := false
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		expired = false
+		if err := SetSafetyContext(ctx, tx); err != nil {
+			return err
+		}
 		var status string
 		if err := tx.QueryRow(ctx, `SELECT evidence_decide($1::uuid,$2::uuid,$3,$4)`, approvalID, operatorID, decision, reason).Scan(&status); err != nil {
 			return MapSafetyError(err)
@@ -293,9 +340,12 @@ func (s *Store) ExpireEvidenceApprovals(ctx context.Context) (int64, error) {
 
 // SetOperatorRole changes an operator's role through operator_set_role. A promotion to administrator is refused
 // with ErrApprovalRequired while another administrator is active: it goes through ProposeAdminPromotion. tx is
-// the caller's transaction, where the audit entry is written. operatorID is the acting administrator (empty when
+// the caller's transaction; the function writes the audit entry there (reason and CLI actor from SafetyContext). operatorID is the acting administrator (empty when
 // no administrator is active: the bootstrap).
 func SetOperatorRole(ctx context.Context, tx pgx.Tx, target, role, operatorID string) error {
+	if err := SetSafetyContext(ctx, tx); err != nil {
+		return err
+	}
 	var actor any
 	if operatorID != "" {
 		actor = operatorID

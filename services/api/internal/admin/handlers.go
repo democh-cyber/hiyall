@@ -350,8 +350,18 @@ func (s *Server) listOperators(w http.ResponseWriter, r *http.Request, p *Princi
 }
 
 // operatorChange is the shared shape of the three operator management routes: a reason, a target id,
-// and one Service call made as the signed-in operator.
+// and one Service call made as the signed-in operator. activeAdmins, when the call reports it, goes into the answer.
 func (s *Server) operatorChange(w http.ResponseWriter, r *http.Request, p *Principal, reasonText string, run func(actor Actor, id, reason string) (Operator, error)) {
+	s.operatorChangeCount(w, r, p, reasonText, func(a Actor, id, reason string) (Operator, int, error) {
+		o, err := run(a, id, reason)
+		return o, -1, err
+	})
+}
+
+// operatorChangeCount is operatorChange for a call that also says how many administrators are active afterwards. Below
+// two, no two-person action can be completed (clearing a case, releasing a hold, promoting an administrator): the answer
+// carries twoPersonAvailable=false and a warning, which the console shows.
+func (s *Server) operatorChangeCount(w http.ResponseWriter, r *http.Request, p *Principal, reasonText string, run func(actor Actor, id, reason string) (Operator, int, error)) {
 	reason, err := Reason(reasonText)
 	if err != nil {
 		s.fail(w, r, err)
@@ -363,12 +373,20 @@ func (s *Server) operatorChange(w http.ResponseWriter, r *http.Request, p *Princ
 		return
 	}
 	op := p.Operator
-	updated, err := run(Actor{Operator: &op, IP: p.IP}, id, reason)
+	updated, admins, err := run(Actor{Operator: &op, IP: p.IP}, id, reason)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	s.ok(w, r, map[string]any{"operator": updated})
+	out := map[string]any{"operator": updated}
+	if admins >= 0 {
+		out["activeAdmins"] = admins
+		out["twoPersonAvailable"] = admins >= 2
+		if admins < 2 {
+			out["warning"] = "Fewer than two administrators are active: two-person actions (clearing a case, releasing or lifting an evidence hold, promoting an administrator) cannot be completed until another administrator is created and promoted."
+		}
+	}
+	s.ok(w, r, out)
 }
 
 type reasonBody struct {
@@ -381,8 +399,8 @@ func (s *Server) disableOperator(w http.ResponseWriter, r *http.Request, p *Prin
 		s.fail(w, r, err)
 		return
 	}
-	s.operatorChange(w, r, p, body.Reason, func(a Actor, id, reason string) (Operator, error) {
-		return s.svc.SetDisabled(r.Context(), a, id, true, reason, true)
+	s.operatorChangeCount(w, r, p, body.Reason, func(a Actor, id, reason string) (Operator, int, error) {
+		return s.svc.SetDisabledCount(r.Context(), a, id, true, reason, true)
 	})
 }
 
@@ -392,8 +410,8 @@ func (s *Server) enableOperator(w http.ResponseWriter, r *http.Request, p *Princ
 		s.fail(w, r, err)
 		return
 	}
-	s.operatorChange(w, r, p, body.Reason, func(a Actor, id, reason string) (Operator, error) {
-		return s.svc.SetDisabled(r.Context(), a, id, false, reason, true)
+	s.operatorChangeCount(w, r, p, body.Reason, func(a Actor, id, reason string) (Operator, int, error) {
+		return s.svc.SetDisabledCount(r.Context(), a, id, false, reason, true)
 	})
 }
 

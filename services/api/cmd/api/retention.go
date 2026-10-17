@@ -27,6 +27,11 @@ func retentionJobs(db *store.Store) []maintenance.Job {
 		{Name: "message metadata retention", Timeout: longJob, Run: func(ctx context.Context) (int64, error) {
 			return db.PurgeMessageMetadata(ctx, store.MessageMetadataRetention)
 		}},
+		// Signed-out identity-provider sessions older than 400 days whose sign-in the "sign out everywhere" watermark
+		// refuses anyway (store.PurgeRevokedSessionTombstones; round-4 audit N10).
+		{Name: "revoked session tombstone purge", Timeout: longJob, Run: func(ctx context.Context) (int64, error) {
+			return db.PurgeRevokedSessionTombstones(ctx, store.RevokedSessionTombstoneRetention)
+		}},
 		{Name: "media tombstone purge", Run: func(ctx context.Context) (int64, error) {
 			return db.PurgeMediaTombstones(ctx, store.MediaTombstoneRetention)
 		}},

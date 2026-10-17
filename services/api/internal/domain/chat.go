@@ -20,8 +20,12 @@ func IsID(value string) bool { return uuidPattern.MatchString(value) }
 var (
 	ErrMessagesNotAllowed = &PolicyError{403, "MESSAGES_NOT_ALLOWED", "This account isn't accepting messages from you"}
 	ErrDevicesChanged     = &PolicyError{409, "DEVICES_CHANGED", "Devices changed. Refresh them and encrypt again."}
-	ErrTooManyDevices     = &PolicyError{409, "TOO_MANY_DEVICES", "Remove a device before adding another"}
-	ErrDeviceConflict     = &PolicyError{409, "DEVICE_CONFLICT", "This device id is already registered with different keys"}
+	// ErrPeerNoDevices answers a send to a person with no active chat device (each was removed as idle or signed
+	// out, or they never opened chat): nothing can be encrypted for them yet, and it can be tried again once they
+	// open Hiyall (CHAT-N1). Distinct from ErrDevicesChanged, which says "encrypt again for the current devices".
+	ErrPeerNoDevices  = &PolicyError{409, "PEER_NO_DEVICES", "They haven't opened Hiyall in a while. Your message can't be delivered yet."}
+	ErrTooManyDevices = &PolicyError{409, "TOO_MANY_DEVICES", "Remove a device before adding another"}
+	ErrDeviceConflict = &PolicyError{409, "DEVICE_CONFLICT", "This device id is already registered with different keys"}
 	// ErrAwaitingReply is the first-contact cap: until the other person has sent a message of their
 	// own, a sender may send FirstContactMessages messages in a conversation.
 	ErrAwaitingReply      = &PolicyError{403, "AWAITING_REPLY", "You can send more once they reply. Give them a little time."}
@@ -32,7 +36,10 @@ var (
 	// waiting on a recipient device: nobody else is held back by it.
 	// ErrOwnBacklog is its own code (OWN_BACKLOG) when the full device is one of the sender's own other
 	// devices, because the person who can fix it is the sender, in Chat devices.
-	ErrRecipientBacklog = &PolicyError{429, "RECIPIENT_BACKLOG", "They haven't picked up their earlier messages yet. Try again later."}
+	// Since round 4 (CHAT-N2) it is only answered for a device that is in use: one idle for more than 48 hours
+	// that is full for this sender alone is revoked in the send instead, and a peer with no active device gets
+	// ErrPeerNoDevices.
+	ErrRecipientBacklog = &PolicyError{429, "RECIPIENT_BACKLOG", "They haven't caught up on earlier messages yet. Try again later."}
 	ErrOwnBacklog       = &PolicyError{429, "OWN_BACKLOG", "One of your other devices has too many unread messages. Open Hiyall on it, or remove it in Chat devices."}
 	// ErrChatDailyLimit is the per-conversation daily message quota (Entitlements.ChatMessagesPerConversationPerDay).
 	ErrChatDailyLimit = &PolicyError{429, "CHAT_DAILY_LIMIT", "You've sent a lot of messages in this chat today. Try again later."}

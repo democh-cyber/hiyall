@@ -159,6 +159,34 @@ groups:
           summary: "The upload scanner cannot reach its provider or list"
           description: "Photo uploads are waiting or failing because scanning is unavailable. Check SCAN_PROVIDER_URL, the key file and the provider's status."
           runbook: "docs/security/16-csam-and-illegal-content.md section 2"
+      - alert: HiyallEvidenceCanaryFailed
+        # The canary found that the API's own evidence token can delete evidence and no bucket lock stopped the probe
+        # (docs/security/16-csam-and-illegal-content.md section 9). The value 2 is the failure; 0 is "not answered yet".
+        expr: hiyall_evidence_canary_state == 2
+        labels: {severity: page}
+        annotations:
+          summary: "The API's evidence token can delete held evidence"
+          description: "A compromised API could destroy evidence. Scope the token to write only, or put an R2 bucket-lock retention rule on the evidence bucket (at least EVIDENCE_RETENTION_DAYS) and re-run `api check-config -release -net`."
+          runbook: "docs/security/16-csam-and-illegal-content.md section 9"
+      - alert: HiyallApprovalWaiting
+        # A two-person proposal (clear a case, release a hold, lift a legal hold, promote an administrator) has waited for
+        # a second administrator for over 4 hours; proposals lapse after 24. NaN means the database could not answer
+        # (a missing grant or an error), which is an unanswered question, not an empty queue.
+        expr: hiyall_pending_approvals > 0 and hiyall_oldest_pending_approval_seconds > 14400
+        labels: {severity: ticket}
+        annotations:
+          summary: "A two-person approval has been waiting for a second administrator for over 4 hours"
+          description: "{{ $value }} proposal(s) are waiting. A second administrator must approve or let them lapse (24 hours). Open Approvals in the admin console."
+          runbook: "docs/security/15-admin-console.md (Two-person control)"
+      - alert: HiyallSafetyQueueUnreadable
+        # The gauges that watch the two-person and quarantine queues report NaN when safety_queue_stats cannot answer.
+        expr: hiyall_pending_approvals != hiyall_pending_approvals
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "The approval and quarantine queue gauges cannot be read"
+          description: "safety_queue_stats failed or the API role lacks EXECUTE on it, so the approval alert is blind. Run grants.sql and check the API log."
+          runbook: "docs/security/15-admin-console.md (Database roles)"
       - alert: HiyallPushConfigErrors
         # FCM refused a push because of OUR configuration (tokens are kept). Wrong FCM_SERVICE_ACCOUNT_FILE for the app's project.
         expr: |

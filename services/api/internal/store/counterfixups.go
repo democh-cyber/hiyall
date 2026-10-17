@@ -20,7 +20,8 @@ import (
 // status of the account (by at most that one account, and the account itself is hidden meanwhile). An edge that
 // is removed in that window from a neighbour the recount has not reached yet leaves that neighbour one too high
 // until the weekly ReconcileSocialCounters repairs it; that needs a member to change a relationship with an
-// account that is suspended, deactivated or in deletion, which the API does not offer.
+// account that is suspended, deactivated or in deletion, which the API does not offer. The one process that
+// deletes such edges, the purge of the account itself, finishes the account's recount first (drainCounterFixups).
 
 // counterFixupChunk is how many neighbour counter rows one fix-up transaction locks and recounts.
 const counterFixupChunk = 500
@@ -35,18 +36,27 @@ const (
 // chunk never sorts the account's whole neighbourhood: follows_follower_list, follows_followee_list, the unique
 // (user_low_id, user_high_id) and friendships_high_low (migration 0044). Each returns the neighbour and the
 // cursor text (created_at for the follow streams).
+//
+// Every ORDER BY names the table's own typed columns (f.created_at, f.followee_id), never the output column. A
+// bare "ORDER BY created_at" in a query that also selects "created_at::text" means the OUTPUT column, which is
+// text: the stream was then sorted by the text of the timestamp (a whole second prints without a fraction, so
+// "…:05+00" sorts before "…:05.5+00" and after "…:04.9+00" for a DESC walk that wants the opposite), by the text of
+// the uuid, with the collation of the database, and with a sort of the account's whole neighbourhood in every
+// chunk instead of a read of the index. The keyset comparison in the WHERE clause is on the typed columns, so the
+// two disagreed and neighbours could be skipped or counted twice (round-4 audit N3). The output columns are called
+// nb and ts so that a name can never be captured again.
 var fixupStreams = [fixupLastStage + 1]struct {
 	sql  string
 	desc bool
 }{
-	{`SELECT followee_id::text,created_at::text FROM follows WHERE follower_id=$1 AND state='active' AND (created_at,followee_id)<($2::timestamptz,$3::uuid)
- ORDER BY created_at DESC,followee_id DESC LIMIT $4`, true},
-	{`SELECT follower_id::text,created_at::text FROM follows WHERE followee_id=$1 AND state='active' AND (created_at,follower_id)<($2::timestamptz,$3::uuid)
- ORDER BY created_at DESC,follower_id DESC LIMIT $4`, true},
-	{`SELECT user_high_id::text,'infinity' FROM friendships WHERE user_low_id=$1 AND status='accepted' AND user_high_id>$3::uuid AND $2::timestamptz IS NOT NULL
- ORDER BY user_high_id LIMIT $4`, false},
-	{`SELECT user_low_id::text,'infinity' FROM friendships WHERE user_high_id=$1 AND status='accepted' AND user_low_id>$3::uuid AND $2::timestamptz IS NOT NULL
- ORDER BY user_low_id LIMIT $4`, false},
+	{`SELECT f.followee_id::text AS nb,f.created_at::text AS ts FROM follows f WHERE f.follower_id=$1 AND f.state='active' AND (f.created_at,f.followee_id)<($2::timestamptz,$3::uuid)
+ ORDER BY f.created_at DESC,f.followee_id DESC LIMIT $4`, true},
+	{`SELECT f.follower_id::text AS nb,f.created_at::text AS ts FROM follows f WHERE f.followee_id=$1 AND f.state='active' AND (f.created_at,f.follower_id)<($2::timestamptz,$3::uuid)
+ ORDER BY f.created_at DESC,f.follower_id DESC LIMIT $4`, true},
+	{`SELECT f.user_high_id::text AS nb,'infinity' AS ts FROM friendships f WHERE f.user_low_id=$1 AND f.status='accepted' AND f.user_high_id>$3::uuid AND $2::timestamptz IS NOT NULL
+ ORDER BY f.user_high_id LIMIT $4`, false},
+	{`SELECT f.user_low_id::text AS nb,'infinity' AS ts FROM friendships f WHERE f.user_high_id=$1 AND f.status='accepted' AND f.user_low_id>$3::uuid AND $2::timestamptz IS NOT NULL
+ ORDER BY f.user_low_id LIMIT $4`, false},
 }
 
 // ApplyCounterFixups runs at most maxChunks chunks of the queued recounts (oldest queued account first) and
@@ -59,7 +69,7 @@ func (s *Store) ApplyCounterFixups(ctx context.Context, maxChunks int) (int64, e
 		if ctx.Err() != nil {
 			return total, ctx.Err()
 		}
-		n, found, err := s.counterFixupChunk(ctx)
+		n, found, err := s.counterFixupChunk(ctx, "")
 		total += n
 		if err != nil || !found {
 			return total, err
@@ -68,12 +78,14 @@ func (s *Store) ApplyCounterFixups(ctx context.Context, maxChunks int) (int64, e
 	return total, nil
 }
 
-func (s *Store) counterFixupChunk(ctx context.Context) (seen int64, found bool, err error) {
+// counterFixupChunk does one chunk of the oldest queued account, or of account only when it is not empty. found is
+// false when there is nothing to do (or the only row is held by another worker).
+func (s *Store) counterFixupChunk(ctx context.Context, only string) (seen int64, found bool, err error) {
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
 		seen, found = 0, false
 		var user, ts, after string
 		var stream int
-		err := tx.QueryRow(ctx, `SELECT user_id::text,stream,after_ts::text,after_id::text FROM counter_fixups ORDER BY queued_at LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&user, &stream, &ts, &after)
+		err := tx.QueryRow(ctx, `SELECT user_id::text,stream,after_ts::text,after_id::text FROM counter_fixups WHERE ($1='' OR user_id=$1::uuid) ORDER BY queued_at LIMIT 1 FOR UPDATE SKIP LOCKED`, only).Scan(&user, &stream, &ts, &after)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -120,6 +132,32 @@ func (s *Store) counterFixupChunk(ctx context.Context) (seen int64, found bool, 
 		return err
 	})
 	return seen, found, err
+}
+
+// drainCounterFixups finishes the recount that account user has queued, on the caller's goroutine, and says whether
+// none is left. The account purge calls it before it deletes the account's follows and friendships: the recount
+// walks those rows, so a neighbour whose edge the purge deleted first is never visited and keeps the counter that
+// still counted the (by now inactive) account until the weekly reconcile (round-4 audit N9: found by the concurrency
+// test, 9000 followers one too high). It is false while another worker holds the queue row, in which case the purge
+// waits for its next run.
+func (s *Store) drainCounterFixups(ctx context.Context, user string) (bool, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		_, found, err := s.counterFixupChunk(ctx, user)
+		if err != nil {
+			return false, err
+		}
+		if found {
+			continue
+		}
+		var queued bool
+		if err = s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM counter_fixups WHERE user_id=$1)`, user).Scan(&queued); err != nil {
+			return false, err
+		}
+		return !queued, nil
+	}
 }
 
 // recountSocial makes the counter rows of ids equal to what their follow and friendship rows say. The rows are

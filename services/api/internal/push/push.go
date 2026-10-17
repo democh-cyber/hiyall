@@ -89,7 +89,17 @@ type Notice struct {
 	Recipient, Actor, Conversation string
 	// Device is a device that must not receive this push: for "device", the one that was just added.
 	Device string
+	// Targets are the devices a "deletion" notice goes to. The account is already pending deletion and its tokens are
+	// cleared, so neither the eligibility check nor the token lookup would find anything: the caller reads the tokens
+	// as it clears them and hands them over here (round-4 N-5). Ignored for every other kind.
+	Targets []Target
 }
+
+// KindDeletion is the push that tells a member their account was just scheduled for deletion, sent once to every device
+// that held a token before the deletion cleared them. It is a security push (never switched off, exempt from the live
+// socket check and from the chat cap), because appleCodeUnavailable is only the client's statement: a deletion made
+// with a stolen token must be visible to the owner.
+const KindDeletion = "deletion"
 
 // Category is the member's notification choice a kind falls under.
 const (
@@ -124,6 +134,7 @@ var kinds = map[string]kindSpec{
 	"chat":            {CategoryChat, 30 * time.Second, "New message", ""},
 	"device":          {CategorySecurity, 0, "New device added to your account", ""},
 	"device-revoked":  {CategorySecurity, 0, "A device was removed from your account", ""},
+	KindDeletion:      {CategorySecurity, 0, "Account deletion scheduled", ""},
 	"friend_request":  {CategorySocial, 10 * time.Minute, "You have a new friend request", "%s sent you a friend request"},
 	"friend_accepted": {CategorySocial, 10 * time.Minute, "Your friend request was accepted", "%s accepted your friend request"},
 	"follow":          {CategorySocial, 10 * time.Minute, "You have a new follower", "%s started following you"},
@@ -253,6 +264,8 @@ func (n Notice) collapseKey() string {
 		return "chat-" + n.Conversation
 	case "device", "device-revoked":
 		return "device"
+	case KindDeletion:
+		return "deletion"
 	}
 	return "social"
 }
@@ -314,18 +327,24 @@ func (d *Dispatcher) process(ctx context.Context, n Notice) {
 	if spec.category != CategorySecurity && d.cfg.Online(n.Recipient) {
 		return
 	}
-	verdict, err := d.cfg.Check(ctx, n, spec.category)
-	if err != nil {
-		slog.Warn("push eligibility check failed; nothing sent", "kind", n.Kind, "reason", logscrub.Err(err))
-		return
-	}
-	if !verdict.OK {
-		return
-	}
-	targets, err := d.cfg.Targets(ctx, []string{n.Recipient})
-	if err != nil {
-		slog.Warn("push lookup failed", "reason", logscrub.Err(err))
-		return
+	var verdict Eligibility
+	var targets []Target
+	if n.Kind == KindDeletion {
+		// The account is pending deletion and its tokens are cleared, so the caller's own list is the only one.
+		verdict, targets = Eligibility{OK: true}, n.Targets
+	} else {
+		var err error
+		if verdict, err = d.cfg.Check(ctx, n, spec.category); err != nil {
+			slog.Warn("push eligibility check failed; nothing sent", "kind", n.Kind, "reason", logscrub.Err(err))
+			return
+		}
+		if !verdict.OK {
+			return
+		}
+		if targets, err = d.cfg.Targets(ctx, []string{n.Recipient}); err != nil {
+			slog.Warn("push lookup failed", "reason", logscrub.Err(err))
+			return
+		}
 	}
 	if len(targets) == 0 {
 		return
@@ -352,6 +371,9 @@ func message(n Notice, spec kindSpec, actorName string) Message {
 	data := map[string]string{"kind": n.Kind}
 	if n.Kind == "chat" {
 		data["conversationId"] = n.Conversation
+	} else if n.Kind == KindDeletion {
+		// Content-free: the app says the account is scheduled for deletion and offers to cancel.
+		data["kind"] = KindDeletion
 	} else if n.Kind == "device" || n.Kind == "device-revoked" {
 		// Content-free: the app opens the chat devices screen and lists what the relay knows.
 		data["kind"] = "device"

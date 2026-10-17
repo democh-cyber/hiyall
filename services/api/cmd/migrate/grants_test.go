@@ -50,7 +50,7 @@ func TestMigrateRunsGrantsAfterTheMigrations(t *testing.T) {
 		`SELECT has_table_privilege('hiyall_api','users','INSERT')`,
 		`SELECT has_table_privilege('hiyall_api','profile_social_counts','SELECT')`,
 		`SELECT has_column_privilege('hiyall_api','content_cases','media_id','SELECT')`,
-		`SELECT has_table_privilege('hiyall_api','content_cases','INSERT')`,
+		`SELECT has_column_privilege('hiyall_api','content_cases','media_id','INSERT')`,
 		`SELECT has_function_privilege('hiyall_api','held_objects_due(integer)','EXECUTE')`,
 		`SELECT has_table_privilege('hiyall_admin','operator_audit','INSERT')`,
 	} {
@@ -60,6 +60,12 @@ func TestMigrateRunsGrantsAfterTheMigrations(t *testing.T) {
 	}
 	for _, q := range []string{
 		`SELECT has_table_privilege('hiyall_api','content_cases','SELECT')`,
+		`SELECT has_table_privilege('hiyall_api','content_cases','INSERT')`, // only the scanner's columns (round-4 N-1)
+		`SELECT has_column_privilege('hiyall_api','content_cases','released_at','INSERT')`,
+		`SELECT has_column_privilege('hiyall_api','content_cases','status','INSERT')`,
+		`SELECT has_table_privilege('hiyall_admin','operators','INSERT')`,
+		`SELECT has_column_privilege('hiyall_admin','operators','disabled_at','UPDATE')`,
+		`SELECT has_table_privilege('hiyall_admin','apple_revocations','DELETE')`,
 		`SELECT has_table_privilege('hiyall_api','operators','SELECT')`,
 		`SELECT has_table_privilege('hiyall_api','operator_audit','INSERT')`,
 		`SELECT has_table_privilege('hiyall_admin','operator_audit','UPDATE')`,

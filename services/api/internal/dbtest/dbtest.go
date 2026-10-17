@@ -49,7 +49,15 @@ func ApplyRoles(t testing.TB, ctx context.Context, pool *pgxpool.Pool) {
 		if _, err = conn.Exec(ctx, `SELECT pg_advisory_lock(4917399)`); err != nil {
 			t.Fatal(err)
 		}
-		err = Retry(func() error { _, err := conn.Exec(ctx, Script(t, name)); return err })
+		// The scripts are one explicit transaction: a failure in the middle (a deadlock with a script of another
+		// package) leaves the connection in an aborted transaction, which would fail the retry and every later user
+		// of the pooled connection with "current transaction is aborted", hiding the real error.
+		err = Retry(func() error {
+			_, _ = conn.Exec(context.WithoutCancel(ctx), `ROLLBACK`)
+			_, err := conn.Exec(ctx, Script(t, name))
+			return err
+		})
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `ROLLBACK`)
 		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(4917399)`)
 		if err != nil {
 			var pe *pgconn.PgError
@@ -120,6 +128,20 @@ func (d *Denials) Check(t testing.TB) {
 // unset or its user cannot create databases.
 func Scratch(t testing.TB) string {
 	t.Helper()
+	return scratch(t, "")
+}
+
+// ScratchICU is Scratch on a database whose text collation is not C: UTF8 with the ICU provider and the en-US
+// locale, which orders punctuation, digits and letters the way a production database created with a language
+// locale does (a "." sorts before a "+", a hyphen before a digit). Code that sorts the text of a timestamp or a
+// uuid instead of the typed column is only wrong under such a collation. Skipped when the server has no ICU.
+func ScratchICU(t testing.TB) string {
+	t.Helper()
+	return scratch(t, ` ENCODING 'UTF8' LOCALE_PROVIDER icu ICU_LOCALE 'en-US' LOCALE 'C' TEMPLATE template0`)
+}
+
+func scratch(t testing.TB, createOptions string) string {
+	t.Helper()
 	base := os.Getenv("TEST_DATABASE_URL")
 	if base == "" {
 		t.Skip("TEST_DATABASE_URL required for PostgreSQL integration")
@@ -132,7 +154,7 @@ func Scratch(t testing.TB) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = admin.Exec(ctx, `CREATE DATABASE `+name); err != nil {
+	if _, err = admin.Exec(ctx, `CREATE DATABASE `+name+createOptions); err != nil {
 		admin.Close(ctx)
 		t.Skipf("cannot create a scratch database: %v", err)
 	}
@@ -178,7 +200,12 @@ func ApplyRolesScript(t testing.TB, ctx context.Context, conn *pgx.Conn) {
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(4917399)`); err != nil {
 		t.Fatal(err)
 	}
-	err := Retry(func() error { _, err := conn.Exec(ctx, Script(t, "roles.sql")); return err })
+	err := Retry(func() error {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `ROLLBACK`)
+		_, err := conn.Exec(ctx, Script(t, "roles.sql"))
+		return err
+	})
+	_, _ = conn.Exec(context.WithoutCancel(ctx), `ROLLBACK`)
 	_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(4917399)`)
 	if err != nil {
 		var pe *pgconn.PgError

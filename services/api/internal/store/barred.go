@@ -14,7 +14,8 @@ package store
 // viewer must be an expression that does not depend on the row (a parameter such as "$1::uuid"); other is the
 // member column or expression. It never answers differently from NOT interaction_barred(viewer, other): a
 // missing birth date is an adult, and a NULL other is not barred (the coalesce), as before. Single-row checks
-// keep calling interaction_barred, which is cheaper for one row; chat keeps it everywhere.
+// keep calling interaction_barred, which is cheaper for one row. Chat uses this form where it counts a device's
+// undelivered envelopes (a send's backlog caps and the backlog sweep, round 4 CHAT-N4); its other checks are single-row.
 func notBarred(viewer, other string) string {
 	const minor = `birth_date>(now() AT TIME ZONE 'UTC')::date-interval '18 years'`
 	return `(coalesce((` + other + `) NOT IN (SELECT blocked_id FROM blocks WHERE blocker_id=` + viewer + ` UNION ALL SELECT blocker_id FROM blocks WHERE blocked_id=` + viewer + `),true)

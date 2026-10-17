@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -179,22 +180,94 @@ func (s *Store) purgeDeletedPosts(ctx context.Context, retain time.Duration) (in
 	return n, err
 }
 
+// A walk is a pass over a table in key order that a job continues from run to run (reconcile_state: cursor,
+// started_at, finished_at). walkResume returns the cursor to continue from ("" at the start). When the last pass
+// reached its end more than rewalk ago it starts a new one from the beginning. walkSave records how far the job
+// has got, walkEnd that it reached the end (the first time only: later runs continue from the cursor, and
+// finished_at is what the next rewalk is counted from).
+func (s *Store) walkResume(ctx context.Context, job string, rewalk time.Duration) (string, error) {
+	var cursor *string
+	var again bool
+	if err := s.Pool.QueryRow(ctx, `INSERT INTO reconcile_state(job) VALUES($1) ON CONFLICT (job) DO UPDATE SET job=excluded.job
+ RETURNING cursor,coalesce(finished_at<now()-$2::interval,false)`, job, rewalk).Scan(&cursor, &again); err != nil {
+		return "", err
+	}
+	if again {
+		if _, err := s.Pool.Exec(ctx, `UPDATE reconcile_state SET cursor=NULL,started_at=now(),finished_at=NULL WHERE job=$1`, job); err != nil {
+			return "", err
+		}
+		return "", nil
+	}
+	if cursor == nil {
+		return "", nil
+	}
+	return *cursor, nil
+}
+
+func (s *Store) walkSave(ctx context.Context, job, cursor string) error {
+	_, err := s.Pool.Exec(ctx, `UPDATE reconcile_state SET cursor=$2 WHERE job=$1`, job, cursor)
+	return err
+}
+
+func (s *Store) walkEnd(ctx context.Context, job string) error {
+	_, err := s.Pool.Exec(ctx, `UPDATE reconcile_state SET finished_at=coalesce(finished_at,now()) WHERE job=$1`, job)
+	return err
+}
+
+// MessageMetadataRewalk is how long after a pass over the old messages reached its end the next pass starts again
+// from the oldest message. Between passes each run resumes after the last row the previous run examined, so rows
+// that stay (see PurgeMessageMetadata) are not looked at again every hour; a row that was kept and stops being
+// needed (the peer's newer message arrived, a report closed) is therefore removed within this long.
+const MessageMetadataRewalk = 24 * time.Hour
+
+// messagePurgeJob is the reconcile_state row that holds the cursor of PurgeMessageMetadata.
+const messagePurgeJob = "message_metadata_purge"
+
+// messagePurgeStart is where a pass begins: before the oldest message.
+const (
+	messagePurgeStartTS = "-infinity"
+	messagePurgeStartID = "00000000-0000-0000-0000-000000000000"
+)
+
+// messagePurgeAfterWindow is called by the tests after each window's cursor has been saved (a crash can happen
+// there). It is nil in production.
+var messagePurgeAfterWindow func(windows int)
+
 // PurgeMessageMetadata deletes message metadata rows older than retain once nothing needs them: no envelope
 // is still waiting for a device to receive it (both sides have it), no attachment hangs on it, and no report
 // names it as evidence. A conversation always keeps each member's latest real (non-reaction) message, because
 // the "has the peer replied" rule reads it.
 //
-// One run is one pass over the old messages in (created_at, message_id) order, in windows of retentionChunk rows
-// examined from a cursor (messages_age_key). The rows that stay (each member's latest message, reported ones)
-// are therefore looked at once per run, not once per chunk as when every chunk began again at the oldest row
-// (round-3 audit N11).
+// A pass is one walk over the old messages in (created_at, message_id) order, in windows of retentionChunk rows
+// examined from a cursor (messages_age_key). The cursor is kept in reconcile_state after every window, so a run that
+// ends (the job's time limit, a crash, a deploy) is continued by the next one instead of beginning at the oldest
+// message again, and the rows that stay (each member's latest message, reported ones) are looked at once per
+// pass, not once per run (round-3 audit N11, round-4 audit N5). When a walk reaches the end the cursor stays at
+// the last row it examined, so the following runs look only at messages that have aged in since; MessageMetadataRewalk
+// after that a new pass starts from the oldest message and revisits the rows that were kept.
+//
+// The last row of a window is picked by the typed columns (w.created_at, w.message_id). Ordering by the output
+// column of the same name would sort the text of the timestamp, which under a language collation puts a whole
+// second after its fractions: the cursor then went back and a window of kept rows was examined forever
+// (round-4 audit N3).
 func (s *Store) PurgeMessageMetadata(ctx context.Context, retain time.Duration) (int64, error) {
-	var total int64
-	afterTS, afterID := "-infinity", "00000000-0000-0000-0000-000000000000"
-	for ctx.Err() == nil {
-		var examined, deleted int64
+	deleted, _, err := s.purgeMessageMetadata(ctx, retain)
+	return deleted, err
+}
+
+func (s *Store) purgeMessageMetadata(ctx context.Context, retain time.Duration) (deleted, examined int64, err error) {
+	afterTS, afterID := messagePurgeStartTS, messagePurgeStartID
+	cursor, err := s.walkResume(ctx, messagePurgeJob, MessageMetadataRewalk)
+	if err != nil {
+		return 0, 0, err
+	}
+	if ts, id, ok := strings.Cut(cursor, "|"); ok {
+		afterTS, afterID = ts, id
+	}
+	for windows := 1; ctx.Err() == nil; windows++ {
+		var seen, gone int64
 		var lastTS, lastID *string
-		err := s.Pool.QueryRow(ctx, `WITH `+reportedMessageIDs+`,
+		err = s.Pool.QueryRow(ctx, `WITH `+reportedMessageIDs+`,
  win AS MATERIALIZED (SELECT m.ctid AS tid,m.message_id,m.created_at,m.conversation_id,m.sender_id,m.aux FROM messages m
   WHERE m.created_at<now()-$1::interval AND (m.created_at,m.message_id)>($2::timestamptz,$3::uuid) ORDER BY m.created_at,m.message_id LIMIT $4),
  del AS (DELETE FROM messages WHERE ctid IN (SELECT w.tid FROM win w
@@ -204,13 +277,89 @@ func (s *Store) PurgeMessageMetadata(ctx context.Context, retain time.Duration) 
   AND NOT EXISTS(SELECT 1 FROM evidence WHERE evidence.id=w.message_id::text)
   AND (w.aux OR EXISTS(SELECT 1 FROM messages n WHERE n.conversation_id=w.conversation_id AND n.sender_id=w.sender_id AND NOT n.aux AND (n.created_at,n.message_id)>(w.created_at,w.message_id)))) RETURNING 1)
  SELECT (SELECT count(*) FROM win),(SELECT count(*) FROM del),
-  (SELECT created_at::text FROM win ORDER BY created_at DESC,message_id DESC LIMIT 1),(SELECT message_id::text FROM win ORDER BY created_at DESC,message_id DESC LIMIT 1)`,
-			retain, afterTS, afterID, retentionChunk).Scan(&examined, &deleted, &lastTS, &lastID)
-		total += deleted
-		if err != nil || examined < retentionChunk || lastTS == nil {
+  (SELECT l.created_at::text FROM win l ORDER BY l.created_at DESC,l.message_id DESC LIMIT 1),(SELECT l.message_id::text FROM win l ORDER BY l.created_at DESC,l.message_id DESC LIMIT 1)`,
+			retain, afterTS, afterID, retentionChunk).Scan(&seen, &gone, &lastTS, &lastID)
+		deleted += gone
+		examined += seen
+		if err != nil {
+			return deleted, examined, err
+		}
+		if lastTS != nil {
+			afterTS, afterID = *lastTS, *lastID
+			if err = s.walkSave(ctx, messagePurgeJob, afterTS+"|"+afterID); err != nil {
+				return deleted, examined, err
+			}
+		}
+		if messagePurgeAfterWindow != nil {
+			messagePurgeAfterWindow(windows)
+		}
+		if seen < retentionChunk || lastTS == nil {
+			// The end: the pass is finished (the first time only; later runs continue it from the cursor).
+			return deleted, examined, s.walkEnd(ctx, messagePurgeJob)
+		}
+	}
+	return deleted, examined, ctx.Err()
+}
+
+// RevokedSessionTombstoneRetention is how long after the sign-out a revoked identity-provider session row is kept.
+const RevokedSessionTombstoneRetention = 400 * 24 * time.Hour
+
+const (
+	sessionTombstoneJob    = "revoked_session_tombstones"
+	sessionTombstoneRewalk = 24 * time.Hour
+	sessionTombstoneBatch  = 1000
+)
+
+// PurgeRevokedSessionTombstones deletes the rows of identity-provider sessions that were signed out more than retain
+// ago (round-4 audit N10), when that is safe.
+//
+// The row of a revoked session exists so that a refresh token that is still valid cannot recreate the session: a
+// Firebase session id ("fb:<subject>:<auth_time>") is the same for every token the sign-in ever mints, and Firebase
+// refresh tokens do not expire by themselves, so "tokens live an hour" does not make an old tombstone useless. What
+// does make one redundant is the identity's sessions_revoked_before watermark (set by "sign out everywhere else"):
+// resolveOIDCSlow refuses a Firebase sign-in whose auth_time is not after the watermark and that has no session row,
+// whether or not the tombstone exists. So a tombstone goes only when it is a Firebase session whose auth_time is at or
+// before its identity's watermark. A tombstone of a single-device sign-out that no watermark covers stays: deleting it
+// would let that device sign in again. Rows of other identity providers stay for the same reason.
+//
+// Each run continues from a cursor in reconcile_state (revocation order), so the tombstones that stay are looked
+// at once per pass, and a new pass starts a day after the last one reached its end (a watermark may have advanced).
+func (s *Store) PurgeRevokedSessionTombstones(ctx context.Context, retain time.Duration) (int64, error) {
+	afterTS, afterID := "-infinity", "00000000-0000-0000-0000-000000000000"
+	cursor, err := s.walkResume(ctx, sessionTombstoneJob, sessionTombstoneRewalk)
+	if err != nil {
+		return 0, err
+	}
+	if ts, id, ok := strings.Cut(cursor, "|"); ok {
+		afterTS, afterID = ts, id
+	}
+	var total int64
+	for ctx.Err() == nil {
+		var seen, gone int64
+		var lastTS, lastID *string
+		err = s.Pool.QueryRow(ctx, `WITH cand AS MATERIALIZED (SELECT s.ctid AS tid,s.session_id,s.revoked_at,s.issuer,s.user_id,s.external_sid FROM sessions s
+  WHERE s.revoked_at IS NOT NULL AND s.external_sid IS NOT NULL AND s.revoked_at<now()-$1::interval AND (s.revoked_at,s.session_id)>($2::timestamptz,$3::uuid)
+  ORDER BY s.revoked_at,s.session_id LIMIT $4),
+ del AS (DELETE FROM sessions WHERE ctid IN (SELECT c.tid FROM cand c JOIN auth_identities a ON a.issuer=c.issuer AND a.user_id=c.user_id AND starts_with(c.external_sid,'fb:'||a.subject||':')
+   WHERE starts_with(c.issuer,$5) AND a.sessions_revoked_before IS NOT NULL
+   AND substr(c.external_sid,length('fb:'||a.subject||':')+1) ~ '^[0-9]{1,18}$'
+   AND to_timestamp(substr(c.external_sid,length('fb:'||a.subject||':')+1)::bigint)<=a.sessions_revoked_before) RETURNING 1)
+ SELECT (SELECT count(*) FROM cand),(SELECT count(*) FROM del),
+  (SELECT l.revoked_at::text FROM cand l ORDER BY l.revoked_at DESC,l.session_id DESC LIMIT 1),(SELECT l.session_id::text FROM cand l ORDER BY l.revoked_at DESC,l.session_id DESC LIMIT 1)`,
+			retain, afterTS, afterID, sessionTombstoneBatch, firebaseIssuerPrefix).Scan(&seen, &gone, &lastTS, &lastID)
+		total += gone
+		if err != nil {
 			return total, err
 		}
-		afterTS, afterID = *lastTS, *lastID
+		if lastTS != nil {
+			afterTS, afterID = *lastTS, *lastID
+			if err = s.walkSave(ctx, sessionTombstoneJob, afterTS+"|"+afterID); err != nil {
+				return total, err
+			}
+		}
+		if seen < sessionTombstoneBatch || lastTS == nil {
+			return total, s.walkEnd(ctx, sessionTombstoneJob)
+		}
 	}
 	return total, ctx.Err()
 }

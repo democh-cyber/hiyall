@@ -84,3 +84,67 @@ func TestMemoryListsByPrefixWithTimes(t *testing.T) {
 		t.Fatalf("limit: %+v", got)
 	}
 }
+
+// lockedBucket refuses to overwrite or delete an object that exists: what an R2 bucket-lock rule does.
+type lockedBucket struct{ *Memory }
+
+func (l lockedBucket) Put(ctx context.Context, k string, d []byte, ct string) error {
+	if l.Memory.Has(k) {
+		return errDenied
+	}
+	return l.Memory.Put(ctx, k, d, ct)
+}
+func (l lockedBucket) Delete(context.Context, ...string) error { return errDenied }
+
+// Round-4 N-6: starts do not pile up probe objects. The probe is named for the day: where the token can delete, nothing is
+// left; where a bucket lock keeps it, a second start on the same day finds the key taken and writes one more under a
+// unique name at most.
+func TestEvidenceCanaryLeavesNothingBehindWhereItCanDeleteAndAtMostOneADayUnderALock(t *testing.T) {
+	ctx := context.Background()
+	count := func(m *Memory) int {
+		objs, err := m.List(ctx, CanaryPrefix, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(objs)
+	}
+	open := NewMemory()
+	for i := 0; i < 5; i++ {
+		res, err := EvidenceCanary(ctx, open)
+		if err != nil || !res.CanDelete {
+			t.Fatalf("run %d: %+v %v", i, res, err)
+		}
+	}
+	if n := count(open); n != 0 {
+		t.Fatalf("a token that can delete left %d probe objects behind after 5 starts", n)
+	}
+	// Overwrite allowed, delete refused (a retention rule on deletes only): the day's key is reused.
+	keeps := guarded{Memory: NewMemory(), denyDelete: true, denyGet: true}
+	var key string
+	for i := 0; i < 5; i++ {
+		res, err := EvidenceCanary(ctx, keeps)
+		if err != nil || !res.WriteOnly() {
+			t.Fatalf("run %d: %+v %v", i, res, err)
+		}
+		if key != "" && res.Key != key {
+			t.Fatalf("the probe key changed between starts of one day: %s then %s", key, res.Key)
+		}
+		key = res.Key
+	}
+	if n := count(keeps.Memory); n != 1 {
+		t.Fatalf("five starts on one day left %d probe objects under overwrite-allowed locking, want 1", n)
+	}
+	if want := CanaryPrefix + time.Now().UTC().Format("20060102"); key != want {
+		t.Fatalf("probe key %q, want the day's %q", key, want)
+	}
+	// A lock that refuses the overwrite too: the second start writes under a unique name, and still tells the truth.
+	locked := lockedBucket{Memory: NewMemory()}
+	first, err := EvidenceCanary(ctx, locked)
+	if err != nil || first.CanDelete {
+		t.Fatalf("%+v %v", first, err)
+	}
+	second, err := EvidenceCanary(ctx, locked)
+	if err != nil || second.CanDelete || second.Key == first.Key {
+		t.Fatalf("%+v %v", second, err)
+	}
+}

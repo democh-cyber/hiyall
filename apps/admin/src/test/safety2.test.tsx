@@ -120,28 +120,33 @@ describe('counsel’s reference form', () => {
   })
 })
 
-describe('Apple revocations and evidence orphans', () => {
-  const revocation = { revocationId: 'rv-1', issuer: 'https://securetoken.google.com/p', subject: 'fb-uid-1', userId: 'u-77', reason: 'the app could not obtain a Sign in with Apple authorization code', createdAt: '2026-10-14T09:00:00Z' }
+describe('Apple deletion records and evidence orphans', () => {
+  const revocation = { revocationId: 'rv-1', issuer: 'https://securetoken.google.com/p', subject: 'fb-uid-1', userId: 'u-77', status: 'manual', reason: 'support-driven deletion: erasure request', createdAt: '2026-10-14T09:00:00Z' }
+  const informed = { revocationId: 'rv-2', issuer: 'https://securetoken.google.com/p', subject: 'fb-uid-2', userId: 'u-78', status: 'member_informed', reason: 'the member was told to remove Hiyall in Apple ID settings', createdAt: '2026-10-15T09:00:00Z' }
 
-  it('lists the manual revocations and marks one done with a reason', async () => {
+  it('lists the Apple records and acknowledges one with a reason, without claiming anyone revoked anything', async () => {
     const user = userEvent.setup()
-    let items = [revocation]
+    let items = [revocation, informed]
     const { calls } = mockApi({
       ...signedIn('admin'),
       'GET /apple-revocations': () => ({ data: { items } }),
-      'POST /apple-revocations/rv-1/revoked': () => { items = []; return { data: { revocationId: 'rv-1', done: true } } },
+      'POST /apple-revocations/rv-1/acknowledge': () => { items = items.filter((r) => r.revocationId !== 'rv-1'); return { data: { revocationId: 'rv-1', acknowledged: true } } },
     })
     renderAt('/apple-revocations')
-    expect(await screen.findByText('fb-uid-1')).toBeInTheDocument()
-    expect(screen.getByText('u-77')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Mark revoked…' }))
-    const dialog = screen.getByRole('dialog', { name: 'Mark the Apple authorization revoked' })
-    const submit = within(dialog).getByRole('button', { name: 'Mark revoked' })
+    expect(await screen.findByText('u-77')).toBeInTheDocument()
+    expect(screen.getByText('tell the member')).toBeInTheDocument()
+    expect(screen.getByText('member informed')).toBeInTheDocument()
+    expect(screen.getByText(/Stop using Apple ID/)).toBeInTheDocument()
+    // The old claim, that an operator revokes the authorization in Apple's console, is gone from the page.
+    expect(screen.queryByText(/developer console/i)).not.toBeInTheDocument()
+    await user.click(screen.getAllByRole('button', { name: 'Acknowledge…' })[0])
+    const dialog = screen.getByRole('dialog', { name: 'Acknowledge the Apple record' })
+    const submit = within(dialog).getByRole('button', { name: 'Acknowledge' })
     expect(submit).toBeDisabled()
-    await user.type(within(dialog).getByLabelText(/Reason/), 'revoked in Apple console, ticket 7')
+    await user.type(within(dialog).getByLabelText(/Reason/), 'told the member by e-mail, ticket 7')
     await user.click(submit)
-    expect(await screen.findByText('Nothing to revoke.')).toBeInTheDocument()
-    expect(calls.find((c) => c.path === '/apple-revocations/rv-1/revoked')!.body).toEqual({ reason: 'revoked in Apple console, ticket 7' })
+    expect(await screen.findByText('Acknowledged and recorded in the audit log.')).toBeInTheDocument()
+    expect(calls.find((c) => c.path === '/apple-revocations/rv-1/acknowledge')!.body).toEqual({ reason: 'told the member by e-mail, ticket 7' })
   })
 
   it('shows evidence objects without a case', async () => {
@@ -157,14 +162,14 @@ describe('Apple revocations and evidence orphans', () => {
     mockApi({ ...signedIn('moderator') })
     renderAt('/apple-revocations')
     expect(await screen.findByText('Your role does not allow this page.')).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: 'Apple revocations' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Apple deletions' })).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Evidence orphans' })).not.toBeInTheDocument()
   })
 
   it('offers the pages to an administrator', async () => {
     mockApi({ ...signedIn('admin'), 'GET /reports*': () => ({ data: { items: [], nextCursor: null, hasMore: false } }) })
     renderAt('/')
-    expect(await screen.findByRole('link', { name: 'Apple revocations' })).toHaveAttribute('href', '/apple-revocations')
+    expect(await screen.findByRole('link', { name: 'Apple deletions' })).toHaveAttribute('href', '/apple-revocations')
     expect(screen.getByRole('link', { name: 'Evidence orphans' })).toHaveAttribute('href', '/evidence-orphans')
   })
 })

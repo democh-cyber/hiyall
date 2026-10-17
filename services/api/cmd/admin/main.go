@@ -5,7 +5,8 @@
 //	admin operator-add -email E -role R [-name N]   create a staff account; prints the one-time authenticator enrolment
 //	admin operator-reset -email E          new password and authenticator for an account; ends its sessions
 //	admin operator-disable -email E -reason TEXT    disable an account at once, even the last administrator
-//	admin schedule-deletion -user ID -reason TEXT   schedule a member's account deletion (support-driven; audited)
+//	admin schedule-deletion -user ID -reason TEXT [-operator EMAIL]   schedule a member's account deletion (support-driven; audited under the
+//	                                       operator's e-mail address: -operator or ADMIN_OPERATOR_EMAIL, an active administrator, never a shell user)
 //
 // Staff accounts exist only because this command created them. The password is read from a terminal
 // prompt, or from the first line of stdin when stdin is not a terminal; it is never taken from a flag,
@@ -71,7 +72,7 @@ const usageText = `usage:
   admin operator-add -email EMAIL -role viewer|moderator|admin [-name NAME]
   admin operator-reset -email EMAIL
   admin operator-disable -email EMAIL -reason TEXT
-  admin schedule-deletion -user MEMBER_ID -reason TEXT
+  admin schedule-deletion -user MEMBER_ID -reason TEXT [-operator EMAIL]
   admin healthcheck
   admin purge-holds [-batch N]`
 
@@ -137,11 +138,18 @@ func serve(ctx context.Context, getenv func(string) string) error {
 	}
 	if evidenceReader != nil {
 		svc.Evidence, svc.EvidenceDelete = evidenceReader, evidenceDeleter
+		// Say it at start, loudly: with the wrong bucket the sweep and the purge do nothing (they check again every run).
+		if perr := svc.EvidenceProbe(startup); perr != nil {
+			slog.Error("ALERT: the evidence sweep and the hold purge will do nothing until this is fixed", "reason", perr.Error())
+		}
 	} else if cfg.MediaEndpoint != "" {
 		slog.Warn("quarantined photos are read from the media bucket: set ADMIN_EVIDENCE_ENDPOINT (read-only token for the evidence bucket)")
 	}
 	if cfg.SharedDatabase {
 		slog.Warn("the console runs on DATABASE_URL (the API's database role); set ADMIN_DATABASE_URL to the hiyall_admin role (database/roles/roles.sql)")
+	}
+	if err = checkAdminGrants(startup, db, cfg.Env); err != nil {
+		return err
 	}
 	var operators int
 	if err = db.Pool.QueryRow(startup, `SELECT count(*) FROM operators`).Scan(&operators); err != nil {
@@ -238,7 +246,7 @@ func operatorCommand(ctx context.Context, command string, args []string, getenv 
 		}
 		// guards=false: when a stolen device belongs to the only administrator, they are still shut out.
 		if _, err = svc.SetDisabled(timeout, admin.Actor{Label: actor}, id, true, reasonText, false); err != nil {
-			return err
+			return cliError(err)
 		}
 		fmt.Fprintln(stdout, "Disabled. Their sessions have ended.")
 		return nil
@@ -262,12 +270,21 @@ func operatorCommand(ctx context.Context, command string, args []string, getenv 
 		enrolment, err = svc.ResetOperator(timeout, *email, password, actor)
 	}
 	if err != nil {
-		return err
+		return cliError(err)
 	}
 	// The seed is shown once, here. It is stored sealed and cannot be read back.
 	fmt.Fprintf(stdout, "%s %s (%s)\n\nAuthenticator enrolment, shown once. Add it to an authenticator app now:\n  URI:    %s\n  Secret: %s\n\nThe password was not printed or logged.\n",
 		map[string]string{"operator-add": "Created", "operator-reset": "Reset"}[command], enrolment.Operator.Email, enrolment.Operator.Role, enrolment.OTPAuth, enrolment.SeedText)
 	return nil
+}
+
+// cliError says what a policy refusal means: the error's text is its code, which tells a person at a terminal nothing.
+func cliError(err error) error {
+	var policy *domain.PolicyError
+	if errors.As(err, &policy) {
+		return errors.New(policy.Code + ": " + policy.Message)
+	}
+	return err
 }
 
 func osUser() string {
@@ -329,7 +346,8 @@ func purgeHoldsCommand(ctx context.Context, args []string, getenv func(string) s
 	if err != nil {
 		return err
 	}
-	if _, svc.EvidenceDelete, err = admin.NewEvidenceStores(timeout, cfg); err != nil {
+	// The reader too: the purge first proves it looks at the bucket the API writes to (admin.Service.EvidenceProbe).
+	if svc.Evidence, svc.EvidenceDelete, err = admin.NewEvidenceStores(timeout, cfg); err != nil {
 		return err
 	}
 	var total int64
@@ -347,16 +365,20 @@ func purgeHoldsCommand(ctx context.Context, args []string, getenv func(string) s
 	return nil
 }
 
-// scheduleDeletionCommand is `admin schedule-deletion -user ID -reason TEXT`: the support-driven way to delete a
-// member's account (the same 30 day grace period as the member's own request: sessions end at once, the purge
-// runs when it is due). It is for an operator at a terminal, never an HTTP route, and is audited with the
-// operator's OS user and the reason. A member who signs in with Apple gets a manual revocation to do in the
-// console's Apple revocations list. Nothing here needs the member's code or password.
+// scheduleDeletionCommand is `admin schedule-deletion -user ID -reason TEXT [-operator EMAIL]`: the support-driven way to
+// delete a member's account (the same 30 day grace period as the member's own request: sessions end at once, the purge
+// runs when it is due). It is for an operator at a terminal, never an HTTP route, and is audited under the operator's
+// e-mail address and the reason: -operator, else ADMIN_OPERATOR_EMAIL, naming an active administrator (the database
+// function refuses anything else, so a shell user such as cli:root is never recorded). It works for a member who is
+// suspended, banned or deactivated (an erasure request); such a member cannot cancel it. A member who signs in with
+// Apple gets a record in the console's Apple list: nobody at Hiyall can revoke the authorization, so an operator tells
+// the member to remove Hiyall in Apple ID settings and acknowledges it. Nothing here needs the member's code or password.
 func scheduleDeletionCommand(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("schedule-deletion", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	userID := flags.String("user", "", "the member's id")
 	reason := flags.String("reason", "", "why (recorded in the audit log)")
+	operator := flags.String("operator", "", "e-mail address of the administrator doing this (default: ADMIN_OPERATOR_EMAIL)")
 	if err := flags.Parse(args); err != nil || *userID == "" || *reason == "" {
 		return usageError(usageText)
 	}
@@ -366,6 +388,17 @@ func scheduleDeletionCommand(ctx context.Context, args []string, getenv func(str
 	reasonText, err := admin.Reason(*reason)
 	if err != nil {
 		return err
+	}
+	who := strings.TrimSpace(*operator)
+	if who == "" {
+		who = strings.TrimSpace(getenv("ADMIN_OPERATOR_EMAIL"))
+	}
+	if who == "" {
+		return errors.New("name the administrator doing this: -operator EMAIL or ADMIN_OPERATOR_EMAIL (the deletion is audited under that address, not under a shell user)")
+	}
+	who, ok := admin.NormalizeEmail(who)
+	if !ok {
+		return errors.New("-operator / ADMIN_OPERATOR_EMAIL must be an e-mail address")
 	}
 	cfg, err := admin.LoadConfig(getenv)
 	if err != nil {
@@ -378,10 +411,13 @@ func scheduleDeletionCommand(ctx context.Context, args []string, getenv func(str
 		return errors.New("database connection failed; check configuration without logging credentials")
 	}
 	defer db.Pool.Close()
-	due, err := db.AdminScheduleDeletion(timeout, *userID, "cli:"+osUser(), reasonText)
+	due, err := db.AdminScheduleDeletion(timeout, *userID, who, reasonText)
 	if err != nil {
-		return err
+		if errors.Is(err, store.ErrNotAdmin) {
+			return errors.New(who + " is not an active administrator: -operator / ADMIN_OPERATOR_EMAIL must name one")
+		}
+		return cliError(err)
 	}
-	fmt.Fprintf(stdout, "Deletion scheduled. Their sessions have ended. The account is removed on %s unless the member signs in and cancels before then.\nIf they signed in with Apple, revoke the authorization by hand and mark it done in the console (Apple revocations).\n", due.UTC().Format(time.RFC3339))
+	fmt.Fprintf(stdout, "Deletion scheduled. Their sessions have ended. The account is removed on %s unless the member signs in and cancels before then (a member who was suspended or banned cannot cancel).\nIf they signed in with Apple, tell them to remove Hiyall in Apple ID settings (Settings > Apple ID > Sign in with Apple > Hiyall > Stop using Apple ID): nobody at Hiyall can do that for them. Acknowledge it in the console (Apple list) once you have.\n", due.UTC().Format(time.RFC3339))
 	return nil
 }

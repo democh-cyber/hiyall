@@ -153,7 +153,7 @@ func TestOwnerPathWithoutSuperuser(t *testing.T) {
 	exec(super, `INSERT INTO media_assets(media_id,owner_id,purpose,status,content_type,size_bytes,upload_key,attached,expires_at,declared_bytes)
  SELECT '00000000-0000-0000-0000-0000000000f1',user_id,'post','quarantined','image/jpeg',10,'hold/1',false,now(),10 FROM people WHERE n=3`)
 	exec(super, `INSERT INTO content_cases(case_id,media_id,user_id,purpose,result,scanner,original_sha256,original_bytes,content_type,original_key,status,hold_until,released_at,released_by,release_reason)
- SELECT '00000000-0000-0000-0000-0000000000f2','00000000-0000-0000-0000-0000000000f1',user_id,'post','flagged','test','x',10,'image/jpeg','hold/1','cleared',now()-interval '1 day',now()-interval '2 days','a','b' FROM people WHERE n=3`)
+ SELECT '00000000-0000-0000-0000-0000000000f2','00000000-0000-0000-0000-0000000000f1',user_id,'post','flagged','test','x',10,'image/jpeg','hold/00000000-0000-0000-0000-0000000000f1/original','cleared',now()-interval '1 day',now()-interval '2 days','a','b' FROM people WHERE n=3`)
 	if n := one(api, `SELECT count(*) FROM held_objects_due(10)`); n != 1 {
 		t.Fatalf("held_objects_due as hiyall_api: %d, want 1", n)
 	}
@@ -171,4 +171,6 @@ func TestOwnerPathWithoutSuperuser(t *testing.T) {
 	if _, err = api.Exec(ctx, `SELECT 1 FROM operator_audit`); err == nil {
 		t.Error("hiyall_api can read operator_audit")
 	}
+	// Every other definer function, as the owner and as the role it is granted to (round-4 audit N9).
+	ownerSafetyFunctions(t, ctx, super, asRole("hiyall_migrate"), admin, api)
 }

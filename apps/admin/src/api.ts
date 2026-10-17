@@ -201,12 +201,18 @@ export interface ApprovalList {
 export const COUNSEL_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9 ._/-]{5,119}$/
 export const COUNSEL_HINT = '6 to 120 characters: letters, digits, spaces and . _ / - (no commas), starting with a letter or digit'
 
-/** A Sign in with Apple authorization of a deleted account that an operator revokes by hand in Apple's console. */
+/**
+ * A record about the Sign in with Apple authorization of a deleted account. Nobody at Hiyall can revoke it (Apple's
+ * revoke call needs the member's own token): the member removes Hiyall in Apple ID settings. 'member_informed': the app
+ * told them (kept 90 days, nothing to do). 'manual': support scheduled the deletion, so an operator tells the member, then
+ * acknowledges the record.
+ */
 export interface AppleRevocation {
   revocationId: string
   issuer: string
   subject: string
   userId: string
+  status: 'manual' | 'member_informed'
   reason: string
   createdAt: string
 }

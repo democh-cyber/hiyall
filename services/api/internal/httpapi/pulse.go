@@ -463,8 +463,14 @@ func (a *API) quarantineUpload(ctx context.Context, owner, id string, upload sto
 	// The case row goes first, as 'pending', and the objects second: an object in the bucket then never exists
 	// without a case that names it. If a write fails the case stays pending and the console's sweep drops it once an
 	// hour has passed and the objects are missing (round-3 audit API-6/7).
+	// The media row's upload key is replaced by the evidence key, so the case records where the original sits in the
+	// upload prefix: if the evidence write fails for a match, that object is the only copy and an operator can find it.
+	signals := map[string]string{"uploadKey": upload.Key}
+	for k, v := range res.Signals {
+		signals[k] = v
+	}
 	caseID, err := a.Store.BeginQuarantine(ctx, store.Quarantine{
-		MediaID: id, Owner: owner, Purpose: upload.Purpose, Result: string(res.Verdict), Scanner: res.Scanner, Signals: res.Signals,
+		MediaID: id, Owner: owner, Purpose: upload.Purpose, Result: string(res.Verdict), Scanner: res.Scanner, Signals: signals,
 		OriginalSHA256: media.SHA256Hex(original), OriginalBytes: int64(len(original)), ContentType: upload.ContentType, OriginalKey: originalKey, FullKey: fullKey,
 		RetentionDays: a.safe.retentionDays,
 	})
@@ -475,18 +481,55 @@ func (a *API) quarantineUpload(ctx context.Context, owner, id string, upload sto
 		// The uploader is already suspended in the database; close their live sockets whatever happens next.
 		defer a.endSessions(ctx, owner, "", "")
 	}
-	if err := evidence.Put(ctx, originalKey, original, upload.ContentType); err != nil {
+	if err := a.putEvidence(ctx, evidence, originalKey, original, upload.ContentType, id, upload.Key, res.Verdict); err != nil {
 		return err
 	}
-	if err := evidence.Put(ctx, fullKey, out.Full, "image/jpeg"); err != nil {
+	if err := a.putEvidence(ctx, evidence, fullKey, out.Full, "image/jpeg", id, upload.Key, res.Verdict); err != nil {
 		return err
 	}
 	if err = a.Store.ActivateQuarantine(ctx, caseID); err != nil {
 		return err
 	}
 	a.quarantineAlert(ctx, caseID, id, string(res.Verdict))
-	if err = a.Media.Delete(ctx, upload.Key); err != nil {
-		slog.Warn("quarantined upload not removed from the upload prefix", "mediaId", id, "reason", err.Error())
-	}
+	a.removeQuarantinedUpload(ctx, id, upload.Key)
 	return &domain.PolicyError{Status: 422, Code: "UPLOAD_REJECTED", Message: "That photo can’t be used."}
+}
+
+// putEvidence writes one evidence object. When it fails for a FLAGGED upload (the console's sweep will drop the pending
+// case once an hour has passed, and nothing in the database names the upload object any more) the upload object is
+// recorded for the cleanup job, so it does not stay in the upload prefix for ever. For a MATCH it is kept: until an
+// operator has dealt with the case it may be the only copy (its key is in the case's signals as uploadKey).
+func (a *API) putEvidence(ctx context.Context, evidence media.Store, key string, data []byte, contentType, mediaID, uploadKey string, verdict media.Verdict) error {
+	err := evidence.Put(ctx, key, data, contentType)
+	if err != nil && verdict != media.Match {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if rerr := a.Store.RecordUploadLeftover(rctx, uploadKey, mediaID); rerr != nil {
+			slog.Warn("upload object of a flagged photo with no evidence copy not recorded for cleanup", "mediaId", mediaID, "reason", scrubURLs(rerr.Error()))
+		}
+	}
+	return err
+}
+
+// removeQuarantinedUpload deletes the original from the upload prefix of the media bucket once the evidence copy is
+// stored. The media row's upload key now names the evidence (BeginQuarantine), so an object left behind here would be
+// referenced by nothing and found by no cleanup: a failed delete is tried once more and then recorded
+// (quarantine_upload_leftovers) for the API's hourly job, never just logged (round-4 N-7).
+func (a *API) removeQuarantinedUpload(ctx context.Context, mediaID, key string) {
+	ctx = context.WithoutCancel(ctx)
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err = a.Media.Delete(dctx, key)
+		cancel()
+		if err == nil {
+			return
+		}
+	}
+	slog.Warn("quarantined upload not removed from the upload prefix; recorded for the cleanup job", "mediaId", mediaID, "reason", scrubURLs(err.Error()))
+	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if rerr := a.Store.RecordUploadLeftover(rctx, key, mediaID); rerr != nil {
+		slog.Error("quarantined upload leftover could not be recorded; remove it by hand", "mediaId", mediaID, "key", key, "reason", scrubURLs(rerr.Error()))
+	}
 }

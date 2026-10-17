@@ -86,6 +86,17 @@ func newEnv(t *testing.T) *env {
 	if err = db.Seed(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// The suites assume no cases from earlier runs: a long-lived local database accumulates released or backdated
+	// cases whose holds have run out, which the purge and sweep tests would then act on. A fresh CI database has none.
+	// Only rows older than ten minutes go, so cases a concurrently running test just made are left alone.
+	for _, q := range []string{
+		`DELETE FROM evidence_approvals WHERE case_id IN (SELECT case_id FROM content_cases WHERE created_at < now() - interval '10 minutes')`,
+		`DELETE FROM content_cases WHERE created_at < now() - interval '10 minutes'`,
+	} {
+		if _, err = db.Pool.Exec(ctx, q); err != nil {
+			t.Fatalf("clearing cases left by earlier runs: %v", err)
+		}
+	}
 	svc, err := NewService(db, testConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -120,9 +131,22 @@ type testOperator struct {
 
 func (e *env) operator(role Role) testOperator {
 	e.t.Helper()
-	enrol, err := e.svc.CreateOperator(e.ctx, randomName("op")+"@hiyall.test", "Test "+string(role), role, testPassword, "test")
+	// operator_create refuses an administrator while another is active (a promotion needs a second administrator's
+	// approval), so a fixture administrator is created as a moderator and made one directly: the fixtures connect as
+	// the schema owner, which may. The restricted-role tests assert what the console role may not do.
+	create := role
+	if role == RoleAdmin {
+		create = RoleModerator
+	}
+	enrol, err := e.svc.CreateOperator(e.ctx, randomName("op")+"@hiyall.test", "Test "+string(role), create, testPassword, "test")
 	if err != nil {
 		e.t.Fatal(err)
+	}
+	if role == RoleAdmin {
+		if _, err = e.db.Pool.Exec(e.ctx, `UPDATE operators SET role='admin' WHERE operator_id=$1`, enrol.Operator.ID); err != nil {
+			e.t.Fatal(err)
+		}
+		enrol.Operator.Role = RoleAdmin
 	}
 	return testOperator{Operator: enrol.Operator, seed: enrol.TOTPSeed, password: testPassword}
 }

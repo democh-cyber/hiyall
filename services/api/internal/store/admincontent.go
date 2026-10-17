@@ -216,8 +216,8 @@ var ErrCaseClosed = &domain.PolicyError{Status: 409, Code: "CASE_STATE", Message
 // UPDATE on cases, and 'reported' moves hold_until to at least a year after the report, however late it is made.
 // A case is cleared only by a proposal a second administrator approves (ProposeEvidenceStep), so Action "clear"
 // is refused here. legalHold, when not nil, can only be true: a legal hold is lifted by the same two-person
-// route, and a reported or confirmed case always carries one. hook runs in the same transaction, where the
-// console writes its audit entry.
+// route, and a reported or confirmed case always carries one. The function writes the audit entry in the same
+// transaction (migration 0046); hook, when not nil, runs there too.
 type ContentCaseStep struct {
 	Action          string // confirm or reported
 	OperatorID      string // the acting administrator
@@ -239,6 +239,9 @@ func (s *Store) ResolveContentCase(ctx context.Context, caseID string, step Cont
 		return ErrCaseClosed
 	}
 	return s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := SetSafetyContext(ctx, tx); err != nil {
+			return err
+		}
 		var user string
 		var err error
 		if step.Action == "confirm" {

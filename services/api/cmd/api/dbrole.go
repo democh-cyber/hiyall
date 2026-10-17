@@ -83,7 +83,7 @@ func enforceGrants(ctx context.Context, db *store.Store, env string) (func(conte
 }
 
 // reviewDatabase is `api check-config -db`: it connects with DATABASE_URL (read only, short timeouts) and checks
-// the role (RoleProblems) and the grants a release applied (GrantProblems for hiyall_api). Against production
+// the role (RoleProblems) and the grants a release applied (GrantProblems for hiyall_api and, when the cluster has it, hiyall_admin). Against production
 // a problem is fatal; elsewhere the role findings are warnings, because a development database is owned by the
 // developer's own role on purpose. A failure to connect is a problem in both.
 func reviewDatabase() (problems, warnings []string) {
@@ -111,6 +111,14 @@ func reviewDatabase() (problems, warnings []string) {
 	grantLines, err := db.GrantProblems(ctx, store.GrantsRole)
 	if err != nil {
 		return append(problems, "the grants check failed: "+err.Error()), warnings
+	}
+	// The console's role too, when the deployment has one: the release step that runs grants.sql serves both.
+	if exists, err := db.RoleExists(ctx, store.AdminRole); err == nil && exists {
+		adminLines, err := db.GrantProblems(ctx, store.AdminRole)
+		if err != nil {
+			return append(problems, "the console role's grants check failed: "+err.Error()), warnings
+		}
+		grantLines = append(grantLines, adminLines...)
 	}
 	if cfg.Env == "production" {
 		problems = add(problems, grantLines...)

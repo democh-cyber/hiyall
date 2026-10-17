@@ -137,6 +137,29 @@ func TestOperatorAddPrintsEnrolmentOnceAndTheOperatorCanSignIn(t *testing.T) {
 	}
 }
 
+// Round-4 N-2: `operator-add -role admin` is the bootstrap only. With an active administrator the command refuses and says
+// how to do it (a moderator, then a promotion a second administrator approves), and creates nothing.
+func TestOperatorAddRefusesASecondAdministratorWhileOneIsActive(t *testing.T) {
+	getenv, db, ctx := testEnv(t)
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO operators(operator_id,email,display_name,role,password_hash,totp_secret) VALUES(gen_random_uuid(),$1,'Active','admin','h','\x00')`,
+		"active-"+strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")+"@hiyall.test"); err != nil {
+		t.Fatal(err)
+	}
+	email := "second-" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "") + "@hiyall.test"
+	var out, errOut bytes.Buffer
+	err := run(ctx, []string{"operator-add", "-email", email, "-role", "admin"}, getenv, strings.NewReader("a long CLI test password\n"), &out, &errOut)
+	if err == nil || !strings.Contains(err.Error(), "moderator") || !strings.Contains(err.Error(), "approves") {
+		t.Fatalf("a second administrator: %v", err)
+	}
+	var n int
+	if err = db.Pool.QueryRow(ctx, `SELECT count(*) FROM operators WHERE email=$1`, email).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("an account was created anyway: %d %v", n, err)
+	}
+	if strings.Contains(out.String(), "otpauth") {
+		t.Fatal("an enrolment was printed for an account that was not created")
+	}
+}
+
 func TestServeRefusesToStartOnANonLoopbackAddress(t *testing.T) {
 	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
 	for name, vars := range map[string]map[string]string{
@@ -152,9 +175,14 @@ func TestServeRefusesToStartOnANonLoopbackAddress(t *testing.T) {
 	}
 }
 
-// Round-3 audit API-1: support can delete an account that cannot get an Apple code, from a terminal, audited.
+// Round-3 audit API-1: support can delete an account that cannot get an Apple code, from a terminal, audited. Round-4
+// N-12: under the operator's own address (never a shell user), and nobody can revoke the Apple authorization for the member.
 func TestScheduleDeletionCommandSchedulesAuditsAndQueuesTheAppleRevocation(t *testing.T) {
 	getenv, db, ctx := testEnv(t)
+	operatorID, operatorEmail := uuid.NewString(), "support-"+uuid.NewString()[:8]+"@hiyall.test"
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO operators(operator_id,email,display_name,role,password_hash,totp_secret) VALUES($1,$2,'Support','admin','h','\x00')`, operatorID, operatorEmail); err != nil {
+		t.Fatal(err)
+	}
 	id := uuid.NewString()
 	subject := "apple-" + id
 	for _, q := range []string{
@@ -171,20 +199,50 @@ func TestScheduleDeletionCommandSchedulesAuditsAndQueuesTheAppleRevocation(t *te
 			t.Fatalf("accepted %v", bad)
 		}
 	}
-	if err := run(ctx, []string{"schedule-deletion", "-user", "not-an-id", "-reason", "support ticket 4411"}, getenv, strings.NewReader(""), &out, &errOut); err == nil {
+	if err := run(ctx, []string{"schedule-deletion", "-user", "not-an-id", "-reason", "support ticket 4411", "-operator", operatorEmail}, getenv, strings.NewReader(""), &out, &errOut); err == nil {
 		t.Fatal("accepted a bad id")
 	}
-	if err := run(ctx, []string{"schedule-deletion", "-user", id, "-reason", "short"}, getenv, strings.NewReader(""), &out, &errOut); err == nil {
+	if err := run(ctx, []string{"schedule-deletion", "-user", id, "-reason", "short", "-operator", operatorEmail}, getenv, strings.NewReader(""), &out, &errOut); err == nil {
 		t.Fatal("accepted a short reason")
 	}
-	if err := run(ctx, []string{"schedule-deletion", "-user", uuid.NewString(), "-reason", "support ticket 4411"}, getenv, strings.NewReader(""), &out, &errOut); err == nil {
+	if err := run(ctx, []string{"schedule-deletion", "-user", uuid.NewString(), "-reason", "support ticket 4411", "-operator", operatorEmail}, getenv, strings.NewReader(""), &out, &errOut); err == nil {
 		t.Fatal("scheduled an unknown member")
 	}
-	out.Reset()
-	if err := run(ctx, []string{"schedule-deletion", "-user", id, "-reason", "support ticket 4411: member cannot sign in with Apple"}, getenv, strings.NewReader(""), &out, &errOut); err != nil {
+	// No operator: neither the flag nor ADMIN_OPERATOR_EMAIL. A shell user, an address that is nobody and a disabled or
+	// non-administrator account are refused, and nothing changes for the member.
+	for name, args := range map[string][]string{
+		"no operator":  {"schedule-deletion", "-user", id, "-reason", "support ticket 4411"},
+		"a shell user": {"schedule-deletion", "-user", id, "-reason", "support ticket 4411", "-operator", "cli:root"},
+		"root":         {"schedule-deletion", "-user", id, "-reason", "support ticket 4411", "-operator", "root"},
+		"unknown":      {"schedule-deletion", "-user", id, "-reason", "support ticket 4411", "-operator", "nobody@hiyall.test"},
+	} {
+		if err := run(ctx, args, getenv, strings.NewReader(""), &out, &errOut); err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
+	}
+	var viewerEmail = "viewer-" + uuid.NewString()[:8] + "@hiyall.test"
+	if _, err := db.Pool.Exec(ctx, `INSERT INTO operators(operator_id,email,display_name,role,password_hash,totp_secret) VALUES(gen_random_uuid(),$1,'Viewer','viewer','h','\x00')`, viewerEmail); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "Deletion scheduled") || !strings.Contains(out.String(), "Apple") {
+	if err := run(ctx, []string{"schedule-deletion", "-user", id, "-reason", "support ticket 4411", "-operator", viewerEmail}, getenv, strings.NewReader(""), &out, &errOut); err == nil {
+		t.Fatal("a viewer scheduled a deletion")
+	}
+	var untouched string
+	if err := db.Pool.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1`, id).Scan(&untouched); err != nil || untouched != "active" {
+		t.Fatalf("a refused command changed the member: %s %v", untouched, err)
+	}
+	// ADMIN_OPERATOR_EMAIL does it without the flag.
+	out.Reset()
+	withOperator := func(k string) string {
+		if k == "ADMIN_OPERATOR_EMAIL" {
+			return operatorEmail
+		}
+		return getenv(k)
+	}
+	if err := run(ctx, []string{"schedule-deletion", "-user", id, "-reason", "support ticket 4411: member cannot sign in with Apple"}, withOperator, strings.NewReader(""), &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Deletion scheduled") || !strings.Contains(out.String(), "Apple") || !strings.Contains(out.String(), "Stop using Apple ID") || strings.Contains(strings.ToLower(out.String()), "revoke the authorization by hand") {
 		t.Fatalf("output: %s", out.String())
 	}
 	var status string
@@ -198,11 +256,12 @@ func TestScheduleDeletionCommandSchedulesAuditsAndQueuesTheAppleRevocation(t *te
 		t.Fatal("no manual Apple revocation queued")
 	}
 	var actor, reason string
-	if err := db.Pool.QueryRow(ctx, `SELECT actor,reason FROM operator_audit WHERE action='account_deletion_scheduled' AND target_id=$1`, id).Scan(&actor, &reason); err != nil || !strings.HasPrefix(actor, "cli:") || !strings.Contains(reason, "ticket 4411") {
-		t.Fatalf("audit %q %q %v", actor, reason, err)
+	var auditOperator *string
+	if err := db.Pool.QueryRow(ctx, `SELECT actor,reason,operator_id::text FROM operator_audit WHERE action='account_deletion_scheduled' AND target_id=$1`, id).Scan(&actor, &reason, &auditOperator); err != nil || actor != operatorEmail || auditOperator == nil || *auditOperator != operatorID || !strings.Contains(reason, "ticket 4411") {
+		t.Fatalf("audit %q %q %v %v", actor, reason, auditOperator, err)
 	}
 	// Again: the first due date stands and nothing is duplicated.
-	if err := run(ctx, []string{"schedule-deletion", "-user", id, "-reason", "support ticket 4411 again"}, getenv, strings.NewReader(""), &out, &errOut); err != nil {
+	if err := run(ctx, []string{"schedule-deletion", "-user", id, "-reason", "support ticket 4411 again", "-operator", operatorEmail}, getenv, strings.NewReader(""), &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 	db.Pool.QueryRow(ctx, `SELECT count(*) FROM apple_revocations WHERE user_id=$1`, id).Scan(&n)
