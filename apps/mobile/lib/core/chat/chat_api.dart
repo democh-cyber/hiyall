@@ -56,6 +56,9 @@ class ChatApi {
   /// passes them in). Left out when null.
   final String? clientVersion, clientPlatform;
 
+  /// Called when the relay answers 401 APP_CHECK_REQUIRED (it cannot confirm this app build). Never a sign-out.
+  final void Function()? onAppCheckRequired;
+
   /// Called when the relay refuses this app version (426 UPGRADE_REQUIRED);
   /// the app then shows only its "Update Hiyall" screen.
   final void Function()? onUpgradeRequired;
@@ -69,6 +72,7 @@ class ChatApi {
     this.clientVersion,
     this.clientPlatform,
     this.onUpgradeRequired,
+    this.onAppCheckRequired,
     Dio? dio,
   }) : _dio =
            dio ??
@@ -112,6 +116,19 @@ class ChatApi {
       return response.data!['data'];
     } on DioException catch (error) {
       final status = error.response?.statusCode;
+      final data = error.response?.data;
+      final failure = data is Map ? data['error'] : null;
+      final code = failure is Map ? failure['code'] : null;
+      if (status == 401 && code == 'APP_CHECK_REQUIRED') {
+        // The relay does not trust this app build, which says nothing about the credential: no token refresh,
+        // no sign-out, nothing wiped. The app shows its own "confirm this app" screen.
+        onAppCheckRequired?.call();
+        throw ChatFailure(
+          'APP_CHECK_REQUIRED',
+          'Hiyall couldn’t confirm this app. Update it, or open the real app from the store.',
+          status,
+        );
+      }
       if (status == 401) {
         if (retryToken == null) {
           final fresh = await tokenRefresher?.call();
@@ -119,15 +136,15 @@ class ChatApi {
             return _call(method, path, body, fresh);
           }
         }
-        onUnauthorized?.call();
+        // Only the relay's explicit "unauthenticated" ends the session; any other 401 (a proxy's, one without
+        // the error envelope) proves nothing about the credential.
+        if (code == 'UNAUTHENTICATED') onUnauthorized?.call();
         throw ChatFailure(
           'UNAUTHENTICATED',
           'Your session has expired. Sign in again.',
           status,
         );
       }
-      final data = error.response?.data;
-      final failure = data is Map ? data['error'] : null;
       if (status == 426 &&
           failure is Map &&
           failure['code'] == 'UPGRADE_REQUIRED') {

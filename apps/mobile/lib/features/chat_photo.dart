@@ -14,6 +14,7 @@ import '../core/chat/chat_blob_codec.dart';
 import '../core/chat/chat_engine.dart';
 import '../core/chat/chat_jpeg.dart';
 import '../core/chat/chat_media.dart';
+import '../core/picked_file.dart';
 import '../core/theme.dart';
 import '../shared/press_scale.dart';
 import 'chat_photo_states.dart';
@@ -143,7 +144,8 @@ Future<Uint8List?> pickChatPhoto(ImagePicker picker, PhotoSource source) async {
     imageQuality: 90,
   );
   if (file == null) return null;
-  final bytes = await file.readAsBytes();
+  // The picker's temporary copy is plaintext: it is deleted as soon as the bytes are read.
+  final bytes = await readAndDeletePick(file);
   if (bytes.length > maxPhotoInput) {
     throw const ChatFailure(
       'PHOTO_TOO_LARGE',

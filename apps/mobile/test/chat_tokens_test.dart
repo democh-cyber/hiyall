@@ -63,6 +63,17 @@ void main() {
       ('dark', ChatTokens.dark),
       ('light', ChatTokens.light),
     ]) {
+      test(
+        '$name: onError is at least 4.5:1 on error, and the theme agrees',
+        () {
+          expect(contrastRatio(t.onError, t.error), greaterThanOrEqualTo(4.5));
+          final scheme = hiyallTheme(t.brightness).colorScheme;
+          expect(scheme.error, t.error);
+          expect(scheme.onError, t.onError);
+          expect(contrastRatio(scheme.onError, scheme.error), greaterThan(4.5));
+        },
+      );
+
       test('$name: text on every surface it sits on is at least 4.5:1', () {
         final surfaces = {
           'bg': t.bg,

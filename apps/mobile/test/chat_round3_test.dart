@@ -58,6 +58,13 @@ class FlakyKeystore extends MemoryChatStore {
   }
 }
 
+/// A keystore that opens for single entries but cannot list them all (what the last-resort reset is for).
+class _UnlistableKeystore extends MemoryChatStore {
+  @override
+  Future<List<String>> keys() =>
+      throw const ChatStorageUnavailable('cannot list');
+}
+
 class CountingApi extends Api {
   CountingApi(super.relay, super.user);
   int keyCounts = 0;
@@ -269,7 +276,7 @@ void main() {
       expect(await ChatStorageHealth(dir).failedLaunches(), 0);
     });
 
-    test('the explicit reset erases files and keys, and falls back to erasing the keystore', () async {
+    test('the explicit reset erases files and keys, and falls back to deleting this account\'s entries by name', () async {
       await Directory('${dir.path}/chat_state').create();
       await File('${dir.path}/chat_state/a.snap').writeAsString('x');
       final store = MemoryChatStore()
@@ -293,17 +300,42 @@ void main() {
         reason: 'the old device is remembered',
       );
 
-      // A keystore that will not delete entries: the last resort clears it all.
-      final stuck = FlakyKeystore()..failing = true;
-      var erased = 0;
+      // A keystore that cannot list its entries: this account's chat entries are deleted by name, and nothing
+      // else the app keeps there is touched (round 4, CHAT-N7: the last resort used to clear the whole keystore,
+      // push and say-hi preferences, the story draft and a queued session revoke with it).
+      final unlisted = _UnlistableKeystore()
+        ..values.addAll({
+          'hiyall.chat.$meId.snapKey': 's',
+          'hiyall.chat.$meId.pickleKey': 'k',
+          'hiyall.chat.$meId.deviceId': 'd2',
+          'hiyall.chat.$meId.trust': '{}',
+          'hiyall.chat.$meId.outbox': '[]',
+          'hiyall.chatowner': meId,
+          'hiyall.chat.other.pickleKey': 'o',
+          'hiyall.pushoff.$meId': 'true',
+          'hiyall.sayhi.$meId': '{}',
+          'hiyall.storydraft': 'draft',
+          'hiyall.revokequeue': '[]',
+        });
       await ChatLocalData.resetAfterStorageFailure(
         root: dir,
-        store: stuck,
+        store: unlisted,
         userId: meId,
-        eraseEverything: () async => erased++,
       );
-      expect(erased, 1);
-      // And without that last resort the failure is reported, not hidden.
+      expect(
+        unlisted.values,
+        {
+          'hiyall.chat.other.pickleKey': 'o',
+          'hiyall.pushoff.$meId': 'true',
+          'hiyall.sayhi.$meId': '{}',
+          'hiyall.storydraft': 'draft',
+          'hiyall.revokequeue': '[]',
+          'hiyall.chatrevoke.$meId': 'd2',
+        },
+        reason: 'only this account\'s chat entries went; the old device is remembered',
+      );
+      // A keystore that will not delete either reports it: a key that is still there is not "gone".
+      final stuck = FlakyKeystore()..failing = true;
       await expectLater(
         ChatLocalData.resetAfterStorageFailure(
           root: dir,
