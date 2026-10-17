@@ -66,10 +66,6 @@ class SecureChatStore implements ChatStore {
   @override
   Future<T> batch<T>(Future<T> Function() work) => work();
 
-  /// Erases everything this app keeps in the platform keystore. The last resort of "Reset chat on this phone"
-  /// when single entries cannot be removed because the keystore will not open them.
-  static Future<void> eraseEverything() => _guard(_storage.deleteAll);
-
   /// Any platform failure of the keystore is [ChatStorageUnavailable]: an error to try again, which nothing
   /// above may answer by deleting or regenerating keys (audit CHAT-N4).
   static Future<T> _guard<T>(Future<T> Function() operation) async {
@@ -115,6 +111,7 @@ final chatApiProvider = Provider<ChatApi?>((ref) {
     clientVersion: AppInfo.version,
     clientPlatform: clientPlatform,
     onUpgradeRequired: () => rest.onUpgradeRequired?.call(),
+    onAppCheckRequired: () => rest.onAppCheckRequired?.call(),
   );
 });
 
@@ -155,8 +152,8 @@ int _storageRetries = 0;
 DeviceNoticeKind? _nextStartNotice;
 
 /// "Reset chat on this phone", the explicit, destructive way out when the platform keystore cannot be opened
-/// launch after launch: this account's chat data goes (snapshot, photos, keys; when single entries cannot be
-/// removed, the whole keystore), a new chat identity is made, and a notice says so. The old device stays on
+/// launch after launch: this account's chat data goes (snapshot, photos, keys; the chat entries are removed by
+/// name when the keystore cannot list them, and nothing else the app keeps there is touched), a new chat identity is made, and a notice says so. The old device stays on
 /// the account's device list until it is removed there or goes stale.
 Future<void> resetChatOnThisPhone(WidgetRef ref) async {
   final session = ref.read(sessionProvider).asData?.value;
@@ -167,7 +164,6 @@ Future<void> resetChatOnThisPhone(WidgetRef ref) async {
     root: root,
     store: SecureChatStore(),
     userId: session.userId,
-    eraseEverything: SecureChatStore.eraseEverything,
   );
   await ChatStorageHealth(root).clear();
   _nextStartNotice = DeviceNoticeKind.storage;
@@ -286,6 +282,7 @@ Future<ChatEngine?> _openChatEngine(Ref ref) async {
       clientVersion: AppInfo.version,
       clientPlatform: clientPlatform,
       onUpgradeRequired: () => rest.onUpgradeRequired?.call(),
+      onAppCheckRequired: () => rest.onAppCheckRequired?.call(),
     ),
     store: store,
     platform: defaultTargetPlatform == TargetPlatform.iOS ? 'ios' : 'android',
@@ -344,7 +341,9 @@ String? photoFailureText(String? code) => switch (code) {
   _ => null,
 };
 
-String chatError(Object error) =>
+/// What a failed chat call says. [peerName] is the other person in the conversation the call was about, when
+/// the caller knows it, for the refusals that are about them (`PEER_NO_DEVICES`).
+String chatError(Object error, {String? peerName}) =>
     (error is ChatFailure ? photoFailureText(error.code) : null) ??
     switch (error) {
       ChatStorageUnavailable() => 'Couldn’t open secure storage. Nothing was deleted. We’ll try again in a moment.',
@@ -360,7 +359,9 @@ String chatError(Object error) =>
       ChatFailure(code: 'RATE_LIMITED') =>
         'You’re sending a lot. Wait a moment.',
       ChatFailure(code: 'RECIPIENT_BACKLOG') =>
-        'They haven’t picked up their earlier messages yet. Try again later.',
+        'They haven’t caught up on earlier messages yet. Try again later.',
+      ChatFailure(code: 'PEER_NO_DEVICES') =>
+        '${peerName == null || peerName.trim().isEmpty ? 'They haven’t' : '${peerName.trim()} hasn’t'} opened Hiyall in a while. Your message can’t be delivered yet.',
       ChatFailure(code: 'OWN_BACKLOG') => 'One of your other devices has too many unread messages. Open Chat devices (Profile, Chat devices), open Hiyall on that device or remove it.',
       ChatFailure(code: 'CHAT_DAILY_LIMIT') =>
         'You’ve sent a lot of messages in this chat today. Try again later.',
@@ -679,7 +680,7 @@ Future<void> confirmChatReset(BuildContext context, WidgetRef ref) async {
     builder: (context) => AlertDialog(
       title: const Text('Reset chat on this phone?'),
       content: const Text(
-        'This phone couldn’t open its secure storage several times in a row. Resetting erases the chats stored on this phone and its chat keys, and starts again with a new chat identity. Messages already on this phone can’t be recovered. Chats on your other devices are not affected.',
+        'This phone couldn’t open its secure storage several times in a row. Resetting erases the chats stored on this phone and its chat keys, and starts again with a new chat identity. Messages already on this phone can’t be recovered. Chats on your other devices are not affected, and neither are your notification and other app settings.',
       ),
       actions: [
         TextButton(
@@ -717,6 +718,7 @@ Future<void> confirmChatReset(BuildContext context, WidgetRef ref) async {
         DeviceNoticeKind.removed,
         DeviceNoticeKind.inactive,
         DeviceNoticeKind.review,
+        DeviceNoticeKind.idle,
       ].firstWhere(
         (k) => notices.any((n) => n.kind == k),
         orElse: () => DeviceNoticeKind.added,
@@ -738,9 +740,14 @@ Future<void> confirmChatReset(BuildContext context, WidgetRef ref) async {
       body: 'Its messages had piled up, which would have held back messages to your account. If it was yours, sign in on it again. If it wasn’t, review your devices.',
       action: 'Review devices',
     ),
+    DeviceNoticeKind.idle => (
+      title: 'A device you haven’t used for a while was signed out of chat',
+      body: 'Nothing is wrong. Open Hiyall on it and it will connect again, with the same keys.',
+      action: 'See devices',
+    ),
     DeviceNoticeKind.reset => (
       title: 'This phone started a new secure chat identity',
-      body: 'It was removed from your account, or went unused for a long time, so its chat keys were replaced. If that wasn’t you, review your devices and sign in again.',
+      body: 'It was removed from your account, so its chat keys were replaced. If that wasn’t you, review your devices and sign in again.',
       action: 'Review devices',
     ),
     DeviceNoticeKind.removed => (
@@ -1396,7 +1403,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
             selection: TextSelection.collapsed(offset: text.length),
           );
         }
-        showMessage(context, chatError(e));
+        showMessage(context, chatError(e, peerName: peerName));
       }
     }
   }
@@ -1412,7 +1419,9 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
       if (e is ChatFailure && e.code == 'OWN_BACKLOG') {
         showOwnBacklogMessage(context);
       }
-      if (!isTransientChatFailure(e)) showMessage(context, chatError(e));
+      if (!isTransientChatFailure(e)) {
+        showMessage(context, chatError(e, peerName: peerName));
+      }
     }
   }
 
@@ -1464,7 +1473,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
       );
       if (mounted) setState(() => replyingTo = null);
     } catch (e) {
-      if (mounted) showMessage(context, chatError(e));
+      if (mounted) showMessage(context, chatError(e, peerName: peerName));
     }
   }
 

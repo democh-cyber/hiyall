@@ -297,8 +297,9 @@ enum DeviceNoticeKind {
   /// A device this phone knew of was removed by another session (the relay's record, or it vanished).
   removed,
 
-  /// This phone's own chat identity was replaced because the relay no longer knew it (removed from the
-  /// account, or unused for a long time).
+  /// This phone's own chat identity was replaced because the relay had removed this device (by another
+  /// session) and would not take its keys back. (A device removed only for not being used comes back with the
+  /// same identity and says nothing.)
   reset,
 
   /// This phone's encrypted data could not be unlocked, so it started again with a new identity.
@@ -311,6 +312,11 @@ enum DeviceNoticeKind {
   /// The relay removed a device of this account that had not been used for days while its undelivered
   /// messages piled up (so it would not stop other people's messages reaching the account).
   inactive,
+
+  /// The relay signed a device of this account out of chat because it had not been used for a long time (or
+  /// sat idle while one person's messages filled it). Nothing is wrong: opening Hiyall on it brings it back
+  /// with the same keys. A calm note, never an alarm.
+  idle,
 }
 
 /// Something about this account's devices that the person should see, noticed by this phone. Kept until
@@ -460,11 +466,26 @@ class ChatEngine {
   /// and sends from the keys it already has meanwhile). The last wait repeats. Tests pass short ones.
   final List<Duration> keyRetryDelays;
 
+  /// Called after this device registered again following a removal by the relay (an idle sign-out, or a new
+  /// identity): the relay dropped its push token then, so whoever holds the token sends it again.
+  void Function()? onReregistered;
+
+  /// Waits between the attempts to register this device again after the relay removed it and that did not
+  /// work (the account is full, the relay is out of reach): the wait grows, the last one repeats, and nothing
+  /// is rewritten meanwhile (audit CHAT-N5). Tests pass short ones.
+  final List<Duration> reregisterDelays;
+
   /// A notice to show once this engine has started with a fresh identity: the explicit reset the person chose
   /// after the keystore could not be opened ([DeviceNoticeKind.storage]).
   final DeviceNoticeKind? startNotice;
   Timer? _keyRetry;
   int _keyFailures = 0;
+  int _reregisterFailures = 0;
+  DateTime? _reregisterNotBefore;
+
+  /// The relay does not hold this device and registering it again has not worked yet (see [_recoverRemoved]):
+  /// nothing that needs the relay (keys, fallback rotation) is attempted meanwhile.
+  bool _awaitingRegistration = false;
   ChatMedia? _media;
   PhotoOutbox? _outbox;
 
@@ -485,6 +506,13 @@ class ChatEngine {
       Duration(seconds: 5),
       Duration(seconds: 15),
       Duration(minutes: 1),
+      Duration(minutes: 5),
+      Duration(minutes: 15),
+    ],
+    this.reregisterDelays = const [
+      Duration(seconds: 30),
+      Duration(minutes: 1),
+      Duration(minutes: 2),
       Duration(minutes: 5),
       Duration(minutes: 15),
     ],
@@ -584,53 +612,56 @@ class ChatEngine {
     return result;
   }
 
-  Future<void> start({Duration poll = const Duration(seconds: 2)}) =>
-      _locked(() async {
-        if (_started) return;
-        await _loadNotes();
-        // The snapshot files existed and none opened (the key is gone, or they are damaged), or only the
-        // previous generation did (an older state than the one last committed: its ratchets may be behind what
-        // peers already saw). Neither is an identity to carry on with: start a new one and say so, never
-        // silently (audit CHAT-N8). Also checked for the keystore that was wiped with files left behind.
-        final opened = store;
-        if (opened is SnapshotChatStore && opened.info.identityUntrusted) {
-          await _resetIdentity(because: DeviceNoticeKind.locked);
-        }
-        try {
-          await _loadIdentity();
-        } on _StateLocked {
-          // The saved account cannot be opened (its key is gone or unusable, or the entry is damaged). Nothing
-          // here can be recovered: start again with a new identity and say so (re-audit CHAT-5).
-          await _resetIdentity(because: DeviceNoticeKind.locked);
-          await _loadIdentity();
-        }
-        try {
-          await _register();
-        } on ChatFailure catch (failure) {
-          // The relay says this device id or key belongs to something else, or
-          // was revoked (removed from the device list, signed out elsewhere,
-          // unused for 14 days). The old identity is of no use: make a new one.
-          if (failure.code != 'DEVICE_CONFLICT') rethrow;
-          await _resetIdentity(because: DeviceNoticeKind.reset);
-          await _loadIdentity();
-          await _register();
-        }
-        final reason = startNotice;
-        if (reason != null) {
-          _addOwnNotice(DeviceNotice('', _clock().toUtc(), reason));
-          await _saveNotes();
-          if (!_ownDeviceChanges.isClosed) _ownDeviceChanges.add(null);
-        }
-        _started = true;
-        // A wipe (sign-out) closes this engine first and waits for what it was doing.
-        ChatLocalData.registerDrain(userId, dispose);
-        await ChatLocalData.markOwner(_store, userId);
-        await _afterStart();
-        if (poll > Duration.zero) {
-          _pollEvery = poll;
-          _startTimer();
-        }
-      });
+  Future<void> start({Duration poll = const Duration(seconds: 2)}) => _locked(
+    () async {
+      if (_started) return;
+      await _loadNotes();
+      // The snapshot files existed and none opened (the key is gone, or they are damaged), or only the
+      // previous generation did (an older state than the one last committed: its ratchets may be behind what
+      // peers already saw). Neither is an identity to carry on with: start a new one and say so, never
+      // silently (audit CHAT-N8). Also checked for the keystore that was wiped with files left behind.
+      final opened = store;
+      if (opened is SnapshotChatStore && opened.info.identityUntrusted) {
+        await _resetIdentity(because: DeviceNoticeKind.locked);
+      }
+      try {
+        await _loadIdentity();
+      } on _StateLocked {
+        // The saved account cannot be opened (its key is gone or unusable, or the entry is damaged). Nothing
+        // here can be recovered: start again with a new identity and say so (re-audit CHAT-5).
+        await _resetIdentity(because: DeviceNoticeKind.locked);
+        await _loadIdentity();
+      }
+      try {
+        await _register();
+      } on ChatFailure catch (failure) {
+        // The relay says this device id or key belongs to something else, or
+        // was revoked by someone (removed from the device list, signed out
+        // elsewhere). The old identity is of no use: make a new one. (A device
+        // removed only for being unused is taken back with its keys by the
+        // registration above, so it never gets here.)
+        if (failure.code != 'DEVICE_CONFLICT') rethrow;
+        await _resetIdentity(because: DeviceNoticeKind.reset);
+        await _loadIdentity();
+        await _register();
+      }
+      final reason = startNotice;
+      if (reason != null) {
+        _addOwnNotice(DeviceNotice('', _clock().toUtc(), reason));
+        await _saveNotes();
+        if (!_ownDeviceChanges.isClosed) _ownDeviceChanges.add(null);
+      }
+      _started = true;
+      // A wipe (sign-out) closes this engine first and waits for what it was doing.
+      ChatLocalData.registerDrain(userId, dispose);
+      await ChatLocalData.markOwner(_store, userId);
+      await _afterStart();
+      if (poll > Duration.zero) {
+        _pollEvery = poll;
+        _startTimer();
+      }
+    },
+  );
 
   /// Housekeeping that must never stop chat from starting.
   Future<void> _afterStart() async {
@@ -1091,12 +1122,28 @@ class ChatEngine {
   /// the owner sees (and a realtime signal told them), for a peer as a notice
   /// in every conversation with them, shown when it is next opened (and in
   /// [conversationId] at once).
+  ///
+  /// The pins and the notices about them are one commit, and the engine's memory follows the store, never
+  /// leads it: everything is worked out on copies, written together (the notice in the conversation included),
+  /// and only a commit that landed changes what the engine remembers. A write that fails (the history cannot be
+  /// written) leaves the device unpinned, in memory and on disk alike, so the next look announces it again
+  /// instead of pinning it silently (audit CHAT-N6).
   Future<List<_Device>> _devices(String user, {String? conversationId}) async {
     final wasKnown = _trust.containsKey(user);
-    final known = _trust[user] ?? {};
-    final firstContact = known.isEmpty;
+    final before = _trust[user];
+    final firstContact = before == null || before.isEmpty;
     final fetched = await _fetchDevices(user);
-    var notes = false;
+    final known = {
+      for (final e
+          in (before ?? const <String, Map<String, dynamic>>{}).entries)
+        e.key: Map<String, dynamic>.of(e.value),
+    };
+    final ownBefore = _ownNotices;
+    final peersBefore = Map<String, List<DeviceNotice>>.of(_peerNotices);
+    final verifiedBefore = Map<String, Map<String, dynamic>>.of(_verified);
+    final changedBefore = Set<String>.of(_verifyChanged);
+    var notes = false, pinsChanged = false, signal = false;
+    final appends = <ChatMessage>[];
     // This phone knows of none of this account's devices (a new install, a sign-in, a reset) and the relay
     // lists others: they are pinned (they have to be, to send to them) but never silently. The person is asked
     // to review them, and the notice stays until dismissed (re-audit CHAT-2).
@@ -1106,38 +1153,74 @@ class ChatEngine {
       _addOwnNotice(
         DeviceNotice('', _clock().toUtc(), DeviceNoticeKind.review),
       );
-      notes = true;
-      if (!_ownDeviceChanges.isClosed) _ownDeviceChanges.add(null);
+      notes = signal = true;
     }
     for (final d in fetched.list) {
+      final pin = known[d.id];
+      if (pin != null && pin['idle'] == true) {
+        // A device the relay had signed out as idle is back with the keys that are pinned: nothing is new, the
+        // note about its absence goes.
+        pin.remove('idle');
+        pinsChanged = true;
+        if (user == userId) {
+          final kept = [
+            for (final n in _ownNotices)
+              if (!(n.kind == DeviceNoticeKind.idle && n.deviceId == d.id)) n,
+          ];
+          if (kept.length != _ownNotices.length) {
+            _ownNotices = kept;
+            notes = signal = true;
+          }
+        }
+      }
       if (!fetched.unpinned.contains(d.id)) continue;
       known[d.id] = {'identityKey': d.identityKey, 'signingKey': d.signingKey};
+      pinsChanged = true;
       if (firstContact || d.id == deviceId) continue;
       final notice = DeviceNotice(d.id, _clock().toUtc());
       notes = true;
       if (user == userId) {
         _addOwnNotice(notice);
-        if (!_ownDeviceChanges.isClosed) _ownDeviceChanges.add(null);
+        signal = true;
       } else {
         final kept = [...?_peerNotices[user], notice];
         _peerNotices[user] = kept.length > 10
             ? kept.sublist(kept.length - 10)
             : kept;
-        if (conversationId != null) {
-          await _append(conversationId, _deviceNotice(user, notice));
-        }
+        if (conversationId != null) appends.add(_deviceNotice(user, notice));
       }
     }
-    _trust[user] = known;
-    // The pins and the notices about them are one commit: a stop between two writes must never leave a device
-    // pinned without the "review" or "added" notice that says it appeared (audit CHAT-N6).
-    await _store.batch(() async {
-      // Nothing new to pin is the usual case: do not rewrite the store for it.
-      if (!wasKnown || fetched.unpinned.isNotEmpty) {
-        await _store.write(_k('trust'), jsonEncode(_trust));
+    try {
+      await _log.transaction(() async {
+        for (final notice in appends) {
+          await _append(conversationId!, notice);
+        }
+        _trust[user] = known;
+        // Nothing new to pin is the usual case: do not rewrite the store for it.
+        if (!wasKnown || pinsChanged) {
+          await _store.write(_k('trust'), jsonEncode(_trust));
+        }
+        await _checkVerified(user, fetched.list, saveNotes: notes);
+      });
+    } catch (_) {
+      _ownNotices = ownBefore;
+      _peerNotices
+        ..clear()
+        ..addAll(peersBefore);
+      if (before == null) {
+        _trust.remove(user);
+      } else {
+        _trust[user] = before;
       }
-      await _checkVerified(user, fetched.list, saveNotes: notes);
-    });
+      _verified
+        ..clear()
+        ..addAll(verifiedBefore);
+      _verifyChanged
+        ..clear()
+        ..addAll(changedBefore);
+      rethrow;
+    }
+    if (signal && !_ownDeviceChanges.isClosed) _ownDeviceChanges.add(null);
     return fetched.list;
   }
 
@@ -1190,8 +1273,11 @@ class ChatEngine {
         await _noticeRemoved();
       });
 
-  /// The relay's record of devices of this account that another session removed: each one this phone had
-  /// pinned becomes a notice (and its pin goes). Best effort; a failure is tried again next time.
+  /// The relay's record of devices of this account that another session or the relay itself removed: each one
+  /// this phone had pinned becomes a notice. A removal by another session also drops its pin; an idle one (the
+  /// relay signed a device out that nobody had used for a long time) keeps it, marked, so that the same device
+  /// coming back with the same keys is not announced as a new one, and the note appears once, not at every
+  /// look. Best effort; a failure is tried again next time.
   Future<void> _noticeRemoved() async {
     final List<Map<String, dynamic>> removed;
     try {
@@ -1199,18 +1285,32 @@ class ChatEngine {
     } catch (_) {
       return;
     }
-    final pins = _trust[userId];
-    if (pins == null) return;
+    final before = _trust[userId];
+    if (before == null) return;
+    final pins = {
+      for (final e in before.entries) e.key: Map<String, dynamic>.of(e.value),
+    };
+    final ownBefore = _ownNotices;
     var changed = false;
     for (final r in removed) {
       final id = r['deviceId'];
-      if (id is! String || id == deviceId || pins[id] == null) continue;
-      pins.remove(id);
+      if (id is! String || id == deviceId) continue;
+      final pin = pins[id];
+      if (pin == null) continue;
+      final idle = r['reason'] == 'idle';
+      if (idle && pin['idle'] == true) continue;
+      if (idle) {
+        pin['idle'] = true;
+      } else {
+        pins.remove(id);
+      }
       _addOwnNotice(
         DeviceNotice(
           id,
           DateTime.tryParse('${r['removedAt']}') ?? _clock().toUtc(),
-          r['reason'] == 'inactive'
+          idle
+              ? DeviceNoticeKind.idle
+              : r['reason'] == 'inactive'
               ? DeviceNoticeKind.inactive
               : DeviceNoticeKind.removed,
         ),
@@ -1218,11 +1318,18 @@ class ChatEngine {
       changed = true;
     }
     if (!changed) return;
-    // The dropped pins and their notices land together (audit CHAT-N6).
-    await _store.batch(() async {
-      await _store.write(_k('trust'), jsonEncode(_trust));
-      await _saveNotes();
-    });
+    // The dropped pins and their notices land together (audit CHAT-N6), and the memory follows the commit.
+    _trust[userId] = pins;
+    try {
+      await _store.batch(() async {
+        await _store.write(_k('trust'), jsonEncode(_trust));
+        await _saveNotes();
+      });
+    } catch (_) {
+      _trust[userId] = before;
+      _ownNotices = ownBefore;
+      rethrow;
+    }
     if (!_ownDeviceChanges.isClosed) _ownDeviceChanges.add(null);
   }
 
@@ -1644,9 +1751,21 @@ class ChatEngine {
   }) async {
     final startFresh = {...fresh};
     for (var attempt = 0; ; attempt++) {
+      final peerDevices = await _devices(
+        peerId,
+        conversationId: conversationId,
+      );
+      // Nobody to encrypt for: every device of theirs was signed out as idle (or none was ever registered).
+      // The relay says the same (`PEER_NO_DEVICES`); asking it with an empty envelope list would only be refused.
+      if (peerDevices.isEmpty) {
+        throw const ChatFailure(
+          'PEER_NO_DEVICES',
+          'They haven’t opened Hiyall in a while. Your message can’t be delivered yet.',
+          409,
+        );
+      }
       final targets = [
-        for (final d in await _devices(peerId, conversationId: conversationId))
-          (peerId, d),
+        for (final d in peerDevices) (peerId, d),
         for (final d in await _devices(userId))
           if (d.id != deviceId) (userId, d),
       ];
@@ -1787,8 +1906,57 @@ class ChatEngine {
     }
     // Only with nothing left waiting: a message made for the old fallback key
     // must be opened before that key is forgotten.
-    if (drained && !_leftBehind) await _maintainFallback();
+    if (drained && !_leftBehind && !_awaitingRegistration) {
+      await _maintainFallback();
+    }
   });
+
+  /// This device is gone from the relay (the inbox answered 404). Registers it again, with the same keys first:
+  /// a device the relay removed only for not being used (35 days, or one sender's messages filling it while it
+  /// sat idle) is taken back as the same device, so nothing about its identity changes for anyone (CHAT-N1). A
+  /// device somebody removed is refused (`DEVICE_CONFLICT`); then, and only then, the identity is replaced and
+  /// the person is told. Returns whether the device is registered now.
+  ///
+  /// When it cannot be registered (the account holds ten devices, the relay is unreachable) nothing is touched
+  /// and the next attempt waits longer, up to the last of [reregisterDelays]: this phone's saved state is not
+  /// rewritten again and again, and the relay is not asked every poll (audit CHAT-N5). A failure is thrown the
+  /// first time and quietly skipped while waiting.
+  Future<bool> _recoverRemoved() async {
+    final notBefore = _reregisterNotBefore;
+    if (notBefore != null && _clock().isBefore(notBefore)) {
+      _awaitingRegistration = true;
+      return false;
+    }
+    try {
+      try {
+        await _register();
+      } on ChatFailure catch (failure) {
+        if (failure.code != 'DEVICE_CONFLICT') rethrow;
+        await _resetIdentity(because: DeviceNoticeKind.reset);
+        await _loadIdentity();
+        await _register();
+      }
+    } catch (_) {
+      _awaitingRegistration = true;
+      if (reregisterDelays.isNotEmpty) {
+        _reregisterNotBefore = _clock().add(
+          reregisterDelays[min(
+            _reregisterFailures,
+            reregisterDelays.length - 1,
+          )],
+        );
+      }
+      _reregisterFailures++;
+      rethrow;
+    }
+    _reregisterFailures = 0;
+    _reregisterNotBefore = null;
+    _awaitingRegistration = false;
+    try {
+      onReregistered?.call();
+    } catch (_) {}
+    return true;
+  }
 
   /// One page of the inbox. For each message the order is: decrypt (in memory),
   /// then write the history (and any waiting reactions) and the account and
@@ -1802,12 +1970,9 @@ class ChatEngine {
     try {
       items = await api.inbox(deviceId);
     } on ChatFailure catch (failure) {
-      // This device was removed on the relay (revoked, unused for 14 days):
-      // start over with a new identity.
+      // The relay no longer has this device: it was removed. See [_recoverRemoved].
       if (failure.status == 404 && failure.code == 'NOT_FOUND') {
-        await _resetIdentity(because: DeviceNoticeKind.reset);
-        await _loadIdentity();
-        await _register();
+        if (!await _recoverRemoved()) return 0;
         try {
           // The account's other devices, compared with the pins this phone kept: whatever appeared while
           // it was away is announced now.

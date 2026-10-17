@@ -166,6 +166,13 @@ void main() {
           find.textContaining('erases the chats stored on this phone'),
           findsOneWidget,
         );
+        // What stays is said too: the reset touches the chat's own entries only (round 4, CHAT-N7).
+        expect(
+          find.textContaining(
+            'neither are your notification and other app settings',
+          ),
+          findsOneWidget,
+        );
         await tester.tap(find.text('Cancel'));
         await tester.pumpAndSettle();
         expect(find.text('Reset chat on this phone?'), findsNothing);
@@ -254,7 +261,7 @@ void main() {
     test('a full inbox on their side and the daily limit', () {
       expect(
         chatError(const ChatFailure('RECIPIENT_BACKLOG', 'x', 429)),
-        contains('picked up'),
+        contains('caught up'),
       );
       expect(
         chatError(const ChatFailure('CHAT_DAILY_LIMIT', 'x', 429)),
@@ -278,13 +285,13 @@ void main() {
       expect(own, contains('Chat devices'));
       expect(
         own,
-        isNot(contains('picked up')),
+        isNot(contains('caught up')),
         reason: 'not the recipient text',
       );
       // The recipient text is unchanged.
       expect(
         chatError(const ChatFailure('RECIPIENT_BACKLOG', 'x', 429)),
-        'They haven’t picked up their earlier messages yet. Try again later.',
+        'They haven’t caught up on earlier messages yet. Try again later.',
       );
       expect(
         isTransientChatFailure(const ChatFailure('OWN_BACKLOG', 'x', 429)),
