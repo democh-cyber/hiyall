@@ -84,16 +84,51 @@ Sign-out always finishes on the device. If the server cannot be told, the short-
 the platform keystore for up to an hour and the revoke is sent on the next launch (`RevokeQueue`); the
 identity-provider session ends on the device regardless.
 
-`SessionController.signOutHooks` runs whenever a session ends: sign-out, session expiry and account deletion
-(`lib/core/state.dart`). Each hook gets 5 seconds (`signOutHookTimeout`); one that throws or hangs is logged
-(error type only) and skipped, so it can never keep the person signed in. The controller registers two hooks of
-its own, independent of any screen or provider listener: `chatWipeHook` (`lib/core/chat_wipe_hook.dart`, erases
-the departing account's chat keys, history and cached photos through `ChatLocalData.wipeAccount` and removes the
-chat device on the server, best effort with a 3 s limit; a failed revoke is remembered and retried next launch)
-and the export-file wipe. The chat keystore is bound in `lib/bindings.dart` (`chatWipeStoreProvider`). Push
-(`PushController.beforeSignOut`, each step limited to 2 s) and the chat engine add theirs. On expiry the credential
-is already dead, so server calls in hooks fail quietly and the local clean-up is what runs.
-Tests: `test/session_hooks_test.dart` (real `SessionController`, fake keystore and revoker).
+`SessionController.signOutHooks` runs whenever a session ends: sign-out, session expiry, account deletion and an
+end the identity provider reports by itself (`_onUser(null)` while a session is live and the app is not signing
+out: a revoked refresh token, a disabled account) (`lib/core/state.dart`). Each hook gets 5 seconds
+(`signOutHookTimeout`); one that throws or hangs is logged (error type only) and skipped, so it can never keep the
+person signed in. The controller registers three hooks of its own, independent of any screen or provider
+listener:
+
+1. `chatWipeHook` (`lib/core/chat_wipe_hook.dart`): erases the departing account's chat keys, history and cached
+   photos through `ChatLocalData.wipeAccount` and removes the chat device on the server, best effort with a 3 s
+   limit; a failed revoke is remembered and retried next launch. The files go first and every keystore step is
+   tried on its own: when the keystore errors, the account is written to a small "wipe pending" file
+   (`chat_wipe_pending` in the app's private folder, no secrets) that `SessionController` retries at every launch
+   (before the chat engine opens, see `chatWipeSettled`) and at the next sign-out. The chat keystore is bound in
+   `lib/bindings.dart` (`chatWipeStoreProvider`).
+2. The export-file wipe (`exportWipeProvider`): the data export in the temporary folder and the copy
+   `share_plus` keeps in `<cacheDir>/share_plus` on Android (see "Data export on the phone").
+3. `accountResidueHook` (`lib/core/signout_residue.dart`): the account's unsent story draft and its Home, Say hi
+   and notification choices, image_picker's plaintext copies of picked photos (`sweepPickerTemp`,
+   `lib/core/picked_file.dart`) and every cached picture (the network image cache is shared, so it goes whole).
+   Whose it is comes from the departing session, else the last signed-in account, which is also kept in a small
+   non-secret file (`last_user.json`, `lib/core/last_user.dart`) so that a cold start the server refuses with a
+   dead credential still names it. Each step is best effort.
+
+Push (`PushController.beforeSignOut`, each step limited to 2 s) and the chat engine add theirs. On expiry the
+credential is already dead, so server calls in hooks fail quietly and the local clean-up is what runs.
+A departure that finishes after somebody signed in again leaves what that sign-in remembered alone.
+Tests: `test/session_hooks_test.dart`, `test/signout_paths_test.dart`, `test/session_round4_test.dart` (real
+`SessionController`, fake keystore and revoker), `test/chat_wipe_pending_test.dart` (a keystore that errors).
+
+Only the server's explicit `401 UNAUTHENTICATED` ends a session (`ApiClient`, the cold-start check in
+`SessionController._establish`, and the realtime socket, which reads the reason with one plain request after a
+refused handshake). `401 APP_CHECK_REQUIRED` means the app, not the session, is refused: nothing is signed out or
+wiped, `appCheckRequiredProvider` is set and the router shows "Update or verify this app" (`/verify-app`, with
+"Update now" and "Try again"). A 401 whose reason cannot be read proves nothing and is retried. The app does not
+send an App Check token yet (see the deploy guide, App Check); this is only the error handling.
+
+## Photos picked from the gallery or camera
+
+`image_picker` copies every pick in plaintext into a temporary folder and never removes it (Android
+`<cacheDir>/<uuid>/<name>`, the resized `<cacheDir>/scaled_<name>` and camera captures `<cacheDir>/<uuid><digits>.jpg`;
+iOS `<tmp>/image_picker_<id>.<ext>`). Every pick site reads the photo with `readAndDeletePick` (story composer,
+post composer, profile photo; the chat photo picker adopts the same helper), and `sweepPickerTemp` removes what is
+left (the original of a resized pick, a pick never read) at every launch and in the residue hook at sign-out.
+It looks only at the first level of the two temporary folders and only at those shapes. Tests:
+`test/picked_file_test.dart` (temporary folders laid out like both platforms), `test/pick_sites_delete_test.dart`.
 
 ## Deep links
 
@@ -126,15 +161,24 @@ are removed at launch, when Settings resumes, and at sign-out when this run wrot
 `test/data_delivery_test.dart` (fake file system), `test/account_api_test.dart`.
 
 One transport rule (`lib/core/api_config.dart`, `isSecureTransport`): https, or plain http to localhost,
-127.0.0.1 or 10.0.2.2 in a debug build only. `ApiClient` and the realtime socket use it; `ChatApi`'s upload-slot
-check should call it too (`lib/core/chat/chat_api.dart`, still a copy of the old host list).
+127.0.0.1 or 10.0.2.2 in a debug build only. `ApiClient`, the realtime socket and `ChatApi` (its own requests and the
+upload-slot check) all use that one helper.
 
 ## Deleting an Apple account
 
-Apple accounts sign in with Apple again and send the one-time authorization code. If Apple returns none (web
-never does; iOS is unverified on a device), or the server answers `422 APPLE_CODE_REQUIRED`, the delete screen
-shows a plain explanation with "Try Apple again" and "Contact support" (the Help & Safety support address), logs
-it to error reporting without personal data, and stops asking after two misses: only "Contact support" remains.
+Any account that lists Apple as a provider (also next to Google, Facebook or a password) signs in with Apple again
+and sends the one-time authorization code. If the server answers `422 APPLE_CODE_REQUIRED` for an account the app
+did not know had an Apple identity (nothing was sent), the delete screen goes to the Apple sign-in step with no miss
+counted. If Apple returns no code (web never does; iOS is unverified on a device), or a code was sent and the server
+still refuses it, the screen shows a plain explanation with "Try Apple again" and "Contact support" (the Help &
+Safety support address), logs it to error reporting without personal data, and stops asking after two misses.
+
+After two misses the screen says what is true: Hiyall cannot remove its own access to the member's Apple ID without
+Apple's confirmation, so the member does it afterwards in Settings > Apple ID > Sign in with Apple > Hiyall > Stop
+using Apple ID (button to Apple's help page, `appleStopUsingUrl` in `lib/features/account_data.dart`; the owner
+verifies that page before release). "Delete my account anyway" then sends `appleCodeUnavailable: true`; the response
+field `appleAction: remove_in_apple_settings` makes the confirmation screen repeat the instruction. Nothing in the app
+says staff will revoke the access.
 
 ## Help & Safety contacts
 

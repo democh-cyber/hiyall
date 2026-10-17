@@ -265,7 +265,7 @@ void main() {
         onSessionEnded: () => ended++,
         connect: (url, token) async {
           attempts++;
-          throw const RealtimeUnauthorized(401);
+          throw const RealtimeUnauthorized(401, 'UNAUTHENTICATED');
         },
       );
       client.start();
@@ -273,6 +273,80 @@ void main() {
       async.elapse(const Duration(minutes: 5));
       expect(attempts, 2);
       expect(ended, 1);
+      client.dispose();
+    });
+  });
+
+  test(
+    'A 401 APP_CHECK_REQUIRED stops the client without ending the session',
+    () {
+      fakeAsync((async) {
+        var attempts = 0, ended = 0, appCheck = 0;
+        var refreshed = 0;
+        final client = RealtimeClient(
+          'http://127.0.0.1:8080',
+          'token-1',
+          refreshToken: () async {
+            refreshed++;
+            return 'token-2';
+          },
+          onSessionEnded: () => ended++,
+          onAppCheckRequired: () => appCheck++,
+          connect: (url, token) async {
+            attempts++;
+            throw const RealtimeUnauthorized(401, 'APP_CHECK_REQUIRED');
+          },
+        );
+        client.start();
+        async.flushMicrotasks();
+        async.elapse(const Duration(minutes: 5));
+        expect(attempts, 1, reason: 'no retry storm');
+        expect(refreshed, 0);
+        expect(ended, 0);
+        expect(appCheck, 1);
+        client.dispose();
+      });
+    },
+  );
+
+  test(
+    'A refusal whose reason could not be read is retried, never a sign-out',
+    () {
+      fakeAsync((async) {
+        var attempts = 0, ended = 0;
+        final client = RealtimeClient(
+          'http://127.0.0.1:8080',
+          'token-1',
+          onSessionEnded: () => ended++,
+          connect: (url, token) async {
+            attempts++;
+            throw const RealtimeUnauthorized(401);
+          },
+        );
+        client.start();
+        async.flushMicrotasks();
+        async.elapse(const Duration(minutes: 2));
+        expect(attempts, greaterThan(1), reason: 'backs off and retries');
+        expect(ended, 0);
+        client.dispose();
+      });
+    },
+  );
+
+  test('A 403 is not a sign-out either', () {
+    fakeAsync((async) {
+      var ended = 0;
+      final client = RealtimeClient(
+        'http://127.0.0.1:8080',
+        'token-1',
+        onSessionEnded: () => ended++,
+        connect: (url, token) async =>
+            throw const RealtimeUnauthorized(403, 'ONBOARDING_REQUIRED'),
+      );
+      client.start();
+      async.flushMicrotasks();
+      async.elapse(const Duration(minutes: 2));
+      expect(ended, 0);
       client.dispose();
     });
   });

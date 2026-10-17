@@ -90,12 +90,40 @@ Future<void> Function() chatWipeHook(Ref ref, Session? Function() departing) =>
       return run;
     };
 
+/// Erases what an earlier sign-out left in the keystore because it would not answer then (see
+/// [ChatLocalData.pendingWipes]). `SessionController` starts it at launch; it is tracked like a sign-out wipe,
+/// so the chat engine (which awaits [chatWipeSettled]) never opens before it has finished. Never throws.
+Future<void> retryPendingChatWipe(Ref ref) {
+  final store = ref.read(chatWipeStoreProvider);
+  if (store == null) return Future.value();
+  final run = () async {
+    try {
+      final root = await ref.read(chatWipeRootProvider)();
+      await ChatLocalData.retryPendingWipes(root: root, store: store);
+    } catch (_) {
+      // Left for the next launch or sign-out.
+    }
+  }();
+  _wipesInFlight.add(run);
+  unawaited(run.whenComplete(() => _wipesInFlight.remove(run)));
+  return run;
+}
+
 Future<void> _wipe(Ref ref, Session? session) async {
   final store = ref.read(chatWipeStoreProvider);
   if (store == null) return;
-  final userId = session?.userId ?? await store.read(ChatLocalData.ownerKey);
-  if (userId == null) return;
   final root = await ref.read(chatWipeRootProvider)();
+  String? userId = session?.userId;
+  if (userId == null) {
+    try {
+      userId = await store.read(ChatLocalData.ownerKey);
+    } catch (_) {
+      // The keystore will not say whose data this is: the files go now, the entries are retried later.
+      await ChatLocalData.wipeUnknownOwner(root);
+      return;
+    }
+  }
+  if (userId == null) return;
   await ChatLocalData.wipeAccount(
     root: root,
     store: store,

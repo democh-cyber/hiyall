@@ -6,6 +6,7 @@ import 'package:flutter/painting.dart' show PaintingBinding;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'home_prefs.dart';
+import 'picked_file.dart';
 import 'push/push_prefs.dart';
 import 'say_hi_prefs.dart';
 import 'story_draft.dart';
@@ -32,15 +33,21 @@ final imageCachesWipeProvider = Provider<Future<void> Function()>(
 
 /// What a departing account leaves on this phone besides chat data (see
 /// `chat_wipe_hook.dart` for that): its unsent story draft, the Home, Say hi and
-/// notification choices kept for it, and every cached picture (the cache is shared by
+/// notification choices kept for it, the picker's temporary copies of photos, and every cached picture (the cache is shared by
 /// all accounts, so it goes whole). Each step is best effort and never stops the
 /// next. [userId] is the account that is leaving, or null when none is known: only
 /// the shared picture caches are cleared then.
 Future<void> Function() accountResidueHook(
   Ref ref,
-  String? Function() userId,
+  FutureOr<String?> Function() userId,
 ) => () async {
-  final uid = userId();
+  String? named;
+  try {
+    named = await userId();
+  } catch (_) {
+    // Nobody to name: only the shared caches go.
+  }
+  final uid = named;
   Future<void> step(Future<void> Function() work) async {
     try {
       await work();
@@ -56,4 +63,6 @@ Future<void> Function() accountResidueHook(
     await step(() => ref.read(pushPrefsStoreProvider).forget(uid));
   }
   await step(() => ref.read(imageCachesWipeProvider)());
+  // image_picker's plaintext copies of photos this account picked.
+  await step(() => ref.read(pickerTempSweepProvider)());
 };

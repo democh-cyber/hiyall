@@ -77,7 +77,7 @@ class _EngineChat implements HiChat {
 /// message, which says when to try again; the wait it asked for (Retry-After)
 /// is added when the message does not already say so, and a daily limit that
 /// says "Try again later." says how long instead ([ApiFailure.displayMessage]).
-String sayHiFailureText(Object error) {
+String sayHiFailureText(Object error, {String? peerName}) {
   if (error is ChatFailure && error.status == 429) {
     final shown = ApiFailure(
       error.message,
@@ -96,7 +96,7 @@ String sayHiFailureText(Object error) {
     }
     return shown;
   }
-  return chatError(error);
+  return chatError(error, peerName: peerName);
 }
 
 /// The wait a rate limit asked for, if any, capped at a minute so the control
@@ -146,7 +146,9 @@ class HiNote {
       );
     }
   }
-  final text = error is ApiFailure ? error.displayMessage : chatError(error);
+  final text = error is ApiFailure
+      ? error.displayMessage
+      : chatError(error, peerName: name);
   return (HiNote(HiNoteKind.failed, text), null);
 }
 

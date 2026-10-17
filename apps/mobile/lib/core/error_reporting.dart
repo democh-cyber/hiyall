@@ -154,7 +154,13 @@ bool _fromChat(Breadcrumb b) {
       v is String && (v.contains('/chats') || v.contains('conversation'));
   if ((b.category ?? '').toLowerCase().contains('chat')) return true;
   if (chatty(b.message)) return true;
-  return b.data?.values.any(chatty) ?? false;
+  // Nested maps and lists are looked into too: a chat route can hide below the top level.
+  bool deep(Object? v) => switch (v) {
+    Map() => v.values.any(deep),
+    List() => v.any(deep),
+    _ => chatty(v),
+  };
+  return b.data?.values.any(deep) ?? false;
 }
 
 /// Keeps navigation and lifecycle crumbs, without query strings; drops every
@@ -181,7 +187,8 @@ Breadcrumb? scrubBreadcrumb(Breadcrumb? crumb, Hint hint) {
           'http.query',
           'http.fragment',
         }.contains(e.key))
-          e.key: e.value is String ? scrubText(e.value as String) : e.value,
+          // Strings are scrubbed also inside nested maps and lists, like [SentryEvent.extra].
+          e.key: _scrubValue(e.value),
     };
   }
   return crumb;

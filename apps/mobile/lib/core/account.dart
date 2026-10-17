@@ -8,11 +8,16 @@ class DeletionStatus {
 
   /// True while pending and before [dueAt].
   final bool canCancel;
+
+  /// What the member still has to do about Apple, when the server could not disconnect Hiyall from the
+  /// Apple ID itself (response field `appleAction`): [appleActionRemoveInSettings]. Null otherwise.
+  final String? appleAction;
   const DeletionStatus({
     this.pending = false,
     this.scheduledAt,
     this.dueAt,
     this.canCancel = false,
+    this.appleAction,
   });
   factory DeletionStatus.fromJson(Map<String, dynamic> json) => DeletionStatus(
     pending: json['pending'] as bool? ?? false,
@@ -23,8 +28,12 @@ class DeletionStatus {
         ? null
         : DateTime.parse(json['dueAt'] as String),
     canCancel: json['canCancel'] as bool? ?? false,
+    appleAction: json['appleAction'] as String?,
   );
 }
+
+/// [DeletionStatus.appleAction]: the member must remove Hiyall's access in their Apple ID settings.
+const appleActionRemoveInSettings = 'remove_in_apple_settings';
 
 /// The member's own data export and account deletion. A member whose account is
 /// scheduled for deletion can reach only [deletionStatus], [cancelDeletion]
@@ -53,7 +62,8 @@ mixin AccountApi {
   /// `REAUTH_REQUIRED` when the sign-in is older than five minutes. Apple accounts send the one-time
   /// [appleAuthorizationCode] from their Apple re-sign-in so the server can revoke Apple's token.
   /// When Apple twice gave no code, [appleCodeUnavailable] says so (body field `appleCodeUnavailable`):
-  /// the server then schedules the deletion and queues the Apple revocation for an operator.
+  /// the server schedules the deletion anyway and answers `appleAction: remove_in_apple_settings`: nobody
+  /// at Hiyall can remove the access, the member does it in their Apple ID settings.
   Future<DeletionStatus> scheduleDeletion(
     Session s,
     String confirmUsername, {

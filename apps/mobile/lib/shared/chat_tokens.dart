@@ -46,6 +46,10 @@ class ChatTokens extends ThemeExtension<ChatTokens> {
   final Color focusRing;
   final Color error;
 
+  /// Text and icons drawn on a fill of [error] (a destructive confirm button). At least 4.5:1 on
+  /// [error] in both themes (see `chat_tokens_test.dart`): the pale pink of the dark theme needs dark ink.
+  final Color onError;
+
   /// The floating navigation dock.
   final Color dockSurface;
   final Color shadow;
@@ -80,6 +84,7 @@ class ChatTokens extends ThemeExtension<ChatTokens> {
     required this.mutedBadgeInk,
     required this.focusRing,
     required this.error,
+    required this.onError,
     required this.dockSurface,
     required this.shadow,
   });
@@ -114,6 +119,7 @@ class ChatTokens extends ThemeExtension<ChatTokens> {
     mutedBadgeInk: Color(0xfff5f6ef),
     focusRing: Color(0x8cd2f65a),
     error: Color(0xffffb4bf),
+    onError: Color(0xff3a0510),
     dockSurface: Color(0xff20251f),
     shadow: Color(0x66000000),
   );
@@ -151,6 +157,7 @@ class ChatTokens extends ThemeExtension<ChatTokens> {
     mutedBadgeInk: VibeColors.ink,
     focusRing: Color(0x99246846),
     error: VibeColors.error,
+    onError: Color(0xffffffff),
     dockSurface: Color(0xfffcfdf8),
     shadow: Color(0x1a20231f),
   );
@@ -197,6 +204,7 @@ class ChatTokens extends ThemeExtension<ChatTokens> {
     mutedBadgeInk: mutedBadgeInk,
     focusRing: focusRing,
     error: error,
+    onError: onError,
     dockSurface: dockSurface,
     shadow: shadow,
   );

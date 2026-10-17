@@ -35,6 +35,8 @@ ThemeData hiyallTheme(Brightness brightness) {
             ? const Color(0xffc0c5b8)
             : const Color(0xff60665b),
         error: dark ? const Color(0xffffb4bf) : VibeColors.error,
+        // The same pair as ChatTokens.error / onError: AA on the fill in both themes.
+        onError: dark ? const Color(0xff3a0510) : Colors.white,
         outlineVariant: dark
             ? const Color(0xff41463d)
             : const Color(0xffe4e7dd),

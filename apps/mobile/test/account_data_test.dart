@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_riverpod/misc.dart' show Override;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/app.dart';
 import 'package:hiyall/core/account_state.dart';
@@ -10,9 +11,11 @@ import 'package:hiyall/core/data_delivery.dart';
 import 'package:hiyall/core/error_reporting.dart';
 import 'package:hiyall/features/help_safety.dart'
     show HelpContacts, mailLauncher;
-import 'package:url_launcher/url_launcher.dart' show launchUrl;
+import 'package:url_launcher/url_launcher.dart' show LaunchMode, launchUrl;
 import 'package:hiyall/core/state.dart';
+import 'package:hiyall/core/theme.dart';
 import 'package:hiyall/features/account_data.dart';
+import 'package:hiyall/features/chat_format.dart' show contrastRatio;
 
 import 'auth_test.dart' show AuthApi, FakeGateway, launch, location;
 import 'widget_test.dart' show FakeApi, SignedIn;
@@ -25,6 +28,9 @@ class AccountFake extends FakeApi {
   final unavailableFlags = <bool>[];
   var cancelled = 0, exports = 0;
   final scheduleFailures = <ApiFailure>[];
+
+  /// The `appleAction` the server answers a deletion with.
+  String? appleActionOnSchedule;
   ApiFailure? exportFailure, cancelFailure;
   List<int> exportBytes = const [123, 125];
 
@@ -48,6 +54,7 @@ class AccountFake extends FakeApi {
       scheduledAt: DateTime.utc(2026, 10, 13),
       dueAt: DateTime.utc(2026, 11, 12, 12),
       canCancel: true,
+      appleAction: appleActionOnSchedule,
     );
   }
 
@@ -553,21 +560,46 @@ void main() {
     );
 
     testWidgets(
-      'APPLE_CODE_REQUIRED for a Google-only account makes the retry an Apple sign-in',
+      'APPLE_CODE_REQUIRED for a Google-only account goes to the Apple sign-in, counts no miss and does not say Apple failed',
       (tester) async {
+        final reported = <String>[];
+        ErrorReporting.onCapture = (error, fatal) => reported.add('$error');
+        addTearDown(() => ErrorReporting.onCapture = null);
         final api = AccountFake()
           ..scheduleFailures.add(
             const ApiFailure('Check', 422, 'APPLE_CODE_REQUIRED'),
           );
         final reauth = FakeReauth(AuthMethod.google)..codeOnApple = 'late-code';
-        await toDelete(tester, api, reauth);
-        // The server was asked first (Google accounts list no Apple) and refused.
-        expect(find.byKey(const Key('delete-apple-explain')), findsOneWidget);
+        final container = await toDelete(tester, api, reauth);
+        // The server was asked first (Google accounts list no Apple) and said it needs Apple's code:
+        // the Apple step, not the "Apple didn't send it" screen.
+        expect(find.byKey(const Key('delete-apple-explain')), findsNothing);
+        expect(find.textContaining('didn’t send back'), findsNothing);
+        expect(find.text('Continue with Apple'), findsOneWidget);
+        expect(container.read(appleDeletionMissesProvider)[anjaliId], isNull);
+        expect(reported, isEmpty);
         expect(reauth.withAppleCalls, isEmpty);
-        await press(tester, 'delete-apple-retry');
+        await press(tester, 'delete-reauth');
         expect(reauth.withAppleCalls, [true]);
         expect(api.appleCodes, ['late-code']);
         expect(api.unavailableFlags, [false]);
+        expect(container.read(appleDeletionMissesProvider)[anjaliId], isNull);
+      },
+    );
+
+    testWidgets(
+      'APPLE_CODE_REQUIRED after the Apple sign-in sent no code is a miss from then on',
+      (tester) async {
+        final api = AccountFake()
+          ..scheduleFailures.add(
+            const ApiFailure('Check', 422, 'APPLE_CODE_REQUIRED'),
+          );
+        final reauth = FakeReauth(AuthMethod.google); // Apple returns no code
+        final container = await toDelete(tester, api, reauth);
+        expect(find.text('Continue with Apple'), findsOneWidget);
+        await press(tester, 'delete-reauth');
+        expect(find.byKey(const Key('delete-apple-explain')), findsOneWidget);
+        expect(container.read(appleDeletionMissesProvider)[anjaliId], 1);
       },
     );
 
@@ -584,15 +616,111 @@ void main() {
         expect(reauth.withAppleCalls, [true, true]);
         // Second miss: the explanation says what will happen, and the member chooses.
         expect(find.byKey(const Key('delete-apple-explain')), findsOneWidget);
-        expect(find.textContaining('by hand'), findsOneWidget);
+        expect(find.textContaining(appleStopUsingSteps), findsOneWidget);
+        expect(find.textContaining('by hand'), findsNothing);
+        expect(find.textContaining('We will remove'), findsNothing);
+        expect(find.textContaining('staff'), findsNothing);
+        expect(find.text('Delete my account anyway'), findsOneWidget);
         expect(find.text('Try Apple again'), findsNothing);
         expect(api.scheduled, isEmpty, reason: 'nothing is sent on its own');
+        api.appleActionOnSchedule = appleActionRemoveInSettings;
         await press(tester, 'delete-apple-continue');
         expect(api.scheduled, ['anjali']);
         expect(api.appleCodes, [null]);
         expect(api.unavailableFlags, [true]);
+        // The confirmation screen repeats the instruction: it is the member's job now.
+        expect(find.byKey(const Key('delete-done-apple')), findsOneWidget);
+        expect(find.textContaining(appleStopUsingSteps), findsOneWidget);
+        expect(find.byKey(const Key('apple-stop-using-help')), findsOneWidget);
+        await press(tester, 'delete-done');
+        expect(find.byKey(const Key('delete-done-apple')), findsNothing);
       },
     );
+
+    testWidgets(
+      'A normal deletion with Apple confirmation shows no Apple instruction afterwards',
+      (tester) async {
+        final api = AccountFake();
+        final reauth = FakeReauth(AuthMethod.apple)..codeOnApple = 'c';
+        final container = await toDelete(tester, api, reauth);
+        await press(tester, 'delete-reauth');
+        expect(api.scheduled, ['anjali']);
+        expect(container.read(deletionAppleActionProvider), isNull);
+        expect(find.byKey(const Key('delete-done-apple')), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'The Apple help button opens the Apple support page, and says so when it cannot',
+      (tester) async {
+        final opened = <Uri>[];
+        var works = true;
+        appleHelpLauncher = (uri) async {
+          opened.add(uri);
+          return works;
+        };
+        addTearDown(
+          () =>
+              appleHelpLauncher = (uri) =>
+                  launchUrl(uri, mode: LaunchMode.externalApplication),
+        );
+        expect(Uri.parse(appleStopUsingUrl).scheme, 'https');
+        final api = AccountFake();
+        final reauth = FakeReauth(AuthMethod.apple);
+        await toDelete(tester, api, reauth);
+        await press(tester, 'delete-reauth');
+        await press(tester, 'delete-apple-retry');
+        await press(tester, 'apple-stop-using-help');
+        expect(opened.single.toString(), appleStopUsingUrl);
+        works = false;
+        await press(tester, 'apple-stop-using-help');
+        expect(find.textContaining('Couldn’t open the page'), findsOneWidget);
+      },
+    );
+
+    for (final dark in [true, false]) {
+      testWidgets(
+        'The destructive buttons are AA (4.5:1) in the ${dark ? 'dark' : 'light'} theme',
+        (tester) async {
+          tester.platformDispatcher.platformBrightnessTestValue = dark
+              ? Brightness.dark
+              : Brightness.light;
+          addTearDown(
+            tester.platformDispatcher.clearPlatformBrightnessTestValue,
+          );
+          final api = AccountFake();
+          final reauth = FakeReauth(AuthMethod.apple);
+          final container = await openAccount(tester, api, reauth: reauth);
+          await container.read(profileProvider.future);
+          await start(tester);
+          await press(tester, 'delete-continue');
+          void check(String key) {
+            final style = tester
+                .widget<FilledButton>(find.byKey(Key(key)))
+                .style!;
+            final bg = style.backgroundColor!.resolve({})!;
+            final fg = style.foregroundColor!.resolve({})!;
+            expect(
+              contrastRatio(fg, bg),
+              greaterThanOrEqualTo(4.5),
+              reason: key,
+            );
+            if (dark) expect(fg, isNot(Colors.white), reason: key);
+          }
+
+          check('delete-confirm');
+          await tester.enterText(
+            find.byKey(const Key('delete-username')),
+            'anjali',
+          );
+          await tester.pump();
+          await press(tester, 'delete-confirm');
+          await press(tester, 'delete-reauth');
+          await press(tester, 'delete-apple-retry');
+          check('delete-apple-continue');
+        },
+      );
+    }
 
     testWidgets('The miss count survives leaving the screen and coming back', (
       tester,
@@ -723,6 +851,148 @@ void main() {
       }
     });
   });
+
+  group(
+    'The Apple deletion steps at the extremes (RTL, 320 wide, text 2.0)',
+    () {
+      Future<void> host(
+        WidgetTester tester,
+        Widget screen, {
+        required bool rtl,
+        AccountFake? api,
+        FakeReauth? reauth,
+        List<Override> extra = const [],
+      }) async {
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = const Size(320, 640);
+        tester.platformDispatcher.textScaleFactorTestValue = 2;
+        addTearDown(tester.view.reset);
+        addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+        final container = ProviderContainer(
+          overrides: [
+            apiProvider.overrideWithValue(api ?? AccountFake()),
+            sessionProvider.overrideWith(SignedIn.new),
+            reauthenticatorProvider.overrideWithValue(
+              reauth ?? FakeReauth(AuthMethod.apple),
+            ),
+            ...extra,
+          ],
+        );
+        addTearDown(container.dispose);
+        await container.read(profileProvider.future);
+        await tester.pumpWidget(
+          UncontrolledProviderScope(
+            container: container,
+            child: MaterialApp(
+              theme: hiyallTheme(Brightness.light),
+              builder: (context, child) => Directionality(
+                textDirection: rtl ? TextDirection.rtl : TextDirection.ltr,
+                child: child!,
+              ),
+              home: screen,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      void fits(WidgetTester tester, List<String> keys) {
+        expect(tester.takeException(), isNull);
+        for (final key in keys) {
+          final finder = find.byKey(Key(key));
+          expect(finder, findsOneWidget, reason: key);
+          expect(
+            tester.getSize(finder).height,
+            greaterThanOrEqualTo(48),
+            reason: key,
+          );
+        }
+      }
+
+      for (final rtl in [false, true]) {
+        final dir = rtl ? 'right to left' : 'left to right';
+
+        testWidgets('the Apple reauth step and the way-out step ($dir)', (
+          tester,
+        ) async {
+          await host(
+            tester,
+            const DeleteAccountScreen(),
+            rtl: rtl,
+            extra: [
+              appleDeletionMissesProvider.overrideWith(
+                () => _Misses({anjaliId: 2}),
+              ),
+            ],
+          );
+          await press(tester, 'delete-continue');
+          await tester.enterText(
+            find.byKey(const Key('delete-username')),
+            'anjali',
+          );
+          await tester.pump();
+          await press(tester, 'delete-confirm');
+          // Two misses already: the way out, with the instruction and both buttons.
+          expect(find.byKey(const Key('delete-apple-explain')), findsOneWidget);
+          await tester.ensureVisible(
+            find.byKey(const Key('delete-apple-continue')),
+          );
+          await tester.pumpAndSettle();
+          fits(tester, [
+            'delete-apple-continue',
+            'apple-stop-using-help',
+            'delete-apple-support',
+          ]);
+          for (final key in [
+            'delete-apple-continue',
+            'apple-stop-using-help',
+          ]) {
+            final box = tester.getRect(find.byKey(Key(key)));
+            expect(box.left, greaterThanOrEqualTo(0), reason: key);
+            expect(box.right, lessThanOrEqualTo(320), reason: key);
+          }
+          // Back to the sign-in step: the Apple button fits too.
+          await tester.tap(find.text('Back'));
+          await tester.pumpAndSettle();
+          await press(tester, 'delete-confirm');
+        });
+
+        testWidgets('the first Apple step ($dir)', (tester) async {
+          await host(tester, const DeleteAccountScreen(), rtl: rtl);
+          await press(tester, 'delete-continue');
+          await tester.enterText(
+            find.byKey(const Key('delete-username')),
+            'anjali',
+          );
+          await tester.pump();
+          await press(tester, 'delete-confirm');
+          await tester.ensureVisible(find.byKey(const Key('delete-reauth')));
+          await tester.pumpAndSettle();
+          fits(tester, ['delete-reauth']);
+        });
+
+        testWidgets(
+          'the confirmation screen with the Apple instruction ($dir)',
+          (tester) async {
+            await host(
+              tester,
+              const DeletionScheduledScreen(),
+              rtl: rtl,
+              extra: [
+                deletionAppleActionProvider.overrideWith(
+                  () => _AppleAction(appleActionRemoveInSettings),
+                ),
+              ],
+            );
+            expect(find.byKey(const Key('delete-done-apple')), findsOneWidget);
+            await tester.ensureVisible(find.byKey(const Key('delete-done')));
+            await tester.pumpAndSettle();
+            fits(tester, ['apple-stop-using-help', 'delete-done']);
+          },
+        );
+      }
+    },
+  );
 
   group('A member whose account is scheduled for deletion', () {
     PendingAccount pending({bool open = true}) => PendingAccount(
@@ -884,6 +1154,20 @@ void main() {
       expect(container.read(sessionProvider).asData?.value, isNotNull);
     });
   });
+}
+
+class _Misses extends AppleDeletionMisses {
+  final Map<String, int> start;
+  _Misses(this.start);
+  @override
+  Map<String, int> build() => start;
+}
+
+class _AppleAction extends DeletionAppleAction {
+  final String? value;
+  _AppleAction(this.value);
+  @override
+  String? build() => value;
 }
 
 class _SignedOut extends SessionController {

@@ -31,6 +31,10 @@ class RealtimeClient {
   /// Called once the server keeps refusing the session after a fresh token:
   /// the session really ended, so the app should sign out rather than retry.
   final void Function()? onSessionEnded;
+
+  /// Called once, and the client stops, when the server refuses the app itself (401 APP_CHECK_REQUIRED),
+  /// not the session: the session must not be ended for that.
+  final void Function()? onAppCheckRequired;
   final Future<RealtimeSocket> Function(Uri, String) _connect;
   RealtimeClient(
     String apiBase,
@@ -38,6 +42,7 @@ class RealtimeClient {
     this.tokenOf,
     this.refreshToken,
     this.onSessionEnded,
+    this.onAppCheckRequired,
     Future<RealtimeSocket> Function(Uri, String)? connect,
 
     /// Overrides [kDebugMode] for the transport check (tests).
@@ -140,8 +145,22 @@ class RealtimeClient {
       );
     } on UnsupportedError {
       if (generation == _generation) _running = false;
-    } on RealtimeUnauthorized {
-      if (current()) _sessionEnded();
+    } on RealtimeUnauthorized catch (refusal) {
+      if (!current()) return;
+      switch (refusal.code) {
+        case 'UNAUTHENTICATED':
+          _sessionEnded();
+        case 'APP_CHECK_REQUIRED':
+          // The app is refused, not the session: stop asking and let the app say so.
+          _setConnected(false);
+          stop();
+          onAppCheckRequired?.call();
+        default:
+          // The reason could not be read (or is not about the session): that proves nothing, so it is
+          // retried like any lost connection. A really ended session ends with the next API call.
+          _setConnected(false);
+          _schedule();
+      }
     } catch (_) {
       if (current()) _schedule();
     }

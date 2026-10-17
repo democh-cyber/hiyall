@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart' show launchUrl, LaunchMode;
 
 import '../app.dart' show routerProvider;
 import '../core/account_state.dart';
@@ -264,6 +265,41 @@ class _AccountDataGroupState extends ConsumerState<AccountDataSettingsGroup> {
 
 enum _Step { explain, confirm, reauth, appleNoCode }
 
+/// Apple's own page on removing an app's access to the Apple ID ("Stop using Apple ID"). VERIFY before
+/// release that this page still says that (owner check; the app only opens it).
+const appleStopUsingUrl = 'https://support.apple.com/en-us/102571';
+
+/// Where a member removes Hiyall's access to their Apple ID themselves.
+const appleStopUsingSteps =
+    'Settings > Apple ID > Sign in with Apple > Hiyall > Stop using Apple ID';
+
+/// Opens [appleStopUsingUrl]. Replaced in tests, which have no browser.
+@visibleForTesting
+Future<bool> Function(Uri uri) appleHelpLauncher = (uri) =>
+    launchUrl(uri, mode: LaunchMode.externalApplication);
+
+/// A button that opens Apple's page on removing an app's access.
+class AppleStopUsingButton extends StatelessWidget {
+  const AppleStopUsingButton({super.key});
+  @override
+  Widget build(BuildContext context) => OutlinedButton(
+    key: const Key('apple-stop-using-help'),
+    onPressed: () async {
+      var opened = false;
+      try {
+        opened = await appleHelpLauncher(Uri.parse(appleStopUsingUrl));
+      } catch (_) {}
+      if (!opened && context.mounted) {
+        showMessage(
+          context,
+          'Couldn’t open the page. Search for “Stop using Apple ID” on support.apple.com.',
+        );
+      }
+    },
+    child: const Text('How to do it in Apple settings'),
+  );
+}
+
 /// How many times Apple may come back without the code before the app stops asking.
 const appleCodeAttempts = 2;
 
@@ -356,7 +392,8 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen> {
   }
 
   /// Schedules the deletion. [codeUnavailable] is the member's choice, after Apple twice gave no
-  /// code, to go on without it: the server then revokes Apple's access by hand.
+  /// code, to go on without it: the server then cannot disconnect Hiyall from the Apple ID, and the
+  /// member removes the access themselves in Apple ID settings (the response says so).
   Future<void> schedule({bool codeUnavailable = false}) async {
     if (busy) return;
     // An account with an Apple identity always signs in with Apple again first, whatever else it signs in
@@ -386,6 +423,7 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen> {
           );
       // Every session ended on the server; leave this one too, quietly, and say when it ends.
       ref.read(deletionScheduledProvider.notifier).set(status.dueAt);
+      ref.read(deletionAppleActionProvider.notifier).set(status.appleAction);
       ref.read(appleDeletionMissesProvider.notifier).clear(session.userId);
       final router = ref.read(routerProvider);
       await ref.read(sessionProvider.notifier).signOutProvider();
@@ -395,9 +433,19 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen> {
       if (failure.code == 'REAUTH_REQUIRED') {
         go(_Step.reauth);
       } else if (failure.code == 'APPLE_CODE_REQUIRED' && !codeUnavailable) {
-        // The server needs Apple's one-time code and did not get one.
+        // The server needs Apple's one-time code.
         serverWantsApple = true;
-        appleMissed('server');
+        if (code == null) {
+          // None was sent because this account was not known to need one (a Google or password
+          // account with an Apple identity the app cannot see): that is no miss. Ask for Apple's
+          // sign-in, or, when Apple already came back empty twice, offer the way out.
+          go(
+            appleMisses >= appleCodeAttempts ? _Step.appleNoCode : _Step.reauth,
+          );
+        } else {
+          // A code was sent and the server still refused it (stale or not Apple's): a miss.
+          appleMissed('server');
+        }
       } else {
         setState(() => error = failure.displayMessage);
       }
@@ -619,7 +667,7 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen> {
         key: const Key('delete-confirm'),
         style: FilledButton.styleFrom(
           backgroundColor: tokens.error,
-          foregroundColor: Colors.white,
+          foregroundColor: tokens.onError,
         ),
         onPressed: matches && !busy ? schedule : null,
         child: Text(busy ? 'Deleting…' : 'Delete my account'),
@@ -637,7 +685,7 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen> {
     return [
       Text(
         giveUp
-            ? 'Apple twice signed you in without sending back the confirmation we use to disconnect Hiyall from your Apple ID. You can still delete your account now. We will remove Hiyall’s access to your Apple ID by hand afterwards, so it can take a little longer than usual to disappear from the list of apps using your Apple ID (you can also remove it yourself in your Apple ID settings). Nothing has been deleted yet.'
+            ? 'Apple twice signed you in without sending back the confirmation Hiyall needs to disconnect from your Apple ID. You can still delete your account now, but Hiyall cannot remove its own access to your Apple ID: you do that yourself afterwards in $appleStopUsingSteps. Until you do, Hiyall stays in the list of apps using your Apple ID. Nothing has been deleted yet.'
             : 'Apple signed you in but didn’t send back the confirmation we need to finish deleting your account and disconnect it from Apple. Nothing has been deleted.',
         key: const Key('delete-apple-explain'),
         style: TextStyle(height: 1.5, color: tokens.textSecondary),
@@ -661,11 +709,13 @@ class _DeleteAccountScreenState extends ConsumerState<DeleteAccountScreen> {
           key: const Key('delete-apple-continue'),
           style: FilledButton.styleFrom(
             backgroundColor: tokens.error,
-            foregroundColor: Colors.white,
+            foregroundColor: tokens.onError,
           ),
           onPressed: busy ? null : () => schedule(codeUnavailable: true),
           child: Text(busy ? 'Deleting…' : 'Delete my account anyway'),
         ),
+        const SizedBox(height: 8),
+        const AppleStopUsingButton(),
         const SizedBox(height: 8),
         OutlinedButton(
           key: const Key('delete-apple-support'),
@@ -752,6 +802,7 @@ class DeletionScheduledScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final tokens = ChatTokens.of(context);
     final due = ref.watch(deletionScheduledProvider);
+    final appleAction = ref.watch(deletionAppleActionProvider);
     return Scaffold(
       backgroundColor: tokens.bg,
       body: SafeArea(
@@ -793,11 +844,22 @@ class DeletionScheduledScreen extends ConsumerWidget {
                     'Changed your mind? Sign in before then and tap “Keep my account”.',
                     style: TextStyle(height: 1.5, color: tokens.textSecondary),
                   ),
+                  if (appleAction == appleActionRemoveInSettings) ...[
+                    const SizedBox(height: 18),
+                    Text(
+                      'One thing is left for you to do. Apple did not confirm the disconnection, so Hiyall cannot remove its own access to your Apple ID. Remove it yourself in $appleStopUsingSteps.',
+                      key: const Key('delete-done-apple'),
+                      style: TextStyle(height: 1.5, color: tokens.text),
+                    ),
+                    const SizedBox(height: 12),
+                    const AppleStopUsingButton(),
+                  ],
                   const SizedBox(height: 26),
                   FilledButton(
                     key: const Key('delete-done'),
                     onPressed: () {
                       ref.read(deletionScheduledProvider.notifier).set(null);
+                      ref.read(deletionAppleActionProvider.notifier).set(null);
                       context.go('/welcome');
                     },
                     child: const Text('Done'),

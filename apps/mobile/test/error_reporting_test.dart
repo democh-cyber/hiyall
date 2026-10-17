@@ -152,6 +152,52 @@ void main() {
     );
   });
 
+  group('breadcrumbs, nested data', () {
+    test('strings inside nested maps and lists are scrubbed', () {
+      final crumb = scrubBreadcrumb(
+        Breadcrumb(
+          category: 'navigation',
+          data: {
+            'state': {
+              'to': '/discover?q=secret',
+              'mail': 'ana@example.com',
+              'deeper': [
+                {'url': 'https://x.test/a?sig=abc'},
+                'Bearer abc.def',
+              ],
+            },
+            'count': 3,
+          },
+        ),
+        Hint(),
+      )!;
+      final state = crumb.data!['state'] as Map;
+      expect(state['to'], '/discover');
+      expect(state['mail'], '[email]');
+      final deeper = state['deeper'] as List;
+      expect((deeper[0] as Map)['url'], 'https://x.test/a');
+      expect(deeper[1], 'Bearer [redacted]');
+      expect(crumb.data!['count'], 3);
+    });
+
+    test('a chat route hidden in a nested value drops the crumb', () {
+      expect(
+        scrubBreadcrumb(
+          Breadcrumb(
+            category: 'ui',
+            data: {
+              'extra': {
+                'trail': ['/home', '/chats/abc?name=Niko'],
+              },
+            },
+          ),
+          Hint(),
+        ),
+        isNull,
+      );
+    });
+  });
+
   group('events', () {
     SentryEvent dirty() => SentryEvent(
       user: SentryUser(

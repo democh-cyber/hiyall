@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../core/feed_state.dart';
+import '../../core/picked_file.dart';
 import '../../core/state.dart';
 import '../../core/user_error.dart';
 import '../../shared/widgets.dart';
@@ -80,15 +81,20 @@ class _ComposePostScreenState extends ConsumerState<ComposePostScreen> {
       maxHeight: 2048,
       imageQuality: 85,
     );
-    for (final f in files.take(room)) {
-      final p = PendingPhoto(await f.readAsBytes());
-      if (!mounted) return;
-      setState(() => photos.add(p));
-      unawaited(
-        uploadPendingPhoto(ref, p, 'post', () {
-          if (mounted) setState(() {});
-        }, onLimit: (m) => mounted ? showMessage(context, m) : null),
-      );
+    try {
+      for (final f in files.take(room)) {
+        final p = PendingPhoto(await readAndDeletePick(f));
+        if (!mounted) return;
+        setState(() => photos.add(p));
+        unawaited(
+          uploadPendingPhoto(ref, p, 'post', () {
+            if (mounted) setState(() {});
+          }, onLimit: (m) => mounted ? showMessage(context, m) : null),
+        );
+      }
+    } finally {
+      // The copies of picks beyond [room], or of the originals of resized ones, go too.
+      unawaited(sweepPickerTemp());
     }
   }
 
