@@ -67,7 +67,7 @@ func (k *keyedLimiter) reset(key string) {
 // rename one without accepting that its buckets restart full.
 func (a *API) limiters() map[string]*keyedLimiter {
 	return map[string]*keyedLimiter{
-		"clients": a.clients, "search": a.search, "graph": a.graph, "messages": a.messages, "aux_messages": a.auxMessages, "reports": a.reports,
+		"clients": a.clients, "auth_clients": a.authClients, "search": a.search, "graph": a.graph, "messages": a.messages, "aux_messages": a.auxMessages, "reports": a.reports,
 		"uploads": a.uploads, "blob_slots": a.blobSlots, "blob_urls": a.blobURLs, "content": a.content,
 		"lists": a.lists, "locations": a.locations, "first_chats": a.firstChats,
 		"profile_edits": a.profileEdits, "media_complete": a.mediaComplete,
@@ -89,7 +89,7 @@ func (a *API) nameLimiters() {
 // which would cost a database write for every request (the busiest path in the API) to defend the
 // database; behind N nodes it is N times the limit, which is still a bound, and the proxy in front is
 // where a real per-address limit belongs.
-var memoryOnlyLimiters = map[string]bool{"clients": true, "visit_writes": true}
+var memoryOnlyLimiters = map[string]bool{"clients": true, "auth_clients": true, "visit_writes": true}
 
 // UseSharedRateLimits moves the per-account limiters (everything but memoryOnlyLimiters) to the
 // database, so that N nodes enforce one limit. db is normally the Store's pool. Call it before serving

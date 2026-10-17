@@ -831,8 +831,10 @@ const providerSessionIdle = 400 * 24 * time.Hour
 // PurgeSessions deletes at most batch session rows that expired more than retain ago:
 // development sessions (their token cannot be refreshed), and identity-provider sessions
 // that were never revoked and have not been used for providerSessionIdle. A revoked
-// identity-provider session is a tombstone and is never purged: a still-valid refresh token
+// identity-provider session is a tombstone and is not purged here: a still-valid refresh token
 // keeps minting tokens for the same sid, and only the tombstone stops it recreating the session.
+// PurgeRevokedSessionTombstones removes one after 400 days, and only when the identity's "sign out
+// everywhere" watermark refuses that sign-in without it.
 func (s *Store) PurgeSessions(ctx context.Context, retain time.Duration, batch int) (int64, error) {
 	tag, err := s.Pool.Exec(ctx, `DELETE FROM sessions WHERE ctid IN (SELECT ctid FROM sessions
  WHERE (external_sid IS NULL OR revoked_at IS NULL) AND expires_at<now()-$1::interval AND (external_sid IS NULL OR last_seen_at<now()-$3::interval)

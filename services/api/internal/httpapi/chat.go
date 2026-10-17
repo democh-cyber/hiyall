@@ -65,12 +65,18 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		if isID(p.SessionID) {
 			d.SessionID = p.SessionID
 		}
-		registered, created, err := a.Store.RegisterDeviceNew(ctx, d)
+		registered, outcome, err := a.Store.RegisterDeviceOutcome(ctx, d)
 		if err != nil {
 			a.error(w, r, err)
 			return true
 		}
-		if created {
+		if outcome == store.DeviceReturned {
+			// A device the relay had removed as idle is back with the keys it always had (CHAT-N1). It is not a new
+			// device: no "added" signal and no security push. The account's other devices only look at their list
+			// again, which now holds it, so a removal notice they kept can go.
+			a.signal(ctx, "device", map[string]string{"deviceId": registered.DeviceID, "change": "returned"}, p.UserID)
+		}
+		if outcome == store.DeviceCreated {
 			// Every device of the account learns at once that one was added, so an unexpected one is noticed.
 			a.signal(ctx, "device", map[string]string{"deviceId": registered.DeviceID, "change": "added"}, p.UserID)
 			// And a content-free push to the others that are not connected, so a device added with a stolen
@@ -298,11 +304,16 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		if err != nil {
 			var revoked *store.DevicesRevoked
 			if errors.As(err, &revoked) {
-				// The send found a dormant device over the backlog cap and revoked it (CHAT-N1): the owner's
-				// other devices are told, like any removal they did not make, and the sender is answered
-				// DEVICES_CHANGED below, which the client retries once.
+				// The send found a dormant device over the backlog cap, or a ghost one that one sender alone had
+				// filled, and revoked it (CHAT-N1, N2): the owner's other devices are told, like any removal they
+				// did not make, and the sender is answered DEVICES_CHANGED below, which the client retries once.
 				for _, d := range revoked.Devices {
-					a.signal(ctx, "device", map[string]string{"deviceId": d.DeviceID, "change": "revoked", "by": "other", "reason": "inactive"}, d.UserID)
+					a.signal(ctx, "device", map[string]string{"deviceId": d.DeviceID, "change": "revoked", "by": "other", "reason": d.Reason}, d.UserID)
+					// An idle removal is housekeeping, not a security event: it is listed for the owner's other
+					// devices (and signalled to those that are connected) but never pushed.
+					if d.Reason == store.ReasonIdle {
+						continue
+					}
 					// The sender's own phone, which is mid-send, needs no push about it.
 					exclude := ""
 					if d.UserID == p.UserID {

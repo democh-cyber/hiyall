@@ -11,19 +11,32 @@ import (
 )
 
 // Account deletion for a member whose Sign in with Apple authorization cannot be revoked by the server, and the
-// operator's side of it (round-3 audit API-1). A member who signs in with Apple, or has Apple linked, must have the
-// authorization revoked at deletion (App Store guideline 5.1.1(v)); the server needs a fresh authorization code
-// from the app for that. When the app cannot get one even after re-authenticating (the member re-signed in with
-// Google, the web has no code) the deletion must still go ahead: the member is never locked in. The authorization
-// is then queued as a 'manual' apple_revocations row for an operator to revoke by hand and mark done.
+// operator's side of it (round-3 audit API-1, round-4 N-4). A member who signs in with Apple, or has Apple linked,
+// must have the authorization revoked at deletion (App Store guideline 5.1.1(v)); the server needs a fresh
+// authorization code from the app for that. When the app cannot get one even after re-authenticating (the member
+// re-signed in with Google, the web has no code) the deletion must still go ahead: the member is never locked in.
+//
+// Nobody at Hiyall can revoke the authorization instead: Apple's revoke call needs the member's own token and the
+// developer portal has no per-user revoke. The member does it themselves in Apple ID settings (Settings > Apple ID >
+// Sign in with Apple > Hiyall > Stop using Apple ID), and the API tells them so in the deletion response
+// (appleAction). The queue row is a record that they were told ('member_informed', removed after 90 days). A deletion
+// that support schedules cannot tell the member in the app, so its row is 'manual': an operator tells the member and
+// acknowledges it.
 
-// ScheduleDeletionManualApple schedules the deletion and, in the same transaction, queues a manual revocation for
-// every identity of the account that holds an Apple authorization. A member without one is simply deleted. Asking
-// again changes nothing (an existing row, such as a sealed token the purge retries, is kept).
+// ScheduleDeletionManualApple schedules the deletion and, in the same transaction, records for every identity of the
+// account that holds an Apple authorization that the member was told to remove it themselves. A member without one is
+// simply deleted. Asking again changes nothing (an existing row, such as a sealed token the purge retries, is kept).
 func (s *Store) ScheduleDeletionManualApple(ctx context.Context, user string) (DeletionState, error) {
+	state, _, err := s.ScheduleDeletionManualAppleNotify(ctx, user)
+	return state, err
+}
+
+// ScheduleDeletionManualAppleNotify is ScheduleDeletionManualApple that also returns the push tokens cleared (see
+// ScheduleDeletionNotify).
+func (s *Store) ScheduleDeletionManualAppleNotify(ctx context.Context, user string) (DeletionState, []PushTarget, error) {
 	return s.scheduleDeletion(ctx, user, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO apple_revocations(issuer,subject,status,user_id,reason)
- SELECT issuer,subject,'manual',$1::uuid,'the app could not obtain a Sign in with Apple authorization code' FROM auth_identities
+ SELECT issuer,subject,'member_informed',$1::uuid,'the app could not obtain a Sign in with Apple authorization code; the member was told to remove Hiyall in Apple ID settings' FROM auth_identities
   WHERE user_id=$1 AND (sign_in_provider='apple.com' OR apple_linked)
  ON CONFLICT (issuer,subject) DO NOTHING`, user)
 		return err
@@ -31,8 +44,10 @@ func (s *Store) ScheduleDeletionManualApple(ctx context.Context, user string) (D
 }
 
 // AdminScheduleDeletion is `admin schedule-deletion`: the support-driven deletion, as the console role (which has no
-// access to the member tables) through admin_schedule_deletion. It audits the action itself and queues manual Apple
-// revocations like ScheduleDeletionManualApple. It returns when the grace period ends.
+// access to the member tables) through admin_schedule_deletion. actor is the e-mail address of an active administrator
+// (never a shell user such as cli:root: the function refuses anything else). It works for a suspended, banned or
+// deactivated member too (an erasure request), audits the action itself, and queues a 'manual' Apple record for an
+// operator to tell the member. It returns when the grace period ends.
 func (s *Store) AdminScheduleDeletion(ctx context.Context, user, actor, reason string) (time.Time, error) {
 	notice, _ := json.Marshal(realtime.DisconnectEvent(user))
 	var due time.Time
@@ -42,24 +57,27 @@ func (s *Store) AdminScheduleDeletion(ctx context.Context, user, actor, reason s
 
 // AppleRevocationCase is a manual revocation waiting for an operator.
 type AppleRevocationCase struct {
-	RevocationID string    `json:"revocationId"`
-	Issuer       string    `json:"issuer"`
-	Subject      string    `json:"subject"`
-	UserID       string    `json:"userId"`
-	Reason       string    `json:"reason"`
-	CreatedAt    time.Time `json:"createdAt"`
+	RevocationID string `json:"revocationId"`
+	Issuer       string `json:"issuer"`
+	Subject      string `json:"subject"`
+	UserID       string `json:"userId"`
+	// Status is 'manual' (an operator has to tell the member) or 'member_informed' (the app told them; a record).
+	Status    string    `json:"status"`
+	Reason    string    `json:"reason"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
-// ManualAppleRevocations lists the revocations an operator still has to do by hand, oldest first.
+// ManualAppleRevocations lists the Apple records, 'manual' ones first (those need an operator), oldest first. Despite
+// the name it also lists 'member_informed' records, for visibility.
 func (s *Store) ManualAppleRevocations(ctx context.Context, limit int) ([]AppleRevocationCase, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT revocation_id::text,issuer,subject,coalesce(user_id::text,''),coalesce(reason,''),created_at
- FROM apple_revocations WHERE status='manual' ORDER BY created_at,revocation_id LIMIT $1`, limit)
+	rows, err := s.Pool.Query(ctx, `SELECT revocation_id::text,issuer,subject,coalesce(user_id::text,''),status,coalesce(reason,''),created_at
+ FROM apple_revocations WHERE status IN ('manual','member_informed') ORDER BY (status='manual') DESC,created_at,revocation_id LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
 	out, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (AppleRevocationCase, error) {
 		var c AppleRevocationCase
-		return c, row.Scan(&c.RevocationID, &c.Issuer, &c.Subject, &c.UserID, &c.Reason, &c.CreatedAt)
+		return c, row.Scan(&c.RevocationID, &c.Issuer, &c.Subject, &c.UserID, &c.Status, &c.Reason, &c.CreatedAt)
 	})
 	if out == nil && err == nil {
 		out = []AppleRevocationCase{}
@@ -67,23 +85,34 @@ func (s *Store) ManualAppleRevocations(ctx context.Context, limit int) ([]AppleR
 	return out, mapped(err)
 }
 
-// MarkAppleRevoked removes a manual revocation once the operator revoked the authorization in Apple's console.
-// hook runs in the same transaction, where the console writes its audit entry; the row is gone only if that
-// entry was written.
-func (s *Store) MarkAppleRevoked(ctx context.Context, id string, hook func(ctx context.Context, tx pgx.Tx, c AppleRevocationCase) error) error {
-	return s.inTx(ctx, func(tx pgx.Tx) error {
-		var c AppleRevocationCase
-		err := tx.QueryRow(ctx, `DELETE FROM apple_revocations WHERE revocation_id=$1 AND status='manual'
- RETURNING revocation_id::text,issuer,subject,coalesce(user_id::text,''),coalesce(reason,''),created_at`, id).Scan(&c.RevocationID, &c.Issuer, &c.Subject, &c.UserID, &c.Reason, &c.CreatedAt)
-		if err != nil {
+// AcknowledgeAppleRevocation removes an Apple record once an operator has dealt with it (told the member, for a 'manual'
+// one) through apple_revocation_acknowledge, which writes the audit entry in the same transaction. The console role has
+// no DELETE on the table.
+func (s *Store) AcknowledgeAppleRevocation(ctx context.Context, id, operatorID, reason string) (AppleRevocationCase, error) {
+	var c AppleRevocationCase
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := SetSafetyContext(ctx, tx); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `SELECT revocation_id::text,issuer,subject,coalesce(user_id::text,''),status,coalesce(reason,''),created_at FROM apple_revocations WHERE revocation_id=$1`, id).
+			Scan(&c.RevocationID, &c.Issuer, &c.Subject, &c.UserID, &c.Status, &c.Reason, &c.CreatedAt); err != nil {
 			return mapped(err)
 		}
-		if hook != nil {
-			return hook(ctx, tx, c)
-		}
-		return nil
+		_, err := tx.Exec(ctx, `SELECT apple_revocation_acknowledge($1::uuid,$2::uuid,$3)`, id, operatorID, reason)
+		return MapSafetyError(err)
 	})
+	return c, err
 }
+
+// PruneAppleRecords removes 'member_informed' records older than days (never fewer than 30) and returns how many.
+func (s *Store) PruneAppleRecords(ctx context.Context, days int) (int64, error) {
+	var n int64
+	err := s.Pool.QueryRow(ctx, `SELECT apple_revocations_prune($1)`, days).Scan(&n)
+	return n, mapped(err)
+}
+
+// AppleRecordRetentionDays is how long a 'member_informed' record is kept.
+const AppleRecordRetentionDays = 90
 
 // PendingCase is a quarantine case still 'pending' after its hour: the evidence objects may never have been written.
 type PendingCase struct {

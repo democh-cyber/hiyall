@@ -219,9 +219,13 @@ func TestBackloggedIdleDevicesAreSweptAndActiveOnesAreNot(t *testing.T) {
 	}
 }
 
-func TestStaleDeviceWindowIsTwoWeeks(t *testing.T) {
-	if store.StaleDeviceAfter != 14*24*time.Hour || store.DormantDeviceAfter != 7*24*time.Hour || store.BackloggedDeviceIdle != 3*24*time.Hour {
-		t.Fatalf("windows %v %v %v", store.StaleDeviceAfter, store.DormantDeviceAfter, store.BackloggedDeviceIdle)
+func TestStaleDeviceWindowOutlastsTheEnvelopeExpiry(t *testing.T) {
+	if store.StaleDeviceAfter != 35*24*time.Hour || store.DormantDeviceAfter != 7*24*time.Hour || store.BackloggedDeviceIdle != 3*24*time.Hour || store.GhostDeviceAfter != 48*time.Hour {
+		t.Fatalf("windows %v %v %v %v", store.StaleDeviceAfter, store.DormantDeviceAfter, store.BackloggedDeviceIdle, store.GhostDeviceAfter)
+	}
+	// Round 4 (CHAT-N1): idleness never loses ciphertext that had not already expired.
+	if store.StaleDeviceAfter <= store.UndeliveredEnvelopeTTL {
+		t.Fatalf("a device is revoked as idle after %v but ciphertext waits %v", store.StaleDeviceAfter, store.UndeliveredEnvelopeTTL)
 	}
 }
 
@@ -244,7 +248,7 @@ func TestOwnDeviceBacklogHasItsOwnCodeAndTheRecipientTextIsUnchanged(t *testing.
 	h.expect(h.send(alice, "POST", path+"/messages", message(phone, bobPhone, tablet)), 200, "")
 	h.expect(h.send(alice, "POST", path+"/messages", message(phone, bobPhone, tablet)), 200, "")
 	status, _, body = h.full(alice, "POST", path+"/messages", "application/json", mustJSON(message(phone, bobPhone, tablet)))
-	if status != 429 || !strings.Contains(string(body), `"RECIPIENT_BACKLOG"`) || !strings.Contains(string(body), "They haven't picked up their earlier messages yet. Try again later.") {
+	if status != 429 || !strings.Contains(string(body), `"RECIPIENT_BACKLOG"`) || !strings.Contains(string(body), "They haven't caught up on earlier messages yet. Try again later.") {
 		t.Fatalf("recipient backlog: %d %s", status, body)
 	}
 }

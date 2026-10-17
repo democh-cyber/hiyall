@@ -264,4 +264,17 @@ func TestCheckConfigNetRunsTheEvidenceCanary(t *testing.T) {
 	if code, out := runCheck(t, "-net"); code != 0 || !strings.Contains(out, "warning: evidence token canary did not run") {
 		t.Fatalf("a probe that could not run: %d %s", code, out)
 	}
+	// Round-4 N-6: a RELEASE must not ship on an unproven evidence bucket, so with -release the same write failure is a
+	// problem (a start, by contrast, only warns and retries in the background).
+	if code, out := runCheck(t, "-release", "-net"); code != 1 || !strings.Contains(out, "problem: evidence token canary could not write its probe") {
+		t.Fatalf("-release -net with a probe that could not run: %d %s", code, out)
+	}
+	// A declared lock is not verified without -net: the check says so.
+	t.Setenv("EVIDENCE_BUCKET", "hiyall-evidence")
+	t.Setenv("EVIDENCE_ACCESS_KEY", "w")
+	t.Setenv("EVIDENCE_SECRET_KEY", "w")
+	t.Setenv("EVIDENCE_ALLOW_API_DELETE", "true")
+	if _, out := runCheck(t, "-release"); !strings.Contains(out, "declares a bucket lock") || !strings.Contains(out, "did not verify it") {
+		t.Fatalf("an unverified declaration was not flagged: %s", out)
+	}
 }

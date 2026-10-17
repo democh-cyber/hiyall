@@ -142,6 +142,9 @@ func TestMessageMetadataRetention(t *testing.T) {
 	h.exec(`INSERT INTO message_envelopes(message_id,recipient_device_id,envelope_type,ciphertext) VALUES($1,$2,0,'x')`, pending, db)
 	h.exec(`INSERT INTO chat_blobs(blob_id,uploader_id,conversation_id,message_id,role,size_bytes,ct_sha256,state,object_key,uploaded_at,expires_at)
  VALUES(gen_random_uuid(),$1,$2,$3,'full',100,decode(repeat('ab',32),'hex'),'uploaded','chat/y',now(),now()+interval '1 day')`, alice, conversation, blob)
+	// The job resumes after the last message an earlier run examined (reconcile_state). This test backdates its
+	// messages behind that cursor, which real messages never are, so it starts a pass from the beginning.
+	h.exec(`DELETE FROM reconcile_state WHERE job='message_metadata_purge'`)
 	if _, err := h.db.PurgeMessageMetadata(h.ctx, store.MessageMetadataRetention); err != nil {
 		t.Fatal(err)
 	}

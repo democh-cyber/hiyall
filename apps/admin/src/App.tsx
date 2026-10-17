@@ -52,7 +52,7 @@ function Shell() {
           <NavLink to="/" end>Reports</NavLink>
           {op.role !== 'viewer' && <NavLink to="/content">Quarantine</NavLink>}
           {op.role === 'admin' && <NavLink to="/approvals">Approvals</NavLink>}
-          {op.role === 'admin' && <NavLink to="/apple-revocations">Apple revocations</NavLink>}
+          {op.role === 'admin' && <NavLink to="/apple-revocations">Apple deletions</NavLink>}
           {op.role === 'admin' && <NavLink to="/evidence-orphans">Evidence orphans</NavLink>}
           {op.role === 'admin' && <NavLink to="/audit">Audit log</NavLink>}
           {op.role === 'admin' && <NavLink to="/operators">Operators</NavLink>}

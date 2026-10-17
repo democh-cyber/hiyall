@@ -23,6 +23,10 @@ const purgeBatch = 1000
 // the next run retries instead of spinning.
 const purgeMaxRounds = 100000
 
+// errPurgeWaiting means a step has to wait for another worker (the counter recount of this account); the purge stops
+// quietly and the next run continues.
+var errPurgeWaiting = errors.New("account purge is waiting for another job")
+
 // errPurgeFenced means the account is no longer in status 'deleting'; the purge stops quietly.
 var errPurgeFenced = errors.New("account is no longer being deleted")
 

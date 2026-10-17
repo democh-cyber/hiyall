@@ -269,13 +269,14 @@ func TestRevokingAnotherSessionsDeviceIsRecordedForTheOwner(t *testing.T) {
 	if got := removedOf(h, alice); len(got) != 0 {
 		t.Fatalf("old removal still listed: %v", got)
 	}
-	// The maintenance job and a session revocation never record one.
+	// A session revocation never records one. The idle sweep does, with its reason, so the owner's other devices
+	// can tell the removal from one by a session of theirs (round 4, CHAT-N1).
 	h.exec(`UPDATE devices SET last_seen_at=now()-interval '100 days' WHERE device_id=$1`, tablet.id)
 	if n, err := h.db.RevokeStaleDevices(h.ctx, store.StaleDeviceAfter, 10); err != nil || n != 1 {
 		t.Fatalf("stale revoke %d %v", n, err)
 	}
-	if got := removedOf(h, alice); len(got) != 0 {
-		t.Fatalf("stale revocation listed: %v", got)
+	if got := removedOf(h, alice); len(got) != 1 || got[0]["deviceId"] != tablet.id || got[0]["reason"] != "idle" {
+		t.Fatalf("idle revocation listed as %v", got)
 	}
 }
 

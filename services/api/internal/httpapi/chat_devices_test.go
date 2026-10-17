@@ -55,8 +55,8 @@ func TestStaleDevicesAreRevokedAndFreeTheCap(t *testing.T) {
 	h.expect(h.send(alice, "POST", "/v1/devices", newTestDevice(alice).registration()), 409, "TOO_MANY_DEVICES")
 	keys := []map[string]string{old[0].oneTimeKey("k1")}
 	h.expect(h.send(alice, "POST", "/v1/devices/"+old[0].id+"/keys", map[string]any{"oneTimeKeys": keys}), 200, "")
-	h.exec(`UPDATE devices SET last_seen_at=now()-interval '15 days' WHERE device_id=$1`, old[0].id)
-	h.exec(`UPDATE devices SET last_seen_at=now()-interval '13 days' WHERE device_id=$1`, old[1].id)
+	h.exec(`UPDATE devices SET last_seen_at=now()-interval '36 days' WHERE device_id=$1`, old[0].id)
+	h.exec(`UPDATE devices SET last_seen_at=now()-interval '34 days' WHERE device_id=$1`, old[1].id)
 
 	n, err := h.db.RevokeStaleDevices(h.ctx, store.StaleDeviceAfter, 100)
 	if err != nil || n != 1 {
@@ -72,9 +72,12 @@ func TestStaleDevicesAreRevokedAndFreeTheCap(t *testing.T) {
 	if again, _ := h.db.RevokeStaleDevices(h.ctx, store.StaleDeviceAfter, 100); again != 0 {
 		t.Fatalf("second sweep revoked %d", again)
 	}
-	// The stale device is told to start over: its inbox is gone and its registration conflicts.
+	// The stale device finds its inbox gone; the account is full again, so it cannot come back yet. A slot freed,
+	// it registers again with the same keys (CHAT-N1: idle is not a reason to start a new identity).
 	h.expect(h.call(alice, "GET", "/v1/devices/"+old[0].id+"/inbox"), 404, "NOT_FOUND")
-	h.expect(h.send(alice, "POST", "/v1/devices", old[0].registration()), 409, "DEVICE_CONFLICT")
+	h.expect(h.send(alice, "POST", "/v1/devices", old[0].registration()), 409, "TOO_MANY_DEVICES")
+	h.expect(h.call(alice, "DELETE", "/v1/devices/"+old[2].id), 200, "")
+	h.expect(h.send(alice, "POST", "/v1/devices", old[0].registration()), 200, "")
 }
 
 func TestFirstContactCapUntilThePeerReplies(t *testing.T) {

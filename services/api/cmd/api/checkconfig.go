@@ -18,11 +18,15 @@ import (
 
 // checkConfig is `api check-config [-release]`: it loads the environment exactly as a start does
 // (config.Load, then the same pushSender, uploadScanner, appleRevoker and Firebase deleter construction, which
-// read and parse the key files) and reports what a start would refuse, without opening the database (unless -db) or the
-// network. It never prints a value, only the variable name and the rule.
+// read and parse the key files) and reports what a start would refuse. It makes NO network call and opens no database
+// unless asked: the Apple probe (a request to Apple's token endpoint) runs with -release, -db or -net, the evidence canary
+// (a probe object written to the evidence bucket) with -net, and the database connection with -db. It never prints a value,
+// only the variable name and the rule.
 //
 // With -net it also writes a probe object to the evidence bucket and proves that the API's token cannot read or
-// delete it (media.EvidenceCanary); the Apple probe runs with -release, -db or -net. With -release it also applies the V1 release requirements that a start tolerates (push, error reporting, a
+// delete it, or that a bucket lock refuses the delete (media.EvidenceCanary); a probe that cannot be written is a warning,
+// and a problem with -release -net (a release must not ship on an unproven bucket). The Apple probe runs with -release, -db
+// or -net. With -release it also applies the V1 release requirements that a start tolerates (push, error reporting, a
 // minimum client version, Apple revocation and real media buckets), because a server that starts is not
 // necessarily one that is fit to ship. With -db it also connects to DATABASE_URL and checks the database role
 // and the grants of database/roles/grants.sql (dbrole.go). Exit 0: nothing to fix (warnings may print). 1: problems. 2: usage.
@@ -120,6 +124,8 @@ func reviewConfig(release, database, network bool) (problems, warnings []string)
 	if network && cfg.MediaEndpoint != "" && cfg.EvidenceSeparate() {
 		problem, warning, perr := evidenceProbe(cfg)
 		switch {
+		case perr != nil && release:
+			problems = append(problems, "evidence token canary could not write its probe: "+perr.Error()+" (a release must not ship on an unproven evidence bucket)")
 		case perr != nil:
 			warnings = append(warnings, "evidence token canary did not run: "+perr.Error())
 		case problem != "":
@@ -127,6 +133,9 @@ func reviewConfig(release, database, network bool) (problems, warnings []string)
 		case warning != "":
 			warnings = append(warnings, warning)
 		}
+	}
+	if cfg.EvidenceAllowAPIDelete && !network && cfg.EvidenceSeparate() {
+		warnings = append(warnings, "EVIDENCE_ALLOW_API_DELETE=true declares a bucket lock on the evidence bucket; this check did not verify it (run with -net: the canary must see a delete refused)")
 	}
 	if cfg.FirebaseServiceAccountFile != "" {
 		if _, err := identity.NewFirebaseDeleter(cfg.FirebaseProjectID, cfg.FirebaseServiceAccountFile); err != nil {

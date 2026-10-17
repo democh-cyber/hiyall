@@ -44,22 +44,33 @@ type Safety struct {
 	EvidenceRetentionDays int
 	// EvidenceCanary (EVIDENCE_CANARY=true) runs the evidence-token canary at start: the API puts a probe object
 	// into the evidence bucket with its own credential and then tries to read and to delete it. Production
-	// refuses to start when either works (the token was meant to be write-only), unless EvidenceAllowAPIDelete.
-	// `api check-config -release -net` runs the same probe once.
+	// refuses to start when the token can delete the probe (the token was meant to be write-only, or the bucket
+	// locked), whatever EvidenceAllowAPIDelete says, unless EvidenceCanaryAcceptUnlocked. A probe that cannot be
+	// written at all (the bucket is down) never stops a start: it is retried in the background, and only
+	// `api check-config -release -net` fails on it. `api check-config -release -net` runs the same probe once.
 	EvidenceCanary bool
-	// EvidenceAllowAPIDelete (EVIDENCE_ALLOW_API_DELETE=true) accepts that the API's evidence token CAN read or
-	// delete (Cloudflare R2 tokens cannot be made write-only), on the condition that a bucket-lock retention rule
-	// on the evidence bucket stops a delete from taking effect (docs/deployment/10-deploy-guide.md). It is a
-	// statement that the owner has put that rule in place.
+	// EvidenceAllowAPIDelete (EVIDENCE_ALLOW_API_DELETE=true) declares that the evidence bucket has a bucket-lock
+	// retention rule (Cloudflare R2 tokens cannot be made write-only, so a lock is what stops a delete from taking
+	// effect; docs/deployment/10-deploy-guide.md). It is a declaration the canary VERIFIES: the probe object must
+	// survive a Delete by the API's credential, or the canary fails.
 	EvidenceAllowAPIDelete bool
-	// NearbyAccountsPerAddress (NEARBY_ACCOUNTS_PER_ADDRESS, default 200) is how many different accounts one
-	// source address (an IPv6 /64, an IPv4 address) may use Nearby from in a UTC day. A carrier's NAT or a campus
-	// shares one address among many people, so it is a ceiling against account farms, not a quota.
+	// EvidenceCanaryAcceptUnlocked (EVIDENCE_CANARY_ACCEPT_UNLOCKED=true) is the owner's explicit acceptance of the
+	// risk when the canary shows the API's token CAN delete evidence and no lock stops it: the canary then warns
+	// instead of failing. Use it only knowingly, for as long as the lock rule is not in place.
+	EvidenceCanaryAcceptUnlocked bool
+	// NearbyAccountsPerAddress (NEARBY_ACCOUNTS_PER_ADDRESS, default 500) is how many different accounts one
+	// source address (an IPv6 /64, an IPv4 address) may use Nearby from in a UTC day. A carrier's NAT (CGNAT) or a
+	// campus shares one address among thousands of people, so it is a ceiling against account farms, not a quota.
 	NearbyAccountsPerAddress int
 }
 
 // DefaultEvidenceRetentionDays is one year, pending counsel (audit LEGAL-2).
 const DefaultEvidenceRetentionDays = 365
+
+// DefaultNearbyAccountsPerAddress is the default NEARBY_ACCOUNTS_PER_ADDRESS (round-4 N-9: 200 was too low for a mobile
+// carrier's NAT or a campus; it is still a ceiling against account farms, not a quota). domain.DefaultNearbyAccountsPerAddress
+// is the same number for a caller that never set it; a test keeps the two equal.
+const DefaultNearbyAccountsPerAddress = 500
 
 // EvidenceSeparate says whether quarantined originals go to a bucket of their own.
 func (s Safety) EvidenceSeparate() bool { return s.EvidenceBucket != "" }
@@ -97,7 +108,7 @@ func (c *Config) loadSafety() error {
 	if s.EvidenceRetentionDays, err = intRange("EVIDENCE_RETENTION_DAYS", DefaultEvidenceRetentionDays, 30, 3650); err != nil {
 		return err
 	}
-	if s.NearbyAccountsPerAddress, err = intRange("NEARBY_ACCOUNTS_PER_ADDRESS", 200, 1, 1000000); err != nil {
+	if s.NearbyAccountsPerAddress, err = intRange("NEARBY_ACCOUNTS_PER_ADDRESS", DefaultNearbyAccountsPerAddress, 1, 1000000); err != nil {
 		return err
 	}
 	if s.EvidenceAllowSharedBucket, err = boolEnv("EVIDENCE_ALLOW_SHARED_BUCKET"); err != nil {
@@ -107,6 +118,9 @@ func (c *Config) loadSafety() error {
 		return err
 	}
 	if s.EvidenceAllowAPIDelete, err = boolEnv("EVIDENCE_ALLOW_API_DELETE"); err != nil {
+		return err
+	}
+	if s.EvidenceCanaryAcceptUnlocked, err = boolEnv("EVIDENCE_CANARY_ACCEPT_UNLOCKED"); err != nil {
 		return err
 	}
 	s.EvidenceEndpoint, s.EvidenceAccessKey, s.EvidenceSecretKey = os.Getenv("EVIDENCE_ENDPOINT"), os.Getenv("EVIDENCE_ACCESS_KEY"), os.Getenv("EVIDENCE_SECRET_KEY")
@@ -162,18 +176,38 @@ func (c *Config) loadSafety() error {
 	return nil
 }
 
+// ownerVariableNames are exactly the variables that only the admin console (cmd/admin, internal/admin) and the migrate
+// command (cmd/migrate) read. The list is explicit on purpose (round-4 N-10): a prefix match would also refuse names the
+// platform adds to every container, such as Kubernetes service-link variables (ADMIN_SERVICE_HOST, ADMIN_PORT_8081_TCP),
+// and a production API would then refuse to start for a reason that has nothing to do with its configuration.
+// TestOwnerVariablesCoverTheConsoleAndMigrateSettings keeps it complete: it fails when the console or the migrate command
+// reads a name that is not here.
+var ownerVariableNames = []string{
+	"ADMIN_ADDR", "ADMIN_ALLOW_REMOTE", "ADMIN_ALLOW_SHARED_DB", "ADMIN_ALLOWED_HOSTS", "ADMIN_CLIENT_IP_HEADER", "ADMIN_DATA_KEY", "ADMIN_DATA_KEY_FILE",
+	"ADMIN_DATABASE_URL", "ADMIN_EVIDENCE_ACCESS_KEY", "ADMIN_EVIDENCE_BUCKET", "ADMIN_EVIDENCE_DELETE_ACCESS_KEY", "ADMIN_EVIDENCE_DELETE_SECRET_KEY",
+	"ADMIN_EVIDENCE_ENDPOINT", "ADMIN_EVIDENCE_REGION", "ADMIN_EVIDENCE_SECRET_KEY", "ADMIN_EVIDENCE_SECURE", "ADMIN_MEDIA_ACCESS_KEY", "ADMIN_MEDIA_BUCKET",
+	"ADMIN_MEDIA_ENDPOINT", "ADMIN_MEDIA_REGION", "ADMIN_MEDIA_SECRET_KEY", "ADMIN_MEDIA_SECURE", "ADMIN_OPERATOR_EMAIL", "ADMIN_STATIC_DIR", "ADMIN_TLS_CERT",
+	"ADMIN_TLS_KEY", "ADMIN_TRUST_PROXY", "ADMIN_TRUSTED_PROXY_CIDRS",
+	"MIGRATE_DATABASE_URL", "MIGRATE_DEADLINE", "MIGRATE_GRANTS_FILE", "MIGRATE_LOCK_TIMEOUT", "MIGRATE_RUN_GRANTS", "MIGRATE_STATEMENT_TIMEOUT",
+}
+
+// OwnerVariableNames returns the explicit list (a copy), for the drift test and the documentation.
+func OwnerVariableNames() []string { return append([]string(nil), ownerVariableNames...) }
+
 // OwnerVariables lists the variables in environ (KEY=value pairs, as os.Environ gives them) that only the admin
-// console or the migrate command read: every ADMIN_* and MIGRATE_* name with a value, except the
-// ADMIN_TEST_* ones a developer's shell may carry for the test suite. Production refuses to start the API while
-// any is present. It returns names only, sorted, never a value.
+// console or the migrate command read: the names of ownerVariableNames that have a value. Production refuses to start
+// the API while any is present. A name that merely starts with ADMIN_ or MIGRATE_ (ADMIN_SERVICE_HOST, a Kubernetes
+// service link; ADMIN_TEST_* in a developer's shell) is not on the list and does not count. It returns names only,
+// sorted, never a value.
 func OwnerVariables(environ []string) []string {
+	owner := make(map[string]bool, len(ownerVariableNames))
+	for _, n := range ownerVariableNames {
+		owner[n] = true
+	}
 	var names []string
 	for _, kv := range environ {
 		name, value, _ := strings.Cut(kv, "=")
-		if value == "" || strings.HasPrefix(name, "ADMIN_TEST_") {
-			continue
-		}
-		if strings.HasPrefix(name, "ADMIN_") || strings.HasPrefix(name, "MIGRATE_") {
+		if value != "" && owner[name] {
 			names = append(names, name)
 		}
 	}

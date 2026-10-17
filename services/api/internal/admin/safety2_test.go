@@ -42,6 +42,10 @@ func TestAdminRoleHasNoDirectWriteOnCasesApprovalsOrRoles(t *testing.T) {
 		`INSERT INTO evidence_approvals(approval_id,kind,proposed_by,reason,expires_at) SELECT gen_random_uuid(),'clear',operator_id,'x',now() FROM operators LIMIT 1`,
 		`UPDATE operators SET role='admin'`, `UPDATE operators SET role=role WHERE false`,
 		`SELECT token_sealed FROM apple_revocations`, `UPDATE apple_revocations SET status='queued'`, `INSERT INTO apple_revocations(issuer,subject,status) VALUES('a','b','manual')`,
+		// Round-4 N-2: no account creation, no disabling or enabling, no deleting an Apple record, except through the functions.
+		`INSERT INTO operators(operator_id,email,display_name,role,password_hash,totp_secret) VALUES(gen_random_uuid(),'x@y.zz','x','admin','h','\x00')`,
+		`INSERT INTO operators(operator_id,email,display_name,role,password_hash,totp_secret) VALUES(gen_random_uuid(),'x@y.zz','x','viewer','h','\x00')`,
+		`UPDATE operators SET disabled_at=now()`, `UPDATE operators SET disabled_at=disabled_at WHERE false`, `DELETE FROM apple_revocations WHERE false`, `DELETE FROM apple_revocations WHERE status<>'manual'`,
 	} {
 		if _, err := adm.Exec(ctx, q); !denied(err) {
 			t.Errorf("hiyall_admin ran %q: %v", q, err)
@@ -49,7 +53,7 @@ func TestAdminRoleHasNoDirectWriteOnCasesApprovalsOrRoles(t *testing.T) {
 	}
 	for _, q := range []string{
 		`SELECT count(*) FROM content_cases`, `SELECT count(*) FROM evidence_approvals`, `SELECT revocation_id,issuer,subject,user_id,status,reason,created_at FROM apple_revocations`,
-		`UPDATE operators SET disabled_at=disabled_at WHERE false`, `UPDATE operators SET password_hash=password_hash WHERE false`, `DELETE FROM apple_revocations WHERE false`,
+		`UPDATE operators SET password_hash=password_hash WHERE false`, `UPDATE operators SET last_login_at=last_login_at WHERE false`,
 		`SELECT evidence_expire_due()`, `SELECT count(*) FROM pending_cases_due(5)`,
 	} {
 		if _, err := adm.Exec(ctx, q); err != nil {
@@ -67,6 +71,8 @@ func TestAdminRoleHasNoDirectWriteOnCasesApprovalsOrRoles(t *testing.T) {
 		`SELECT operator_set_role(gen_random_uuid(),'admin',NULL)`, `SELECT content_case_report(gen_random_uuid(),gen_random_uuid(),'n','ref')`, `SELECT evidence_expire_due()`,
 		`SELECT pending_cases_due(5)`, `SELECT drop_pending_case(gen_random_uuid(),'x')`, `SELECT admin_schedule_deletion(gen_random_uuid(),'x','y','c','n')`,
 		`SELECT safety_fail('X')`, `SELECT safety_admin_email(gen_random_uuid())`,
+		`SELECT operator_create(gen_random_uuid(),'x@y.zz','x','viewer','h','\x00',NULL,'a')`, `SELECT operator_set_disabled(gen_random_uuid(),true,NULL,'a','a reason',false)`,
+		`SELECT apple_revocation_acknowledge(gen_random_uuid(),gen_random_uuid(),'a reason')`, `SELECT apple_revocations_prune(90)`, `SELECT safety_audit(NULL,'a','b','c','d','e','{}')`,
 	} {
 		if _, err := api.Exec(ctx, q); !denied(err) {
 			t.Errorf("hiyall_api ran %q: %v", q, err)
@@ -326,58 +332,75 @@ func TestExpiredProposalsAreMarkedAndRefused(t *testing.T) {
 
 func (e *env) manualRevocation(userID string) string {
 	e.t.Helper()
+	return e.appleRecord(userID, "manual")
+}
+
+// appleRecord inserts a record of the given status ('manual' or 'member_informed').
+func (e *env) appleRecord(userID, status string) string {
+	e.t.Helper()
 	id := uuid.NewString()
-	e.exec(`INSERT INTO apple_revocations(revocation_id,issuer,subject,status,user_id,reason) VALUES($1,'https://securetoken.google.com/test',$2,'manual',$3,'the app could not obtain a code')`, id, "fb-"+id, userID)
+	e.exec(`INSERT INTO apple_revocations(revocation_id,issuer,subject,status,user_id,reason) VALUES($1,'https://securetoken.google.com/test',$2,$4,$3,'the app could not obtain a code')`, id, "fb-"+id, userID, status)
 	return id
 }
 
-func TestManualAppleRevocationsAreListedAndMarkedDoneWithAnAuditEntry(t *testing.T) {
+func TestAppleRecordsAreListedAndAcknowledgedWithAnAuditEntry(t *testing.T) {
 	e := newEnv(t)
 	e.exec(`DELETE FROM apple_revocations`)
 	uid := e.member(false)
 	id := e.manualRevocation(uid)
+	informed := e.appleRecord(e.member(false), "member_informed")
 	e.exec(`INSERT INTO apple_revocations(issuer,subject,token_sealed) VALUES('https://securetoken.google.com/test',$1,'\xdeadbeef')`, "queued-"+id)
 	adm, mod := e.session(e.operator(RoleAdmin)), e.session(e.operator(RoleModerator))
 	if r := e.get(mod, "/admin/v1/apple-revocations"); r.status != 403 {
 		t.Fatalf("moderator: %d", r.status)
 	}
 	var list struct {
-		Items []struct{ RevocationID, Issuer, Subject, UserID, Reason string }
+		Items        []struct{ RevocationID, Issuer, Subject, UserID, Status, Reason string }
+		MemberAction string
 	}
 	r := e.get(adm, "/admin/v1/apple-revocations")
 	r.data(&list)
-	if r.status != 200 || len(list.Items) != 1 || list.Items[0].RevocationID != id || list.Items[0].UserID != uid {
+	// The records an operator must act on first, then the ones that are only a record. The queued token row is no one's job.
+	if r.status != 200 || len(list.Items) != 2 || list.Items[0].RevocationID != id || list.Items[0].UserID != uid || list.Items[0].Status != "manual" || list.Items[1].RevocationID != informed || list.Items[1].Status != "member_informed" {
 		t.Fatalf("list: %d %s", r.status, r.raw)
+	}
+	if !strings.Contains(list.MemberAction, "Stop using Apple ID") {
+		t.Fatalf("the list does not say what the member does: %q", list.MemberAction)
 	}
 	if strings.Contains(string(r.raw), "deadbeef") || strings.Contains(strings.ToLower(string(r.raw)), "sealed") {
 		t.Fatal("the list shows a sealed token")
 	}
-	if r = e.post(adm, "/admin/v1/apple-revocations/"+id+"/revoked", map[string]string{"reason": "short"}); r.status != 422 {
+	if r = e.post(adm, "/admin/v1/apple-revocations/"+id+"/acknowledge", map[string]string{"reason": "short"}); r.status != 422 {
 		t.Fatalf("reason: %d", r.status)
 	}
-	if r = e.post(mod, "/admin/v1/apple-revocations/"+id+"/revoked", map[string]string{"reason": "revoked in Apple's console"}); r.status != 403 {
-		t.Fatalf("moderator marked: %d", r.status)
+	if r = e.post(mod, "/admin/v1/apple-revocations/"+id+"/acknowledge", map[string]string{"reason": "told the member by e-mail"}); r.status != 403 {
+		t.Fatalf("moderator acknowledged: %d", r.status)
 	}
-	if r = e.post(adm, "/admin/v1/apple-revocations/"+id+"/revoked", map[string]string{"reason": "revoked in Apple's console, ticket 7"}); r.status != 200 {
-		t.Fatalf("mark: %d %s", r.status, r.raw)
+	if r = e.post(adm, "/admin/v1/apple-revocations/"+id+"/acknowledge", map[string]string{"reason": "told the member by e-mail, ticket 7"}); r.status != 200 {
+		t.Fatalf("acknowledge: %d %s", r.status, r.raw)
 	}
 	if e.count(`SELECT count(*) FROM apple_revocations WHERE revocation_id=$1`, id) != 0 {
 		t.Fatal("the row stayed")
 	}
-	if e.count(`SELECT count(*) FROM operator_audit WHERE action='apple_revocation_done' AND target_id=$1 AND reason LIKE '%ticket 7%'`, uid) != 1 {
+	// The function wrote the audit entry: the operator, the reason and the client address.
+	if e.count(`SELECT count(*) FROM operator_audit WHERE action='apple_revocation_acknowledged' AND target_id=$1 AND reason LIKE '%ticket 7%' AND operator_id IS NOT NULL AND ip<>''`, uid) != 1 {
 		t.Fatal("not audited")
 	}
 	if e.count(`SELECT count(*) FROM operator_audit WHERE action='apple_revocations_view'`) < 1 {
 		t.Fatal("the list read was not audited")
 	}
-	if r = e.post(adm, "/admin/v1/apple-revocations/"+id+"/revoked", map[string]string{"reason": "revoked in Apple's console, again"}); r.status != 404 {
-		t.Fatalf("second mark: %d", r.status)
+	if r = e.post(adm, "/admin/v1/apple-revocations/"+id+"/acknowledge", map[string]string{"reason": "told the member, again"}); r.status != 404 {
+		t.Fatalf("second acknowledge: %d", r.status)
 	}
-	// A queued token row is not an operator's job and is not marked from here.
+	// The old route is gone: nothing claims an operator revoked anything.
+	if r = e.post(adm, "/admin/v1/apple-revocations/"+informed+"/revoked", map[string]string{"reason": "revoked in Apple's console"}); r.status != 404 {
+		t.Fatalf("the old revoked route: %d", r.status)
+	}
+	// A queued token row is not an operator's job and is not acknowledged from here.
 	var qid string
 	e.db.Pool.QueryRow(e.ctx, `SELECT revocation_id::text FROM apple_revocations WHERE subject=$1`, "queued-"+id).Scan(&qid)
-	if r = e.post(adm, "/admin/v1/apple-revocations/"+qid+"/revoked", map[string]string{"reason": "revoked in Apple's console, queued"}); r.status != 404 {
-		t.Fatalf("queued row marked: %d", r.status)
+	if r = e.post(adm, "/admin/v1/apple-revocations/"+qid+"/acknowledge", map[string]string{"reason": "told the member, queued"}); r.status != 404 {
+		t.Fatalf("queued row acknowledged: %d", r.status)
 	}
 }
 
@@ -422,28 +445,31 @@ func TestSweepOpensPendingCasesWithObjectsAndDropsThoseWithout(t *testing.T) {
 	}
 	e.exec(`UPDATE content_cases SET created_at=now()-interval '2 hours' WHERE case_id IN ($1,$2,$3)`, whole, missing, half)
 	n, err := e.svc.SweepEvidence(e.ctx)
-	if err != nil || n != 3 {
+	// The whole case is opened and the half-written FLAGGED one dropped; the scanner MATCH with no objects is kept.
+	if err != nil || n != 2 {
 		t.Fatalf("sweep handled %d: %v", n, err)
 	}
 	if st, _, _ := e.caseState(whole); st != "open" {
 		t.Fatalf("complete case: %s", st)
 	}
-	for _, id := range []string{missing, half} {
-		if e.count(`SELECT count(*) FROM content_cases WHERE case_id=$1`, id) != 0 {
-			t.Fatalf("case %s was not dropped", id)
-		}
+	if e.count(`SELECT count(*) FROM content_cases WHERE case_id=$1`, half) != 0 {
+		t.Fatalf("case %s was not dropped", half)
+	}
+	if st, _, _ := e.caseState(missing); st != "pending" {
+		t.Fatalf("a pending case made for a scanner match was touched: %s", st)
 	}
 	if st, _, _ := e.caseState(fresh); st != "pending" {
 		t.Fatalf("a case under an hour old was touched: %s", st)
 	}
-	if e.count(`SELECT count(*) FROM media_assets WHERE media_id IN ($1,$2) AND status='deleted'`, missingMedia, halfMedia) != 2 {
-		t.Fatal("the uploads of dropped cases were not marked deleted")
+	if e.count(`SELECT count(*) FROM media_assets WHERE media_id=$1 AND status='deleted'`, halfMedia) != 1 || e.count(`SELECT count(*) FROM media_assets WHERE media_id=$1 AND status='quarantined'`, missingMedia) != 1 {
+		t.Fatal("the upload of the dropped case was not marked deleted, or the match's upload was released")
 	}
-	// Every step is audited (a match's suspension stays: the sweep never restores a member).
+	// The match's suspension stays and its case is reported once in the audit log (the log line repeats every run).
 	if e.count(`SELECT count(*) FROM users WHERE status='suspended' AND user_id IN (SELECT subject_id FROM moderation_actions WHERE note LIKE '%'||$1||'%')`, missing) != 1 {
 		t.Fatal("the suspension a match caused did not stay")
 	}
-	if e.count(`SELECT count(*) FROM operator_audit WHERE actor='system:evidence-sweep' AND action IN ('pending_case_activated','pending_case_dropped') AND target_id IN ($1,$2,$3)`, whole, missing, half) != 3 {
+	if e.count(`SELECT count(*) FROM operator_audit WHERE actor='system:evidence-sweep' AND action IN ('pending_case_activated','pending_case_dropped') AND target_id IN ($1,$2)`, whole, half) != 2 ||
+		e.count(`SELECT count(*) FROM operator_audit WHERE actor='system:evidence-sweep' AND action='pending_match_case_stuck' AND target_id=$1`, missing) != 1 {
 		t.Fatal("the sweep's steps were not audited")
 	}
 	// Run again: nothing is left to do, and without a reader the sweep does nothing at all.
@@ -481,7 +507,10 @@ func TestSweepListsEvidenceObjectsWithoutACaseAndNeverDeletesThem(t *testing.T) 
 	if _, err := e.svc.SweepEvidence(e.ctx); err != nil {
 		t.Fatal(err)
 	}
-	rep := e.svc.EvidenceOrphans()
+	rep, err := e.svc.EvidenceOrphans(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if rep.CheckedAt == nil || !rep.Complete || len(rep.Items) != 2 {
 		t.Fatalf("orphans: %+v", rep)
 	}
@@ -640,7 +669,8 @@ func TestSupportDeletionWorksOnTheRestrictedAdminRole(t *testing.T) {
 	if _, err = db.Pool.Exec(e.ctx, `UPDATE devices SET push_token=NULL`); !denied(err) {
 		t.Fatalf("the console role can write devices directly: %v", err)
 	}
-	due, err := db.AdminScheduleDeletion(e.ctx, uid, "cli:test", "support ticket 4412")
+	op := e.operator(RoleAdmin)
+	due, err := db.AdminScheduleDeletion(e.ctx, uid, op.Email, "support ticket 4412")
 	if err != nil || time.Until(due) < 29*24*time.Hour {
 		t.Fatalf("due %v: %v", due, err)
 	}
@@ -649,7 +679,11 @@ func TestSupportDeletionWorksOnTheRestrictedAdminRole(t *testing.T) {
 		e.count(`SELECT count(*) FROM apple_revocations WHERE user_id=$1 AND status='manual'`, uid) != 1 {
 		t.Fatal("the deletion was not applied")
 	}
-	if _, err = db.AdminScheduleDeletion(e.ctx, uuid.NewString(), "cli:test", "support ticket 4412"); err == nil {
+	// Audited under the operator, by the function.
+	if e.count(`SELECT count(*) FROM operator_audit WHERE action='account_deletion_scheduled' AND target_id=$1 AND actor=$2 AND operator_id=$3`, uid, op.Email, op.ID) != 1 {
+		t.Fatal("the deletion was not audited under the operator")
+	}
+	if _, err = db.AdminScheduleDeletion(e.ctx, uuid.NewString(), op.Email, "support ticket 4412"); err == nil {
 		t.Fatal("an unknown member was scheduled")
 	}
 }

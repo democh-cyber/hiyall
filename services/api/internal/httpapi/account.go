@@ -8,6 +8,7 @@ import (
 
 	"hiyall/services/api/internal/domain"
 	"hiyall/services/api/internal/metrics"
+	"hiyall/services/api/internal/push"
 	"hiyall/services/api/internal/store"
 )
 
@@ -28,6 +29,10 @@ func (a *API) recentlyAuthenticated(ctx context.Context, p store.Principal) (boo
 //
 //	GET    /v1/me/deletion   -> {pending, scheduledAt, dueAt, canCancel}   (also for a member in the grace period)
 //	POST   /v1/me/deletion   {confirmUsername[, appleAuthorizationCode | appleCodeUnavailable:true]}    403 REAUTH_REQUIRED when the sign-in is older than 5 minutes
+//	                         -> the deletion state, plus appleAction "remove_in_apple_settings" when appleCodeUnavailable was used for an
+//	                         account that holds a Sign in with Apple authorization: Hiyall cannot revoke it, the member does it in
+//	                         Settings > Apple ID > Sign in with Apple > Hiyall > Stop using Apple ID. Every new deletion also sends one
+//	                         content-free "Account deletion scheduled" push to the devices that had a token (kind "deletion").
 //	DELETE /v1/me/deletion   cancels during the grace period (409 DELETION_WINDOW_CLOSED after it, 404 when none is scheduled)
 //	GET    /v1/me/export     a JSON download, once per 24 hours (429 RATE_LIMITED with Retry-After)
 func (a *API) deletionStatus(w http.ResponseWriter, r *http.Request, p store.Principal) {
@@ -89,9 +94,11 @@ func (a *API) scheduleDeletion(w http.ResponseWriter, r *http.Request, p store.P
 		}
 	} else if req.AppleCodeUnavailable {
 		// The app re-authenticated and could not get a code (the member signed in with Google again, or the web
-		// has none). The member must still be able to leave, so the deletion goes ahead and the Apple
-		// authorization is queued for an operator to revoke by hand (apple_revocations, status 'manual'; the
-		// console lists it). Only an account that holds an Apple authorization gets a row.
+		// has none). The member must still be able to leave, so the deletion goes ahead. Nobody at Hiyall can revoke
+		// the Apple authorization for them (Apple's revoke call needs the member's own token and the developer portal
+		// has no per-user revoke), so the response tells the member to remove the app's access in Apple ID settings
+		// (appleAction) and the queue row only records that they were told (status 'member_informed'). Only an
+		// account that holds an Apple authorization gets a row.
 		has, herr := a.Store.HasAppleAuthorization(ctx, p.UserID)
 		if herr != nil {
 			a.error(w, r, herr)
@@ -113,23 +120,55 @@ func (a *API) scheduleDeletion(w http.ResponseWriter, r *http.Request, p store.P
 		}
 	}
 	var state store.DeletionState
+	var devices []store.PushTarget
 	if manualApple {
-		state, err = a.Store.ScheduleDeletionManualApple(ctx, p.UserID)
+		state, devices, err = a.Store.ScheduleDeletionManualAppleNotify(ctx, p.UserID)
 		if err == nil {
 			appleManualRevocations.Inc()
-			slog.Warn("account deletion scheduled without Apple revocation: queued for an operator", "userId", p.UserID)
+			slog.Warn("account deletion scheduled without Apple revocation: the member was told to remove access in Apple ID settings", "userId", p.UserID)
 		}
 	} else {
-		state, err = a.Store.ScheduleDeletion(ctx, p.UserID)
+		state, devices, err = a.Store.ScheduleDeletionNotify(ctx, p.UserID)
 	}
 	if err != nil {
 		a.error(w, r, err)
 		return
 	}
+	// appleCodeUnavailable is only the client's statement, and a stolen token can delete an account: before the
+	// sockets close, one content-free push goes to every device that held a token (the deletion cleared them), so the
+	// owner sees it. Nothing is sent for a request that changed nothing (already pending).
+	a.notifyDeletion(p.UserID, devices)
 	// The database already refuses every session; this ends the sockets this node holds now (the other
 	// nodes were told through the bus, and every socket checks its session at each heartbeat anyway).
 	a.endSessions(ctx, p.UserID, "", "")
+	if manualApple {
+		a.ok(w, r, deletionReply{DeletionState: state, AppleAction: AppleActionRemoveInSettings})
+		return
+	}
 	a.ok(w, r, state)
+}
+
+// AppleActionRemoveInSettings is the value of appleAction in the POST /v1/me/deletion response when the deletion went
+// ahead without revoking a Sign in with Apple authorization: the member removes the app's access themselves in Apple ID
+// settings (Settings > Apple ID > Sign in with Apple > Hiyall > Stop using Apple ID).
+const AppleActionRemoveInSettings = "remove_in_apple_settings"
+
+// deletionReply is the deletion state, with appleAction when the member has something left to do at Apple.
+type deletionReply struct {
+	store.DeletionState
+	AppleAction string `json:"appleAction"`
+}
+
+// notifyDeletion queues the "account deletion scheduled" push for the devices that held a token.
+func (a *API) notifyDeletion(user string, devices []store.PushTarget) {
+	if len(devices) == 0 {
+		return
+	}
+	targets := make([]push.Target, len(devices))
+	for i, d := range devices {
+		targets[i] = push.Target{UserID: d.UserID, DeviceID: d.DeviceID, Provider: d.Provider, Token: d.Token}
+	}
+	a.wake(push.Notice{Kind: push.KindDeletion, Recipient: user, Actor: user, Targets: targets})
 }
 
 // lazyResponse sends the download headers only when the first byte of the document is written, so a failure
@@ -214,8 +253,9 @@ func (a *API) export(w http.ResponseWriter, r *http.Request, p store.Principal) 
 }
 
 // appleManualRevocations counts deletions scheduled with appleCodeUnavailable for an account that holds an Apple
-// authorization: each is a row an operator must revoke by hand in the console (Apple revocations).
-var appleManualRevocations = metrics.NewCounter("hiyall_apple_manual_revocations_total", "Account deletions scheduled without a Sign in with Apple code; queued for an operator.")
+// authorization: the member was told to remove the app's access in Apple ID settings (and a 'member_informed' row
+// records it). The metric name is kept for dashboards.
+var appleManualRevocations = metrics.NewCounter("hiyall_apple_manual_revocations_total", "Account deletions scheduled without a Sign in with Apple code; the member was told to remove access in Apple ID settings.")
 
 // ErrAppleCodeRequired is 422 APPLE_CODE_REQUIRED: this account signs in with Apple, so deleting it needs the
 // one-time authorization code from a fresh Sign in with Apple.

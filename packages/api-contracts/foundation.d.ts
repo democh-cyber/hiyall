@@ -701,7 +701,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Register this device's public identity; idempotent; 409 DEVICE_CONFLICT (revoked or keys belong to another device: the client makes a new identity) or TOO_MANY_DEVICES; a new device is signalled to the account's other devices (realtime event device); the device is linked to the registering auth session and revoked with it; devices unseen for 90 days are revoked; 429 RATE_LIMITED (per account, shared with the device list, revoke, key and inbox routes) */
+        /** Register this device's public identity; idempotent; 409 DEVICE_CONFLICT (revoked, or keys belong to another device: the client makes a new identity) or TOO_MANY_DEVICES; a new device is signalled to the account's other devices (realtime event device) and pushed; a device the relay removed as idle (unseen for 35 days, or idle for 48 hours while one sender had filled its share) registers again with the same device id and keys: its row becomes active again, nothing is signalled as added and peers see no change (realtime event device, change returned), and if the account is full it is 409 TOO_MANY_DEVICES; the device is linked to the registering auth session and revoked with it; 429 RATE_LIMITED (per account, shared with the device list, revoke, key and inbox routes) */
         post: operations["postDevice_v1_devices"];
         delete?: never;
         options?: never;
@@ -716,7 +716,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Your active devices, plus removed: devices of the account that another session (another phone, or a stolen credential) took out in the last 30 days, newest first, so a device that missed the realtime event still learns of it */
+        /** Your active devices, plus removed: devices of the account that another session (another phone, or a stolen credential) or the relay took out in the last 30 days, newest first, so a device that missed the realtime event still learns of it; reason inactive is a dormant device whose backlog grew (its ciphertext was dropped), idle a device not used for 35 days (or a ghost for one sender after 48 hours) whose unexpired ciphertext was kept and which can return with the same keys, and a returned device is no longer listed */
         get: operations["getDeviceList_v1_me_devices"];
         put?: never;
         post?: never;
@@ -839,7 +839,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId; 403 AWAITING_REPLY once you have sent 3 messages (reactions and the noop count too: the relay cannot tell kinds) in a conversation and the peer has sent no non-aux message; 429 RECIPIENT_BACKLOG (Retry-After 60) when a device that must receive it already holds 2000 undelivered envelopes, or 300 from you; 429 OWN_BACKLOG (Retry-After 60) when the full device is your own other device; 409 DEVICES_CHANGED also when the send revoked a dormant device that was over the cap (retry with the refreshed device list); 429 CHAT_DAILY_LIMIT (Retry-After) after 2000 messages from you in this conversation in 24 hours */
+        /** Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId; 403 AWAITING_REPLY once you have sent 3 messages (reactions and the noop count too: the relay cannot tell kinds) in a conversation and the peer has sent no non-aux message; 429 RECIPIENT_BACKLOG (Retry-After 60) when a device that must receive it already holds 2000 undelivered envelopes, or 300 from you while the device is in use; 429 OWN_BACKLOG (Retry-After 60) when the full device is your own other device; 409 DEVICES_CHANGED also when the send revoked a dormant device that was over the cap, or an idle (48 hours) device that one sender alone had filled to 300 (retry with the refreshed device list); 409 PEER_NO_DEVICES when the other person has no active device (every one was removed as idle or signed out): nothing can be encrypted for them yet, try again when they open Hiyall; 429 CHAT_DAILY_LIMIT (Retry-After) after 2000 messages from you in this conversation in 24 hours */
         post: operations["postMessageAccepted_v1_conversations_conversationId_messages"];
         delete?: never;
         options?: never;
@@ -1652,8 +1652,8 @@ export interface paths {
         /** Whether deletion is scheduled and until when. The only route besides cancel and sign-out that a member in the grace period can reach; allowed before onboarding */
         get: operations["getDeletionState_v1_me_deletion"];
         put?: never;
-        /** Schedule deletion of your account in 30 days. Needs a sign-in from the last 5 minutes (Firebase auth_time) and your username as confirmation. At once: the account leaves Discover, Nearby, search, lists, Pulse and everyone's counts; every session is revoked and live sockets are closed; push tokens are cleared. Idempotent while pending. Allowed before onboarding */
-        post: operations["postDeletionState_v1_me_deletion"];
+        /** Schedule deletion of your account in 30 days. Needs a sign-in from the last 5 minutes (Firebase auth_time) and your username as confirmation. At once: the account leaves Discover, Nearby, search, lists, Pulse and everyone's counts; every session is revoked and live sockets are closed; one content-free push (kind deletion, body Account deletion scheduled) goes to every device that had a push token, and then the tokens are cleared. Idempotent while pending. Allowed before onboarding */
+        post: operations["postDeletionScheduled_v1_me_deletion"];
         /** Cancel a scheduled deletion during the grace period (sign in again first: sessions were revoked). The account is exactly as it was, with its content */
         delete: operations["deleteDeletionState_v1_me_deletion"];
         options?: never;
@@ -2424,7 +2424,7 @@ export interface components {
                 /** Format: date-time */
                 removedAt: string;
                 /** @enum {string} */
-                reason?: "inactive";
+                reason?: "inactive" | "idle";
             }[];
         };
         SignedKey: {
@@ -3518,7 +3518,7 @@ export interface components {
             confirmUsername: string;
             /** @description Members who sign in with Apple only: the one-time authorization code from signing in with Apple again during deletion. The server exchanges it for a refresh token and revokes it at Apple (App Store guideline 5.1.1(v)) before the deletion is scheduled; 503 APPLE_REVOKE_FAILED when Apple cannot be reached or the code is stale, in which case nothing changed and the member signs in with Apple again to retry. Ignored with a warning when Apple revocation is not configured on the server. Required, as 422 APPLE_CODE_REQUIRED, when the server knows the account signs in with Apple (or has Apple linked) and revocation is configured, unless appleCodeUnavailable is true. */
             appleAuthorizationCode?: string;
-            /** @description Members who sign in with Apple only: true when the app signed in with Apple again and still could not obtain an authorization code (the member re-authenticated with Google, or the web returns none). The deletion is scheduled anyway and the Apple authorization is queued for an operator to revoke by hand (apple_revocations, status manual). Ignored for an account that holds no Apple authorization. Never together with appleAuthorizationCode (422 VALIDATION). */
+            /** @description Members who sign in with Apple only: true when the app signed in with Apple again and still could not obtain an authorization code (the member re-authenticated with Google, or the web returns none). The deletion is scheduled anyway. Hiyall cannot revoke the Apple authorization for the member (Apple's revoke call needs the member's own token), so the response carries appleAction remove_in_apple_settings: the app tells the member to remove the app's access in Settings > Apple ID > Sign in with Apple > Hiyall > Stop using Apple ID. Ignored for an account that holds no Apple authorization. Never together with appleAuthorizationCode (422 VALIDATION). */
             appleCodeUnavailable?: boolean;
         };
         DeletionState: {
@@ -3534,10 +3534,34 @@ export interface components {
             /** @description True while pending and before dueAt. */
             canCancel: boolean;
         };
+        DeletionScheduled: {
+            /** @description True while the account is scheduled for deletion. */
+            pending: boolean;
+            /** Format: date-time */
+            scheduledAt: string | null;
+            /**
+             * Format: date-time
+             * @description End of the 30 day grace period; the account is purged on the first hourly run after it.
+             */
+            dueAt: string | null;
+            /** @description True while pending and before dueAt. */
+            canCancel: boolean;
+            /**
+             * @description Only in the answer to POST /v1/me/deletion made with appleCodeUnavailable:true for an account that holds a Sign in with Apple authorization. Nobody at Hiyall can revoke it for the member: they remove the app's access themselves in Apple ID settings (Settings > Apple ID > Sign in with Apple > Hiyall > Stop using Apple ID). Absent otherwise.
+             * @enum {string}
+             */
+            appleAction?: "remove_in_apple_settings";
+        };
         DeletionStateResponse: {
             /** @constant */
             success: true;
             data: components["schemas"]["DeletionState"];
+            meta: components["schemas"]["Meta"];
+        };
+        DeletionScheduledResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["DeletionScheduled"];
             meta: components["schemas"]["Meta"];
         };
         /** @description The member's data: exportVersion, generatedAt, note, account, settings, interests, posts, comments, reactions, saves, stories, connections {following, followers, friends}, blocks, mutes, restrictions, sessions, devices, notifications, visits {made, ownProfileVisitors}, location {sharing, updatedAt}, spaces {memberships, owned, entries}, reports (own words only), media (links valid 24 hours), chat (conversation ids, peers and counts; message content is end-to-end encrypted and not included), truncated (names of lists cut at 10,000 rows or 32 MiB), complete. */
@@ -18185,7 +18209,7 @@ export interface operations {
             };
         };
     };
-    postDeletionState_v1_me_deletion: {
+    postDeletionScheduled_v1_me_deletion: {
         parameters: {
             query?: never;
             header?: never;
@@ -18204,7 +18228,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DeletionStateResponse"];
+                    "application/json": components["schemas"]["DeletionScheduledResponse"];
                 };
             };
             /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */

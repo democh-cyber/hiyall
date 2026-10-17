@@ -44,11 +44,20 @@ type API struct {
 	ClientIP *clientip.Resolver
 	// minClient is the oldest app version served per platform (android, ios, web); see upgrade.go.
 	minClient map[string][3]int
-	budget    *rate.Limiter
-	clients   *keyedLimiter
-	search    *keyedLimiter
-	graph     *keyedLimiter
-	messages  *keyedLimiter
+	// budget is the instance-wide limit for requests WITHOUT a bearer token and for tokens that fail verification;
+	// authBudget is the separate, larger one for requests that carry a token, so anonymous traffic cannot use up what
+	// signed-in members need and the other way round (round-3 API-3, round-4 N-8).
+	budget     *rate.Limiter
+	authBudget *rate.Limiter
+	// clients is the strict per-address bucket (an IPv6 client's whole /64): 50 requests a second, applied to
+	// unauthenticated requests and to tokens that fail verification. authClients is the generous per-address
+	// flood backstop for requests that carry a token (500 a second): behind carrier-grade NAT or a campus thousands of
+	// signed-in members share one address, and they are limited per account, not per address (round-4 N-8).
+	clients     *keyedLimiter
+	authClients *keyedLimiter
+	search      *keyedLimiter
+	graph       *keyedLimiter
+	messages    *keyedLimiter
 	// auxMessages is the stricter budget for reactions, per sender and conversation: a burst of 60,
 	// refilling one every 10 seconds (60 per 10 minutes sustained). A reaction also takes a token from
 	// messages, so it can never be a way around the normal send limit.
@@ -126,9 +135,11 @@ type API struct {
 
 func New(s *store.Store, verify Verify, dev bool, origin string) *API {
 	a := &API{Store: s, Verify: verify, DevAuth: dev, Origin: origin,
-		// The instance budget is a backstop; each client address gets its own bucket.
+		// The instance budgets are backstops; each client address gets its own bucket.
 		budget:      rate.NewLimiter(2000, 4000),
+		authBudget:  rate.NewLimiter(8000, 16000),
 		clients:     newKeyedLimiter(50, 100, addressLimiterKeys),
+		authClients: newKeyedLimiter(500, 1000, addressLimiterKeys),
 		search:      newKeyedLimiter(rate.Every(2*time.Second), 10, accountLimiterKeys),
 		graph:       newKeyedLimiter(rate.Every(2*time.Second), 20, accountLimiterKeys),
 		messages:    newKeyedLimiter(5, 40, accountLimiterKeys),
@@ -289,12 +300,14 @@ func (a *API) Handler() http.Handler {
 		if a.health(w, r) {
 			return
 		}
-		// The per-address bucket (an IPv6 client's whole /64) limits everyone. The instance budget is only for
-		// requests that carry no bearer token, and for tokens that then fail verification: a flood of
-		// anonymous requests must not use up what signed-in members need (round-3 audit API-3).
+		// Two sets of limits (round-3 audit API-3, round-4 N-8). Requests without a bearer token are charged to the
+		// strict per-address bucket (an IPv6 client's whole /64, 50 a second) and the instance budget; tokens that then
+		// fail verification are charged to both as well (below). A request that carries a token is only held to the
+		// generous flood backstops (500 a second per address, 8000 for the instance), because behind carrier-grade NAT or
+		// a campus thousands of signed-in members share one address, and what they may do is limited per account.
 		raw := r.Header.Get("Authorization")
 		hasBearer := strings.HasPrefix(raw, "Bearer ") && len(raw) <= 16384
-		if !a.clients.allow(a.clientBucket(r)) || (!hasBearer && !a.budget.Allow()) {
+		if !a.admitAddress(r, hasBearer) {
 			w.Header().Set("Retry-After", "1")
 			a.failure(w, r, 429, "RATE_LIMITED", "Try again shortly")
 			return
@@ -316,7 +329,7 @@ func (a *API) Handler() http.Handler {
 		}
 		p, err := a.Verify(r.Context(), strings.TrimPrefix(raw, "Bearer "))
 		if err != nil {
-			if !a.budget.Allow() {
+			if !a.chargeFailedToken(r) {
 				w.Header().Set("Retry-After", "1")
 				a.failure(w, r, 429, "RATE_LIMITED", "Try again shortly")
 				return
@@ -333,6 +346,24 @@ func (a *API) Handler() http.Handler {
 // rightmost untrusted X-Forwarded-For hop (see clientip). A request from anyone else is keyed by its peer
 // whatever headers it sends.
 func (a *API) clientAddress(r *http.Request) string { return a.ClientIP.ClientIP(r) }
+
+// admitAddress is the first limit check of a request, before its token is verified: the strict per-address bucket and the
+// instance budget for a request without a bearer token; only the flood backstops (per address and for the instance) for
+// one that has a token. false: answer 429.
+func (a *API) admitAddress(r *http.Request, hasBearer bool) bool {
+	bucket := a.clientBucket(r)
+	if hasBearer {
+		return a.authClients.allow(bucket) && a.authBudget.Allow()
+	}
+	return a.clients.allow(bucket) && a.budget.Allow()
+}
+
+// chargeFailedToken is what a token that failed verification costs on top of admitAddress: one token of the strict per-address
+// bucket and of the unauthenticated instance budget, so guessing tokens is held to the anonymous limits (HTTP and
+// /v1/realtime alike). false: answer 429 instead of 401.
+func (a *API) chargeFailedToken(r *http.Request) bool {
+	return a.clients.allow(a.clientBucket(r)) && a.budget.Allow()
+}
 
 // clientBucket is the key the per-address limiter and the Nearby per-address count use: clientAddress, with an
 // IPv6 address reduced to its /64 so that rotating through a customer's addresses is not a way round a limit.

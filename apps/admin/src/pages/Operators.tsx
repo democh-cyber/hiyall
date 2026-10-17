@@ -16,7 +16,7 @@ export function Operators() {
   return (
     <section aria-labelledby="ops-title">
       <h1 id="ops-title">Operators</h1>
-      <p className="hint">Accounts are created on the server with <code>admin operator-add</code>. Each change here needs a reason and is audited. Making someone an administrator is a proposal that a different administrator approves under Approvals.</p>
+      <p className="hint">Accounts are created on the server with <code>admin operator-add</code> (a viewer or a moderator; only the very first administrator is created directly). Each change here needs a reason and is audited. Making someone an administrator is a proposal that a different administrator approves under Approvals. The last active administrator cannot be disabled here.</p>
       {notice && <p role="status" className="notice">{notice}</p>}
       <ErrorNote error={error} />
       <div className="table-wrap">
@@ -61,7 +61,11 @@ export function Operators() {
             if (change.kind === 'role') {
               const out = await api<{ pending?: boolean }>('POST', `${base}/role`, { role: change.role, reason })
               if (out?.pending) setNotice(`Proposal recorded: ${change.op.email} becomes an administrator when a different administrator approves it under Approvals (within 24 hours).`)
-            } else await api('POST', `${base}/${change.kind}`, { reason })
+            } else {
+              const out = await api<{ warning?: string }>('POST', `${base}/${change.kind}`, { reason })
+              // Below two active administrators nothing needing a second one can be completed: say so.
+              if (out?.warning) setNotice(out.warning)
+            }
             setChange(null)
             setRoleFor({})
             await reload()

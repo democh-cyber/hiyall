@@ -11,8 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"hiyall/services/api/internal/domain"
 	"hiyall/services/api/internal/media"
 	"hiyall/services/api/internal/store"
@@ -379,12 +377,8 @@ func (s *Server) resolveContentCase(w http.ResponseWriter, r *http.Request, p *P
 		s.fail(w, r, domain.ErrNotFound)
 		return
 	}
-	hook := func(ctx context.Context, tx pgx.Tx, subject string) error {
-		opID := p.Operator.ID
-		return insertAudit(ctx, tx, AuditEntry{OperatorID: &opID, Actor: p.Operator.Email, Action: "content_case_" + body.Action, TargetType: "content_case", TargetID: id,
-			Reason: reason, IP: p.IP, Detail: map[string]any{"subjectId": subject, "reportReference": ref}})
-	}
-	err = s.svc.Store.ResolveContentCase(r.Context(), id, store.ContentCaseStep{Action: body.Action, OperatorID: p.Operator.ID, Note: reason, ReportReference: ref, LegalHold: body.LegalHold}, hook)
+	// The database function writes the audit entry in the same transaction (migration 0046).
+	err = s.svc.Store.ResolveContentCase(safetyCtx(r, p), id, store.ContentCaseStep{Action: body.Action, OperatorID: p.Operator.ID, Note: reason, ReportReference: ref, LegalHold: body.LegalHold}, nil)
 	if err != nil {
 		s.fail(w, r, err)
 		return

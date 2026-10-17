@@ -69,9 +69,11 @@ func (a *API) realtimeGateway(w http.ResponseWriter, r *http.Request) {
 		a.failure(w, r, 404, "NOT_FOUND", "Endpoint unavailable")
 		return
 	}
-	// As for every route: the instance budget is for requests without a bearer token only.
+	// As for every route (server.go): the strict per-address bucket and the instance budget for a request without a
+	// bearer token, only the flood backstops for one with a token, and a token that fails verification is charged to
+	// the strict ones (below).
 	raw := r.Header.Get("Authorization")
-	if !a.clients.allow(a.clientBucket(r)) || (!(strings.HasPrefix(raw, "Bearer ") && len(raw) <= 16384) && !a.budget.Allow()) {
+	if !a.admitAddress(r, strings.HasPrefix(raw, "Bearer ") && len(raw) <= 16384) {
 		w.Header().Set("Retry-After", "2")
 		a.failure(w, r, 429, "RATE_LIMITED", "Try again shortly")
 		return
@@ -84,6 +86,11 @@ func (a *API) realtimeGateway(w http.ResponseWriter, r *http.Request) {
 	p, err := a.Verify(authCtx, strings.TrimPrefix(raw, "Bearer "))
 	cancel()
 	if err != nil {
+		if !a.chargeFailedToken(r) {
+			w.Header().Set("Retry-After", "2")
+			a.failure(w, r, 429, "RATE_LIMITED", "Try again shortly")
+			return
+		}
 		var policy *domain.PolicyError
 		if errors.As(err, &policy) {
 			a.failure(w, r, policy.Status, policy.Code, policy.Message)

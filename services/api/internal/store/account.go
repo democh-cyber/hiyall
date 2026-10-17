@@ -64,14 +64,26 @@ func (s *Store) Username(ctx context.Context, user string) (string, error) {
 // to close the account's live sockets (NOTIFY is transactional, as in suspend). Asking again while pending
 // changes nothing: the first request's due date stands.
 func (s *Store) ScheduleDeletion(ctx context.Context, user string) (DeletionState, error) {
+	state, _, err := s.scheduleDeletion(ctx, user, nil)
+	return state, err
+}
+
+// ScheduleDeletionNotify is ScheduleDeletion that also returns the push tokens the account's devices held just before
+// the deletion cleared them, so the caller can send the one "deletion scheduled" notice (round-4 N-5): the tokens are
+// gone afterwards, and a deletion made with a stolen token must still reach the owner's devices. Empty when the
+// account was already pending.
+func (s *Store) ScheduleDeletionNotify(ctx context.Context, user string) (DeletionState, []PushTarget, error) {
 	return s.scheduleDeletion(ctx, user, nil)
 }
 
 // scheduleDeletion is ScheduleDeletion with a step that runs in the same transaction after the account is
-// scheduled (or was already pending), such as queueing a manual Apple revocation (deletion_apple.go).
-func (s *Store) scheduleDeletion(ctx context.Context, user string, also func(context.Context, pgx.Tx) error) (DeletionState, error) {
+// scheduled (or was already pending), such as recording that the member was told to remove Apple access
+// themselves (deletion_apple.go).
+func (s *Store) scheduleDeletion(ctx context.Context, user string, also func(context.Context, pgx.Tx) error) (DeletionState, []PushTarget, error) {
+	var targets []PushTarget
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		if err := scheduleDeletionTx(ctx, tx, user); err != nil {
+		var err error
+		if targets, err = scheduleDeletionTx(ctx, tx, user); err != nil {
 			return err
 		}
 		if also != nil {
@@ -80,24 +92,38 @@ func (s *Store) scheduleDeletion(ctx context.Context, user string, also func(con
 		return nil
 	})
 	if err != nil {
-		return DeletionState{}, err
+		return DeletionState{}, nil, err
 	}
-	return s.DeletionStatus(ctx, user)
+	state, err := s.DeletionStatus(ctx, user)
+	return state, targets, err
 }
 
-func scheduleDeletionTx(ctx context.Context, tx pgx.Tx, user string) error {
+func scheduleDeletionTx(ctx context.Context, tx pgx.Tx, user string) ([]PushTarget, error) {
 	var status string
 	if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, user).Scan(&status); err != nil {
-		return mapped(err)
+		return nil, mapped(err)
 	}
 	if status == "pending_deletion" {
-		return nil
+		return nil, nil
 	}
 	if status != "active" {
-		return domain.ErrNotFound
+		return nil, domain.ErrNotFound
+	}
+	// The tokens are read FIRST: revoking the sessions below revokes the chat devices bound to them and clears their
+	// tokens (migration 0035), and the notice must still reach those devices.
+	rows, err := tx.Query(ctx, `SELECT user_id::text,device_id::text,push_provider,push_token FROM devices WHERE user_id=$1 AND revoked_at IS NULL AND push_token IS NOT NULL`, user)
+	if err != nil {
+		return nil, err
+	}
+	targets, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (PushTarget, error) {
+		var t PushTarget
+		return t, row.Scan(&t.UserID, &t.DeviceID, &t.Provider, &t.Token)
+	})
+	if err != nil {
+		return nil, err
 	}
 	for _, statement := range []string{
-		`UPDATE users SET status='pending_deletion',deletion_scheduled_at=now(),deletion_due_at=now()+$2::interval WHERE user_id=$1`,
+		`UPDATE users SET status='pending_deletion',deletion_prior_status='active',deletion_scheduled_at=now(),deletion_due_at=now()+$2::interval WHERE user_id=$1`,
 		`UPDATE sessions SET revoked_at=coalesce(revoked_at,now()) WHERE user_id=$1`,
 		`UPDATE auth_identities SET sessions_revoked_before=now() WHERE user_id=$1`,
 		`UPDATE devices SET push_provider=NULL,push_token=NULL WHERE user_id=$1`,
@@ -107,12 +133,12 @@ func scheduleDeletionTx(ctx context.Context, tx pgx.Tx, user string) error {
 			args = append(args, domain.DeletionGrace)
 		}
 		if _, err := tx.Exec(ctx, statement, args...); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	notice, _ := json.Marshal(realtime.DisconnectEvent(user))
-	_, err := tx.Exec(ctx, `SELECT pg_notify($1,$2)`, realtime.Channel, string(notice))
-	return err
+	_, err = tx.Exec(ctx, `SELECT pg_notify($1,$2)`, realtime.Channel, string(notice))
+	return targets, err
 }
 
 // CancelDeletion returns a pending account to active while the grace period runs. After DueAt the purge
@@ -120,25 +146,37 @@ func scheduleDeletionTx(ctx context.Context, tx pgx.Tx, user string) error {
 func (s *Store) CancelDeletion(ctx context.Context, user string) (DeletionState, error) {
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var status string
+		var prior *string
 		var open bool
-		if err := tx.QueryRow(ctx, `SELECT status,coalesce(deletion_due_at>now(),false) FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, user).Scan(&status, &open); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT status,deletion_prior_status,coalesce(deletion_due_at>now(),false) FROM users WHERE user_id=$1 FOR NO KEY UPDATE`, user).Scan(&status, &prior, &open); err != nil {
 			return mapped(err)
 		}
 		if status != "pending_deletion" {
 			return domain.ErrNotFound
 		}
-		if !open {
+		// A member whose account support scheduled for deletion while it was suspended or banned (an erasure request)
+		// cannot undo it and come back: the suspension does not end because of a cancelled deletion.
+		if !open || (prior != nil && (*prior == "suspended" || *prior == "banned")) {
 			return domain.ErrDeletionClosed
 		}
-		if _, err := tx.Exec(ctx, `UPDATE users SET status='active',deletion_scheduled_at=NULL,deletion_due_at=NULL WHERE user_id=$1`, user); err != nil {
+		restore := "active"
+		if prior != nil && *prior == "deactivated" {
+			restore = "deactivated"
+		}
+		if _, err := tx.Exec(ctx, `UPDATE users SET status=$2,deletion_prior_status=NULL,deletion_scheduled_at=NULL,deletion_due_at=NULL WHERE user_id=$1`, user, restore); err != nil {
 			return err
 		}
-		// The account stays: nothing is left for an operator to revoke by hand (deletion_apple.go).
-		_, err := tx.Exec(ctx, `DELETE FROM apple_revocations WHERE user_id=$1 AND status='manual'`, user)
+		// The account stays: the records of what the member was told about Apple are not needed (deletion_apple.go).
+		_, err := tx.Exec(ctx, `DELETE FROM apple_revocations WHERE user_id=$1 AND status IN ('manual','member_informed')`, user)
 		return err
 	})
 	if err != nil {
 		return DeletionState{}, err
+	}
+	var restored string
+	if err = s.Pool.QueryRow(ctx, `SELECT status FROM users WHERE user_id=$1`, user).Scan(&restored); err == nil && restored != "active" {
+		// A member whose account support deleted while it was deactivated: back to deactivated, which has no deletion state.
+		return DeletionState{}, nil
 	}
 	return s.DeletionStatus(ctx, user)
 }
@@ -245,7 +283,7 @@ func (s *Store) purgeAccount(ctx context.Context, id string, deleter IdentityDel
 	// The account is 'deleting' from here on, durably: the content goes in bounded batches, each in its
 	// own transaction (see purge.go), and a crash resumes at the next run.
 	if err = s.purgeContent(ctx, id); err != nil {
-		if errors.Is(err, errPurgeFenced) {
+		if errors.Is(err, errPurgeFenced) || errors.Is(err, errPurgeWaiting) {
 			return false, nil
 		}
 		return false, err
@@ -278,7 +316,7 @@ func (s *Store) purgeAccount(ctx context.Context, id string, deleter IdentityDel
 	// Finished once no file or file record of theirs is left to remove. The content statements run once more
 	// first (cheap: nothing is left but what the cleanups released since).
 	if err = s.purgeContent(ctx, id); err != nil {
-		if errors.Is(err, errPurgeFenced) {
+		if errors.Is(err, errPurgeFenced) || errors.Is(err, errPurgeWaiting) {
 			return false, nil
 		}
 		return false, err
@@ -415,6 +453,14 @@ func (s *Store) purgeContent(ctx context.Context, id string) error {
 		return err
 	}
 
+	// An account that was suspended, deactivated or put into deletion with more than 20000 edges has its
+	// neighbours' counters recounted by a queued job (migration 0044), which walks the edges. Finish that first:
+	// once the edges are deleted a neighbour is no longer found, and keeps a counter that still counts the account.
+	if drained, err := s.drainCounterFixups(ctx, id); err != nil {
+		return err
+	} else if !drained {
+		return errPurgeWaiting
+	}
 	// Relationships and activity, in both directions. Deleting a follow or friendship updates the other
 	// member's counters through the triggers of migration 0033; the member's own counter row goes last.
 	if err := run(

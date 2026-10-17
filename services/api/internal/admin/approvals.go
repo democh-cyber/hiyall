@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-
 	"hiyall/services/api/internal/domain"
 	"hiyall/services/api/internal/store"
 )
@@ -22,44 +20,17 @@ import (
 //	                                    different administrator approves it here. Only when no administrator is active
 //	                                    can the role be set directly (bootstrap).
 //
-// Approving applies the step in the same transaction. Every proposal and decision is audited there, with both
-// operators' names, so neither can later say the other did it alone. A legal hold is only ever lifted here, with
+// Approving applies the step in the same transaction. Every proposal and decision is audited INSIDE the database function
+// (migration 0046), with both operators' names, so neither can later say the other did it alone and a console that skips
+// its own audit code cannot skip the entry. An approval needs the proposer to still be an active administrator. A legal hold is only ever lifted here, with
 // counsel's reference (6 to 120 characters: letters, digits, spaces and . _ / -). The transitions are SQL functions
 // (migration 0043) the console role alone may run; it has no UPDATE on cases, proposals or operator roles.
 
-func (s *Server) approvalHook(p *Principal, action string) store.ApprovalHook {
-	return func(ctx context.Context, tx pgx.Tx, a store.EvidenceApproval, subject string) error {
-		opID := p.Operator.ID
-		detail := map[string]any{"approvalId": a.ApprovalID, "kind": a.Kind, "subjectId": subject, "proposedBy": a.ProposedByEmail, "status": a.Status}
-		if a.CounselReference != "" {
-			detail["counselReference"] = a.CounselReference
-		}
-		reason := a.Reason
-		if a.DecidedAt != nil {
-			reason = a.DecisionReason
-			detail["decidedBy"] = a.DecidedByEmail
-		}
-		targetType, targetID := "content_case", a.CaseID
-		if a.Kind == store.StepPromoteAdmin {
-			targetType, targetID = "operator", a.TargetOperator
-			detail["targetEmail"] = a.TargetOperatorEmail
-		}
-		if err := insertAudit(ctx, tx, AuditEntry{OperatorID: &opID, Actor: p.Operator.Email, Action: action, TargetType: targetType, TargetID: targetID, Reason: reason, IP: p.IP, Detail: detail}); err != nil {
-			return err
-		}
-		if action != "evidence_approved" {
-			return nil
-		}
-		if a.Kind == store.StepPromoteAdmin {
-			return insertAudit(ctx, tx, AuditEntry{OperatorID: &opID, Actor: p.Operator.Email, Action: "operator_role", TargetType: "operator", TargetID: a.TargetOperator,
-				Reason: a.DecisionReason, IP: p.IP, Detail: map[string]any{"email": a.TargetOperatorEmail, "to": "admin", "approvalId": a.ApprovalID, "proposedBy": a.ProposedByEmail, "approvedBy": a.DecidedByEmail, "proposalReason": a.Reason}})
-		}
-		// The step itself, under the name it always had, so the audit log reads the same as before and now
-		// carries both operators.
-		underlying := map[string]string{store.StepClear: "content_case_clear", store.StepRelease: "hold_release", store.StepLegalHoldLift: "legal_hold_lift"}[a.Kind]
-		return insertAudit(ctx, tx, AuditEntry{OperatorID: &opID, Actor: p.Operator.Email, Action: underlying, TargetType: "content_case", TargetID: a.CaseID,
-			Reason: a.DecisionReason, IP: p.IP, Detail: map[string]any{"subjectId": subject, "approvalId": a.ApprovalID, "proposedBy": a.ProposedByEmail, "approvedBy": a.DecidedByEmail, "proposalReason": a.Reason, "counselReference": a.CounselReference}})
-	}
+// safetyCtx carries the operator's truncated client address to the two-person functions, which write the audit entry
+// themselves (migration 0046): the entry is made inside the function, in the transaction of the change, with the operator
+// the console named.
+func safetyCtx(r *http.Request, p *Principal) context.Context {
+	return store.WithSafetyContext(r.Context(), store.SafetyContext{IP: p.IP})
 }
 
 func (s *Server) proposeEvidenceStep(w http.ResponseWriter, r *http.Request, p *Principal) {
@@ -90,7 +61,7 @@ func (s *Server) proposeEvidenceStep(w http.ResponseWriter, r *http.Request, p *
 		s.fail(w, r, &domain.ValidationError{Field: "counselReference", Message: "name counsel's instruction: 6 to 120 characters of letters, digits, spaces and . _ / -, starting with a letter or digit (who, and a date or reference)"})
 		return
 	}
-	a, err := s.svc.Store.ProposeEvidenceStep(r.Context(), id, body.Kind, p.Operator.ID, reason, counsel, s.approvalHook(p, "evidence_proposed"))
+	a, err := s.svc.Store.ProposeEvidenceStep(safetyCtx(r, p), id, body.Kind, p.Operator.ID, reason, counsel, nil)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -134,7 +105,7 @@ func (s *Server) listApprovals(w http.ResponseWriter, r *http.Request, p *Princi
 	s.ok(w, r, map[string]any{"items": items, "operatorId": p.Operator.ID, "activeAdmins": admins})
 }
 
-func (s *Server) decideEvidenceStep(decision, action string) handlerFunc {
+func (s *Server) decideEvidenceStep(decision string) handlerFunc {
 	return func(w http.ResponseWriter, r *http.Request, p *Principal) {
 		id := r.PathValue("id")
 		var body reasonBody
@@ -151,7 +122,7 @@ func (s *Server) decideEvidenceStep(decision, action string) handlerFunc {
 			s.fail(w, r, domain.ErrNotFound)
 			return
 		}
-		a, err := s.svc.Store.DecideEvidenceStep(r.Context(), id, p.Operator.ID, decision, reason, s.approvalHook(p, action))
+		a, err := s.svc.Store.DecideEvidenceStep(safetyCtx(r, p), id, p.Operator.ID, decision, reason, nil)
 		if err != nil {
 			s.fail(w, r, err)
 			return
@@ -161,21 +132,21 @@ func (s *Server) decideEvidenceStep(decision, action string) handlerFunc {
 }
 
 func (s *Server) approveEvidenceStep(w http.ResponseWriter, r *http.Request, p *Principal) {
-	s.decideEvidenceStep(store.DecisionApprove, "evidence_approved")(w, r, p)
+	s.decideEvidenceStep(store.DecisionApprove)(w, r, p)
 }
 
 func (s *Server) rejectEvidenceStep(w http.ResponseWriter, r *http.Request, p *Principal) {
-	s.decideEvidenceStep(store.DecisionReject, "evidence_rejected")(w, r, p)
+	s.decideEvidenceStep(store.DecisionReject)(w, r, p)
 }
 
 func (s *Server) withdrawEvidenceStep(w http.ResponseWriter, r *http.Request, p *Principal) {
-	s.decideEvidenceStep(store.DecisionWithdraw, "evidence_withdrawn")(w, r, p)
+	s.decideEvidenceStep(store.DecisionWithdraw)(w, r, p)
 }
 
 // proposeAdminPromotion is POST /admin/v1/operators/{id}/role with role "admin" while another administrator is
 // active: it opens a proposal (202) instead of changing the role. A different administrator approves it.
 func (s *Server) proposeAdminPromotion(w http.ResponseWriter, r *http.Request, p *Principal, target, reason string) {
-	a, err := s.svc.Store.ProposeAdminPromotion(r.Context(), target, p.Operator.ID, reason, s.approvalHook(p, "evidence_proposed"))
+	a, err := s.svc.Store.ProposeAdminPromotion(safetyCtx(r, p), target, p.Operator.ID, reason, nil)
 	if err != nil {
 		s.fail(w, r, err)
 		return
