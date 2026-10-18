@@ -309,6 +309,8 @@ erDiagram
 
 **Expected growth:** edges can exceed users by orders of magnitude; large communities create hot partitions.
 
+**As built for group chat (migration `0052_group_chat.sql`, [group chat API](../api/29-group-chat.md)).** A group is a `conversations` row with `kind = 'group'` and no pair columns; `conversation_members.peer_id` is nullable (a group member has no single peer) and holds only the per-member flags of an active member. The roster lives in `chat_groups` (name, owner), `chat_group_members` (`state` active or invited, `role`, `invited_by`, `expires_at` for an invite, `joined_at`) and `chat_group_events` (membership events kept 90 days). `reports.conversation_id` names the conversation of a report about a chat so the console can show a group's roster without reading message rows. Messages, envelopes and blobs are the existing tables, keyed by the group's conversation id; a group send stores one envelope per recipient device. The one-to-one chat code keys on the pair columns, so it can never match a group row.
+
 ### 7.5 `messages` — Chat module
 
 **Purpose:** logical durable message record. Storage begins relational where feasible and moves to DynamoDB/Scylla-like access-pattern storage for high-volume conversations.

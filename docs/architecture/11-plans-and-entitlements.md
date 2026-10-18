@@ -29,6 +29,10 @@ type Entitlements struct {
 	LinkedBlobRetention time.Duration // how long a blob is kept after its message
 	NewConversationsPerDay int        // conversations the member may start per rolling 24 h
 	ChatPinsMax            int        // chats a member may pin in their list (409 PIN_LIMIT past it)
+	GroupMembersMax        int        // people in one group, pending invites included (409 GROUP_FULL)
+	GroupsPerMemberMax     int        // groups a member is in or invited to (409 GROUP_LIMIT)
+	GroupsCreatedPerDay    int        // groups a member may create per UTC day
+	GroupInvitesPerDay     int        // people a member may invite to groups per UTC day
 	VoiceMaxBlobBytes      int64      // largest ciphertext of one voice message blob (413 TOO_LARGE past it)
 	VideoMaxBlobBytes      int64      // largest ciphertext of one video blob
 	VoiceMaxSeconds        int        // policy the app applies (the server cannot see a duration)
@@ -51,7 +55,9 @@ Free values (today's limits, for every member including minors):
 | `BlobsPerDay` / `BlobBytesPerDay` / `PendingBlobs` | 100 / 300 MiB / 10 |
 | `LinkedBlobRetention` | 30 days |
 | `NewConversationsPerDay` | 40 |
-| `ChatPinsMax` | 5 |
+| `ChatPinsMax` | 5 (groups and one-to-one chats together) |
+| `GroupMembersMax` / `GroupsPerMemberMax` | 10 / 30 |
+| `GroupsCreatedPerDay` / `GroupInvitesPerDay` | 5 / 30 |
 | `VoiceMaxBlobBytes` / `VoiceMaxSeconds` | 8 MiB / 300 s (5 minutes) |
 | `VideoMaxBlobBytes` / `VideoMaxSeconds` | 40 MiB / 60 s |
 | `FollowsPerDay` / `FriendRequestsPerDay` / `CommentsPerDay` | 200 / 50 / 300 |
@@ -104,6 +110,8 @@ Tiered now means the value is already an `Entitlements` field. Candidate later m
 | Chat voice message size (8 MiB ciphertext) and length (300 s) | `Entitlements.VoiceMaxBlobBytes` (enforced) and `VoiceMaxSeconds` (client policy only: the length is inside the encrypted descriptor) | tiered now |
 | Chat video size (40 MiB ciphertext) and length (60 s) | `Entitlements.VideoMaxBlobBytes` (enforced) and `VideoMaxSeconds` (client policy only) | tiered now |
 | Pinned chats (5) | `Entitlements.ChatPinsMax` | tiered now |
+| People in a group (10), groups per member (30), groups created (5) and people invited (30) per UTC day | `Entitlements.GroupMembersMax`, `GroupsPerMemberMax`, `GroupsCreatedPerDay`, `GroupInvitesPerDay` | tiered now (the ten is also the ceiling of the one-sealed-copy-per-device design: see [group chat](../mobile/19-group-chat.md)) |
+| Group name length (40), invite lifetime (7 days), envelopes in one group message (100) | `domain.GroupNameMax`, `GroupInviteTTL`, `MaxGroupEnvelopes` | candidate later |
 | Nearby radii (the buckets 5, 10, 15, 25, 50, 100 km, default 25) and Nearby or discovery filters | `domain/nearby.go`, `domain/discovery.go` | candidate later (never below 5 km) |
 | Number of circles or lists | not built | candidate later |
 | Chat history retention | not built (messages are kept) | candidate later |

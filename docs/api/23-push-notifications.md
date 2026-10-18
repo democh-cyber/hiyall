@@ -58,7 +58,8 @@ it is queued. Title is always `Hiyall`.
 
 | kind | when | body | data |
 | --- | --- | --- | --- |
-| `chat` | a message arrived | `New message` (never named) | `{kind: "chat", conversationId}` |
+| `chat` | a message arrived (in a group: to every active member who has not muted it; never for reactions or membership messages) | `New message` (never named, never the group's name) | `{kind: "chat", conversationId}` (a group's id opens the group) |
+| `group_invite` | someone invited you to a group | `You have a new group invite` (never named: not the group, not the inviter) | `{kind: "group_invite"}` (the app opens the chat list, where the invite waits) |
 | `device` | a chat device was added to your account for the first time | `New device added to your account` (never named) | `{kind: "device"}` |
 | `device-revoked` | a device of your account was removed by a session that is not its own (another phone, or a stolen credential) | `A device was removed from your account` (never named) | `{kind: "device"}` |
 | `deletion` | your account was just scheduled for deletion (round-4 N-5): sent once, to every device that held a push token, **before** the deletion clears the tokens | `Account deletion scheduled` (never named) | `{kind: "deletion"}` |
