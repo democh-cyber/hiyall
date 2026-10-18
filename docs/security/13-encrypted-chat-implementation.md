@@ -47,6 +47,10 @@
 - **Live:** `test/chat_live_test.dart` runs three real clients against the API: Anjali's phone and laptop, and Niko. It covers both directions, a 10-message burst, a restart from stored state, and pickles that don't expose keys. **Every request and response is captured, and none of the message text appears.**
 - **Android emulator:** Anjali on the real app and Niko on the command-line peer exchanged messages in both directions. A full `pg_dump` of the dev database has no message text, and every delivered envelope's ciphertext is deleted.
 
+## Group chat
+
+Groups of 3 to 10 people reuse everything above: each message is sealed once per recipient device with the existing Olm sessions (no group key, no sender-key ratchet; cost is O(devices of all members) per message), the relay adds a roster, roles and a name to what it already knows, and membership changes travel as encrypted control messages in the same request that changes the roster. What this adds to the independent review, in particular that the relay asserts additions to the roster and that removals are enforced by the phones, is in [group chat: experience and encryption design](../mobile/19-group-chat.md#security-notes-and-review-items); the server contract is [group chat API](../api/29-group-chat.md).
+
 ## Real-time delivery, receipts and verification
 
 - **Gateway.** `GET /v1/realtime` upgrades to a WebSocket authenticated by the same bearer token (`internal/httpapi/realtime.go`). Events are wake-up signals only: `inbox`, `activity`, `read`, `typing`, `ready`, `resync`. They never carry message text or ciphertext. Clients fetch and decrypt over HTTP as before, so a lost event costs latency, never data.

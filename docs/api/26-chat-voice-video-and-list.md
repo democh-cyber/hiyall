@@ -23,6 +23,8 @@ Single `PUT` of up to 40 MiB: the upload goes straight to the object store, neve
 
 ## Pinned chats, deleted chats, the list order
 
+Group chats ([group chat](29-group-chat.md)) use these same routes by their id and share the pin cap with one-to-one chats; their list is `GET /v1/groups`.
+
 All state is on the caller's own `conversation_members` row (`pinned_at`, `hidden_at`, `closed_at`); the peer is never told and sees nothing. Every write signals the caller's other devices (`inbox`).
 
 ### `PUT /v1/conversations/{conversationId}/pin`
