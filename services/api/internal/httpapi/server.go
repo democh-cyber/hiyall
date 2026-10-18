@@ -417,6 +417,7 @@ func (a *API) error(w http.ResponseWriter, r *http.Request, err error) {
 	var validation *domain.ValidationError
 	var policy *domain.PolicyError
 	var spend *domain.SpendError
+	var cannotAdd *domain.CannotAddError
 	switch {
 	case errors.As(err, &validation):
 		a.failure(w, r, 422, "VALIDATION", validation.Error())
@@ -426,6 +427,9 @@ func (a *API) error(w http.ResponseWriter, r *http.Request, err error) {
 		a.failure(w, r, 412, "VERSION_CONFLICT", "Settings changed. Reload before saving.")
 	case errors.Is(err, domain.ErrUsernameTaken):
 		a.failure(w, r, 409, "USERNAME_TAKEN", "This username is taken")
+	case errors.As(err, &cannotAdd):
+		// The person who cannot be added, never why (a block, an age band, their privacy choice and their group limit look alike).
+		a.failureDetails(w, r, 409, "CANNOT_ADD_MEMBER", "This person can’t be added to the group.", map[string]any{"userId": cannotAdd.UserID})
 	case errors.As(err, &spend):
 		// A 402 that says what it costs and what the member has (billing.go).
 		a.failureDetails(w, r, spend.Status, spend.Code, spend.Message, spend.Details)
@@ -470,12 +474,17 @@ func foreignKeyViolation(err error) bool {
 
 // Reject duplicate keys as well as trailing JSON and unknown properties in domain validation.
 func decode(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
+	return decodeLimit(w, r, 65536)
+}
+
+// decodeLimit is decode with a larger body limit, for the routes whose requests carry many ciphertexts (group messages).
+func decodeLimit(w http.ResponseWriter, r *http.Request, limit int64) (map[string]json.RawMessage, error) {
 	// JSON is UTF-8 by definition; a charset parameter is accepted only if it says so.
 	media, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || media != "application/json" || (params["charset"] != "" && !strings.EqualFold(params["charset"], "utf-8")) {
 		return nil, &domain.ValidationError{Field: "body", Message: "use application/json"}
 	}
-	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 65536))
+	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	token, err := d.Token()
 	if err != nil || token != json.Delim('{') {
 		return nil, &domain.ValidationError{Field: "body", Message: "must be a JSON object"}

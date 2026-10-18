@@ -861,7 +861,7 @@ func setBlockTx(ctx context.Context, tx pgx.Tx, actor, target string, blocked bo
 			return err
 		}
 	}
-	return nil
+	return cancelGroupInvitesBetween(ctx, tx, actor, target)
 }
 
 // SessionLive reports whether a session still authenticates: not revoked, not expired, and

@@ -21,10 +21,11 @@ func BlobKey(blobID string) string { return "chat/" + blobID }
 // blobPeerSQL is the other member of conversation row c, for caller $1.
 const blobPeerSQL = `CASE WHEN c.user_low_id=$1::uuid THEN c.user_high_id ELSE c.user_low_id END`
 
-// blobReachable is true while conversation row c is active and its members, caller $1 and the peer, may
-// still reach each other (not blocked, same age band, both active and onboarded): the 404 conditions of
-// every blob route.
-const blobReachable = `c.status='active' AND $1::uuid IN (c.user_low_id,c.user_high_id) AND NOT interaction_barred($1::uuid,` + blobPeerSQL + `) AND ` + `EXISTS(SELECT 1 FROM users mu JOIN onboarding mo ON mo.user_id=mu.user_id WHERE mu.user_id=` + blobPeerSQL + ` AND mu.status='active' AND mo.completed_at IS NOT NULL)`
+// blobReachable is true while conversation row c is active and its members may still reach each other: in a direct chat
+// caller $1 and the peer are not blocked, in the same age band, both active and onboarded; in a group the caller is an active
+// member and not barred from the blob's uploader (row b). These are the 404 conditions of every blob route.
+const blobReachable = `c.status='active' AND (($1::uuid IN (c.user_low_id,c.user_high_id) AND NOT interaction_barred($1::uuid,` + blobPeerSQL + `) AND ` + `EXISTS(SELECT 1 FROM users mu JOIN onboarding mo ON mo.user_id=mu.user_id WHERE mu.user_id=` + blobPeerSQL + ` AND mu.status='active' AND mo.completed_at IS NOT NULL))
+ OR (c.kind='group' AND EXISTS(SELECT 1 FROM chat_group_members cgm WHERE cgm.conversation_id=c.conversation_id AND cgm.user_id=$1::uuid AND cgm.state='active') AND NOT interaction_barred($1::uuid,b.uploader_id)))`
 
 // peerMayReceiveImages is the sender's gate: the peer has sent a message in the conversation, or the two
 // are friends. It stops strangers from pushing unsolicited images; the peer replying is the consent.
@@ -55,6 +56,10 @@ var (
 func (s *Store) CreateBlobSlot(ctx context.Context, user, conversationID string, b domain.NewBlob, e domain.Entitlements) (id, key string, err error) {
 	var peer string
 	err = s.Pool.QueryRow(ctx, `SELECT (CASE WHEN user_low_id=$2 THEN user_high_id ELSE user_low_id END)::text FROM conversations WHERE conversation_id=$1 AND $2 IN (user_low_id,user_high_id)`, conversationID, user).Scan(&peer)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Not one of the caller's direct chats: a group they are in.
+		return s.createGroupBlobSlot(ctx, user, conversationID, b, e)
+	}
 	if err != nil {
 		return "", "", mapped(err)
 	}
@@ -75,42 +80,78 @@ func (s *Store) CreateBlobSlot(ctx context.Context, user, conversationID string,
 		if err := peerMayReceiveImages(ctx, tx, conversationID, user, peer); err != nil {
 			return err
 		}
-		var count, pending int
-		var bytes int64
-		var firstPending *time.Time
-		if err := tx.QueryRow(ctx, `SELECT count(*),coalesce(sum(size_bytes),0),count(*) FILTER (WHERE state='pending' AND expires_at>now()),min(expires_at) FILTER (WHERE state='pending' AND expires_at>now())
- FROM chat_blobs WHERE uploader_id=$1 AND created_at>now()-interval '24 hours'`, user).Scan(&count, &bytes, &pending, &firstPending); err != nil {
-			return err
-		}
-		if pending >= e.PendingBlobs {
-			// A slot frees when the oldest pending one expires, or sooner when it is completed.
-			wait := time.Second
-			if firstPending != nil {
-				var seconds float64
-				if err := tx.QueryRow(ctx, `SELECT extract(epoch FROM $1::timestamptz-now())`, *firstPending).Scan(&seconds); err != nil {
-					return err
-				}
-				wait = time.Duration(math.Ceil(max(seconds, 1))) * time.Second
-			}
-			return domain.RetryAfter(errBlobPending, wait)
-		}
-		if count >= e.BlobsPerDay || bytes+b.SizeBytes > e.BlobBytesPerDay {
-			wait, err := blobQuotaWait(ctx, tx, user, count, bytes, b.SizeBytes, e)
-			if err != nil {
-				return err
-			}
-			return domain.RetryAfter(errBlobQuota, wait)
-		}
-		id = uuid.NewString()
-		key = BlobKey(id)
-		_, err := tx.Exec(ctx, `INSERT INTO chat_blobs(blob_id,uploader_id,conversation_id,role,size_bytes,ct_sha256,object_key,expires_at)
- VALUES($1,$2,$3,$4,$5,$6,$7,now()+$8::interval)`, id, user, conversationID, b.Role, b.SizeBytes, b.CtSha256, key, domain.UnattachedBlobTTL)
+		id, key, err = insertBlobSlot(ctx, tx, user, conversationID, b, e)
 		return err
 	})
 	if err != nil {
 		return "", "", err
 	}
 	return id, key, nil
+}
+
+// createGroupBlobSlot is CreateBlobSlot for a group: the caller is an active member of an open group (their account is
+// locked, which serialises their slots as lockPair does in a direct chat); there is no "peer replied" gate.
+func (s *Store) createGroupBlobSlot(ctx context.Context, user, conversationID string, b domain.NewBlob, e domain.Entitlements) (id, key string, err error) {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		found, err := lockUsers(ctx, tx, []string{user})
+		if err != nil {
+			return err
+		}
+		if !found[user] {
+			return domain.ErrNotFound
+		}
+		var status string
+		err = tx.QueryRow(ctx, `SELECT c.status FROM conversations c JOIN chat_group_members gm ON gm.conversation_id=c.conversation_id AND gm.user_id=$2 AND gm.state='active'
+ WHERE c.conversation_id=$1 AND c.kind='group'`, conversationID, user).Scan(&status)
+		if err != nil {
+			return mapped(err)
+		}
+		if status != "active" {
+			return domain.ErrNotFound
+		}
+		id, key, err = insertBlobSlot(ctx, tx, user, conversationID, b, e)
+		return err
+	})
+	if err != nil {
+		return "", "", err
+	}
+	return id, key, nil
+}
+
+// insertBlobSlot applies the member's blob quotas (count and bytes per rolling 24 hours, slots not yet completed) and
+// reserves the slot. The caller holds the member's account lock, so the counts cannot be raced past.
+func insertBlobSlot(ctx context.Context, tx pgx.Tx, user, conversationID string, b domain.NewBlob, e domain.Entitlements) (id, key string, err error) {
+	var count, pending int
+	var bytes int64
+	var firstPending *time.Time
+	if err := tx.QueryRow(ctx, `SELECT count(*),coalesce(sum(size_bytes),0),count(*) FILTER (WHERE state='pending' AND expires_at>now()),min(expires_at) FILTER (WHERE state='pending' AND expires_at>now())
+ FROM chat_blobs WHERE uploader_id=$1 AND created_at>now()-interval '24 hours'`, user).Scan(&count, &bytes, &pending, &firstPending); err != nil {
+		return "", "", err
+	}
+	if pending >= e.PendingBlobs {
+		// A slot frees when the oldest pending one expires, or sooner when it is completed.
+		wait := time.Second
+		if firstPending != nil {
+			var seconds float64
+			if err := tx.QueryRow(ctx, `SELECT extract(epoch FROM $1::timestamptz-now())`, *firstPending).Scan(&seconds); err != nil {
+				return "", "", err
+			}
+			wait = time.Duration(math.Ceil(max(seconds, 1))) * time.Second
+		}
+		return "", "", domain.RetryAfter(errBlobPending, wait)
+	}
+	if count >= e.BlobsPerDay || bytes+b.SizeBytes > e.BlobBytesPerDay {
+		wait, err := blobQuotaWait(ctx, tx, user, count, bytes, b.SizeBytes, e)
+		if err != nil {
+			return "", "", err
+		}
+		return "", "", domain.RetryAfter(errBlobQuota, wait)
+	}
+	id = uuid.NewString()
+	key = BlobKey(id)
+	_, err = tx.Exec(ctx, `INSERT INTO chat_blobs(blob_id,uploader_id,conversation_id,role,size_bytes,ct_sha256,object_key,expires_at)
+ VALUES($1,$2,$3,$4,$5,$6,$7,now()+$8::interval)`, id, user, conversationID, b.Role, b.SizeBytes, b.CtSha256, key, domain.UnattachedBlobTTL)
+	return id, key, err
 }
 
 // blobQuotaWait is how long until enough of the member's oldest blobs leave the 24 hour window for a new
@@ -246,6 +287,12 @@ func linkBlobs(ctx context.Context, tx pgx.Tx, user, peer, conversationID, messa
 	if err := peerMayReceiveImages(ctx, tx, conversationID, user, peer); err != nil {
 		return err
 	}
+	return claimBlobs(ctx, tx, user, conversationID, messageID, blobIDs, e)
+}
+
+// claimBlobs links the sender's uploaded, unclaimed blobs of a conversation to a message (the part of linkBlobs that
+// does not depend on who the peer is: a group has no single peer and no "peer replied" gate).
+func claimBlobs(ctx context.Context, tx pgx.Tx, user, conversationID, messageID string, blobIDs []string, e domain.Entitlements) error {
 	tag, err := tx.Exec(ctx, `UPDATE chat_blobs SET message_id=$1,expires_at=now()+$5::interval
  WHERE blob_id=ANY($2::uuid[]) AND uploader_id=$3 AND conversation_id=$4 AND state='uploaded' AND message_id IS NULL AND expires_at>now()`,
 		messageID, blobIDs, user, conversationID, e.LinkedBlobRetention)

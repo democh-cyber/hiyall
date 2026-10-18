@@ -42,8 +42,8 @@ func unhideOwn(ctx context.Context, tx pgx.Tx, user, conversationID string) erro
 // the conversation active); it is what the pin limit counts, so a pinned chat that became unreachable frees its slot.
 const pinnableSQL = `FROM conversation_members m
  JOIN conversations c ON c.conversation_id=m.conversation_id
- JOIN users u ON u.user_id=m.peer_id AND u.status='active'
- WHERE m.user_id=$1 AND c.status='active' AND m.hidden_at IS NULL AND NOT interaction_barred($1::uuid,m.peer_id)`
+ WHERE m.user_id=$1 AND c.status='active' AND m.hidden_at IS NULL
+ AND (c.kind='group' OR EXISTS(SELECT 1 FROM users u WHERE u.user_id=m.peer_id AND u.status='active') AND NOT interaction_barred($1::uuid,m.peer_id))`
 
 // SetConversationPin pins or unpins the caller's side of a conversation and returns pinned_at (nil when unpinned).
 // Pinning needs a chat in the caller's visible list (otherwise ErrNotFound, whatever the reason) and is idempotent:

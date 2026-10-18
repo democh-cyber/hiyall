@@ -174,6 +174,8 @@ func TestRequestsAndJobsRunOnTheRestrictedAPIRole(t *testing.T) {
 		{"chat blobs", func() (int64, error) { return rdb.PurgeChatBlobs(ctx, w.chat, 5000) }},
 		{"chat blob tombstones", func() (int64, error) { return rdb.PurgeChatBlobTombstones(ctx, 5000) }},
 		{"hidden chat close", func() (int64, error) { return rdb.CloseExpiredHiddenChats(ctx, domain.HiddenChatRetention, 5000) }},
+		{"group invite expiry", func() (int64, error) { return rdb.ExpireGroupInvites(ctx, 1000) }},
+		{"group event purge", func() (int64, error) { return rdb.PurgeGroupEvents(ctx, 5000) }},
 		{"deleted identities", func() (int64, error) { return rdb.PurgeDeletedIdentities(ctx, 0, 5000) }},
 		{"rate limits", func() (int64, error) { return ratelimit.Purge(ctx, rdb.Pool, 5000) }},
 	}

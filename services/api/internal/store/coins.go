@@ -171,7 +171,7 @@ func chargeChatSlot(ctx context.Context, tx pgx.Tx, user string, e domain.Entitl
 		return nil
 	}
 	var started int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM conversations WHERE created_by=$1 AND created_at>now()-interval '24 hours'`, user).Scan(&started); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM conversations WHERE kind='direct' AND created_by=$1 AND created_at>now()-interval '24 hours'`, user).Scan(&started); err != nil {
 		return err
 	}
 	cost := e.ChatSlotCost(started)

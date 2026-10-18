@@ -29,6 +29,7 @@ type purgeWorld struct {
 	xanBlob   string
 	convoEli  string
 	convoYui  string
+	group     string // xan's group with eli and yui
 }
 
 func newPurgeWorld(t *testing.T) *purgeWorld {
@@ -159,6 +160,15 @@ func newPurgeWorld(t *testing.T) *purgeWorld {
 	w.peerBlob = blob(eli, w.convoEli, eliMsg)
 	w.heldBlob = blob(xan, w.convoYui, yuiMessage["messageId"].(string))
 
+	// Group chat: a group xan owns with eli and yui in it (they join straight in the table: a real accept needs ciphertext),
+	// so xan has a membership, sent invites, did an event and sent a message there.
+	w.group = h.expect(h.send(xan, "POST", "/v1/groups", map[string]any{"name": "crew", "memberIds": []string{eli, yui}}), 201, "").data["groupId"].(string)
+	for i, u := range []string{eli, yui} {
+		h.exec(`UPDATE chat_group_members SET state='active',expires_at=NULL,joined_at=now()+make_interval(secs=>$3) WHERE conversation_id=$1 AND user_id=$2`, w.group, u, i+1)
+		h.exec(`INSERT INTO conversation_members(conversation_id,user_id,peer_id,sort_at) VALUES($1,$2,NULL,now())`, w.group, u)
+	}
+	h.expect(h.send(xan, "POST", "/v1/conversations/"+w.group+"/messages", message(dx, de, dy)), 200, "")
+
 	// Reports: yui's is open and holds the attachment; xan's about eli was resolved with an action against
 	// eli; cara's about xan was resolved with a warning to xan; xan's open one stays too.
 	w.openRep = h.expect(h.send(yui, "POST", "/v1/reports", map[string]any{"targetType": "user", "targetId": xan, "reasonCode": "spam"}), 201, "").data["report"].(map[string]any)["reportId"].(string)
@@ -217,6 +227,7 @@ var purgedColumns = []string{
 	"user_controls.actor_id", "user_controls.target_id", "media_assets.owner_id", "posts.author_id", "post_reactions.user_id", "saved_posts.user_id",
 	"stories.author_id", "story_views.viewer_id", "spaces.owner_id", "space_members.user_id", "space_entries.author_id", "onboarding.user_id",
 	"user_locations.user_id", "nearby_prefs.user_id", "member_daily_counts.user_id", "member_ages.user_id", "idempotency_keys.user_id", "profile_visits.profile_id", "profile_visits.visitor_id", "profile_visit_counts.profile_id",
+	"chat_group_members.user_id", "chat_group_members.invited_by", "chat_group_events.actor_id",
 	"key_claims.claimer_id", "notification_prefs.user_id", "social_counters.user_id", "support_threads.user_id", "notice_seen.user_id",
 	"coin_balances.user_id", "coin_ledger.user_id", "purchases.user_id", "subscriptions.user_id", "ad_reward_sessions.user_id", "profile_detail_unlocks.viewer_id", "profile_detail_unlocks.target_id",
 }
@@ -234,6 +245,10 @@ var retainedColumns = map[string]string{
 	"chat_blobs.uploader_id":        `t.held_report_id IS NOT NULL`,
 	"devices.user_id":               `t.display_name='' AND t.push_token IS NULL AND t.revoked_at IS NOT NULL AND EXISTS(SELECT 1 FROM messages m WHERE m.sender_device_id=t.device_id)`,
 	"comments.author_id":            `t.body='' AND t.deleted_at IS NOT NULL`,
+	// A group passes to its longest-standing member; one nobody is left in is deleted unless a held message keeps it. The only
+	// event that keeps a deleted account's id is its own member_deleted, which is how the other members learn of it.
+	"chat_groups.owner_id":         `NOT EXISTS(SELECT 1 FROM chat_group_members m WHERE m.conversation_id=t.conversation_id AND m.state='active')`,
+	"chat_group_events.subject_id": `t.kind='member_deleted'`,
 	// A quarantined upload's evidence record is kept on purpose, together with its held objects, until a person
 	// releases the hold (docs/security/16-csam-and-illegal-content.md). It carries no profile data of the member.
 	"content_cases.user_id": `t.status IN ('open','confirmed','cleared','reported')`,

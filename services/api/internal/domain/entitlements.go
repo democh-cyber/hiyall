@@ -71,6 +71,13 @@ type Entitlements struct {
 	PulseSearchPagesPerDay int
 	SupportMessagesPerDay  int
 	PulseVoiceSeconds      int
+	// Group chat (docs/api/29-group-chat.md). GroupMembersMax is the people in one group, pending invites included;
+	// GroupsPerMemberMax the groups a member is in or invited to; GroupsCreatedPerDay and GroupInvitesPerDay count per UTC
+	// calendar day (member_daily_counts), nothing refunded. Each is enforced by the API, never by the app.
+	GroupMembersMax     int
+	GroupsPerMemberMax  int
+	GroupsCreatedPerDay int
+	GroupInvitesPerDay  int
 	// ChatPinsMax is how many conversations a member may pin in their chat list (409 PIN_LIMIT past it).
 	ChatPinsMax int
 	// Voice messages and videos in chat (docs/api/26-chat-voice-video-and-list.md). The server only ever sees
@@ -140,6 +147,10 @@ func EntitlementsFor(plan Plan) Entitlements {
 		SupportMessagesPerDay:             20,
 		PulseVoiceSeconds:                 MaxVoiceSeconds,
 		ChatPinsMax:                       5,
+		GroupMembersMax:                   10,
+		GroupsPerMemberMax:                30,
+		GroupsCreatedPerDay:               5,
+		GroupInvitesPerDay:                30,
 		VoiceMaxSeconds:                   300,
 		VoiceMaxBlobBytes:                 8 << 20,
 		VideoMaxSeconds:                   60,

@@ -508,6 +508,29 @@ func (s *Store) purgeContent(ctx context.Context, id string) error {
 	}); err != nil {
 		return err
 	}
+	// Groups: the person leaves every one (the others see "a member deleted their account"), their invites are cancelled,
+	// and what they sent in groups goes under the same rules as a direct chat's messages (docs/api/29-group-chat.md).
+	if err := s.purgeGroups(ctx, id); err != nil {
+		return err
+	}
+	if err := run(
+		`DELETE FROM message_envelopes WHERE message_id IN (SELECT message_id FROM messages WHERE sender_id=$1 AND conversation_id IN (SELECT conversation_id FROM conversations WHERE kind='group'))`,
+		`WITH `+reportedMessageIDs+`,
+ del AS (DELETE FROM messages m WHERE m.ctid IN (SELECT m2.ctid FROM messages m2 WHERE m2.sender_id=$1 AND m2.conversation_id IN (SELECT conversation_id FROM conversations WHERE kind='group')
+  AND NOT EXISTS(SELECT 1 FROM chat_blobs b WHERE b.message_id=m2.message_id)
+  AND NOT EXISTS(SELECT 1 FROM reports er WHERE er.target_type='message' AND er.target_id=m2.message_id)
+  AND NOT EXISTS(SELECT 1 FROM evidence WHERE evidence.id=m2.message_id::text) LIMIT $2) RETURNING 1)
+ SELECT count(*) FROM del`,
+		`DELETE FROM chat_group_members WHERE user_id=$1`,
+		// What still names the member in a group: the invites they sent, who did or was the subject of an event (the id of a
+		// deleted account stays only in its own member_deleted event, which is how the others learn of it) and who created it.
+		`UPDATE chat_group_members SET invited_by=NULL WHERE invited_by=$1`,
+		`UPDATE chat_group_events SET actor_id=NULL WHERE actor_id=$1`,
+		`UPDATE chat_group_events SET subject_id=NULL WHERE subject_id=$1 AND kind<>'member_deleted'`,
+		`UPDATE conversations SET created_by=NULL WHERE kind='group' AND created_by=$1`,
+	); err != nil {
+		return err
+	}
 	if err := run(
 		// Two statements and not one with OR: each is answered by an index (the primary key, and
 		// message_envelopes_recipient from migration 0039); the OR made it a scan of the whole table.
@@ -529,6 +552,9 @@ func (s *Store) purgeContent(ctx context.Context, id string) error {
  SELECT count(*) FROM del`,
 		`DELETE FROM conversation_members WHERE user_id=$1 OR peer_id=$1`,
 		`DELETE FROM conversations c WHERE $1::uuid IN (c.user_low_id,c.user_high_id)
+ AND NOT EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.conversation_id) AND NOT EXISTS(SELECT 1 FROM chat_blobs b WHERE b.conversation_id=c.conversation_id)`,
+		// A group nobody is left in goes (a held message or attachment keeps it, like a direct chat).
+		`DELETE FROM conversations c WHERE c.kind='group' AND $1::uuid IS NOT NULL AND NOT EXISTS(SELECT 1 FROM chat_group_members m WHERE m.conversation_id=c.conversation_id AND m.state='active')
  AND NOT EXISTS(SELECT 1 FROM messages m WHERE m.conversation_id=c.conversation_id) AND NOT EXISTS(SELECT 1 FROM chat_blobs b WHERE b.conversation_id=c.conversation_id)`,
 		// Key material. A device that signed a retained message keeps only its public keys.
 		`DELETE FROM one_time_keys WHERE device_id IN (SELECT device_id FROM devices WHERE user_id=$1)`,

@@ -412,7 +412,8 @@ func (e *exportWriter) chat(ctx context.Context, q querier, user string) error {
 	e.begin("chat", "{")
 	e.value("note", "Message content is end-to-end encrypted and is stored only on your devices; Hiyall cannot read it and it is not in this export. This section lists which conversations exist and how many messages passed through them.")
 	if err := e.one(ctx, q, "totals", `SELECT jsonb_build_object(
- 'conversations',(SELECT count(*) FROM conversation_members WHERE user_id=$1),
+ 'conversations',(SELECT count(*) FROM conversation_members WHERE user_id=$1 AND peer_id IS NOT NULL),
+ 'groups',(SELECT count(*) FROM chat_group_members WHERE user_id=$1 AND state='active'),
  'messagesSent',(SELECT count(*) FROM messages WHERE sender_id=$1),
  'attachmentsUploaded',(SELECT count(*) FROM chat_blobs WHERE uploader_id=$1 AND role='full'))`, user); err != nil {
 		return err
@@ -424,6 +425,22 @@ func (e *exportWriter) chat(ctx context.Context, q querier, user string) error {
  'messagesReceived',(SELECT count(*) FROM messages m WHERE m.conversation_id=c.conversation_id AND m.sender_id<>$1))
  FROM conversation_members cm JOIN conversations c ON c.conversation_id=cm.conversation_id JOIN users pu ON pu.user_id=cm.peer_id LEFT JOIN profiles pp ON pp.user_id=cm.peer_id
  WHERE cm.user_id=$1 ORDER BY cm.sort_at DESC,cm.conversation_id DESC`, user)
+	if err != nil {
+		return err
+	}
+	// Groups: the person's own memberships and the metadata the server holds about them (docs/api/29-group-chat.md).
+	err = e.list(ctx, q, "groups", `SELECT jsonb_build_object('groupId',c.conversation_id,'name',g.name,'role',gm.role,'status',c.status,'joinedAt',gm.joined_at,'createdAt',c.created_at,
+ 'memberCount',(SELECT count(*) FROM chat_group_members a WHERE a.conversation_id=c.conversation_id AND a.state='active'),
+ 'messagesSent',(SELECT count(*) FROM messages m WHERE m.conversation_id=c.conversation_id AND m.sender_id=$1),
+ 'messagesReceived',(SELECT count(*) FROM messages m WHERE m.conversation_id=c.conversation_id AND m.sender_id<>$1 AND NOT m.aux))
+ FROM chat_group_members gm JOIN conversations c ON c.conversation_id=gm.conversation_id JOIN chat_groups g ON g.conversation_id=c.conversation_id
+ WHERE gm.user_id=$1 AND gm.state='active' ORDER BY gm.joined_at DESC,c.conversation_id DESC`, user)
+	if err != nil {
+		return err
+	}
+	err = e.list(ctx, q, "groupInvites", `SELECT jsonb_build_object('groupId',gm.conversation_id,'name',g.name,'invitedAt',gm.invited_at,'expiresAt',gm.expires_at)
+ FROM chat_group_members gm JOIN chat_groups g ON g.conversation_id=gm.conversation_id
+ WHERE gm.user_id=$1 AND gm.state='invited' AND gm.expires_at>now() ORDER BY gm.invited_at DESC,gm.conversation_id DESC`, user)
 	if err != nil {
 		return err
 	}

@@ -131,7 +131,9 @@ type kindSpec struct {
 const title = "Hiyall"
 
 var kinds = map[string]kindSpec{
-	"chat":            {CategoryChat, 30 * time.Second, "New message", ""},
+	"chat": {CategoryChat, 30 * time.Second, "New message", ""},
+	// An invite to a group (docs/api/29-group-chat.md): a chat notification that names nothing, not even the group.
+	"group_invite":    {CategoryChat, 10 * time.Minute, "You have a new group invite", ""},
 	"device":          {CategorySecurity, 0, "New device added to your account", ""},
 	"device-revoked":  {CategorySecurity, 0, "A device was removed from your account", ""},
 	KindDeletion:      {CategorySecurity, 0, "Account deletion scheduled", ""},
@@ -277,6 +279,8 @@ func (n Notice) collapseKey() string {
 		return "deletion"
 	case "support":
 		return "support"
+	case "group_invite":
+		return "group-invite"
 	}
 	return "social"
 }
@@ -385,6 +389,9 @@ func message(n Notice, spec kindSpec, actorName string) Message {
 	} else if n.Kind == KindDeletion {
 		// Content-free: the app says the account is scheduled for deletion and offers to cancel.
 		data["kind"] = KindDeletion
+	} else if n.Kind == "group_invite" {
+		// Content-free: the app opens the chat list, where the invite waits.
+		data["kind"] = "group_invite"
 	} else if n.Kind == "support" {
 		// Content-free: the app opens the support conversations.
 		data["kind"] = "support"

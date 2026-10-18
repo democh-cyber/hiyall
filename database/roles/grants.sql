@@ -49,7 +49,7 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO hiyall_api;
 REVOKE ALL ON SEQUENCE operator_login_attempts_attempt_id_seq, operator_audit_audit_id_seq FROM hiyall_api;
 
 -- ---- Admin console: what a case and a member view read, what moderation writes, the operator tables.
-GRANT SELECT ON users, profiles, member_ages, reports, moderation_actions, chat_blobs, sessions, auth_identities,
+GRANT SELECT ON users, profiles, member_ages, reports, moderation_actions, chat_blobs, chat_groups, chat_group_members, sessions, auth_identities,
                 posts, post_media, comments, stories, media_assets, spaces, space_entries, content_cases,
                 operators, operator_sessions, operator_login_attempts, operator_audit TO hiyall_admin;
 GRANT UPDATE ON users, reports, sessions, operator_sessions, operator_login_attempts TO hiyall_admin;

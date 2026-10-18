@@ -411,6 +411,10 @@ func maintenanceJobs(db *store.Store, objects, chatObjects media.Store, identiti
 		{"hidden chat close", func(ctx context.Context) (int64, error) {
 			return db.CloseExpiredHiddenChats(ctx, domain.HiddenChatRetention, 5000)
 		}, 0},
+		// Group invites unanswered after 7 days expire (a group left with fewer than two members then closes), and the
+		// membership events of groups are kept 90 days (docs/api/29-group-chat.md).
+		{"group invite expiry", func(ctx context.Context) (int64, error) { return db.ExpireGroupInvites(ctx, 1000) }, 0},
+		{"group event purge", func(ctx context.Context) (int64, error) { return db.PurgeGroupEvents(ctx, 5000) }, 0},
 		// Accounts past their 30 day grace period (docs/api/22-account-deletion-and-export.md). After the
 		// cleanups above, so a purge that marked files deleted last time finds them removed this time.
 		{"account purge", func(ctx context.Context) (int64, error) { return db.PurgeDeletedAccounts(ctx, identities, 50) }, 20 * time.Minute},
