@@ -410,4 +410,95 @@ class ChatApi {
     '/v1/devices/$deviceId/inbox/ack',
     {'messageIds': messageIds},
   );
+
+  // ------------------------------------------------------------ groups
+  // docs/api/29-group-chat.md. A group's messages, blobs, read pointer, mute, pin, hide and restore use the
+  // conversation routes above with the group id. A membership change that has others to tell carries its
+  // encrypted control message inside the request, as `control: {messageId, senderDeviceId, envelopes}`.
+
+  static String _g(String groupId) =>
+      '/v1/groups/${Uri.encodeComponent(groupId)}';
+
+  Map<String, dynamic> _map(dynamic data) =>
+      Map<String, dynamic>.from(data as Map);
+
+  /// Creates a group and invites [memberIds] (2 to 9). 409 CANNOT_ADD_MEMBER names one person in `details`.
+  Future<Map<String, dynamic>> createGroup(
+    String name,
+    List<String> memberIds,
+  ) async => _map(
+    await _call('POST', '/v1/groups', {
+      if (name.isNotEmpty) 'name': name,
+      'memberIds': memberIds,
+    }),
+  );
+
+  /// The caller's groups (active and closed), pinned first, then the most recent.
+  Future<List<Map<String, dynamic>>> groups() async =>
+      _items(await _call('GET', '/v1/groups'));
+
+  /// The groups the caller deleted from their list and can still restore.
+  Future<List<Map<String, dynamic>>> hiddenGroups() async =>
+      _items(await _call('GET', '/v1/groups/hidden'));
+
+  /// Invitations the caller has not answered.
+  Future<List<Map<String, dynamic>>> groupInvites() async =>
+      _items(await _call('GET', '/v1/groups/invites'));
+
+  /// One group with its members, pending invites and the last membership events (404 for a non-member).
+  Future<Map<String, dynamic>> group(String groupId) async =>
+      _map(await _call('GET', _g(groupId)));
+
+  /// Owner: invites 1 to 9 more people (409 GROUP_FULL, 409 CANNOT_ADD_MEMBER).
+  Future<Map<String, dynamic>> inviteToGroup(
+    String groupId,
+    List<String> userIds,
+  ) async =>
+      _map(await _call('POST', '${_g(groupId)}/members', {'userIds': userIds}));
+
+  /// An invited person joins; [control] is the encrypted `join` message for everyone already in the group
+  /// (409 DEVICES_CHANGED when the device set no longer matches).
+  Future<Map<String, dynamic>> acceptGroupInvite(
+    String groupId,
+    Map<String, dynamic> control,
+  ) async =>
+      _map(await _call('POST', '${_g(groupId)}/accept', {'control': control}));
+
+  /// Declines an invitation; nobody is told.
+  Future<void> declineGroupInvite(String groupId) =>
+      _call('POST', '${_g(groupId)}/decline');
+
+  /// Owner: renames the group; [control] is the encrypted `rename` message.
+  Future<Map<String, dynamic>> renameGroup(
+    String groupId,
+    String name,
+    Map<String, dynamic> control,
+  ) async => _map(
+    await _call('PATCH', _g(groupId), {'name': name, 'control': control}),
+  );
+
+  /// Owner: removes an active member ([control] is the encrypted `remove` message, which also goes to the
+  /// removed person) or, with no [control], cancels a pending invite.
+  Future<Map<String, dynamic>> removeGroupMember(
+    String groupId,
+    String userId, {
+    Map<String, dynamic>? control,
+  }) async => _map(
+    await _call(
+      'POST',
+      '${_g(groupId)}/members/${Uri.encodeComponent(userId)}/remove',
+      control == null ? null : {'control': control},
+    ),
+  );
+
+  /// Leaves the group. [control] is the encrypted `leave` message (omitted when nobody else is in the group);
+  /// the owner names [newOwnerId] when two or more other members remain.
+  Future<void> leaveGroup(
+    String groupId, {
+    Map<String, dynamic>? control,
+    String? newOwnerId,
+  }) => _call('POST', '${_g(groupId)}/leave', {
+    'control': ?control,
+    'newOwnerId': ?newOwnerId,
+  });
 }
