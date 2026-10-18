@@ -15,6 +15,8 @@ import 'chat_av_outbox.dart';
 import 'chat_blob_cache.dart';
 import 'chat_blob_codec.dart';
 import 'chat_blob_transport.dart';
+import 'chat_group_state.dart';
+import 'chat_groups.dart';
 import 'chat_history.dart';
 import 'chat_key_upload.dart';
 import 'chat_local_data.dart';
@@ -536,6 +538,10 @@ class ChatEngine {
   /// is rewritten meanwhile (audit CHAT-N5). Tests pass short ones.
   final List<Duration> reregisterDelays;
 
+  /// How long a group's member list, as the relay gave it, is used for sealing before it is asked for again
+  /// (it is also asked for again after a `DEVICES_CHANGED` and after a membership message arrived).
+  final Duration groupRosterTtl;
+
   /// A notice to show once this engine has started with a fresh identity: the explicit reset the person chose
   /// after the keystore could not be opened ([DeviceNoticeKind.storage]).
   final DeviceNoticeKind? startNotice;
@@ -550,6 +556,19 @@ class ChatEngine {
   ChatMedia? _media;
   PhotoOutbox? _outbox;
   AvOutbox? _avOutbox;
+
+  /// What this phone remembers about each group: roster, names, removal marks, who is accounted for (see
+  /// [GroupStore]). Sealed with the rest of the account's chat data.
+  late final GroupStore _groups = GroupStore(_store, _k('groups'));
+
+  /// The relay's member list per group and when it was read (see [groupRosterTtl]).
+  final _rosters = <String, ({DateTime at, GroupInfo info})>{};
+
+  /// Conversations the relay said are not groups (a one-to-one chat), so it is not asked again this run.
+  final _notGroups = <String>{};
+
+  /// Inside [_pollPage]: a send that needs the inbox must not start a second poll of the same page.
+  bool _polling = false;
 
   ChatEngine({
     required this.userId,
@@ -579,6 +598,7 @@ class ChatEngine {
       Duration(minutes: 15),
     ],
     this.startNotice,
+    this.groupRosterTtl = const Duration(seconds: 30),
     DateTime Function()? clock,
     ChatMedia? media,
   }) : _clock = clock ?? DateTime.now {
@@ -713,6 +733,7 @@ class ChatEngine {
     () async {
       if (_started) return;
       await _loadNotes();
+      await _groups.load();
       // The snapshot files existed and none opened (the key is gone, or they are damaged), or only the
       // previous generation did (an older state than the one last committed: its ratchets may be behind what
       // peers already saw). Neither is an identity to carry on with: start a new one and say so, never
@@ -1859,6 +1880,24 @@ class ChatEngine {
     bool aux = false,
     Set<String> fresh = const {},
   }) async {
+    // A group: one envelope per device of every member this phone seals for (the peer id is not used).
+    if (isGroup(conversationId)) {
+      return _groupSend<DateTime?>(
+        conversationId,
+        payload,
+        fresh: fresh,
+        post: (envelopes) => api.send(
+          conversationId,
+          {
+            'messageId': messageId,
+            'senderDeviceId': deviceId,
+            'envelopes': envelopes,
+          },
+          blobIds: blobIds,
+          aux: aux,
+        ),
+      );
+    }
     final startFresh = {...fresh};
     for (var attempt = 0; ; attempt++) {
       final peerDevices = await _devices(
@@ -1927,7 +1966,10 @@ class ChatEngine {
     try {
       await _saveNotes();
       var peer = senderId;
-      if (senderId == userId) {
+      if (isGroup(conversationId)) {
+        // A group is sealed for every member, whoever's device it was (the peer id is not used).
+        peer = groupPeer;
+      } else if (senderId == userId) {
         final c = await api.conversation(conversationId);
         peer = (c['peer'] as Map)['userId'] as String;
       }
@@ -2118,6 +2160,15 @@ class ChatEngine {
   /// the saved ratchet and history where they were, so it is delivered and
   /// decrypted again. The ratchet is rolled back in memory on a failure.
   Future<int> _pollPage() async {
+    _polling = true;
+    try {
+      return await _pollPageOf();
+    } finally {
+      _polling = false;
+    }
+  }
+
+  Future<int> _pollPageOf() async {
     final List<Map<String, dynamic>> items;
     try {
       items = await api.inbox(deviceId);
@@ -2211,16 +2262,22 @@ class ChatEngine {
         }
         Incoming incoming;
         try {
+          final body = jsonDecode(opened.plaintext) as Map<String, dynamic>;
           final Set<String>? members;
           try {
+            // A conversation this phone has no record of may be a group (a second phone, a record that was
+            // lost): the relay is asked once when a membership message arrives in it.
+            if (!_groups.has(conversationId) && body['kind'] == 'group') {
+              await _ensureGroupKnown(conversationId);
+            }
             members = await _quoteMembers(conversationId, senderId);
           } catch (_) {
             opened.undo();
             _leftBehind = true;
-            continue; // history unreadable: left on the relay
+            continue; // history unreadable, or the relay unreachable: left on the relay
           }
           incoming = parseIncoming(
-            jsonDecode(opened.plaintext) as Map<String, dynamic>,
+            body,
             messageId: messageId,
             conversationId: conversationId,
             senderId: senderId,
@@ -2229,6 +2286,15 @@ class ChatEngine {
             members: members,
             aux: item['aux'] == true,
           );
+          if (incoming is IncomingGroupEvent) {
+            try {
+              await _prepareGroupControl(conversationId, incoming);
+            } catch (_) {
+              opened.undo();
+              _leftBehind = true;
+              continue; // the relay could not be asked: left there, delivered again
+            }
+          }
         } catch (_) {
           // Decrypted, but not a message this app understands. The ratchet has
           // moved on, so keep it and say so.
@@ -2249,8 +2315,13 @@ class ChatEngine {
         } catch (_) {
           opened.undo();
           _leftBehind = true;
+          // What the failed commit had put into the group record (memory) is not on disk either.
+          await _groups.reloadQuietly();
           continue; // not acknowledged: delivered again
         }
+        // Something arrived in a group (a signal told this phone to look): the member list is read again at the
+        // next send, whatever the cache time says.
+        if (_groups.has(conversationId)) _rosters.remove(conversationId);
         _processed.add(messageId);
         if (_processed.length > 400) _processed.remove(_processed.first);
         delivered.add(messageId);
@@ -2428,6 +2499,8 @@ class ChatEngine {
         );
       case IncomingReaction(:final event):
         await _log.applyReaction(conversationId, event);
+      case IncomingGroupEvent():
+        await _applyGroupControl(conversationId, incoming);
       case IncomingIgnored():
         break;
     }
@@ -2442,6 +2515,11 @@ class ChatEngine {
     String senderId,
   ) async {
     final members = {userId, senderId};
+    // A group: anyone who is, or was, an active member (a person who left may still be quoted).
+    final group = _groups[conversationId];
+    if (group != null) {
+      return {...members, ...group.directory.keys};
+    }
     if (senderId != userId) return members;
     for (final m in await history(conversationId)) {
       if (!m.mine && !m.notice) {
@@ -2453,15 +2531,19 @@ class ChatEngine {
   }
 
   /// When the peer last read this conversation, if both share receipts.
-  Future<DateTime?> peerReadAt(String conversationId) async =>
-      DateTime.tryParse(
-        (await api.conversation(conversationId))['peerReadAt'] as String? ?? '',
-      );
+  Future<DateTime?> peerReadAt(String conversationId) async {
+    // There are no read receipts in a group.
+    if (isGroup(conversationId)) return null;
+    return DateTime.tryParse(
+      (await api.conversation(conversationId))['peerReadAt'] as String? ?? '',
+    );
+  }
 
   /// Most recent first. Only the returned chats' local history is read.
   Future<List<ChatConversation>> conversations({int limit = 50}) async => [
     for (final c in await api.conversations(limit: limit))
-      await _conversationOf(c),
+      // A group (no peer) is listed by [groups].
+      if (c['peer'] is Map) await _conversationOf(c),
   ];
 
   Future<ChatConversation> _conversationOf(Map<String, dynamic> c) async =>
@@ -2492,6 +2574,7 @@ class ChatEngine {
     final out = <ChatConversation>[];
     final expired = <String>[...result.closedIds];
     for (final c in result.items) {
+      if (c['peer'] is! Map) continue; // a group: see [hiddenGroups]
       final conversation = await _conversationOf(c);
       final until = conversation.restoreUntil;
       if (until != null && !until.isAfter(now)) {
@@ -2509,15 +2592,51 @@ class ChatEngine {
       api.pinConversation(id, pinned);
 
   /// Deletes a chat from the list. The local history is kept for the 30 days it can be restored.
-  Future<void> hideConversation(String id) => api.hideConversation(id);
-  Future<void> restoreConversation(String id) => api.restoreConversation(id);
+  Future<void> hideConversation(String id) async {
+    // A group this account was removed from may no longer be known to the relay: the person can still delete
+    // it from their list, which is then only remembered here.
+    final local = _groups[id];
+    try {
+      await api.hideConversation(id);
+    } on ChatFailure catch (failure) {
+      if (local == null || !local.readOnly || failure.status != 404) rethrow;
+    }
+    if (local != null) {
+      await _locked(() => _setGroupHidden(id, _clock().toUtc()));
+    }
+  }
+
+  Future<void> restoreConversation(String id) async {
+    final local = _groups[id];
+    try {
+      await api.restoreConversation(id);
+    } on ChatFailure catch (failure) {
+      if (local == null || !local.readOnly || failure.status != 404) rethrow;
+    }
+    if (local != null) await _locked(() => _setGroupHidden(id, null));
+  }
 
   /// Deletes this phone's copy of a conversation: its history, the cached files of its media and its unsent
   /// uploads. "Clear history", and the end of a deleted chat's 30 days. Nothing changes on the relay.
   Future<void> clearHistory(String conversationId) =>
-      wipeConversations([conversationId]);
+      _wipeHistoryOf([conversationId]);
 
+  /// [clearHistory] for several conversations, and for each that is a group, this phone's record of it too
+  /// (roster, names, removal marks): this is where a deleted chat's 30 days end, so the group is forgotten.
   Future<void> wipeConversations(Iterable<String> ids) async {
+    final all = ids.toList();
+    await _wipeHistoryOf(all);
+    final groups = [
+      for (final id in all)
+        if (_groups.has(id)) id,
+    ];
+    for (final id in all) {
+      _rosters.remove(id);
+    }
+    if (groups.isNotEmpty) await _locked(() => _groups.remove(groups));
+  }
+
+  Future<void> _wipeHistoryOf(Iterable<String> ids) async {
     for (final id in ids) {
       final unsent = [
         for (final m in await history(id))
@@ -2560,6 +2679,1025 @@ class ChatEngine {
     }
     return out;
   }
+
+  // ------------------------------------------------------------ group chat
+  // The surface the screens use (docs/mobile/19-group-chat.md). Messages in a group go through the ordinary
+  // send, sendPhoto, sendVoice, sendVideo and react with [groupPeer] as the peer id: [_deliver] seals them for
+  // every device of every member this phone has not been told left (see [_groupSend]).
+
+  /// Whether [conversationId] is a group this phone knows.
+  bool isGroup(String conversationId) => _groups.has(conversationId);
+
+  /// Everyone who has been an active member of the group, by id, with the name and photo the relay gave, so a
+  /// message or notice from someone who has since left still shows who it was. Empty for an unknown group.
+  Map<String, GroupMember> groupDirectory(String groupId) => Map.unmodifiable(
+    _groups[groupId]?.directory ?? const <String, GroupMember>{},
+  );
+
+  /// This account was removed from the group, left it, or the group closed: nothing more can be sent there.
+  bool isGroupReadOnly(String groupId) => _groups[groupId]?.readOnly ?? false;
+
+  /// The groups in this account's chat list (not deleted), pinned first then most recent first, each with
+  /// the last message of this phone's history. Also seeds this phone's record of a group it sees for the first
+  /// time (see "Membership changes" in docs/mobile/19-group-chat.md).
+  Future<List<GroupInfo>> groups() async {
+    final infos = [for (final raw in await api.groups()) ?GroupInfo.parse(raw)];
+    await _locked(() => _syncMany(infos));
+    final out = [for (final info in infos) await _decorate(info)];
+    final listed = {for (final info in infos) info.id};
+    // A group this account was removed from (or left) may not be listed any more: it stays in the list,
+    // read-only, until the person deletes it.
+    for (final id in _groups.ids) {
+      final local = _groups[id]!;
+      if (!listed.contains(id) && local.readOnly && local.hiddenAt == null) {
+        out.add(await _infoFromLocal(id));
+      }
+    }
+    return out;
+  }
+
+  /// The groups this account deleted from its list and can still restore (and wipes the local history of
+  /// those past their window, like [hiddenConversations]).
+  Future<List<GroupInfo>> hiddenGroups() async {
+    final now = _clock();
+    final out = <GroupInfo>[], expired = <String>[], listed = <String>{};
+    for (final raw in await api.hiddenGroups()) {
+      final info = GroupInfo.parse(raw);
+      if (info == null) continue;
+      listed.add(info.id);
+      final until = info.restoreUntil;
+      if (until != null && !until.isAfter(now)) {
+        expired.add(info.id);
+      } else {
+        out.add(await _decorate(info));
+      }
+    }
+    for (final id in _groups.ids.toList()) {
+      final local = _groups[id]!;
+      final hidden = local.hiddenAt;
+      if (hidden == null || !local.readOnly || listed.contains(id)) continue;
+      final until = hidden.add(const Duration(days: 30));
+      if (until.isAfter(now)) {
+        out.add(await _infoFromLocal(id));
+      } else {
+        expired.add(id);
+      }
+    }
+    await wipeConversations(expired);
+    return out;
+  }
+
+  /// Invitations waiting for an answer, newest first.
+  Future<List<GroupInvite>> groupInvites() async => [
+    for (final raw in await api.groupInvites()) ?GroupInvite.parse(raw),
+  ];
+
+  /// One group with its member list, pending invites and the relay's membership events. Also applies what
+  /// those events say (notices, removal marks) and lists the members this phone has not confirmed. A group the
+  /// relay no longer shows this account (removed, left) comes back from this phone's record, read-only.
+  Future<GroupInfo> group(String id) async {
+    final GroupInfo info;
+    try {
+      info = await _fetchGroup(id);
+    } on ChatFailure catch (failure) {
+      if (failure.status == 404 && _groups.has(id)) {
+        await _locked(() => _markGroupReadOnly(id));
+        return _infoFromLocal(id);
+      }
+      rethrow;
+    }
+    await _locked(() => _syncGroup(info));
+    return _decorate(info);
+  }
+
+  /// Creates a group and invites [memberIds] (2 to 9 people). Throws [ChatFailure] `CANNOT_ADD_MEMBER` with
+  /// `details['userId']` when someone cannot be added.
+  Future<GroupInfo> createGroup({
+    String name = '',
+    required List<String> memberIds,
+  }) => _locked(() async {
+    final info = _groupFrom(
+      await api.createGroup(_cleanGroupName(name), memberIds),
+    );
+    _rosters[info.id] = (at: _clock(), info: info);
+    // The creator accounts only for themself: everyone else joins by a message that proves it.
+    await _syncGroup(info, creator: true);
+    return _decorate(info);
+  });
+
+  /// Owner: invites more people.
+  Future<GroupInfo> inviteToGroup(String id, List<String> userIds) =>
+      _locked(() async {
+        final info = _groupFrom(await api.inviteToGroup(id, userIds));
+        _rosters[id] = (at: _clock(), info: info);
+        await _syncGroup(info);
+        return _decorate(info);
+      });
+
+  /// Accepts an invitation (sends the encrypted `join` message with the request). Everyone the relay lists as
+  /// an active member at that moment is accounted for; nothing of the group's earlier messages is available.
+  Future<GroupInfo> acceptGroupInvite(String id) => _locked(() async {
+    final messageId = newUuid4(_random);
+    final payload = _groupPayload(id, messageId, 'join', subject: userId);
+    final sealedFor = <String>{};
+    Map<String, dynamic> raw;
+    for (var attempt = 0; ; attempt++) {
+      final info = await _fetchGroup(id);
+      sealedFor.clear();
+      final targets = <(String, _Device)>[];
+      for (final m in info.members) {
+        if (m.userId == userId) continue;
+        sealedFor.add(m.userId);
+        for (final d in await _devices(m.userId, conversationId: id)) {
+          targets.add((m.userId, d));
+        }
+      }
+      for (final d in await _devices(userId)) {
+        if (d.id != deviceId) targets.add((userId, d));
+      }
+      final envelopes = await _seal(targets, payload);
+      try {
+        raw = await api.acceptGroupInvite(id, _control(messageId, envelopes));
+        break;
+      } on ChatFailure catch (failure) {
+        if (failure.code != 'DEVICES_CHANGED' || attempt > 0) rethrow;
+      }
+    }
+    final info = _groupFrom(raw);
+    _rosters[id] = (at: _clock(), info: info);
+    // A new membership: the first snapshot is the people this phone just sealed the join for, and nothing
+    // from an earlier membership (marks, a read-only flag) carries over.
+    await _syncGroup(
+      info,
+      firstSnapshot: {...sealedFor, userId},
+      ownNotice: (messageId: messageId, text: 'You joined'),
+    );
+    return _decorate(info);
+  });
+
+  /// Declines an invitation. Nobody is told.
+  Future<void> declineGroupInvite(String id) async {
+    await api.declineGroupInvite(id);
+    _rosters.remove(id);
+  }
+
+  /// Owner: renames the group ([name] may be empty).
+  Future<GroupInfo> renameGroup(String id, String name) => _locked(() async {
+    final clean = _cleanGroupName(name);
+    final messageId = newUuid4(_random);
+    final payload = _groupPayload(id, messageId, 'rename', name: clean);
+    final raw = await _groupSend<Map<String, dynamic>>(
+      id,
+      payload,
+      post: (envelopes) =>
+          api.renameGroup(id, clean, _control(messageId, envelopes)),
+    );
+    final info = _groupFrom(raw);
+    _rosters[id] = (at: _clock(), info: info);
+    await _syncGroup(
+      info,
+      ownNotice: (
+        messageId: messageId,
+        text: _noticeText(_groups[id]!, 'renamed', actor: userId, name: clean)!,
+      ),
+    );
+    return _decorate(info);
+  });
+
+  /// Owner: removes a member, or cancels a pending invite.
+  Future<GroupInfo> removeFromGroup(String id, String memberId) => _locked(
+    () async {
+      if (memberId == userId) {
+        throw const ChatFailure(
+          'VALIDATION',
+          'Use Leave group to leave a group.',
+          422,
+        );
+      }
+      final current = await _groupRoster(id, force: true);
+      final active = current.members.any((m) => m.userId == memberId);
+      if (!active && current.pending.any((p) => p.userId == memberId)) {
+        final info = _groupFrom(await api.removeGroupMember(id, memberId));
+        _rosters[id] = (at: _clock(), info: info);
+        await _syncGroup(info);
+        return _decorate(info);
+      }
+      final messageId = newUuid4(_random);
+      final payload = _groupPayload(id, messageId, 'remove', subject: memberId);
+      // The removed person gets the message too (it tells their phone to stop), even if this phone does
+      // not account for them; nobody this phone holds a removal mark for is ever sealed for.
+      final raw = await _groupSend<Map<String, dynamic>>(
+        id,
+        payload,
+        alsoFor: {memberId},
+        post: (envelopes) => api.removeGroupMember(
+          id,
+          memberId,
+          control: _control(messageId, envelopes),
+        ),
+      );
+      final info = _groupFrom(raw);
+      _rosters[id] = (at: _clock(), info: info);
+      final at = _clock().toUtc();
+      await _syncGroup(
+        info,
+        ownNotice: (
+          messageId: messageId,
+          text: _noticeText(
+            _groups[id]!,
+            'removed',
+            actor: userId,
+            subject: memberId,
+          )!,
+        ),
+        edit: (l) => l.copyWith(marks: {...l.marks, memberId: at}),
+      );
+      return _decorate(info);
+    },
+  );
+
+  /// Leaves the group. The owner names [newOwnerId] when two or more other members remain.
+  Future<void> leaveGroup(String id, {String? newOwnerId}) => _locked(() async {
+    final local = _groups[id];
+    if (local == null || local.readOnly) {
+      // Already out as far as this phone knows; the relay may not know the group any more.
+      try {
+        await api.leaveGroup(id);
+      } on ChatFailure catch (failure) {
+        if (failure.status != 404 && failure.status != 403) rethrow;
+      }
+      return;
+    }
+    final info = await _groupRoster(id, force: true);
+    final others = [
+      for (final m in info.members)
+        if (m.userId != userId) m,
+    ];
+    if (others.isEmpty) {
+      await api.leaveGroup(id);
+      await _commitLeft(id, null);
+      return;
+    }
+    final handOver = info.ownerId == userId && others.length >= 2;
+    if (handOver && !others.any((m) => m.userId == newOwnerId)) {
+      throw const ChatFailure(
+        'VALIDATION',
+        'Choose who takes over this group first.',
+        422,
+      );
+    }
+    final messageId = newUuid4(_random);
+    final payload = _groupPayload(
+      id,
+      messageId,
+      'leave',
+      subject: userId,
+      owner: handOver ? newOwnerId : null,
+    );
+    await _groupSend<void>(
+      id,
+      payload,
+      post: (envelopes) => api.leaveGroup(
+        id,
+        control: _control(messageId, envelopes),
+        newOwnerId: handOver ? newOwnerId : null,
+      ),
+    );
+    await _commitLeft(id, messageId);
+  });
+
+  /// Confirms a member this phone had not accounted for (see [GroupInfo.unconfirmed]); sealing for them starts.
+  Future<void> confirmGroupMember(String id, String memberId) =>
+      _locked(() async {
+        final local = _groups[id];
+        if (local == null) {
+          throw const ChatFailure(
+            'NOT_FOUND',
+            'This group isn’t available.',
+            404,
+          );
+        }
+        if (local.marks.containsKey(memberId)) {
+          throw _groupOutOfSync(local, {memberId}, const {});
+        }
+        final info = await _groupRoster(id, force: true);
+        if (!info.members.any((m) => m.userId == memberId)) {
+          throw const ChatFailure(
+            'NOT_FOUND',
+            'That person isn’t in this group.',
+            404,
+          );
+        }
+        await _syncGroup(
+          info,
+          edit: (l) => l.copyWith(accounted: {...l.accounted, memberId}),
+        );
+      });
+
+  // ----- group chat: records and the relay's view
+
+  static const _notMember = ChatFailure(
+    'NOT_A_MEMBER',
+    'You’re not in this group any more.',
+    403,
+  );
+
+  GroupInfo _groupFrom(Map<String, dynamic> raw) {
+    final info = GroupInfo.parse(raw);
+    if (info == null) {
+      throw const ChatFailure('BAD_RESPONSE', 'That group couldn’t be read.');
+    }
+    return info;
+  }
+
+  String _cleanGroupName(String name) {
+    final clean = sanitizeText(name, multiline: false).trim();
+    if (clean.runes.length > groupNameMax) {
+      throw const ChatFailure(
+        'VALIDATION',
+        'A group name can have at most $groupNameMax characters.',
+        422,
+      );
+    }
+    return clean;
+  }
+
+  /// [_log.transaction] for work that changes the group record: if the commit fails, memory is put back to
+  /// what the store holds.
+  Future<T> _groupTx<T>(Future<T> Function() work) async {
+    try {
+      return await _log.transaction(work);
+    } catch (_) {
+      await _groups.reloadQuietly();
+      rethrow;
+    }
+  }
+
+  /// Reads the group from the relay (and remembers the answer for [groupRosterTtl]). Changes nothing here.
+  Future<GroupInfo> _fetchGroup(String id) async {
+    final info = _groupFrom(await api.group(id));
+    if (info.id != id) {
+      throw const ChatFailure('BAD_RESPONSE', 'That group couldn’t be read.');
+    }
+    _rosters[id] = (at: _clock(), info: info);
+    return info;
+  }
+
+  /// The relay's member list for sealing: the remembered one, or a fresh read (always after a failure with
+  /// [force]). A group the relay no longer shows this account is read-only from now on.
+  Future<GroupInfo> _groupRoster(String id, {bool force = false}) async {
+    final cached = _rosters[id];
+    if (!force &&
+        cached != null &&
+        _clock().difference(cached.at) < groupRosterTtl) {
+      return cached.info;
+    }
+    final GroupInfo info;
+    try {
+      info = await _fetchGroup(id);
+    } on ChatFailure catch (failure) {
+      if (failure.status == 404 && _groups.has(id)) {
+        await _markGroupReadOnly(id);
+        throw _notMember;
+      }
+      rethrow;
+    }
+    await _syncGroup(info);
+    return info;
+  }
+
+  /// A conversation this phone has no record of: asks the relay once whether it is a group.
+  Future<void> _ensureGroupKnown(String id) async {
+    if (_groups.has(id) || _notGroups.contains(id)) return;
+    final GroupInfo info;
+    try {
+      info = await _fetchGroup(id);
+    } on ChatFailure catch (failure) {
+      if (isTransientChatFailure(failure)) rethrow;
+      _notGroups.add(id);
+      return;
+    }
+    await _syncGroup(info);
+  }
+
+  Set<String> _unconfirmed(GroupLocal local, List<GroupMember> members) => {
+    for (final m in members)
+      if (m.userId != userId &&
+          !local.accounted.contains(m.userId) &&
+          !local.marks.containsKey(m.userId))
+        m.userId,
+  };
+
+  Set<String> _outOfSync(GroupLocal local, List<GroupMember> members) => {
+    for (final m in members)
+      if (m.userId != userId && local.marks.containsKey(m.userId)) m.userId,
+  };
+
+  /// The relay's [info] with what only this phone knows: the last message, whether the group is read-only,
+  /// the members it does not account for and the ones the relay lists although they were removed.
+  Future<GroupInfo> _decorate(GroupInfo info) async {
+    final last = (await history(info.id)).lastOrNull;
+    final local = _groups[info.id];
+    if (local == null) return info.copyWith(last: last);
+    return info.copyWith(
+      last: last,
+      readOnly: local.readOnly || info.closed,
+      unconfirmed: _unconfirmed(local, info.members),
+      outOfSync: _outOfSync(local, info.members),
+    );
+  }
+
+  /// A group from this phone's own record, for one the relay no longer shows.
+  Future<GroupInfo> _infoFromLocal(String id) async {
+    final local = _groups[id]!;
+    final hidden = local.hiddenAt;
+    return GroupInfo(
+      id: id,
+      name: local.name,
+      ownerId: local.ownerId,
+      createdAt: local.createdAt,
+      readOnly: true,
+      members: local.roster,
+      last: (await history(id)).lastOrNull,
+      hiddenAt: hidden,
+      restoreUntil: hidden?.add(const Duration(days: 30)),
+    );
+  }
+
+  Future<void> _setGroupHidden(String id, DateTime? at) => _groupTx(() async {
+    final local = _groups[id];
+    if (local == null) return;
+    await _groups.put(
+      id,
+      at == null
+          ? local.copyWith(clearHidden: true)
+          : local.copyWith(hiddenAt: at),
+    );
+  });
+
+  Future<void> _markGroupReadOnly(String id) => _groupTx(() async {
+    final local = _groups[id];
+    if (local == null || local.readOnly) return;
+    await _groups.put(id, local.copyWith(readOnly: true));
+  });
+
+  /// This account left the group: a notice, and the group is read-only.
+  Future<void> _commitLeft(String id, String? messageId) => _groupTx(() async {
+    final local = _groups[id];
+    if (local == null) return;
+    final noticeId = 'grp-${messageId ?? newUuid4(_random)}';
+    await _append(
+      id,
+      _groupNotice(noticeId, 'You left', userId, _clock().toUtc(), null),
+    );
+    var next = local.copyWith(readOnly: true).withShown(noticeId);
+    if (messageId != null) next = next.withDone(messageId);
+    await _groups.put(id, next);
+    _rosters.remove(id);
+  });
+
+  ChatMessage _groupNotice(
+    String id,
+    String text,
+    String? actor,
+    DateTime at,
+    DateTime? serverAt,
+  ) => ChatMessage(
+    messageId: id,
+    senderId: actor ?? '',
+    text: text,
+    sentAt: at,
+    serverAt: serverAt,
+    mine: actor == userId,
+    notice: true,
+  );
+
+  /// A person's name for a notice: the one the relay gave, as one clean line; "Someone" when there is none.
+  String _nameIn(GroupLocal local, String? id) {
+    final clean = sanitizeText(
+      id == null ? '' : local.nameOf(id) ?? '',
+      multiline: false,
+    ).trim();
+    return clean.isEmpty ? 'Someone' : clean;
+  }
+
+  /// What a membership change says, as the person reads it in the thread; null for one that says nothing.
+  /// [kind] is a relay event kind (`joined`, `left`, `removed`, `renamed`, `member_deleted`, `closed`).
+  String? _noticeText(
+    GroupLocal local,
+    String kind, {
+    String? actor,
+    String? subject,
+    String? name,
+  }) {
+    switch (kind) {
+      case 'joined':
+        if (subject == null) return null;
+        return subject == userId
+            ? 'You joined'
+            : '${_nameIn(local, subject)} joined';
+      case 'left':
+        if (subject == null) return null;
+        return subject == userId
+            ? 'You left'
+            : '${_nameIn(local, subject)} left';
+      case 'removed':
+        if (subject == null) return null;
+        if (subject == userId) return 'You were removed from this group';
+        if (actor == null) return '${_nameIn(local, subject)} was removed';
+        return actor == userId
+            ? 'You removed ${_nameIn(local, subject)}'
+            : '${_nameIn(local, actor)} removed ${_nameIn(local, subject)}';
+      case 'renamed':
+        final who = actor == userId ? 'You' : _nameIn(local, actor);
+        final clean = sanitizeText(name ?? '', multiline: false).trim();
+        return clean.isEmpty
+            ? '$who removed the group name'
+            : '$who renamed the group to “$clean”';
+      case 'member_deleted':
+        return 'A member deleted their account';
+    }
+    // A closed group says nothing in the thread (nobody is told why a group ended, e.g. that invites were
+    // declined): it is only read-only.
+    return null;
+  }
+
+  static String _eventNoticeId(GroupEvent e) =>
+      e.messageId != null && isCanonicalUuid(e.messageId!)
+      ? 'grp-${e.messageId}'
+      : 'grp-ev-${e.eventId}';
+
+  /// This phone's record of a group after reading it from the relay: the roster, owner and name, the names of
+  /// everyone seen, and what the relay's membership events add (notices for the ones not shown yet, removal
+  /// marks for people it says left, were removed or deleted their account). Never an accounted-for entry or a
+  /// lifted mark: only a message the person's own phone authenticated does that. Returns the new record and the
+  /// notices to show; changes nothing.
+  Future<({GroupLocal local, List<ChatMessage> notices})> _merge(
+    GroupLocal? old,
+    GroupInfo info, {
+    bool creator = false,
+    Set<String>? firstSnapshot,
+    String? ownMessageId,
+  }) async {
+    final directory = {...?old?.directory};
+    for (final m in info.members) {
+      directory[m.userId] = m;
+    }
+    final fresh = firstSnapshot != null;
+    var local = GroupLocal(
+      ownerId: info.ownerId,
+      name: info.name,
+      createdAt: info.createdAt,
+      roster: info.members,
+      directory: directory,
+      // A new membership (the person accepted an invitation) starts from what was sealed for.
+      marks: fresh ? const {} : old?.marks ?? const {},
+      accounted:
+          firstSnapshot ??
+          old?.accounted ??
+          (creator
+              ? {userId}
+              : {for (final m in info.members) m.userId, userId}),
+      shown: old?.shown ?? const [],
+      done: old?.done ?? const [],
+      readOnly: !fresh && (old?.readOnly ?? false) || info.closed,
+      hiddenAt: fresh ? null : old?.hiddenAt,
+    );
+    if (ownMessageId != null) {
+      local = local.withDone(ownMessageId).withShown('grp-$ownMessageId');
+    }
+    final notices = <ChatMessage>[];
+    if (info.events.isEmpty) return (local: local, notices: notices);
+    final joined = info.members
+        .where((m) => m.userId == userId)
+        .firstOrNull
+        ?.joinedAt;
+    final existing = {
+      for (final m in await history(info.id))
+        if (m.notice) m.messageId,
+    };
+    final events = info.events;
+    for (var i = 0; i < events.length; i++) {
+      final e = events[i];
+      // Before this account joined (or joined again): not part of its story.
+      if (joined != null && e.at.isBefore(joined)) continue;
+      final noticeId = _eventNoticeId(e);
+      final mid = e.messageId;
+      if (mid != null && local.done.contains(mid)) continue;
+      if (local.shown.contains(noticeId) || existing.contains(noticeId)) {
+        continue;
+      }
+      final subject = e.subjectId, actor = e.actorId;
+      // A leave or removal that the same list shows the person coming back from is not a mark.
+      bool cameBack() => events
+          .skip(i + 1)
+          .any((x) => x.kind == 'joined' && x.subjectId == subject);
+      var marks = local.marks;
+      var readOnly = local.readOnly;
+      switch (e.kind) {
+        case 'left' || 'removed':
+          if (subject != null) {
+            if (subject == userId) {
+              readOnly = true;
+            } else if (!cameBack() && !marks.containsKey(subject)) {
+              marks = {...marks, subject: e.at};
+            }
+          }
+        case 'member_deleted':
+          if (subject != null && !marks.containsKey(subject)) {
+            marks = {...marks, subject: e.at};
+          }
+        case 'closed':
+          readOnly = true;
+      }
+      final text = _noticeText(
+        local,
+        e.kind,
+        actor:
+            actor ?? (e.kind == 'joined' || e.kind == 'left' ? subject : null),
+        subject: subject,
+        name: e.name,
+      );
+      if (text != null) {
+        notices.add(
+          _groupNotice(
+            noticeId,
+            text,
+            actor ?? subject,
+            e.at.toUtc(),
+            e.at.toUtc(),
+          ),
+        );
+      }
+      local = local
+          .copyWith(marks: marks, readOnly: readOnly)
+          .withShown(noticeId);
+    }
+    return (local: local, notices: notices);
+  }
+
+  /// Merges the relay's view of a group into this phone's record and saves it, with the notices it produces,
+  /// in one commit. An invitation has no record. [edit] changes the merged record (after the relay accepted a
+  /// change this phone made); [ownNotice] is the notice of that change, shown from this person's point of view
+  /// (the relay's event for the same control message is then not shown again).
+  Future<void> _syncGroup(
+    GroupInfo info, {
+    bool creator = false,
+    Set<String>? firstSnapshot,
+    GroupLocal Function(GroupLocal)? edit,
+    ({String messageId, String text})? ownNotice,
+  }) {
+    if (info.invited) return Future.value();
+    return _groupTx(() async {
+      final merged = await _merge(
+        _groups[info.id],
+        info,
+        creator: creator,
+        firstSnapshot: firstSnapshot,
+        ownMessageId: ownNotice?.messageId,
+      );
+      var local = merged.local;
+      for (final notice in merged.notices) {
+        await _append(info.id, notice);
+      }
+      if (ownNotice != null) {
+        await _append(
+          info.id,
+          _groupNotice(
+            'grp-${ownNotice.messageId}',
+            ownNotice.text,
+            userId,
+            _clock().toUtc(),
+            null,
+          ),
+        );
+      }
+      if (edit != null) local = edit(local);
+      await _groups.put(info.id, local);
+    });
+  }
+
+  /// [_syncGroup] for the chat list: no events, no notices, one write.
+  Future<void> _syncMany(List<GroupInfo> infos) => _groupTx(() async {
+    final changes = <String, GroupLocal>{};
+    for (final info in infos) {
+      if (info.invited) continue;
+      changes[info.id] = (await _merge(_groups[info.id], info)).local;
+    }
+    if (changes.isNotEmpty) await _groups.putAll(changes);
+  });
+
+  // ----- group chat: sealing and sending
+
+  /// One envelope per target, sealed with the Olm session to that device (started from a claimed one-time key
+  /// when there is none). Account and sessions are saved before anything leaves the phone. Devices in [fresh]
+  /// get a brand-new session.
+  Future<List<Map<String, dynamic>>> _seal(
+    List<(String, _Device)> targets,
+    String payload, {
+    Set<String> fresh = const {},
+  }) async {
+    final startFresh = {...fresh};
+    final envelopes = <Map<String, dynamic>>[];
+    for (final (user, device) in targets) {
+      final sealed = (await _outbound(
+        user,
+        device,
+        fresh: startFresh.remove(device.id),
+      )).encrypt(plaintext: payload);
+      envelopes.add({
+        'deviceId': device.id,
+        'type': sealed.messageType,
+        'ciphertext': sealed.ciphertext,
+      });
+    }
+    await _saveState();
+    return envelopes;
+  }
+
+  Map<String, dynamic> _control(
+    String messageId,
+    List<Map<String, dynamic>> envelopes,
+  ) => {
+    'messageId': messageId,
+    'senderDeviceId': deviceId,
+    'envelopes': envelopes,
+  };
+
+  /// The plaintext of a membership message (padded like every payload); see "Payloads" in
+  /// docs/mobile/19-group-chat.md.
+  String _groupPayload(
+    String groupId,
+    String messageId,
+    String op, {
+    String? subject,
+    String? name,
+    String? owner,
+  }) => encodePadded({
+    'v': 1,
+    'kind': 'group',
+    'text': '',
+    'op': op,
+    'subject': ?subject,
+    'name': ?name,
+    'owner': ?owner,
+    'messageId': messageId,
+    'conversationId': groupId,
+    'senderId': userId,
+    'sentAt': _clock().toUtc().toIso8601String(),
+  }, _random);
+
+  /// The devices to seal a group message for, from the relay's member list: every device of every member
+  /// except this account's, minus anyone this phone holds a removal mark for (never sealed, whatever the relay
+  /// lists) and anyone it does not account for (not until the person confirms them), plus this account's other
+  /// devices. [alsoFor] names people whose phone must be told even though they are not accounted for (the
+  /// person being removed); a mark is never overridden.
+  Future<
+    ({
+      List<(String, _Device)> targets,
+      int otherDevices,
+      Set<String> marked,
+      Set<String> unconfirmed,
+    })
+  >
+  _groupPlan(String id, GroupInfo info, Set<String> alsoFor) async {
+    final local = _groups[id]!;
+    final targets = <(String, _Device)>[];
+    final marked = <String>{}, unconfirmed = <String>{};
+    var others = 0;
+    for (final m in info.members) {
+      if (m.userId == userId) continue;
+      if (local.marks.containsKey(m.userId)) {
+        marked.add(m.userId);
+        continue;
+      }
+      if (!local.accounted.contains(m.userId) && !alsoFor.contains(m.userId)) {
+        unconfirmed.add(m.userId);
+        continue;
+      }
+      for (final d in await _devices(m.userId, conversationId: id)) {
+        targets.add((m.userId, d));
+        others++;
+      }
+    }
+    for (final d in await _devices(userId)) {
+      if (d.id != deviceId) targets.add((userId, d));
+    }
+    return (
+      targets: targets,
+      otherDevices: others,
+      marked: marked,
+      unconfirmed: unconfirmed,
+    );
+  }
+
+  ChatFailure _groupOutOfSync(
+    GroupLocal local,
+    Set<String> marked,
+    Set<String> unconfirmed,
+  ) {
+    final ids = marked.isNotEmpty ? marked : unconfirmed;
+    final names = ids.map((id) => _nameIn(local, id)).join(', ');
+    final one = ids.length == 1;
+    final details = {'userId': ids.first, 'userIds': ids.toList()};
+    if (marked.isNotEmpty) {
+      return ChatFailure(
+        'GROUP_OUT_OF_SYNC',
+        'Group membership out of sync: $names ${one ? 'was' : 'were'} removed, but the server still lists them. Nothing was sent to them.',
+        409,
+        null,
+        details,
+      );
+    }
+    return ChatFailure(
+      'GROUP_UNCONFIRMED_MEMBER',
+      '$names ${one ? 'isn’t' : 'aren’t'} confirmed in this group yet. Confirm them in Group info to keep sending.',
+      409,
+      null,
+      details,
+    );
+  }
+
+  /// Seals [payload] for the devices [_groupPlan] names and gives the envelopes to [post]. Runs inside
+  /// [_locked]. A `DEVICES_CHANGED` is retried once with the member list read again; when it still fails and the
+  /// relay lists someone this phone does not seal for, the inbox is read once (a `join` or `remove` that is only
+  /// in flight arrives then) and the send tried one last time, then it stops with `GROUP_OUT_OF_SYNC` (a marked
+  /// person is listed) or `GROUP_UNCONFIRMED_MEMBER`. It cannot loop: at most three requests.
+  Future<T> _groupSend<T>(
+    String id,
+    String payload, {
+    Set<String> fresh = const {},
+    Set<String> alsoFor = const {},
+    required Future<T> Function(List<Map<String, dynamic>> envelopes) post,
+  }) async {
+    var polled = false;
+    for (var attempt = 0; ; attempt++) {
+      final local = _groups[id];
+      if (local == null || local.readOnly) {
+        throw const ChatFailure(
+          'CONVERSATION_CLOSED',
+          'You can’t send to this group any more.',
+          403,
+        );
+      }
+      final info = await _groupRoster(id, force: attempt > 0);
+      final plan = await _groupPlan(id, info, alsoFor);
+      final skipped = plan.marked.isNotEmpty || plan.unconfirmed.isNotEmpty;
+      if (plan.otherDevices == 0 && !skipped) {
+        throw const ChatFailure(
+          'GROUP_WAITING',
+          'Nobody else in this group can receive messages yet.',
+          409,
+        );
+      }
+      final envelopes = await _seal(plan.targets, payload, fresh: fresh);
+      try {
+        // Nothing to seal for anyone the relay would accept: the relay's check cannot pass.
+        if (envelopes.isEmpty) {
+          throw const ChatFailure('DEVICES_CHANGED', 'The group changed.', 409);
+        }
+        return await post(envelopes);
+      } on ChatFailure catch (failure) {
+        if (failure.code != 'DEVICES_CHANGED') rethrow;
+        if (attempt == 0) continue;
+        if (!skipped) rethrow;
+        if (!polled && !_polling) {
+          polled = true;
+          try {
+            await _pollPage();
+          } catch (_) {
+            // The inbox could not be read: the answer below stands.
+          }
+          continue;
+        }
+        throw _groupOutOfSync(
+          _groups[id] ?? local,
+          plan.marked,
+          plan.unconfirmed,
+        );
+      }
+    }
+  }
+
+  // ----- group chat: membership messages
+
+  /// Before a membership message is filed: if the owner it names is not the owner this phone knows, or a name in
+  /// it is unknown, the relay is asked once. Throws only when the relay could not be reached (the message is
+  /// then left there to arrive again).
+  Future<void> _prepareGroupControl(String id, IncomingGroupEvent e) async {
+    final local = _groups[id];
+    if (local == null || local.done.contains(e.messageId)) return;
+    final needsOwner = e.op == 'remove' || e.op == 'rename';
+    final subject = e.subject;
+    final unknown =
+        !local.directory.containsKey(e.senderId) ||
+        (subject != null &&
+            subject != userId &&
+            !local.directory.containsKey(subject));
+    if (!(needsOwner && local.ownerId != e.senderId) && !unknown) return;
+    final GroupInfo info;
+    try {
+      info = await _fetchGroup(id);
+    } on ChatFailure catch (failure) {
+      if (isTransientChatFailure(failure)) rethrow;
+      return; // the relay does not show this account the group: nothing more can be learnt
+    }
+    await _syncGroup(info);
+  }
+
+  /// Files a membership message from a member (see "Payloads" in docs/mobile/19-group-chat.md): a notice, and the
+  /// changes to this phone's record of the group. `remove` and `rename` count only from the owner this phone
+  /// knows (after the one refresh of [_prepareGroupControl]); anything else is dropped without a trace. Runs
+  /// inside the commit that also keeps the ratchet that opened the message.
+  Future<void> _applyGroupControl(String id, IncomingGroupEvent e) async {
+    var local = _groups[id];
+    if (local == null || local.done.contains(e.messageId)) return;
+    final sender = e.senderId;
+    if ((e.op == 'remove' || e.op == 'rename') && local.ownerId != sender) {
+      return;
+    }
+    final at = e.serverAt ?? _clock().toUtc();
+    var marks = local.marks;
+    var accounted = local.accounted;
+    var owner = local.ownerId, name = local.name;
+    var readOnly = local.readOnly;
+    var roster = local.roster;
+    final String kind;
+    switch (e.op) {
+      case 'join':
+        kind = 'joined';
+        accounted = {...accounted, sender};
+        final marked = marks[sender];
+        // Only a person's own, later `join` lifts a removal mark.
+        if (marked != null &&
+            (e.serverAt == null || e.serverAt!.isAfter(marked))) {
+          marks = {...marks}..remove(sender);
+        }
+        if (sender == userId) readOnly = false;
+      case 'leave':
+        kind = 'left';
+        marks = {...marks, sender: marks[sender] ?? at};
+        roster = [
+          for (final m in roster)
+            if (m.userId != sender) m,
+        ];
+        final next = e.owner;
+        if (next != null &&
+            sender == local.ownerId &&
+            (next == userId || local.directory.containsKey(next))) {
+          owner = next;
+        }
+        if (sender == userId) readOnly = true;
+      case 'remove':
+        kind = 'removed';
+        final gone = e.subject!;
+        marks = {...marks, gone: marks[gone] ?? at};
+        roster = [
+          for (final m in roster)
+            if (m.userId != gone) m,
+        ];
+        if (gone == userId) readOnly = true;
+      case 'rename':
+        kind = 'renamed';
+        name = e.name ?? '';
+      default:
+        return;
+    }
+    final noticeId = 'grp-${e.messageId}';
+    final text = _noticeText(
+      local,
+      kind,
+      actor: sender,
+      subject: e.subject ?? sender,
+      name: e.name,
+    );
+    if (text != null && !local.shown.contains(noticeId)) {
+      await _append(
+        id,
+        _groupNotice(
+          noticeId,
+          text,
+          sender,
+          e.serverAt ?? _clock().toUtc(),
+          e.serverAt,
+        ),
+      );
+      local = local.withShown(noticeId);
+    }
+    await _groups.put(
+      id,
+      local
+          .copyWith(
+            marks: marks,
+            accounted: accounted,
+            ownerId: owner,
+            name: name,
+            readOnly: readOnly,
+            roster: roster,
+          )
+          .withDone(e.messageId),
+    );
+  }
 }
 
 /// A conversation with messages that match a search of the local history.
@@ -2584,6 +3722,29 @@ class IncomingMessage extends Incoming {
 class IncomingReaction extends Incoming {
   final ReactionEvent event;
   const IncomingReaction(this.event);
+}
+
+/// A membership message from a member of a group: `join`, `leave`, `remove` or `rename` (see "Payloads" in
+/// docs/mobile/19-group-chat.md). Its shape is checked; whether its sender may do it is decided when it is
+/// applied (the owner for `remove` and `rename`).
+class IncomingGroupEvent extends Incoming {
+  final String messageId, senderId, op;
+
+  /// The person it is about: the sender for `join` and `leave`, the removed member for `remove`.
+  final String? subject;
+
+  /// The new name (`rename`; may be empty) and the new owner (`leave` by the owner).
+  final String? name, owner;
+  final DateTime? serverAt;
+  const IncomingGroupEvent({
+    required this.messageId,
+    required this.senderId,
+    required this.op,
+    this.subject,
+    this.name,
+    this.owner,
+    this.serverAt,
+  });
 }
 
 /// A reaction that did not pass validation, or a kind this app does not know
@@ -2675,8 +3836,19 @@ Incoming parseIncoming(
   // The relay says the sender marked this message auxiliary (quiet: not unread, not pushed). Only a reaction
   // or the noop is that; anything else carrying the mark is a message dressed up to skip the relay's
   // first-contact cap, and is dropped without a trace (re-audit CHAT-3).
-  if (aux && kind != 'reaction' && kind != 'noop') {
+  if (aux && kind != 'reaction' && kind != 'noop' && kind != 'group') {
     return const IncomingIgnored();
+  }
+  // A membership message is always auxiliary at the relay (it travels inside a group request and is never
+  // unread or pushed), and only such a message is one: the relay's flag and the decrypted kind must agree.
+  if (kind == 'group') {
+    if (!aux) return const IncomingIgnored();
+    return _parseGroupEvent(
+      body,
+      messageId: messageId,
+      senderId: senderId,
+      serverAt: serverAt,
+    );
   }
   if (kind == 'reaction') {
     final to = body['to'], emoji = body['emoji'], op = body['op'];
@@ -2752,6 +3924,67 @@ Incoming parseIncoming(
       ),
     ),
   );
+}
+
+/// Reads a membership message's fields. Anything that is not exactly right (an unknown `op`, a `subject` that
+/// breaks the rule of its op, a bad name) is ignored without a notice or an error.
+Incoming _parseGroupEvent(
+  Map<String, dynamic> body, {
+  required String messageId,
+  required String senderId,
+  DateTime? serverAt,
+}) {
+  const ignored = IncomingIgnored();
+  if (!isCanonicalUuid(messageId) || !isCanonicalUuid(senderId)) return ignored;
+  final op = body['op'], subject = body['subject'];
+  switch (op) {
+    case 'join' || 'leave':
+      if (subject != senderId) return ignored;
+      String? owner;
+      final next = body['owner'];
+      if (op == 'leave' &&
+          next is String &&
+          isCanonicalUuid(next) &&
+          next != senderId) {
+        owner = next;
+      }
+      return IncomingGroupEvent(
+        messageId: messageId,
+        senderId: senderId,
+        op: op as String,
+        subject: senderId,
+        owner: owner,
+        serverAt: serverAt,
+      );
+    case 'remove':
+      if (subject is! String ||
+          !isCanonicalUuid(subject) ||
+          subject == senderId) {
+        return ignored;
+      }
+      return IncomingGroupEvent(
+        messageId: messageId,
+        senderId: senderId,
+        op: 'remove',
+        subject: subject,
+        serverAt: serverAt,
+      );
+    case 'rename':
+      final name = body['name'];
+      if (name is! String ||
+          name.runes.length > groupNameMax ||
+          sanitizeText(name, multiline: false) != name) {
+        return ignored;
+      }
+      return IncomingGroupEvent(
+        messageId: messageId,
+        senderId: senderId,
+        op: 'rename',
+        name: name,
+        serverAt: serverAt,
+      );
+  }
+  return ignored;
 }
 
 /// Turns a decrypted payload into a message (see [parseIncoming]); throws for
