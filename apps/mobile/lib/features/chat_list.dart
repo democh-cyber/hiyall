@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/chat/chat_engine.dart';
+import '../core/chat/chat_groups.dart';
 import '../core/theme.dart';
 import '../shared/chat_tokens.dart';
 import '../shared/person_avatar.dart';
@@ -8,6 +9,8 @@ import '../shared/presence_dot.dart';
 import '../shared/press_scale.dart';
 import '../shared/widgets.dart' show starPath;
 import 'chat_format.dart';
+import 'chat_groups_data.dart';
+import 'chat_groups_list.dart';
 import 'chat_thread.dart';
 
 /// The widest the chat list grows; wider windows centre it.
@@ -41,6 +44,12 @@ class ChatRow extends StatelessWidget {
   /// A line of a message that matches the search, shown in place of the last message.
   final String? snippet;
   final VoidCallback? onLongPress;
+
+  /// Set when the row is a group (and [me] is this account's id): a stack of member photos and a group mark
+  /// replace the person's photo, there is no online dot, and others' messages are previewed with the sender's
+  /// first name in front.
+  final GroupInfo? group;
+  final String me;
   const ChatRow({
     super.key,
     required this.chat,
@@ -52,26 +61,49 @@ class ChatRow extends StatelessWidget {
     this.selected = false,
     this.snippet,
     this.onLongPress,
+    this.group,
+    this.me = '',
   });
+
+  /// The preview of a group's last message.
+  ChatPreview _groupPreview(ChatPreview base, ChatMessage? last) {
+    if (last == null) {
+      return const ChatPreview(ChatPreviewKind.none, 'No messages yet');
+    }
+    final g = group!;
+    if (last.mine ||
+        last.notice ||
+        base.isFailed ||
+        !g.members.any((m) => m.userId == last.senderId)) {
+      return base;
+    }
+    final who = firstName(g.member(last.senderId)!.name);
+    return ChatPreview(base.kind, '$who: ${base.text}');
+  }
 
   @override
   Widget build(BuildContext context) {
     final t = ChatTokens.of(context);
     final c = chat;
+    final isGroup = group != null;
     final unread = c.unreadCount > 0;
     final when = c.last == null || c.last!.notice
         ? null
         : chatListTime(c.last!.shownAt, now);
-    final preview = snippet != null
+    final shownPreview = snippet != null
         ? ChatPreview(ChatPreviewKind.text, snippet!)
         : previewFor(c.last, username: c.peerUsername);
+    final preview = isGroup && snippet == null
+        ? _groupPreview(shownPreview, c.last)
+        : shownPreview;
     final label = [
       c.peerName,
+      if (isGroup) 'group, ${memberCountText(group!.memberCount)}',
       if (c.pinned) 'pinned',
       if (selecting) (selected ? 'selected' : 'not selected'),
       if (unread) '${c.unreadCount} unread',
       if (c.muted) 'muted',
-      if (c.online) PresenceDot.label,
+      if (c.online && !isGroup) PresenceDot.label,
       if (typing) 'typing' else preview.line,
       ?when,
     ].join(', ');
@@ -236,32 +268,39 @@ class ChatRow extends StatelessWidget {
                       ),
                       const SizedBox(width: 12),
                     ],
-                    Stack(
-                      clipBehavior: Clip.none,
-                      children: [
-                        PersonAvatar(
-                          name: c.peerName,
-                          avatarUrl: c.peerAvatarUrl,
-                          userId: c.peerId,
-                          radius: ChatMetrics.avatarRadius,
-                          initialStyle: const TextStyle(
-                            fontFamily: 'SpaceGrotesk',
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        // Only when the server said they are online and let
-                        // this account see it; never an "offline" mark.
-                        if (c.online)
-                          Positioned(
-                            right: -1,
-                            bottom: -1,
-                            child: PresenceDot(
-                              key: Key('chat-row-online-${c.peerId}'),
-                              ringColor: unread ? t.unreadRow : t.bg,
+                    if (isGroup)
+                      GroupRowAvatar(
+                        group: group!,
+                        me: me,
+                        ring: unread ? t.unreadRow : t.bg,
+                      )
+                    else
+                      Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          PersonAvatar(
+                            name: c.peerName,
+                            avatarUrl: c.peerAvatarUrl,
+                            userId: c.peerId,
+                            radius: ChatMetrics.avatarRadius,
+                            initialStyle: const TextStyle(
+                              fontFamily: 'SpaceGrotesk',
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
-                      ],
-                    ),
+                          // Only when the server said they are online and let
+                          // this account see it; never an "offline" mark.
+                          if (c.online)
+                            Positioned(
+                              right: -1,
+                              bottom: -1,
+                              child: PresenceDot(
+                                key: Key('chat-row-online-${c.peerId}'),
+                                ringColor: unread ? t.unreadRow : t.bg,
+                              ),
+                            ),
+                        ],
+                      ),
                     const SizedBox(width: _rowGap),
                     Expanded(
                       child: Column(

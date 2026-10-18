@@ -40,6 +40,9 @@ class BubbleActions {
   /// Reads the message's text aloud on the phone; null leaves the action out.
   final void Function(ChatMessage message)? onReadAloud;
 
+  /// Reports the message (a group's menu offers it for other people's messages); null leaves the action out.
+  final void Function(ChatMessage message)? onReport;
+
   /// Translates the message on the phone, or hides its translation when [isTranslated] says it is shown; null
   /// leaves the action out.
   final void Function(ChatMessage message)? onTranslate;
@@ -50,6 +53,7 @@ class BubbleActions {
     required this.onQuoteTap,
     required this.onCopy,
     this.onReadAloud,
+    this.onReport,
     this.onTranslate,
     this.isTranslated,
   });
@@ -66,18 +70,28 @@ bool canInteract(ChatMessage m) =>
 class ReactionChipData {
   final String emoji;
   final bool mine, theirs;
+
+  /// In a group: how many other people chose this emoji and who they are, when the screen could name them.
+  final int others;
+  final List<String> names;
   const ReactionChipData(
     this.emoji, {
     required this.mine,
     required this.theirs,
+    this.others = 0,
+    this.names = const [],
   });
 
-  /// The count shows only when both people chose the same emoji.
-  int get count => (mine ? 1 : 0) + (theirs ? 1 : 0);
+  /// The count shows only when more than one person chose the same emoji.
+  int get count => (mine ? 1 : 0) + (others > 0 ? others : (theirs ? 1 : 0));
 }
 
 /// The chips of [m]: this account's first, then the others in picker order.
-List<ReactionChipData> reactionChips(ChatMessage m, String selfId) {
+List<ReactionChipData> reactionChips(
+  ChatMessage m,
+  String selfId, {
+  String Function(String id)? nameOf,
+}) {
   final byEmoji = <String, ReactionChipData>{};
   m.reactions.forEach((sender, emoji) {
     final mine = sender == selfId;
@@ -86,6 +100,8 @@ List<ReactionChipData> reactionChips(ChatMessage m, String selfId) {
       emoji,
       mine: mine || (old?.mine ?? false),
       theirs: !mine || (old?.theirs ?? false),
+      others: (old?.others ?? 0) + (mine ? 0 : 1),
+      names: [...?old?.names, if (!mine && nameOf != null) nameOf(sender)],
     );
   });
   final all = byEmoji.values.toList();
@@ -97,6 +113,14 @@ List<ReactionChipData> reactionChips(ChatMessage m, String selfId) {
 
 /// What a screen reader says for a chip.
 String reactionChipLabel(ReactionChipData chip, String peerName) {
+  if (chip.names.isNotEmpty) {
+    final shown = [if (chip.mine) 'You', ...chip.names.take(3)];
+    final more = chip.others - chip.names.take(3).length;
+    final who = shown.length == 1
+        ? shown.first
+        : '${shown.take(shown.length - 1).join(', ')} and ${shown.last}';
+    return '$who${more > 0 ? ' and $more more' : ''} reacted with ${chip.emoji}';
+  }
   final who = chip.mine && chip.theirs
       ? 'You and $peerName'
       : chip.mine
@@ -774,6 +798,7 @@ class _BubbleInteractionsState extends State<BubbleInteractions>
           m.text.trim().isNotEmpty &&
           !m.isMedia,
       translated: widget.actions.isTranslated?.call(m) ?? false,
+      canReport: widget.actions.onReport != null && !m.mine,
     );
     if (!mounted || choice == null) return;
     switch (choice) {
@@ -787,6 +812,8 @@ class _BubbleInteractionsState extends State<BubbleInteractions>
         widget.actions.onReadAloud?.call(m);
       case MenuTranslate():
         widget.actions.onTranslate?.call(m);
+      case MenuReport():
+        widget.actions.onReport?.call(m);
     }
   }
 
@@ -960,6 +987,11 @@ class MenuTranslate extends MenuChoice {
   const MenuTranslate();
 }
 
+/// Report the message (a group's menu).
+class MenuReport extends MenuChoice {
+  const MenuReport();
+}
+
 /// The compact menu over a message: the six quick reactions in a pill, and
 /// Reply and Copy below. Everything except the message dims, so the pill reads
 /// as belonging to it. Returns the choice, or null if it was dismissed.
@@ -971,6 +1003,7 @@ Future<MenuChoice?> showReactionMenu(
   bool canReadAloud = false,
   bool canTranslate = false,
   bool translated = false,
+  bool canReport = false,
   bool alignEnd = false,
 }) {
   final still = MediaQuery.disableAnimationsOf(context);
@@ -990,6 +1023,7 @@ Future<MenuChoice?> showReactionMenu(
       canReadAloud: canReadAloud,
       canTranslate: canTranslate,
       translated: translated,
+      canReport: canReport,
       alignEnd: alignEnd,
     ),
     transitionBuilder: (context, animation, _, child) {
@@ -1020,7 +1054,7 @@ class ReactionMenuScene extends StatelessWidget {
   final Rect anchor;
   final String? mine;
   final bool canCopy, alignEnd;
-  final bool canReadAloud, canTranslate, translated;
+  final bool canReadAloud, canTranslate, translated, canReport;
   const ReactionMenuScene({
     super.key,
     required this.anchor,
@@ -1029,6 +1063,7 @@ class ReactionMenuScene extends StatelessWidget {
     this.canReadAloud = false,
     this.canTranslate = false,
     this.translated = false,
+    this.canReport = false,
     this.alignEnd = false,
   });
 
@@ -1051,7 +1086,11 @@ class ReactionMenuScene extends StatelessWidget {
     );
     // Tiles, 4 dp of padding above and below, and the 1 dp edge.
     final tiles =
-        1 + (canCopy ? 1 : 0) + (canReadAloud ? 1 : 0) + (canTranslate ? 1 : 0);
+        1 +
+        (canCopy ? 1 : 0) +
+        (canReadAloud ? 1 : 0) +
+        (canTranslate ? 1 : 0) +
+        (canReport ? 1 : 0);
     final actionsHeight = tileHeight * tiles + 10;
 
     double clampX(double x, double width) =>
@@ -1126,6 +1165,7 @@ class ReactionMenuScene extends StatelessWidget {
                 canReadAloud: canReadAloud,
                 canTranslate: canTranslate,
                 translated: translated,
+                canReport: canReport,
                 tokens: t,
               ),
             ),
@@ -1254,13 +1294,14 @@ class _PillEmoji extends StatelessWidget {
 }
 
 class _Actions extends StatelessWidget {
-  final bool canCopy, canReadAloud, canTranslate, translated;
+  final bool canCopy, canReadAloud, canTranslate, translated, canReport;
   final ChatTokens tokens;
   const _Actions({
     required this.canCopy,
     required this.canReadAloud,
     required this.canTranslate,
     required this.translated,
+    required this.canReport,
     required this.tokens,
   });
   @override
@@ -1315,6 +1356,14 @@ class _Actions extends StatelessWidget {
               label: translated ? 'Hide translation' : 'Translate',
               tokens: t,
               onTap: () => Navigator.pop(context, const MenuTranslate()),
+            ),
+          if (canReport)
+            _ActionTile(
+              key: const Key('menu-report'),
+              icon: Icons.flag_outlined,
+              label: 'Report',
+              tokens: t,
+              onTap: () => Navigator.pop(context, const MenuReport()),
             ),
         ],
       ),

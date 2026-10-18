@@ -283,6 +283,12 @@ class ChatBubble extends StatelessWidget {
 
   /// A translation to draw under the message's text (manual or automatic); null draws none.
   final BubbleTranslation? translation;
+
+  /// In a group: the sender's name, drawn above the bubble (on the first bubble of a run). Null draws none.
+  final String? senderLabel;
+
+  /// In a group: the names of the people who reacted, by account id, so a chip can say who is behind it.
+  final String Function(String id)? reactorName;
   const ChatBubble({
     super.key,
     required this.row,
@@ -298,6 +304,8 @@ class ChatBubble extends StatelessWidget {
     this.quote,
     this.highlight = false,
     this.translation,
+    this.senderLabel,
+    this.reactorName,
   });
 
   static const radius = ChatMetrics.bubbleRadius,
@@ -580,7 +588,7 @@ class ChatBubble extends StatelessWidget {
     }
 
     final label = describeMessage(context, m, peerName, seen: seen);
-    final chips = reactionChips(m, selfId);
+    final chips = reactionChips(m, selfId, nameOf: reactorName);
     final interactive = actions != null && canInteract(m);
 
     Widget semanticFor(
@@ -625,7 +633,7 @@ class ChatBubble extends StatelessWidget {
                   width: gutter,
                   child: row.showAvatar
                       ? Padding(
-                          padding: const EdgeInsets.only(right: 8),
+                          padding: const EdgeInsetsDirectional.only(end: 8),
                           child: PersonAvatar(
                             key: Key('peer-avatar-${m.messageId}'),
                             name: peerName,
@@ -665,10 +673,33 @@ class ChatBubble extends StatelessWidget {
                 ? CrossAxisAlignment.end
                 : CrossAxisAlignment.start,
             children: [
+              if (senderLabel != null && !mine)
+                Padding(
+                  padding: const EdgeInsetsDirectional.only(
+                    start: gutter + 4,
+                    end: 8,
+                    bottom: 3,
+                  ),
+                  child: clampedChrome(
+                    context,
+                    Text(
+                      senderLabel!,
+                      key: Key('sender-${m.messageId}'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w700,
+                        height: 1.2,
+                        color: t.textSecondary,
+                      ),
+                    ),
+                  ),
+                ),
               line,
               if (chips.isNotEmpty)
                 Padding(
-                  padding: EdgeInsets.only(left: mine ? 0 : gutter),
+                  padding: EdgeInsetsDirectional.only(start: mine ? 0 : gutter),
                   child: ConstrainedBox(
                     constraints: BoxConstraints(maxWidth: maxBubble),
                     child: ReactionChips(

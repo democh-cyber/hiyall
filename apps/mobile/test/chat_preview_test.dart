@@ -33,6 +33,7 @@ import 'package:hiyall/shared/person_avatar.dart';
 import 'package:hiyall/shared/presence_dot.dart';
 
 import 'avatar_helpers.dart' show PhotoPicker;
+import 'support/no_groups.dart';
 import 'chat_photo_helpers.dart';
 import 'widget_test.dart' show FakeApi, SignedIn;
 
@@ -226,7 +227,7 @@ class PreviewCloud extends FakeCloud {
   Future<int> unreadMessages() async => unread;
 }
 
-class PreviewEngine extends ChatEngine {
+class PreviewEngine extends ChatEngine with NoGroupsEngine {
   PreviewEngine(PreviewCloud cloud, ChatMedia media)
     : super(
         userId: meId,

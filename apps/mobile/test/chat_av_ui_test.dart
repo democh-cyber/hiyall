@@ -35,6 +35,7 @@ import 'package:intl/date_symbol_data_local.dart';
 
 import 'avatar_helpers.dart' show pngBytes;
 import 'chat_av_helpers.dart';
+import 'support/no_groups.dart';
 import 'chat_photo_helpers.dart';
 import 'widget_test.dart' show SignedIn;
 
@@ -85,7 +86,7 @@ class ScriptedAvMedia extends ChatMedia {
   }
 }
 
-class AvUiEngine extends ChatEngine {
+class AvUiEngine extends ChatEngine with NoGroupsEngine {
   AvUiEngine(this.cloud, Directory root, ScriptedAvMedia media)
     : super(
         userId: meId,

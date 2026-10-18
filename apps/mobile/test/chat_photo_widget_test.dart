@@ -23,12 +23,13 @@ import 'package:hiyall/features/chat_photo.dart';
 import 'package:hiyall/features/safety.dart';
 import 'package:image_picker/image_picker.dart';
 
+import 'support/no_groups.dart';
 import 'avatar_helpers.dart';
 import 'chat_photo_helpers.dart';
 import 'widget_test.dart' show FakeApi, SignedIn;
 
 /// An engine whose photo operations are recorded instead of run.
-class EngineSpy extends ChatEngine {
+class EngineSpy extends ChatEngine with NoGroupsEngine {
   EngineSpy(MemoryChatStore store, FakeCloud cloud, ChatMedia? media)
     : super(
         userId: meId,

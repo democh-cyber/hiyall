@@ -341,13 +341,14 @@ class MessageRow extends ThreadRow {
   bool get showAvatar => !message.mine && last;
 }
 
-/// Messages from one person close together read as one run.
+/// Messages from one person close together read as one run (in a group, from the same sender).
 const groupGap = Duration(minutes: 5);
 
 bool _joins(ChatMessage a, ChatMessage b) =>
     !a.notice &&
     !b.notice &&
     a.mine == b.mine &&
+    a.senderId == b.senderId &&
     _day(a.shownAt.toLocal()) == _day(b.shownAt.toLocal()) &&
     b.shownAt.difference(a.shownAt).abs() <= groupGap;
 

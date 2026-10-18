@@ -21,6 +21,7 @@ import 'package:hiyall/features/live_sync.dart';
 
 import 'avatar_helpers.dart' show pngBytes;
 import 'chat_photo_helpers.dart';
+import 'support/no_groups.dart';
 import 'widget_test.dart' show SignedIn;
 
 class UiCloud extends FakeCloud {
@@ -31,7 +32,7 @@ class UiCloud extends FakeCloud {
   Future<int> unreadMessages() async => 0;
 }
 
-class UiEngine extends ChatEngine {
+class UiEngine extends ChatEngine with NoGroupsEngine {
   UiEngine(this.cloud)
     : super(
         userId: meId,
