@@ -152,7 +152,7 @@ var ExpectedGrants = []GrantSpec{
 	{Role: GrantsRole, Kind: "function", Objects: []string{"held_objects_due(integer)", "mark_hold_purged(uuid)",
 		"activate_quarantine_case(uuid)", "hold_still_releasable(uuid)", "safety_queue_stats()", "hold_lock_for_purge(uuid)"}},
 	// hiyall_admin
-	{Role: AdminRole, Kind: "table", Privs: []string{"SELECT"}, Objects: []string{"users", "profiles", "member_ages", "reports", "moderation_actions", "chat_blobs",
+	{Role: AdminRole, Kind: "table", Privs: []string{"SELECT"}, Objects: []string{"users", "profiles", "member_ages", "reports", "moderation_actions", "chat_blobs", "chat_groups", "chat_group_members",
 		"sessions", "auth_identities", "posts", "post_media", "comments", "stories", "media_assets", "spaces", "space_entries", "content_cases",
 		"operators", "operator_sessions", "operator_login_attempts", "operator_audit", "evidence_approvals"}},
 	{Role: AdminRole, Kind: "table", Privs: []string{"UPDATE"}, Objects: []string{"users", "reports", "sessions", "operator_sessions", "operator_login_attempts"}},

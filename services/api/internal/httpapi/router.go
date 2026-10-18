@@ -274,6 +274,20 @@ var routes = []route{
 	{Method: "POST", Pattern: "/v1/blobs/{blobId}/complete", Handler: (*API).serveChat},
 	{Method: "DELETE", Pattern: "/v1/blobs/{blobId}", Handler: (*API).serveChat},
 
+	// ---- Group chat (groups.go, docs/api/29-group-chat.md): the roster. A group's messages, blobs, read pointer, mute, pin and
+	// hide are the conversation routes above, which serve a group by its id.
+	{Method: "POST", Pattern: "/v1/groups", Limit: limitGraph, Handler: (*API).createGroup},
+	{Method: "GET", Pattern: "/v1/groups", Limit: limitLists, Handler: (*API).listGroups},
+	{Method: "GET", Pattern: "/v1/groups/hidden", Limit: limitLists, Handler: (*API).hiddenGroups},
+	{Method: "GET", Pattern: "/v1/groups/invites", Limit: limitLists, Handler: (*API).groupInvites},
+	{Method: "GET", Pattern: "/v1/groups/{groupId}", Limit: limitLists, BadID: badMember, Handler: (*API).getGroup},
+	{Method: "PATCH", Pattern: "/v1/groups/{groupId}", Limit: limitGraph, BadID: badMember, Handler: (*API).renameGroup},
+	{Method: "POST", Pattern: "/v1/groups/{groupId}/members", Limit: limitGraph, BadID: badMember, Handler: (*API).inviteToGroup},
+	{Method: "POST", Pattern: "/v1/groups/{groupId}/members/{userId}/remove", Limit: limitGraph, BadID: badMember, Handler: (*API).removeGroupMember},
+	{Method: "POST", Pattern: "/v1/groups/{groupId}/accept", Limit: limitGraph, BadID: badMember, Handler: (*API).acceptGroup},
+	{Method: "POST", Pattern: "/v1/groups/{groupId}/decline", Limit: limitGraph, BadID: badMember, Handler: (*API).declineGroup},
+	{Method: "POST", Pattern: "/v1/groups/{groupId}/leave", Limit: limitGraph, BadID: badMember, Handler: (*API).leaveGroup},
+
 	// ---- Wave 7 social (social7.go, docs/api/27-stories-notices-support.md): notification choices, topics,
 	// Everyone stories and search, My activity, the notice board and in-app support.
 	{Method: "GET", Pattern: "/v1/me/notifications", Handler: (*API).getNotificationPrefs},

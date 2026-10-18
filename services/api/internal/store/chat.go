@@ -482,7 +482,7 @@ func (s *Store) HaveExchangedMessages(ctx context.Context, a, b string) (bool, e
 // PeerDevices lists another person's devices only to someone allowed to message them.
 func (s *Store) PeerDevices(ctx context.Context, actor, target string) ([]domain.Device, error) {
 	if actor != target {
-		if err := canMessage(ctx, s.Pool, actor, target); err != nil {
+		if err := canReach(ctx, s.Pool, actor, target); err != nil {
 			return nil, err
 		}
 	}
@@ -515,7 +515,7 @@ func (s *Store) ClaimKey(ctx context.Context, actor, target, deviceID string) (d
 	claimed := domain.ClaimedKey{DeviceID: deviceID}
 	// Your own other devices are always reachable; anyone else needs messaging access.
 	if actor != target {
-		if err := canMessage(ctx, s.Pool, actor, target); err != nil {
+		if err := canReach(ctx, s.Pool, actor, target); err != nil {
 			return claimed, err
 		}
 	}
@@ -1092,28 +1092,37 @@ func revokeDormant(ctx context.Context, tx pgx.Tx, overCap, ghosts []string) ([]
 }
 
 // MarkRead moves the caller's read pointer forward to upTo (never past now) and
-// recounts what remains unread. It reports the peer and whether anything changed.
+// recounts what remains unread. It reports the peer (empty for a group, which has none and shares no
+// receipts) and whether anything changed.
 func (s *Store) MarkRead(ctx context.Context, user, conversationID string, upTo time.Time) (peer string, readAt time.Time, changed bool, err error) {
+	var peerID *string
 	err = s.Pool.QueryRow(ctx, `UPDATE conversation_members m SET read_at=least($3::timestamptz,now()),
  unread_count=(SELECT count(*) FROM (SELECT 1 FROM messages x WHERE x.conversation_id=m.conversation_id AND x.sender_id<>m.user_id AND NOT x.aux AND x.created_at>least($3::timestamptz,now()) LIMIT 999) q)
  WHERE m.user_id=$1 AND m.conversation_id=$2 AND (m.read_at IS NULL OR m.read_at<least($3::timestamptz,now()))
- RETURNING m.peer_id::text,m.read_at`, user, conversationID, upTo).Scan(&peer, &readAt)
+ RETURNING m.peer_id::text,m.read_at`, user, conversationID, upTo).Scan(&peerID, &readAt)
 	if err == nil {
-		return peer, readAt, true, nil
+		return deref(peerID), readAt, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return "", time.Time{}, false, err
 	}
 	// Nothing moved: either already read that far, or not a member.
 	var at *time.Time
-	err = s.Pool.QueryRow(ctx, `SELECT peer_id::text,read_at FROM conversation_members WHERE user_id=$1 AND conversation_id=$2`, user, conversationID).Scan(&peer, &at)
+	err = s.Pool.QueryRow(ctx, `SELECT peer_id::text,read_at FROM conversation_members WHERE user_id=$1 AND conversation_id=$2`, user, conversationID).Scan(&peerID, &at)
 	if err != nil {
 		return "", time.Time{}, false, mapped(err)
 	}
 	if at != nil {
 		readAt = *at
 	}
-	return peer, readAt, false, nil
+	return deref(peerID), readAt, false, nil
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // ReadReceiptsShared reports whether both people allow read receipts and typing.
@@ -1125,13 +1134,14 @@ func (s *Store) ReadReceiptsShared(ctx context.Context, a, b string) (bool, erro
 }
 
 // Unread totals the caller's unread messages across active conversations,
-// leaving out muted chats, chats the caller deleted from their list and people the caller restricted.
+// leaving out muted chats, chats the caller deleted from their list and people the caller restricted. Groups count
+// like any chat (they have no single peer to restrict).
 func (s *Store) Unread(ctx context.Context, user string) (domain.UnreadSummary, error) {
 	var u domain.UnreadSummary
 	err := s.Pool.QueryRow(ctx, `SELECT coalesce(sum(m.unread_count),0)::int,count(*)::int FROM conversation_members m JOIN conversations c ON c.conversation_id=m.conversation_id
  WHERE m.user_id=$1 AND m.unread_count>0 AND m.hidden_at IS NULL AND c.status='active' AND (m.muted_until IS NULL OR m.muted_until<=now())
- AND NOT EXISTS(SELECT 1 FROM user_controls rc WHERE rc.actor_id=$1 AND rc.target_id=m.peer_id AND rc.control='restrict')
- AND NOT interaction_barred($1::uuid,m.peer_id)`, user).Scan(&u.Messages, &u.Conversations)
+ AND (m.peer_id IS NULL OR (NOT EXISTS(SELECT 1 FROM user_controls rc WHERE rc.actor_id=$1 AND rc.target_id=m.peer_id AND rc.control='restrict')
+ AND NOT interaction_barred($1::uuid,m.peer_id)))`, user).Scan(&u.Messages, &u.Conversations)
 	return u, err
 }
 

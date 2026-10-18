@@ -944,7 +944,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId; 403 AWAITING_REPLY once you have sent 3 messages (reactions and the noop count too: the relay cannot tell kinds) in a conversation and the peer has sent no non-aux message; 429 RECIPIENT_BACKLOG (Retry-After 60) when a device that must receive it already holds 2000 undelivered envelopes, or 300 from you while the device is in use; 429 OWN_BACKLOG (Retry-After 60) when the full device is your own other device; 409 DEVICES_CHANGED also when the send revoked a dormant device that was over the cap, or an idle (48 hours) device that one sender alone had filled to 300 (retry with the refreshed device list); 409 PEER_NO_DEVICES when the other person has no active device (every one was removed as idle or signed out): nothing can be encrypted for them yet, try again when they open Hiyall; 429 CHAT_DAILY_LIMIT (Retry-After) after 2000 messages from you in this conversation in 24 hours */
+        /** Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId; 403 AWAITING_REPLY once you have sent 3 messages (reactions and the noop count too: the relay cannot tell kinds) in a conversation and the peer has sent no non-aux message; 429 RECIPIENT_BACKLOG (Retry-After 60) when a device that must receive it already holds 2000 undelivered envelopes, or 300 from you while the device is in use; 429 OWN_BACKLOG (Retry-After 60) when the full device is your own other device; 409 DEVICES_CHANGED also when the send revoked a dormant device that was over the cap, or an idle (48 hours) device that one sender alone had filled to 300 (retry with the refreshed device list); 409 PEER_NO_DEVICES when the other person has no active device (every one was removed as idle or signed out): nothing can be encrypted for them yet, try again when they open Hiyall; 429 CHAT_DAILY_LIMIT (Retry-After) after 2000 messages from you in this conversation in 24 hours. A group id works here too: see docs/api/29-group-chat.md */
         post: operations["postMessageAccepted_v1_conversations_conversationId_messages"];
         delete?: never;
         options?: never;
@@ -1029,7 +1029,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Move your read pointer forward; your devices are signalled, the peer only when read receipts are on for both */
+        /** Move your read pointer forward; your devices are signalled, the peer only when read receipts are on for both. A group has no peer and no receipts: only your own pointer moves */
         post: operations["postReadPointer_v1_conversations_conversationId_read"];
         delete?: never;
         options?: never;
@@ -2244,6 +2244,161 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Your groups that you have not deleted from your list (active and closed), pinned first, then most recent first; no paging (at most 200) */
+        get: operations["getGroupList_v1_groups"];
+        put?: never;
+        /** Create a group of 3 to 10 people: you and 2 to 9 invitees, who must accept (an invite expires after 7 days). Limits per member, by entitlement: 30 groups, 5 groups created and 30 people invited per UTC day (429 DAILY_LIMIT) */
+        post: operations["postGroup_v1_groups"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/groups/hidden": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Your deleted groups, restorable for 30 days with POST /v1/conversations/{conversationId}/restore */
+        get: operations["getGroupHiddenList_v1_groups_hidden"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/groups/invites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Your pending, unexpired group invites, newest first. No content: who invited you, the group name and who is already in it */
+        get: operations["getGroupInviteList_v1_groups_invites"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/groups/{groupId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One group. An active member also gets the newest membership events; an invited person gets the name and the active members; anyone else 404 */
+        get: operations["getGroup_v1_groups_groupId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Owner renames the group (empty clears the name). control is the encrypted rename message for everyone in the group, stored in the same transaction as the new name */
+        patch: operations["patchGroup_v1_groups_groupId"];
+        trace?: never;
+    };
+    "/v1/groups/{groupId}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Owner invites 1 to 9 more people, with the rules of creation; people already in or invited are skipped. Pending invites count towards the 10 */
+        post: operations["postGroup_v1_groups_groupId_members"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/groups/{groupId}/members/{userId}/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Owner removes an active member (control: the removal message for everyone in the group, the removed person included) or cancels a pending invite (no body). Removing yourself is 422: leave. A group left with fewer than two active members closes */
+        post: operations["postGroup_v1_groups_groupId_members_userId_remove"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/groups/{groupId}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Accept an invite. control is the encrypted join message for the people already in the group; in one transaction the invite is checked (unexpired, not barred from any member, your group limit) and you become a member. An invite that cannot be accepted any more is 404 */
+        post: operations["postGroup_v1_groups_groupId_accept"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/groups/{groupId}/decline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decline an invite; nobody is told. A group left with fewer than two active members and no pending invite closes */
+        post: operations["postGroupDeclined_v1_groups_groupId_decline"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/groups/{groupId}/leave": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Leave a group. control is the leave message for the others (omit it when nobody else is in the group). The owner names newOwnerId when two or more other active members remain. A group left with fewer than two active members closes */
+        post: operations["postGroupLeft_v1_groups_groupId_leave"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3261,7 +3416,7 @@ export interface components {
             messageId: string;
             /** Format: uuid */
             senderDeviceId: string;
-            /** @description Exactly one per active device of the peer and of the sender other than senderDeviceId; otherwise 409 DEVICES_CHANGED */
+            /** @description Exactly one per active device of the peer and of the sender other than senderDeviceId (up to 20); otherwise 409 DEVICES_CHANGED. For a group (the conversationId is a group id): one per device of every active member the sender is not barred from, and of the sender's other devices, up to 100; the body may be up to 3 MiB; 409 GROUP_WAITING when no other active member has a device. */
             envelopes: components["schemas"]["CiphertextEnvelope"][];
             /** @description Encrypted attachments this message claims: uploaded (POST /v1/blobs/{blobId}/complete), unexpired, not yet in a message, uploaded by you in this conversation. Any mismatch, unknown and foreign ids included, rolls the whole message back with 409 BLOB_NOT_READY. Linking starts the 30 day retention. The sender must pass the same images gate as for upload slots (403 ATTACHMENTS_NOT_ALLOWED). A retry of an already stored messageId is answered as before and links nothing. */
             blobIds?: string[];
@@ -4868,6 +5023,212 @@ export interface components {
             /** @constant */
             success: true;
             data: components["schemas"]["WebhookAck"];
+            meta: components["schemas"]["Meta"];
+        };
+        GroupMember: {
+            /** Format: uuid */
+            userId: string;
+            username: string;
+            displayName: string;
+            /**
+             * Format: uri
+             * @description Signed URL of a 640 px thumbnail of the profile photo, valid for an hour; null when there is no photo (or photo storage is not configured). The URL is minted per response and never stored, so refresh it with the profile rather than caching it for long; cache the image bytes by avatarMediaId or the URL path.
+             */
+            readonly avatarUrl: string | null;
+            /** @enum {string} */
+            role: "owner" | "member";
+            /** Format: date-time */
+            joinedAt: string;
+        };
+        GroupPending: {
+            /** Format: uuid */
+            userId: string;
+            username: string;
+            displayName: string;
+            /**
+             * Format: uri
+             * @description Signed URL of a 640 px thumbnail of the profile photo, valid for an hour; null when there is no photo (or photo storage is not configured). The URL is minted per response and never stored, so refresh it with the profile rather than caching it for long; cache the image bytes by avatarMediaId or the URL path.
+             */
+            readonly avatarUrl: string | null;
+            /** Format: date-time */
+            invitedAt: string;
+            /**
+             * Format: date-time
+             * @description The invite expires then (7 days after it was sent).
+             */
+            expiresAt: string;
+        };
+        GroupEvent: {
+            /** Format: uuid */
+            eventId: string;
+            /** @enum {string} */
+            kind: "created" | "joined" | "left" | "removed" | "renamed" | "owner_changed" | "member_deleted" | "closed";
+            /** Format: uuid */
+            actorId: string | null;
+            /** Format: uuid */
+            subjectId: string | null;
+            /**
+             * Format: uuid
+             * @description The control message that carried the same change, so an app shows one notice.
+             */
+            messageId: string | null;
+            /** @description The new name, for renamed. */
+            name: string | null;
+            /** Format: date-time */
+            at: string;
+        };
+        GroupLimits: {
+            maxMembers: number;
+            inviteExpiryDays: number;
+            nameMax: number;
+            /** @description The most groups one member can be in or invited to. */
+            maxGroups: number;
+        };
+        Group: {
+            /** Format: uuid */
+            groupId: string;
+            /**
+             * Format: uuid
+             * @description The same id: the conversation routes for messages, blobs, read, mute, pin and hide take it.
+             */
+            conversationId: string;
+            /** @constant */
+            kind: "group";
+            /** @description Visible to the server and to members; may be empty (apps then show the member names). */
+            name: string;
+            /** Format: uuid */
+            ownerId: string;
+            /** @enum {string} */
+            status: "active" | "closed";
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            lastMessageAt: string | null;
+            /** @description Active members the caller can see, the caller included. */
+            memberCount: number;
+            /** @description Active members in joining order, leaving out anyone the caller is barred from (a block, or another age band while isolation is on). */
+            members: components["schemas"]["GroupMember"][];
+            /** @description Invited people who have not answered; listed to active members only. */
+            pending: components["schemas"]["GroupPending"][];
+            /** @enum {string} */
+            myState: "active" | "invited";
+            unreadCount: number;
+            /** Format: date-time */
+            readAt: string | null;
+            /** Format: date-time */
+            mutedUntil: string | null;
+            /** Format: date-time */
+            pinnedAt: string | null;
+            /** Format: date-time */
+            hiddenAt: string | null;
+            /**
+             * Format: date-time
+             * @description Only while hiddenAt is set.
+             */
+            restoreUntil?: string;
+            limits: components["schemas"]["GroupLimits"];
+            /** @description Only on the single GET, for an active member: the newest 50 membership events, oldest first. */
+            events?: components["schemas"]["GroupEvent"][];
+        };
+        GroupList: {
+            items: components["schemas"]["Group"][];
+        };
+        GroupHiddenList: {
+            items: components["schemas"]["Group"][];
+            retentionDays: number;
+        };
+        GroupInvite: {
+            /** Format: uuid */
+            groupId: string;
+            name: string;
+            invitedBy: components["schemas"]["UserSummary"];
+            /** Format: date-time */
+            invitedAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            memberCount: number;
+            /** @description The people who have already joined. No content. */
+            members: components["schemas"]["UserSummary"][];
+        };
+        GroupInviteList: {
+            items: components["schemas"]["GroupInvite"][];
+        };
+        GroupCreate: {
+            /** @description Optional; trimmed, NFC, no control or format characters, no line breaks. */
+            name?: string;
+            /** @description People you already chat with or follow, who your invite may reach (messagesFrom), who are not blocked either way with you or each other, in your age band while isolation is on. */
+            memberIds: string[];
+        };
+        GroupInvitePeople: {
+            userIds: string[];
+        };
+        /** @description The encrypted membership message that travels with the change, stored as an auxiliary message. */
+        GroupControl: {
+            /** Format: uuid */
+            messageId: string;
+            /** Format: uuid */
+            senderDeviceId: string;
+            /** @description Exactly one per device of the recipients named in docs/api/29-group-chat.md for the operation; otherwise 409 DEVICES_CHANGED. At most 4 KiB decoded each. */
+            envelopes: components["schemas"]["CiphertextEnvelope"][];
+        };
+        GroupAccept: {
+            control: components["schemas"]["GroupControl"];
+        };
+        GroupRename: {
+            name: string;
+            control?: components["schemas"]["GroupControl"];
+        };
+        GroupRemove: {
+            control?: components["schemas"]["GroupControl"];
+        };
+        GroupLeave: {
+            control?: components["schemas"]["GroupControl"];
+            /**
+             * Format: uuid
+             * @description Required from the owner when two or more other active members remain.
+             */
+            newOwnerId?: string;
+        };
+        GroupDeclined: {
+            declined: boolean;
+        };
+        GroupLeft: {
+            left: boolean;
+        };
+        GroupResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["Group"];
+            meta: components["schemas"]["Meta"];
+        };
+        GroupListResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["GroupList"];
+            meta: components["schemas"]["Meta"];
+        };
+        GroupHiddenListResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["GroupHiddenList"];
+            meta: components["schemas"]["Meta"];
+        };
+        GroupInviteListResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["GroupInviteList"];
+            meta: components["schemas"]["Meta"];
+        };
+        GroupDeclinedResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["GroupDeclined"];
+            meta: components["schemas"]["Meta"];
+        };
+        GroupLeftResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["GroupLeft"];
             meta: components["schemas"]["Meta"];
         };
     };
@@ -24437,6 +24798,1354 @@ export interface operations {
                 };
             };
             /** @description Error 503 ADS_UNAVAILABLE. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getGroupList_v1_groups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupListResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postGroup_v1_groups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409 CANNOT_ADD_MEMBER names the person (error.details.userId) and never why: a block, an age band, their privacy choice, their own group limit and not chatting or following them look alike. GROUP_FULL: ten people, pending invites included. GROUP_LIMIT: you are in the most groups a member may be in. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429. DAILY_LIMIT: groups created or people invited today (Retry-After: next UTC midnight). RATE_LIMITED: the general graph limit. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getGroupHiddenList_v1_groups_hidden: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupHiddenListResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getGroupInviteList_v1_groups_invites: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupInviteListResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getGroup_v1_groups_groupId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    patchGroup_v1_groups_groupId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupRename"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403 GROUP_NOT_OWNER; CONVERSATION_CLOSED for a closed group. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409 DEVICES_CHANGED: the control envelopes are not exactly the devices of every active member (and your other devices) you are not barred from; fetch the group and devices and encrypt again. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postGroup_v1_groups_groupId_members: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupInvitePeople"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403 GROUP_NOT_OWNER; CONVERSATION_CLOSED for a closed group. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409 CANNOT_ADD_MEMBER names the person (error.details.userId) and never why: a block, an age band, their privacy choice, their own group limit and not chatting or following them look alike. GROUP_FULL: ten people, pending invites included. GROUP_LIMIT: you are in the most groups a member may be in. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 DAILY_LIMIT: people invited today. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postGroup_v1_groups_groupId_members_userId_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupRemove"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403 GROUP_NOT_OWNER. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409 DEVICES_CHANGED. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postGroup_v1_groups_groupId_accept: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupAccept"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409 DEVICES_CHANGED: the join message is not sealed for exactly the devices of the active members; GROUP_FULL; GROUP_LIMIT. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postGroupDeclined_v1_groups_groupId_decline: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupDeclinedResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postGroupLeft_v1_groups_groupId_leave: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                groupId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupLeave"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupLeftResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409 DEVICES_CHANGED. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;

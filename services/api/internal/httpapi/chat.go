@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"math"
@@ -240,8 +241,11 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 			data := map[string]string{"conversationId": parts[2], "userId": p.UserID, "readAt": readAt.Format(time.RFC3339Nano)}
 			// Own devices always learn the badge changed; the peer only with receipts on both sides.
 			a.signal(ctx, "read", data, p.UserID)
-			if shared, err := a.Store.ReadReceiptsShared(ctx, p.UserID, peer); err == nil && shared {
-				a.signal(ctx, "read", data, peer)
+			// A group has no peer and no receipts.
+			if peer != "" {
+				if shared, err := a.Store.ReadReceiptsShared(ctx, p.UserID, peer); err == nil && shared {
+					a.signal(ctx, "read", data, peer)
+				}
 			}
 		}
 		a.ok(w, r, map[string]any{"readAt": readAt})
@@ -263,6 +267,11 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 	case n == 3 && parts[1] == "conversations" && isID(parts[2]) && method == "GET":
 		respond(a.Store.ConversationFor(ctx, p.UserID, parts[2], a.signer(ctx), a.presence))
 	case n == 4 && parts[1] == "conversations" && isID(parts[2]) && parts[3] == "messages" && method == "POST":
+		// A group's messages go through the group send (one envelope per device of every member).
+		if kind, err := a.Store.ConversationKind(ctx, parts[2]); err == nil && kind == "group" {
+			a.sendGroupMessage(w, r, p, parts[2])
+			return true
+		}
 		raw, ok := body()
 		if !ok {
 			return true
@@ -285,26 +294,7 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 		}
 		created, peer, quiet, err := a.Store.SendMessage(ctx, p.UserID, parts[2], m, a.entitlementsFor(ctx, p.UserID))
 		if err != nil {
-			var revoked *store.DevicesRevoked
-			if errors.As(err, &revoked) {
-				// The send found a dormant device over the backlog cap, or a ghost one that one sender alone had
-				// filled, and revoked it (CHAT-N1, N2): the owner's other devices are told, like any removal they
-				// did not make, and the sender is answered DEVICES_CHANGED below, which the client retries once.
-				for _, d := range revoked.Devices {
-					a.signal(ctx, "device", map[string]string{"deviceId": d.DeviceID, "change": "revoked", "by": "other", "reason": d.Reason}, d.UserID)
-					// An idle removal is housekeeping, not a security event: it is listed for the owner's other
-					// devices (and signalled to those that are connected) but never pushed.
-					if d.Reason == store.ReasonIdle {
-						continue
-					}
-					// The sender's own phone, which is mid-send, needs no push about it.
-					exclude := ""
-					if d.UserID == p.UserID {
-						exclude = m.SenderDeviceID
-					}
-					a.wake(push.Notice{Kind: "device-revoked", Actor: d.UserID, Recipient: d.UserID, Device: exclude})
-				}
-			}
+			a.signalRevoked(ctx, err, p.UserID, m.SenderDeviceID)
 			a.error(w, r, err)
 			return true
 		}
@@ -328,4 +318,27 @@ func sessionIDOrEmpty(id string) string {
 		return id
 	}
 	return ""
+}
+
+// signalRevoked tells the owners of devices that a send found dormant and revoked (CHAT-N1, N2), like any removal they did
+// not make: their other devices are told, and the removal is pushed unless it was only housekeeping. The sender's own
+// phone, which is mid-send, gets no push. It does nothing for any other error.
+func (a *API) signalRevoked(ctx context.Context, err error, sender, senderDevice string) {
+	var revoked *store.DevicesRevoked
+	if !errors.As(err, &revoked) {
+		return
+	}
+	for _, d := range revoked.Devices {
+		a.signal(ctx, "device", map[string]string{"deviceId": d.DeviceID, "change": "revoked", "by": "other", "reason": d.Reason}, d.UserID)
+		// An idle removal is housekeeping, not a security event: it is listed for the owner's other devices (and
+		// signalled to those that are connected) but never pushed.
+		if d.Reason == store.ReasonIdle {
+			continue
+		}
+		exclude := ""
+		if d.UserID == sender {
+			exclude = senderDevice
+		}
+		a.wake(push.Notice{Kind: "device-revoked", Actor: d.UserID, Recipient: d.UserID, Device: exclude})
+	}
 }

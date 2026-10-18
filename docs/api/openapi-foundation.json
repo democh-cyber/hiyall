@@ -9981,7 +9981,7 @@
         "tags": [
           "Chat"
         ],
-        "summary": "Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId; 403 AWAITING_REPLY once you have sent 3 messages (reactions and the noop count too: the relay cannot tell kinds) in a conversation and the peer has sent no non-aux message; 429 RECIPIENT_BACKLOG (Retry-After 60) when a device that must receive it already holds 2000 undelivered envelopes, or 300 from you while the device is in use; 429 OWN_BACKLOG (Retry-After 60) when the full device is your own other device; 409 DEVICES_CHANGED also when the send revoked a dormant device that was over the cap, or an idle (48 hours) device that one sender alone had filled to 300 (retry with the refreshed device list); 409 PEER_NO_DEVICES when the other person has no active device (every one was removed as idle or signed out): nothing can be encrypted for them yet, try again when they open Hiyall; 429 CHAT_DAILY_LIMIT (Retry-After) after 2000 messages from you in this conversation in 24 hours",
+        "summary": "Relay one ciphertext per recipient device; the server never receives plaintext; idempotent by messageId; 403 AWAITING_REPLY once you have sent 3 messages (reactions and the noop count too: the relay cannot tell kinds) in a conversation and the peer has sent no non-aux message; 429 RECIPIENT_BACKLOG (Retry-After 60) when a device that must receive it already holds 2000 undelivered envelopes, or 300 from you while the device is in use; 429 OWN_BACKLOG (Retry-After 60) when the full device is your own other device; 409 DEVICES_CHANGED also when the send revoked a dormant device that was over the cap, or an idle (48 hours) device that one sender alone had filled to 300 (retry with the refreshed device list); 409 PEER_NO_DEVICES when the other person has no active device (every one was removed as idle or signed out): nothing can be encrypted for them yet, try again when they open Hiyall; 429 CHAT_DAILY_LIMIT (Retry-After) after 2000 messages from you in this conversation in 24 hours. A group id works here too: see docs/api/29-group-chat.md",
         "security": [
           {
             "bearerAuth": []
@@ -10737,7 +10737,7 @@
         "tags": [
           "Chat"
         ],
-        "summary": "Move your read pointer forward; your devices are signalled, the peer only when read receipts are on for both",
+        "summary": "Move your read pointer forward; your devices are signalled, the peer only when read receipts are on for both. A group has no peer and no receipts: only your own pointer moves",
         "security": [
           {
             "bearerAuth": []
@@ -24147,6 +24147,1652 @@
           }
         }
       }
+    },
+    "/v1/groups": {
+      "post": {
+        "operationId": "postGroup_v1_groups",
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Create a group of 3 to 10 people: you and 2 to 9 invitees, who must accept (an invite expires after 7 days). Limits per member, by entitlement: 30 groups, 5 groups created and 30 people invited per UTC day (429 DAILY_LIMIT)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error 404; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error 409 CANNOT_ADD_MEMBER names the person (error.details.userId) and never why: a block, an age band, their privacy choice, their own group limit and not chatting or following them look alike. GROUP_FULL: ten people, pending invites included. GROUP_LIMIT: you are in the most groups a member may be in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Error 412; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error 422; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "Error 428; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error 429. DAILY_LIMIT: groups created or people invited today (Retry-After: next UTC midnight). RATE_LIMITED: the general graph limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error 500; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupCreate"
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "getGroupList_v1_groups",
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Your groups that you have not deleted from your list (active and closed), pinned first, then most recent first; no paging (at most 200)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error 404; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error 409; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Error 412; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error 422; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "Error 428; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error 429; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error 500; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/groups/hidden": {
+      "get": {
+        "operationId": "getGroupHiddenList_v1_groups_hidden",
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Your deleted groups, restorable for 30 days with POST /v1/conversations/{conversationId}/restore",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupHiddenListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error 404; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error 409; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Error 412; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error 422; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "Error 428; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error 429; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error 500; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/groups/invites": {
+      "get": {
+        "operationId": "getGroupInviteList_v1_groups_invites",
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Your pending, unexpired group invites, newest first. No content: who invited you, the group name and who is already in it",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupInviteListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error 404; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error 409; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Error 412; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error 422; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "Error 428; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error 429; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error 500; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/groups/{groupId}": {
+      "get": {
+        "operationId": "getGroup_v1_groups_groupId",
+        "tags": [
+          "Chat"
+        ],
+        "summary": "One group. An active member also gets the newest membership events; an invited person gets the name and the active members; anyone else 404",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error 404; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error 409; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Error 412; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error 422; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "Error 428; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error 429; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error 500; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "groupId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "patchGroup_v1_groups_groupId",
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Owner renames the group (empty clears the name). control is the encrypted rename message for everyone in the group, stored in the same transaction as the new name",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error 403 GROUP_NOT_OWNER; CONVERSATION_CLOSED for a closed group.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error 404; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error 409 DEVICES_CHANGED: the control envelopes are not exactly the devices of every active member (and your other devices) you are not barred from; fetch the group and devices and encrypt again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Error 412; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error 422; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "Error 428; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error 429; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error 500; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "groupId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupRename"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/groups/{groupId}/members": {
+      "post": {
+        "operationId": "postGroup_v1_groups_groupId_members",
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Owner invites 1 to 9 more people, with the rules of creation; people already in or invited are skipped. Pending invites count towards the 10",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error 403 GROUP_NOT_OWNER; CONVERSATION_CLOSED for a closed group.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error 404; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error 409 CANNOT_ADD_MEMBER names the person (error.details.userId) and never why: a block, an age band, their privacy choice, their own group limit and not chatting or following them look alike. GROUP_FULL: ten people, pending invites included. GROUP_LIMIT: you are in the most groups a member may be in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Error 412; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error 422; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "Error 428; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error 429 DAILY_LIMIT: people invited today.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error 500; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "groupId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupInvitePeople"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/groups/{groupId}/members/{userId}/remove": {
+      "post": {
+        "operationId": "postGroup_v1_groups_groupId_members_userId_remove",
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Owner removes an active member (control: the removal message for everyone in the group, the removed person included) or cancels a pending invite (no body). Removing yourself is 422: leave. A group left with fewer than two active members closes",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error 403 GROUP_NOT_OWNER.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error 404; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error 409 DEVICES_CHANGED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Error 412; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error 422; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "Error 428; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error 429; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error 500; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "groupId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupRemove"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/groups/{groupId}/accept": {
+      "post": {
+        "operationId": "postGroup_v1_groups_groupId_accept",
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Accept an invite. control is the encrypted join message for the people already in the group; in one transaction the invite is checked (unexpired, not barred from any member, your group limit) and you become a member. An invite that cannot be accepted any more is 404",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error 404; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error 409 DEVICES_CHANGED: the join message is not sealed for exactly the devices of the active members; GROUP_FULL; GROUP_LIMIT.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Error 412; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error 422; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "Error 428; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error 429; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error 500; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "groupId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupAccept"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/groups/{groupId}/decline": {
+      "post": {
+        "operationId": "postGroupDeclined_v1_groups_groupId_decline",
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Decline an invite; nobody is told. A group left with fewer than two active members and no pending invite closes",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupDeclinedResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error 404; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error 409; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Error 412; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error 422; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "Error 428; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error 429; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error 500; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "groupId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/groups/{groupId}/leave": {
+      "post": {
+        "operationId": "postGroupLeft_v1_groups_groupId_leave",
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Leave a group. control is the leave message for the others (omit it when nobody else is in the group). The owner names newOwnerId when two or more other active members remain. A group left with fewer than two active members closes",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupLeftResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error 404; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error 409 DEVICES_CHANGED.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Error 412; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Error 422; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "426": {
+            "description": "Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "Error 428; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error 429; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error 500; no internal details disclosed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "groupId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupLeave"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -27721,11 +29367,11 @@
           "envelopes": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 20,
+            "maxItems": 100,
             "items": {
               "$ref": "#/components/schemas/CiphertextEnvelope"
             },
-            "description": "Exactly one per active device of the peer and of the sender other than senderDeviceId; otherwise 409 DEVICES_CHANGED"
+            "description": "Exactly one per active device of the peer and of the sender other than senderDeviceId (up to 20); otherwise 409 DEVICES_CHANGED. For a group (the conversationId is a group id): one per device of every active member the sender is not barred from, and of the sender's other devices, up to 100; the body may be up to 3 MiB; 409 GROUP_WAITING when no other active member has a device."
           },
           "blobIds": {
             "type": "array",
@@ -33374,6 +35020,709 @@
           },
           "data": {
             "$ref": "#/components/schemas/WebhookAck"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "meta"
+        ]
+      },
+      "GroupMember": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "username": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]{3,30}$"
+          },
+          "displayName": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "avatarUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "description": "Signed URL of a 640 px thumbnail of the profile photo, valid for an hour; null when there is no photo (or photo storage is not configured). The URL is minted per response and never stored, so refresh it with the profile rather than caching it for long; cache the image bytes by avatarMediaId or the URL path."
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner",
+              "member"
+            ]
+          },
+          "joinedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "userId",
+          "username",
+          "displayName",
+          "avatarUrl",
+          "role",
+          "joinedAt"
+        ]
+      },
+      "GroupPending": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "username": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]{3,30}$"
+          },
+          "displayName": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "avatarUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "readOnly": true,
+            "description": "Signed URL of a 640 px thumbnail of the profile photo, valid for an hour; null when there is no photo (or photo storage is not configured). The URL is minted per response and never stored, so refresh it with the profile rather than caching it for long; cache the image bytes by avatarMediaId or the URL path."
+          },
+          "invitedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The invite expires then (7 days after it was sent)."
+          }
+        },
+        "required": [
+          "userId",
+          "username",
+          "displayName",
+          "avatarUrl",
+          "invitedAt",
+          "expiresAt"
+        ]
+      },
+      "GroupEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "created",
+              "joined",
+              "left",
+              "removed",
+              "renamed",
+              "owner_changed",
+              "member_deleted",
+              "closed"
+            ]
+          },
+          "actorId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "subjectId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "messageId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The control message that carried the same change, so an app shows one notice."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 40,
+            "description": "The new name, for renamed."
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "eventId",
+          "kind",
+          "actorId",
+          "subjectId",
+          "messageId",
+          "name",
+          "at"
+        ]
+      },
+      "GroupLimits": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "maxMembers": {
+            "type": "integer"
+          },
+          "inviteExpiryDays": {
+            "type": "integer"
+          },
+          "nameMax": {
+            "type": "integer"
+          },
+          "maxGroups": {
+            "type": "integer",
+            "description": "The most groups one member can be in or invited to."
+          }
+        },
+        "required": [
+          "maxMembers",
+          "inviteExpiryDays",
+          "nameMax",
+          "maxGroups"
+        ]
+      },
+      "Group": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "groupId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "conversationId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "description": "The same id: the conversation routes for messages, blobs, read, mute, pin and hide take it."
+          },
+          "kind": {
+            "type": "string",
+            "const": "group"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 40,
+            "description": "Visible to the server and to members; may be empty (apps then show the member names)."
+          },
+          "ownerId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "closed"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastMessageAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "memberCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "description": "Active members the caller can see, the caller included."
+          },
+          "members": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/GroupMember"
+            },
+            "description": "Active members in joining order, leaving out anyone the caller is barred from (a block, or another age band while isolation is on)."
+          },
+          "pending": {
+            "type": "array",
+            "maxItems": 9,
+            "items": {
+              "$ref": "#/components/schemas/GroupPending"
+            },
+            "description": "Invited people who have not answered; listed to active members only."
+          },
+          "myState": {
+            "type": "string",
+            "enum": [
+              "active",
+              "invited"
+            ]
+          },
+          "unreadCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "readAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "mutedUntil": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "pinnedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "hiddenAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "restoreUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Only while hiddenAt is set."
+          },
+          "limits": {
+            "$ref": "#/components/schemas/GroupLimits"
+          },
+          "events": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "$ref": "#/components/schemas/GroupEvent"
+            },
+            "description": "Only on the single GET, for an active member: the newest 50 membership events, oldest first."
+          }
+        },
+        "required": [
+          "groupId",
+          "conversationId",
+          "kind",
+          "name",
+          "ownerId",
+          "status",
+          "createdAt",
+          "lastMessageAt",
+          "memberCount",
+          "members",
+          "pending",
+          "myState",
+          "unreadCount",
+          "readAt",
+          "mutedUntil",
+          "pinnedAt",
+          "hiddenAt",
+          "limits"
+        ]
+      },
+      "GroupList": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Group"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "GroupHiddenList": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/Group"
+            }
+          },
+          "retentionDays": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "retentionDays"
+        ]
+      },
+      "GroupInvite": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "groupId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "invitedBy": {
+            "$ref": "#/components/schemas/UserSummary"
+          },
+          "invitedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "memberCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "members": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "$ref": "#/components/schemas/UserSummary"
+            },
+            "description": "The people who have already joined. No content."
+          }
+        },
+        "required": [
+          "groupId",
+          "name",
+          "invitedBy",
+          "invitedAt",
+          "expiresAt",
+          "memberCount",
+          "members"
+        ]
+      },
+      "GroupInviteList": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/GroupInvite"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "GroupCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 40,
+            "description": "Optional; trimmed, NFC, no control or format characters, no line breaks."
+          },
+          "memberIds": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 9,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "description": "People you already chat with or follow, who your invite may reach (messagesFrom), who are not blocked either way with you or each other, in your age band while isolation is on."
+          }
+        },
+        "required": [
+          "memberIds"
+        ]
+      },
+      "GroupInvitePeople": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "userIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 9,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          }
+        },
+        "required": [
+          "userIds"
+        ]
+      },
+      "GroupControl": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "senderDeviceId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "envelopes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/CiphertextEnvelope"
+            },
+            "description": "Exactly one per device of the recipients named in docs/api/29-group-chat.md for the operation; otherwise 409 DEVICES_CHANGED. At most 4 KiB decoded each."
+          }
+        },
+        "required": [
+          "messageId",
+          "senderDeviceId",
+          "envelopes"
+        ],
+        "description": "The encrypted membership message that travels with the change, stored as an auxiliary message."
+      },
+      "GroupAccept": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "control": {
+            "$ref": "#/components/schemas/GroupControl"
+          }
+        },
+        "required": [
+          "control"
+        ]
+      },
+      "GroupRename": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "control": {
+            "$ref": "#/components/schemas/GroupControl"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "GroupRemove": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "control": {
+            "$ref": "#/components/schemas/GroupControl"
+          }
+        },
+        "required": []
+      },
+      "GroupLeave": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "control": {
+            "$ref": "#/components/schemas/GroupControl"
+          },
+          "newOwnerId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "description": "Required from the owner when two or more other active members remain."
+          }
+        },
+        "required": []
+      },
+      "GroupDeclined": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "declined": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "declined"
+        ]
+      },
+      "GroupLeft": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "left": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "left"
+        ]
+      },
+      "GroupResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/Group"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "meta"
+        ]
+      },
+      "GroupListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/GroupList"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "meta"
+        ]
+      },
+      "GroupHiddenListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/GroupHiddenList"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "meta"
+        ]
+      },
+      "GroupInviteListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/GroupInviteList"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "meta"
+        ]
+      },
+      "GroupDeclinedResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/GroupDeclined"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "success",
+          "data",
+          "meta"
+        ]
+      },
+      "GroupLeftResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "success": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/GroupLeft"
           },
           "meta": {
             "$ref": "#/components/schemas/Meta"

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -106,6 +107,56 @@ type AdminCase struct {
 	HeldImages        []AdminBlob      `json:"heldImages"`
 	PriorReports      []AdminReportRef `json:"priorReports"`
 	Actions           []AdminAction    `json:"actions"`
+	// Group is the reported group's metadata when the report is about a group or a message in one: its name, owner and
+	// members, nothing that was said. Omitted for every other report.
+	Group *AdminGroup `json:"group,omitempty"`
+}
+
+// AdminGroup is what the relay knows about a group, for a report about it (docs/api/29-group-chat.md): who is in it and who
+// runs it. The console reads only the roster tables, never message rows.
+type AdminGroup struct {
+	GroupID       string             `json:"groupId"`
+	Name          string             `json:"name"`
+	OwnerID       string             `json:"ownerId"`
+	OwnerUsername string             `json:"ownerUsername"`
+	Members       []AdminGroupMember `json:"members"`
+}
+
+// AdminGroupMember is one person in the roster: active members and pending invitees.
+type AdminGroupMember struct {
+	UserID   string `json:"userId"`
+	Username string `json:"username"`
+	Role     string `json:"role"`
+	State    string `json:"state"`
+}
+
+// adminGroup loads the group a report names (reports.conversation_id), nil when the report is not about a group.
+func (s *Store) adminGroup(ctx context.Context, reportID string) (*AdminGroup, error) {
+	var g AdminGroup
+	err := s.Pool.QueryRow(ctx, `SELECT g.conversation_id::text,g.name,g.owner_id::text,coalesce(op.username,'') FROM reports r
+ JOIN chat_groups g ON g.conversation_id=r.conversation_id LEFT JOIN profiles op ON op.user_id=g.owner_id WHERE r.report_id=$1`, reportID).
+		Scan(&g.GroupID, &g.Name, &g.OwnerID, &g.OwnerUsername)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.Pool.Query(ctx, `SELECT m.user_id::text,coalesce(p.username,''),m.role,m.state FROM chat_group_members m LEFT JOIN profiles p ON p.user_id=m.user_id
+ WHERE m.conversation_id=$1 ORDER BY m.state,m.joined_at,m.user_id`, g.GroupID)
+	if err != nil {
+		return nil, err
+	}
+	if g.Members, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (AdminGroupMember, error) {
+		var m AdminGroupMember
+		return m, row.Scan(&m.UserID, &m.Username, &m.Role, &m.State)
+	}); err != nil {
+		return nil, err
+	}
+	if g.Members == nil {
+		g.Members = []AdminGroupMember{}
+	}
+	return &g, nil
 }
 
 // AdminUser is the moderation view of an account.
@@ -287,7 +338,10 @@ func (s *Store) AdminCase(ctx context.Context, reportID string) (AdminCase, erro
 	if c.PriorReports, err = s.adminReportRefs(ctx, subject, reportID, 20); err != nil {
 		return c, err
 	}
-	c.Actions, err = s.adminActions(ctx, subject, 50)
+	if c.Actions, err = s.adminActions(ctx, subject, 50); err != nil {
+		return c, err
+	}
+	c.Group, err = s.adminGroup(ctx, reportID)
 	return c, err
 }
 

@@ -24,6 +24,8 @@ const (
 	DailyProfileViews    = "profile_view"
 	DailyNearbyQueries   = "nearby_query"
 	DailyLocationChanges = "location_change"
+	DailyGroupsCreated   = "group_create"
+	DailyGroupInvites    = "group_invite"
 )
 
 // DailyLimitError is the refusal when a daily cap is used up. Every kind has its own message; the code is
@@ -38,6 +40,8 @@ var dailyLimitErrors = map[string]*PolicyError{
 	DailyProfileViews:    {429, "DAILY_LIMIT", "You’ve opened a lot of profiles today. Try again tomorrow."},
 	DailyNearbyQueries:   {429, "DAILY_LIMIT", "You’ve looked at Nearby a lot today. Try again tomorrow."},
 	DailyLocationChanges: {429, "DAILY_LIMIT", "Your Nearby area has changed a lot today. Try again tomorrow."},
+	DailyGroupsCreated:   {429, "DAILY_LIMIT", "You’ve started a lot of groups today. Try again tomorrow."},
+	DailyGroupInvites:    {429, "DAILY_LIMIT", "You’ve invited a lot of people to groups today. Try again tomorrow."},
 	DailyNearbyCentres:   {429, "DAILY_LIMIT", "You’ve looked at Nearby from a lot of places today. Try again tomorrow."},
 }
 

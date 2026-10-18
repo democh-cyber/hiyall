@@ -183,9 +183,21 @@ const (
 )
 
 func ParseSendMessage(body map[string]json.RawMessage) (SendMessage, error) {
+	return parseSend(body, 20, true)
+}
+
+// ParseGroupSendMessage is ParseSendMessage for a group: the same fields and rules, with up to MaxGroupEnvelopes
+// envelopes (every device of every member).
+func ParseGroupSendMessage(body map[string]json.RawMessage) (SendMessage, error) {
+	return parseSend(body, MaxGroupEnvelopes, true)
+}
+
+// parseSend reads a message body. allowAux says whether the optional aux and blobIds members are accepted (a group
+// control message takes neither).
+func parseSend(body map[string]json.RawMessage, maxEnvelopes int, allowAux bool) (SendMessage, error) {
 	var m SendMessage
 	for key := range body {
-		if !member(key, "messageId", "senderDeviceId", "envelopes", "blobIds", "aux") {
+		if !member(key, "messageId", "senderDeviceId", "envelopes", "blobIds", "aux") || (!allowAux && (key == "blobIds" || key == "aux")) {
 			return m, invalid(key, "field is not accepted")
 		}
 	}
@@ -207,8 +219,8 @@ func ParseSendMessage(body map[string]json.RawMessage) (SendMessage, error) {
 	if len(m.BlobIDs) > 0 && !ValidBlobIDs(m.BlobIDs, MaxBlobsPerMessage) {
 		return m, invalid("blobIds", "send at most 4 distinct blob ids")
 	}
-	if len(m.Envelopes) == 0 || len(m.Envelopes) > 20 {
-		return m, invalid("envelopes", "send 1–20 device envelopes")
+	if len(m.Envelopes) == 0 || len(m.Envelopes) > maxEnvelopes {
+		return m, invalid("envelopes", "send 1–"+itoa(maxEnvelopes)+" device envelopes")
 	}
 	seen := map[string]bool{}
 	for _, e := range m.Envelopes {

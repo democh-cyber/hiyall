@@ -117,14 +117,16 @@ func (h *socialHarness) send(actor, method, path string, payload any) reply {
 	r.Header.Set("Authorization", "Bearer "+actor)
 	w := httptest.NewRecorder()
 	h.api.Handler().ServeHTTP(w, r)
+	// error.details (a 402's prices, the person a group could not add) is an object, so the error is read loosely.
 	var body struct {
-		Data  map[string]any    `json:"data"`
-		Error map[string]string `json:"error"`
+		Data  map[string]any `json:"data"`
+		Error map[string]any `json:"error"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		h.t.Fatalf("%s %s: %s", method, path, w.Body.String())
 	}
-	return reply{w.Code, body.Data, body.Error["code"]}
+	code, _ := body.Error["code"].(string)
+	return reply{w.Code, body.Data, code}
 }
 
 func (h *socialHarness) expect(got reply, status int, code string) reply {

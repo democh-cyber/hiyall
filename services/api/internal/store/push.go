@@ -72,7 +72,8 @@ func (s *Store) PushAudienceFor(ctx context.Context, recipient, actor, conversat
    WHEN 'comments' THEN coalesce(np.comments,true) WHEN 'replies' THEN coalesce(np.replies,true) WHEN 'reactions' THEN coalesce(np.reactions,true)
    WHEN 'visits' THEN coalesce(np.visits,false) ELSE coalesce(np.social,true) END END
  AND ($4::uuid IS NULL OR EXISTS(SELECT 1 FROM conversation_members m JOIN conversations c ON c.conversation_id=m.conversation_id
-  WHERE m.conversation_id=$4 AND m.user_id=$1 AND m.peer_id=$2 AND c.status='active' AND (m.muted_until IS NULL OR m.muted_until<=now())))`,
+  WHERE m.conversation_id=$4 AND m.user_id=$1 AND c.status='active' AND (m.muted_until IS NULL OR m.muted_until<=now())
+  AND (m.peer_id=$2 OR (c.kind='group' AND EXISTS(SELECT 1 FROM chat_group_members ag WHERE ag.conversation_id=c.conversation_id AND ag.user_id=$2 AND ag.state='active')))))`,
 		recipient, actor, category, conv, PushPref(kind), domain.BandMinor).Scan(&name)
 	if err == pgx.ErrNoRows {
 		return false, "", nil

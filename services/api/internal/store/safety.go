@@ -135,9 +135,16 @@ func (s *Store) CreateReport(ctx context.Context, reporter string, r domain.NewR
 		err = s.Pool.QueryRow(ctx, `SELECT user_id::text FROM users WHERE user_id=$1 AND status<>'deleted'`, r.TargetID).Scan(&subject)
 	case "conversation":
 		conversation = r.TargetID
-		err = s.Pool.QueryRow(ctx, `SELECT peer_id::text FROM conversation_members WHERE user_id=$1 AND conversation_id=$2`, reporter, r.TargetID).Scan(&subject)
+		// A direct chat's subject is the peer; a group's is its owner (a group has no single peer), and its owner reports
+		// a message or a member instead.
+		err = s.Pool.QueryRow(ctx, `SELECT coalesce(cm.peer_id,g.owner_id)::text FROM conversation_members cm LEFT JOIN chat_groups g ON g.conversation_id=cm.conversation_id
+ WHERE cm.user_id=$1 AND cm.conversation_id=$2`, reporter, r.TargetID).Scan(&subject)
+		if err == nil && subject == reporter {
+			return domain.Report{}, false, &domain.ValidationError{Field: "targetId", Message: "report a message or a member of the group"}
+		}
 	case "message":
-		err = s.Pool.QueryRow(ctx, `SELECT cm.peer_id::text,m.conversation_id::text FROM messages m
+		// The subject of a direct chat's message is the peer; of a group's, the person who sent it.
+		err = s.Pool.QueryRow(ctx, `SELECT coalesce(cm.peer_id,m.sender_id)::text,m.conversation_id::text FROM messages m
  JOIN conversation_members cm ON cm.conversation_id=m.conversation_id AND cm.user_id=$1
  WHERE m.message_id=$2`, reporter, r.TargetID).Scan(&subject, &conversation)
 	// Public content: the reporter must be able to see it; the subject is its author.
@@ -229,10 +236,10 @@ func (s *Store) CreateReport(ctx context.Context, reporter string, r domain.NewR
 	report := domain.Report{TargetType: r.TargetType, TargetID: r.TargetID, ReasonCode: r.ReasonCode, Status: "open"}
 	created := false
 	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `INSERT INTO reports(report_id,reporter_id,target_type,target_id,subject_id,reason_code,description,evidence,disclosure_consent,severity)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		err := tx.QueryRow(ctx, `INSERT INTO reports(report_id,reporter_id,target_type,target_id,subject_id,reason_code,description,evidence,disclosure_consent,severity,conversation_id)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULLIF($11,'')::uuid)
  ON CONFLICT (reporter_id,target_type,target_id) WHERE status='open' DO NOTHING
- RETURNING report_id::text,created_at`, newID(), reporter, r.TargetType, r.TargetID, subject, r.ReasonCode, description, evidence, r.DisclosureConsent, r.Severity()).
+ RETURNING report_id::text,created_at`, newID(), reporter, r.TargetType, r.TargetID, subject, r.ReasonCode, description, evidence, r.DisclosureConsent, r.Severity(), conversation).
 			Scan(&report.ReportID, &report.CreatedAt)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
