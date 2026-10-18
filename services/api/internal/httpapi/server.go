@@ -108,6 +108,8 @@ type API struct {
 	// Entitlements resolves a member's limits (docs/architecture/11-plans-and-entitlements.md). Nil means
 	// everyone is on the Free plan, which is the only plan today; tests replace it to try other tiers.
 	Entitlements func(ctx context.Context, userID string) domain.Entitlements
+	// Billing is the plans, coins and store configuration (billing.go). Nil: no plans, every member on Free as today, no store configured.
+	Billing *BillingService
 	// RT and Push are optional; without them clients fall back to polling.
 	RT   *realtime.Hub
 	Push *push.Dispatcher
@@ -312,6 +314,10 @@ func (a *API) Handler() http.Handler {
 			a.failure(w, r, 429, "RATE_LIMITED", "Try again shortly")
 			return
 		}
+		// Store and ad callbacks prove themselves (a token, a signature): they carry no member token and no client version.
+		if a.serveWebhook(w, r) {
+			return
+		}
 		if a.upgradeRequired(r) {
 			a.failure(w, r, 426, "UPGRADE_REQUIRED", "Update Hiyall to keep using it")
 			return
@@ -410,6 +416,7 @@ func (a *API) failure(w http.ResponseWriter, r *http.Request, status int, code, 
 func (a *API) error(w http.ResponseWriter, r *http.Request, err error) {
 	var validation *domain.ValidationError
 	var policy *domain.PolicyError
+	var spend *domain.SpendError
 	switch {
 	case errors.As(err, &validation):
 		a.failure(w, r, 422, "VALIDATION", validation.Error())
@@ -419,6 +426,9 @@ func (a *API) error(w http.ResponseWriter, r *http.Request, err error) {
 		a.failure(w, r, 412, "VERSION_CONFLICT", "Settings changed. Reload before saving.")
 	case errors.Is(err, domain.ErrUsernameTaken):
 		a.failure(w, r, 409, "USERNAME_TAKEN", "This username is taken")
+	case errors.As(err, &spend):
+		// A 402 that says what it costs and what the member has (billing.go).
+		a.failureDetails(w, r, spend.Status, spend.Code, spend.Message, spend.Details)
 	case errors.As(err, &policy):
 		// A refusal that knows when it lifts says so; one that lifts only when the caller acts
 		// (closing a space) sends no Retry-After.

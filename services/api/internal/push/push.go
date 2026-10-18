@@ -141,6 +141,15 @@ var kinds = map[string]kindSpec{
 	"follow_request":  {CategorySocial, 10 * time.Minute, "You have a new follow request", "%s asked to follow you"},
 	"follow_accepted": {CategorySocial, 10 * time.Minute, "Your follow request was accepted", "%s accepted your follow request"},
 	"space_invite":    {CategorySocial, 10 * time.Minute, "You have a new space invitation", "%s invited you to a space"},
+	// Wave 7 (docs/api/27-stories-notices-support.md): which member choice each falls under is store.PushPref. A visit
+	// push is "visit" (the visitor's name may be used) or "visit_anon" (it may not); "support" has no actor and is
+	// content-free.
+	"reaction":   {CategorySocial, 30 * time.Minute, "Someone reacted to your post", "%s reacted to your post"},
+	"comment":    {CategorySocial, 10 * time.Minute, "Someone commented on your post", "%s commented on your post"},
+	"reply":      {CategorySocial, 10 * time.Minute, "Someone replied to your comment", "%s replied to your comment"},
+	"visit":      {CategorySocial, 24 * time.Hour, "Someone visited your profile", "%s visited your profile"},
+	"visit_anon": {CategorySocial, 24 * time.Hour, "Someone visited your profile", ""},
+	"support":    {CategorySocial, 0, "Support replied", ""},
 }
 
 // Allowed reports whether kind may be pushed at all.
@@ -266,6 +275,8 @@ func (n Notice) collapseKey() string {
 		return "device"
 	case KindDeletion:
 		return "deletion"
+	case "support":
+		return "support"
 	}
 	return "social"
 }
@@ -374,6 +385,9 @@ func message(n Notice, spec kindSpec, actorName string) Message {
 	} else if n.Kind == KindDeletion {
 		// Content-free: the app says the account is scheduled for deletion and offers to cancel.
 		data["kind"] = KindDeletion
+	} else if n.Kind == "support" {
+		// Content-free: the app opens the support conversations.
+		data["kind"] = "support"
 	} else if n.Kind == "device" || n.Kind == "device-revoked" {
 		// Content-free: the app opens the chat devices screen and lists what the relay knows.
 		data["kind"] = "device"

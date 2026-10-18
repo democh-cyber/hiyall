@@ -10,11 +10,13 @@ import (
 // Encrypted chat attachments (docs/security/14-encrypted-chat-attachments.md). The server stores
 // opaque ciphertext objects and never learns what is inside them.
 const (
-	// MaxBlobsPerMessage is how many blobs one message may claim: full and thumb now, more with video.
+	// MaxBlobsPerMessage is how many blobs one message may claim: full and thumb for a photo, one voice blob for a
+	// voice message, a video blob and its thumb poster for a video.
 	MaxBlobsPerMessage = 4
 	// MinBlobBytes is the smallest ciphertext accepted: an AEAD tag alone is 16 bytes and no image is that small.
 	MinBlobBytes = 32
-	// Per-role ciphertext caps.
+	// Per-role ciphertext caps of the photo roles. The caps of voice and video are Entitlements
+	// (VoiceMaxBlobBytes, VideoMaxBlobBytes), so a later plan may raise them.
 	MaxFullBlobBytes  = 4 << 20
 	MaxThumbBlobBytes = 256 << 10
 	// Unattached blobs (pending or uploaded) expire after an hour. The per-member quotas and how long a
@@ -24,16 +26,30 @@ const (
 	MaxAttachmentDescriptor = 4096
 )
 
-// BlobRoles maps each role to its ciphertext size cap.
-var BlobRoles = map[string]int64{"full": MaxFullBlobBytes, "thumb": MaxThumbBlobBytes}
+// BlobRoleCap is the ciphertext size cap of a blob role for a member's entitlements, and false for an unknown
+// role. The server sees only a ciphertext size: it cannot tell a voice message from a video, so the role is the
+// uploader's own claim and only picks the cap.
+func BlobRoleCap(role string, e Entitlements) (int64, bool) {
+	switch role {
+	case "full":
+		return MaxFullBlobBytes, true
+	case "thumb":
+		return MaxThumbBlobBytes, true
+	case "voice":
+		return e.VoiceMaxBlobBytes, true
+	case "video":
+		return e.VideoMaxBlobBytes, true
+	}
+	return 0, false
+}
 
 var (
-	ErrBlobNotReady          = &PolicyError{409, "BLOB_NOT_READY", "Finish uploading the photo first"}
+	ErrBlobNotReady          = &PolicyError{409, "BLOB_NOT_READY", "Finish uploading first"}
 	ErrBlobSizeMismatch      = &PolicyError{409, "BLOB_SIZE_MISMATCH", "The uploaded file isn't the size you declared. Start the upload again."}
-	ErrBlobExpired           = &PolicyError{410, "BLOB_EXPIRED", "This photo is no longer available"}
-	ErrAttachmentsNotAllowed = &PolicyError{403, "ATTACHMENTS_NOT_ALLOWED", "You can send photos once they have replied or you are friends"}
+	ErrBlobExpired           = &PolicyError{410, "BLOB_EXPIRED", "This attachment is no longer available"}
+	ErrAttachmentsNotAllowed = &PolicyError{403, "ATTACHMENTS_NOT_ALLOWED", "You can send photos, voice messages and videos once they have replied or you are friends"}
 	ErrBlobTooLarge          = &PolicyError{413, "TOO_LARGE", "That file is too large"}
-	ErrChatMediaUnavailable  = &PolicyError{503, "CHAT_MEDIA_UNAVAILABLE", "Photo sending isn't available right now"}
+	ErrChatMediaUnavailable  = &PolicyError{503, "CHAT_MEDIA_UNAVAILABLE", "Sending photos, voice messages and videos isn't available right now"}
 )
 
 // NewBlob is a request for an upload slot.
@@ -47,9 +63,9 @@ type NewBlob struct {
 // CtSha256Base64 is the hash in the form of the x-amz-checksum-sha256 header.
 func (b NewBlob) CtSha256Base64() string { return base64.StdEncoding.EncodeToString(b.CtSha256) }
 
-// ParseNewBlob validates {role, sizeBytes, ctSha256}. A size over the role's cap is the 413 TOO_LARGE
-// refusal, anything else malformed is a 422.
-func ParseNewBlob(body map[string]json.RawMessage) (NewBlob, error) {
+// ParseNewBlob validates {role, sizeBytes, ctSha256}. A size over the role's cap (from e for voice and
+// video) is the 413 TOO_LARGE refusal, anything else malformed is a 422.
+func ParseNewBlob(body map[string]json.RawMessage, e Entitlements) (NewBlob, error) {
 	var b NewBlob
 	for key := range body {
 		if !member(key, "role", "sizeBytes", "ctSha256") {
@@ -58,11 +74,11 @@ func ParseNewBlob(body map[string]json.RawMessage) (NewBlob, error) {
 	}
 	var role, hash string
 	if json.Unmarshal(body["role"], &role) != nil {
-		return b, invalid("role", "must be full or thumb")
+		return b, invalid("role", "must be full, thumb, voice or video")
 	}
-	limit, ok := BlobRoles[role]
+	limit, ok := BlobRoleCap(role, e)
 	if !ok {
-		return b, invalid("role", "must be full or thumb")
+		return b, invalid("role", "must be full, thumb, voice or video")
 	}
 	b.Role = role
 	// An integer only: 1e3 or 12.0 are not sizes.

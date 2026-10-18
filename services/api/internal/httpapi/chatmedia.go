@@ -22,7 +22,7 @@ const chatBlobContentType = "application/octet-stream"
 // chatMediaRoute serves the end-to-end encrypted attachment blobs of a chat. The server authorizes, size-checks
 // and expires opaque ciphertext; it never sees a key or a plaintext byte.
 //
-//	POST   /v1/conversations/{id}/blobs                  {role, sizeBytes, ctSha256} -> signed PUT slot
+//	POST   /v1/conversations/{id}/blobs                  {role: full|thumb|voice|video, sizeBytes, ctSha256} -> signed PUT slot
 //	POST   /v1/blobs/{blobId}/complete                   verifies the stored size
 //	GET    /v1/conversations/{id}/blobs/{blobId}/url     signed GET for a member
 //	DELETE /v1/blobs/{blobId}                            the uploader removes it (held evidence excepted)
@@ -61,12 +61,13 @@ func (a *API) chatMediaRoute(w http.ResponseWriter, r *http.Request, p store.Pri
 			a.error(w, r, err)
 			return true
 		}
-		blob, err := domain.ParseNewBlob(raw)
+		e := a.entitlementsFor(ctx, p.UserID)
+		blob, err := domain.ParseNewBlob(raw, e)
 		if err != nil {
 			a.error(w, r, err)
 			return true
 		}
-		id, key, err := a.Store.CreateBlobSlot(ctx, p.UserID, parts[2], blob, a.entitlementsFor(ctx, p.UserID))
+		id, key, err := a.Store.CreateBlobSlot(ctx, p.UserID, parts[2], blob, e)
 		if err != nil {
 			a.error(w, r, err)
 			return true

@@ -172,6 +172,10 @@ func (a *API) nearby(w http.ResponseWriter, r *http.Request, p store.Principal) 
 		a.error(w, r, err)
 		return
 	}
+	// Nearby filters, and the gender filter wherever it is used, are Premium features while plans are enforced (billing.go).
+	if !a.nearbyFiltersAllowed(w, r, p, req.Filters) {
+		return
+	}
 	centre, minor, err := a.Store.OwnLocation(r.Context(), p.UserID)
 	if err != nil {
 		a.error(w, r, err)
@@ -215,6 +219,7 @@ func (a *API) nearby(w http.ResponseWriter, r *http.Request, p store.Principal) 
 			next = a.nearbySeal(nearbyCursor{User: p.UserID, Radius: req.RadiusKm, Query: query, Loc: tag, Bucket: last["distanceKm"].(int), After: last["userId"].(string), Exp: time.Now().Add(15 * time.Minute).Unix(), Page: page + 1})
 		}
 	}
+	hideDistances(items)
 	a.ok(w, r, map[string]any{"items": items, "nextCursor": next})
 }
 

@@ -54,6 +54,8 @@ type Config struct {
 	Features
 	// Firebase App Check (appcheck.go).
 	AppCheck
+	// Plans, coins and store credentials (billing.go).
+	Billing
 }
 
 func Load() (Config, error) {
@@ -172,6 +174,9 @@ func Load() (Config, error) {
 		return c, err
 	}
 	if err := c.loadAppCheck(); err != nil {
+		return c, err
+	}
+	if err := c.loadBilling(); err != nil {
 		return c, err
 	}
 	return c, nil

@@ -144,7 +144,7 @@ func withRealtime(t *testing.T, h *socialHarness) (*httptest.Server, *recordingS
 			return out, err
 		},
 		Check: func(ctx context.Context, n push.Notice, category string) (push.Eligibility, error) {
-			ok, name, err := h.api.Store.PushAudience(ctx, n.Recipient, n.Actor, n.Conversation, category)
+			ok, name, err := h.api.Store.PushAudienceFor(ctx, n.Recipient, n.Actor, n.Conversation, category, n.Kind)
 			return push.Eligibility{OK: ok, ActorName: name}, err
 		},
 		Forget: func(ctx context.Context, t push.Target) error {

@@ -3,6 +3,7 @@ package domain
 import (
 	"encoding/base64"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -18,18 +19,34 @@ func body(t *testing.T, value string) map[string]json.RawMessage {
 
 func TestParseNewBlob(t *testing.T) {
 	sum := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	ok, err := ParseNewBlob(body(t, `{"role":"thumb","sizeBytes":262144,"ctSha256":"`+sum+`"}`))
+	ok, err := ParseNewBlob(body(t, `{"role":"thumb","sizeBytes":262144,"ctSha256":"`+sum+`"}`), Free())
 	if err != nil || ok.Role != "thumb" || ok.SizeBytes != 262144 || ok.CtSha256Base64() != sum {
 		t.Fatalf("%+v %v", ok, err)
 	}
-	if _, err = ParseNewBlob(body(t, `{"role":"full","sizeBytes":4194304,"ctSha256":"`+sum+`"}`)); err != nil {
+	if _, err = ParseNewBlob(body(t, `{"role":"full","sizeBytes":4194304,"ctSha256":"`+sum+`"}`), Free()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = ParseNewBlob(body(t, `{"role":"thumb","sizeBytes":262145,"ctSha256":"`+sum+`"}`)); err != ErrBlobTooLarge {
+	if _, err = ParseNewBlob(body(t, `{"role":"thumb","sizeBytes":262145,"ctSha256":"`+sum+`"}`), Free()); err != ErrBlobTooLarge {
 		t.Fatalf("thumb over its cap: %v", err)
 	}
-	if _, err = ParseNewBlob(body(t, `{"role":"full","sizeBytes":99999999999999999999,"ctSha256":"`+sum+`"}`)); err == nil {
+	if _, err = ParseNewBlob(body(t, `{"role":"full","sizeBytes":99999999999999999999,"ctSha256":"`+sum+`"}`), Free()); err == nil {
 		t.Fatal("huge size accepted")
+	}
+	for role, cap := range map[string]int64{"voice": 8 << 20, "video": 40 << 20} {
+		fits := `{"role":"` + role + `","sizeBytes":` + strconv.FormatInt(cap, 10) + `,"ctSha256":"` + sum + `"}`
+		over := `{"role":"` + role + `","sizeBytes":` + strconv.FormatInt(cap+1, 10) + `,"ctSha256":"` + sum + `"}`
+		if b, err := ParseNewBlob(body(t, fits), Free()); err != nil || b.Role != role {
+			t.Fatalf("%s at its cap: %v", role, err)
+		}
+		if _, err := ParseNewBlob(body(t, over), Free()); err != ErrBlobTooLarge {
+			t.Fatalf("%s over its cap: %v", role, err)
+		}
+	}
+	// The voice and video caps are entitlements: a smaller one is what applies.
+	small := Free()
+	small.VideoMaxBlobBytes = 1 << 20
+	if _, err := ParseNewBlob(body(t, `{"role":"video","sizeBytes":1048577,"ctSha256":"`+sum+`"}`), small); err != ErrBlobTooLarge {
+		t.Fatalf("video over a smaller entitlement: %v", err)
 	}
 	for _, bad := range []string{
 		`{"role":"full","sizeBytes":31,"ctSha256":"` + sum + `"}`,
@@ -42,7 +59,7 @@ func TestParseNewBlob(t *testing.T) {
 		`{"role":"full","ctSha256":"` + sum + `"}`,
 		`{"role":"full","sizeBytes":100}`,
 	} {
-		if _, err := ParseNewBlob(body(t, bad)); err == nil {
+		if _, err := ParseNewBlob(body(t, bad), Free()); err == nil {
 			t.Fatalf("accepted %s", bad)
 		}
 	}

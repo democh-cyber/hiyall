@@ -81,7 +81,7 @@ func pushing(t *testing.T, h *socialHarness, mutate func(*push.Config)) (*pushLo
 			return out, err
 		},
 		Check: func(ctx context.Context, n push.Notice, category string) (push.Eligibility, error) {
-			ok, name, err := h.api.Store.PushAudience(ctx, n.Recipient, n.Actor, n.Conversation, category)
+			ok, name, err := h.api.Store.PushAudienceFor(ctx, n.Recipient, n.Actor, n.Conversation, category, n.Kind)
 			return push.Eligibility{OK: ok, ActorName: name}, err
 		},
 		Forget: func(ctx context.Context, tg push.Target) error {
@@ -350,7 +350,7 @@ func TestSocialPushesNameTheActorOnlyWhenTheyAreVisible(t *testing.T) {
 	}
 }
 
-func TestReactionsCommentsAndSpaceModerationAreNeverPushed(t *testing.T) {
+func TestReactionsAndCommentsArePushedAsGenericOrNamedLines(t *testing.T) {
 	h := newSocialHarness(t)
 	log, _ := pushing(t, h, nil)
 	h.tokenFor(alice)
@@ -361,8 +361,16 @@ func TestReactionsCommentsAndSpaceModerationAreNeverPushed(t *testing.T) {
 	post := h.post(alice, "followers", "hello")
 	h.expect(h.send(bob, "PUT", "/v1/posts/"+post+"/reaction", map[string]string{"reaction": "heart"}), 200, "")
 	h.expect(h.send(bob, "POST", "/v1/posts/"+post+"/comments", map[string]string{"body": "nice"}), 201, "")
-	log.quiet(t, 1, "reaction and comment")
-	// They are still listed for Alice and signalled to her open apps.
+	got := log.wait(t, 3)
+	if got[1].Kind != "reaction" || got[1].Body != "Niko reacted to your post" || got[2].Kind != "comment" || got[2].Body != "Niko commented on your post" {
+		t.Fatalf("pushes %+v", got)
+	}
+	// Neither carries the post's text or the comment, and they are still listed for Alice.
+	for _, m := range got[1:] {
+		if strings.Contains(m.Body, "hello") || strings.Contains(m.Body, "nice") {
+			t.Fatalf("content in a push: %+v", m)
+		}
+	}
 	if n := h.ok(alice, "GET", "/v1/notifications"); len(items(n)) < 2 {
 		t.Fatalf("activity %v", n)
 	}

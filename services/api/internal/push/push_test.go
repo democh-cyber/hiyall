@@ -141,12 +141,12 @@ func TestOnlyAllowlistedKindsAreQueued(t *testing.T) {
 	if got := h.d.Stats().Queued; got != 0 {
 		t.Fatalf("queued %d", got)
 	}
-	for _, kind := range []string{"chat", "friend_request", "friend_accepted", "follow", "follow_request", "follow_accepted", "space_invite"} {
+	for _, kind := range []string{"chat", "friend_request", "friend_accepted", "follow", "follow_request", "follow_accepted", "space_invite", "reaction", "comment", "reply", "visit", "visit_anon", "support"} {
 		if !Allowed(kind) || CategoryOf(kind) == "" {
 			t.Fatalf("%s not allowed", kind)
 		}
 	}
-	for _, kind := range []string{"post.reacted", "reaction", "comment", "story_reaction", "message"} {
+	for _, kind := range []string{"post.reacted", "story_reaction", "message"} {
 		if Allowed(kind) {
 			t.Fatalf("%s must never be pushed", kind)
 		}

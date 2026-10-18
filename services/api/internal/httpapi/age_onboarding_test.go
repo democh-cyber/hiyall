@@ -92,6 +92,8 @@ func TestCompletionStoresTheBirthDateOnceAndAppliesMinorDefaults(t *testing.T) {
 			want = "friends"
 		case "location":
 			want = "friends"
+		case "aboutMe", "hometown", "birthday":
+			want = "nobody" // profile v2: hidden for a minor (a minor may later choose friends for the first two)
 		}
 		if fields[name] != want {
 			t.Fatalf("field %s is %v, want %v", name, fields[name], want)

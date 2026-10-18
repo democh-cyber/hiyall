@@ -48,6 +48,9 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 	if a.chatMediaRoute(w, r, p, parts) {
 		return true
 	}
+	if a.chatListRoute(w, r, p, parts) {
+		return true
+	}
 	switch {
 	case n == 2 && parts[1] == "devices" && method == "POST":
 		raw, ok := body()
@@ -213,13 +216,9 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 			a.failure(w, r, 429, "RATE_LIMITED", "You have started a lot of new conversations. Try again in a minute.")
 			return true
 		}
-		respond(a.Store.OpenConversation(ctx, p.UserID, target, a.entitlementsFor(ctx, p.UserID), a.signer(ctx), a.presence))
+		respond(a.Store.OpenConversation(spendConsentFrom(r), p.UserID, target, a.entitlementsFor(ctx, p.UserID), a.signer(ctx), a.presence))
 	case n == 2 && parts[1] == "conversations" && method == "GET":
-		paged(a, w, r, p, "conversations", func(pg page) ([]domain.Conversation, error) {
-			return a.Store.ListConversations(ctx, p.UserID, pg.before, pg.id, pg.limit, a.signer(ctx), a.presence)
-		}, func(c domain.Conversation) (time.Time, string) {
-			return c.SortAt, c.ConversationID
-		}, nil)
+		a.listConversations(w, r, p)
 	case n == 3 && parts[1] == "conversations" && parts[2] == "unread" && method == "GET":
 		respond(a.Store.Unread(ctx, p.UserID))
 	case n == 4 && parts[1] == "conversations" && isID(parts[2]) && parts[3] == "read" && method == "POST":
@@ -260,23 +259,7 @@ func (a *API) chatRoute(w http.ResponseWriter, r *http.Request, p store.Principa
 			}
 		}
 		respond(map[string]bool{"registered": token != ""}, a.Store.SetPushToken(ctx, p.UserID, parts[2], provider, token))
-	// Push choices: GET /v1/me/notifications, PATCH {chat?, social?}. Enforced when the server decides to push.
-	case n == 3 && parts[1] == "me" && parts[2] == "notifications" && method == "GET":
-		respond(a.Store.NotificationPrefs(ctx, p.UserID))
-	case n == 3 && parts[1] == "me" && parts[2] == "notifications" && method == "PATCH":
-		raw, ok := body()
-		if !ok {
-			return true
-		}
-		chat, social, err := domain.ParseNotificationPrefs(raw)
-		if err != nil {
-			a.error(w, r, err)
-			return true
-		}
-		if limited(a.graph) {
-			return true
-		}
-		respond(a.Store.SetNotificationPrefs(ctx, p.UserID, chat, social))
+	// Push choices (GET and PATCH /v1/me/notifications) moved to social7.go (docs/api/27).
 	case n == 3 && parts[1] == "conversations" && isID(parts[2]) && method == "GET":
 		respond(a.Store.ConversationFor(ctx, p.UserID, parts[2], a.signer(ctx), a.presence))
 	case n == 4 && parts[1] == "conversations" && isID(parts[2]) && parts[3] == "messages" && method == "POST":

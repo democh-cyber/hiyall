@@ -178,6 +178,10 @@ func (a *API) acceptFollowRequest(w http.ResponseWriter, r *http.Request, p stor
 // Only ever the caller's own: there is no route for another member's visitors.
 func (a *API) visitors(w http.ResponseWriter, r *http.Request, p store.Principal) {
 	ctx := r.Context()
+	// Who visited you is a Premium feature while plans are enforced (the visitors count on the profile is not).
+	if !a.featureAllowed(w, r, p, domain.FeatureVisitorsList) {
+		return
+	}
 	limitTotal := a.entitlementsFor(ctx, p.UserID).VisitorListLimit
 	paged(a, w, r, p, "visitors", func(pg page) ([]domain.Visitor, error) {
 		return a.Store.ListVisitors(ctx, p.UserID, pg.before, pg.id, pg.limit, limitTotal, a.signer(ctx))

@@ -47,8 +47,11 @@ func TestPrivacyDefaultsAndUnknownFields(t *testing.T) {
 	}
 	for field, audience := range p.FieldAudiences {
 		want := "everyone"
-		if field == "connections" {
+		switch field {
+		case "connections", "aboutMe", "hometown":
 			want = "followers"
+		case "birthday":
+			want = "friends"
 		}
 		if audience != want {
 			t.Fatalf("field %s audience %q, want %q", field, audience, want)
@@ -80,11 +83,12 @@ func TestExpressiveProfileValidation(t *testing.T) {
 	if err := json.Unmarshal([]byte(`["en","ko"]`), &languages); err != nil {
 		t.Fatal(err)
 	}
-	if len(languages) != 2 || languages[1].Code != "ko" || languages[1].Level != "" {
-		t.Fatal("legacy proficiency was invented")
+	// A language written without a level reads as the default level, and writes back as a structured entry.
+	if len(languages) != 2 || languages[1].Code != "ko" || languages[1].Level != LanguageLevelDefault {
+		t.Fatal("a bare tag did not read as the default level")
 	}
 	data, _ := json.Marshal(languages)
-	if string(data) != `[{"code":"en"},{"code":"ko"}]` {
+	if string(data) != `[{"code":"en","level":3},{"code":"ko","level":3}]` {
 		t.Fatal(string(data))
 	}
 }

@@ -371,6 +371,8 @@ func (s *Store) PurgeMediaTombstones(ctx context.Context, retain time.Duration) 
 		tag, err := s.Pool.Exec(ctx, `DELETE FROM media_assets WHERE ctid IN (SELECT m.ctid FROM media_assets m WHERE m.status='deleted' AND m.variants IS NULL AND m.deleted_at<now()-$1::interval
   AND NOT EXISTS(SELECT 1 FROM post_media pm WHERE pm.media_id=m.media_id)
   AND NOT EXISTS(SELECT 1 FROM stories st WHERE st.media_id=m.media_id)
+  AND NOT EXISTS(SELECT 1 FROM posts vp WHERE vp.voice_media_id=m.media_id)
+  AND NOT EXISTS(SELECT 1 FROM stories vs WHERE vs.voice_media_id=m.media_id)
   AND NOT EXISTS(SELECT 1 FROM content_cases cc WHERE cc.media_id=m.media_id)
   ORDER BY m.deleted_at LIMIT $2)`, retain, retentionChunk)
 		return tag.RowsAffected(), err

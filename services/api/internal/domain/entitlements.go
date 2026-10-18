@@ -65,6 +65,45 @@ type Entitlements struct {
 	// (429 RECIPIENT_BACKLOG for that sender only), so one account cannot fill a victim's device alone. It does
 	// not apply to the sender's own other devices.
 	ChatBacklogPerSenderPerDevice int
+	// Wave 7 social (docs/api/27-stories-notices-support.md). PulseSearchPagesPerDay caps the pages of post and story
+	// search a member reads per UTC day; SupportMessagesPerDay the messages they send to support per UTC day;
+	// PulseVoiceSeconds the length of a voice clip on a post or story.
+	PulseSearchPagesPerDay int
+	SupportMessagesPerDay  int
+	PulseVoiceSeconds      int
+	// ChatPinsMax is how many conversations a member may pin in their chat list (409 PIN_LIMIT past it).
+	ChatPinsMax int
+	// Voice messages and videos in chat (docs/api/26-chat-voice-video-and-list.md). The server only ever sees
+	// ciphertext: it enforces the BYTE caps (VoiceMaxBlobBytes, VideoMaxBlobBytes: the largest ciphertext of one
+	// voice or video blob, 413 TOO_LARGE past it), and the member's blob quotas count those bytes. The *Seconds
+	// values CANNOT be enforced by the server, because the duration lives inside the encrypted descriptor; they
+	// are the policy the apps apply from their copy of the Free value (the open point "the app hardcodes some
+	// caps" in docs/architecture/11-plans-and-entitlements.md), so a modified app can exceed them as far as the
+	// byte cap allows.
+	VoiceMaxSeconds   int
+	VoiceMaxBlobBytes int64
+	VideoMaxSeconds   int
+	VideoMaxBlobBytes int64
+	// Profile v2 (docs/api/25-profile-and-discovery-v2.md): how many languages (each with a level), interests,
+	// personality tags and gallery photos a profile may hold. Gallery photos are ordinary photo uploads and also
+	// count towards the upload and storage limits above.
+	LanguagesMax       int
+	InterestsMax       int
+	PersonalityTagsMax int
+	ProfilePhotosMax   int
+
+	// Plans and coins (plans.go, docs/api/28-billing.md). Plan is the plan the numbers above belong to. Enforced says
+	// whether Features and the coin prices below apply: false in the beta (PLANS_ENFORCED off), for members who cannot
+	// buy anything and for Free() / EntitlementsFor, so code that reads them is a no-op until the resolver
+	// (Resolve) turns them on. FreeNewChatsPerDay is the conversations a member may start per rolling 24 hours before
+	// each further one costs ChatSlotCoinCost coins (0: no such limit). Premium features are checked with Allows.
+	Plan                  Plan
+	Enforced              bool
+	Features              Features
+	FreeNewChatsPerDay    int
+	ChatSlotCoinCost      int
+	ProfileDetailCoinCost int
+	ProfileDetailDays     int
 }
 
 // EntitlementsFor returns the limits of a plan. An unknown plan gets Free, so a bad value can only
@@ -97,10 +136,25 @@ func EntitlementsFor(plan Plan) Entitlements {
 		ChatMessagesPerConversationPerDay: 2000,
 		ChatBacklogPerDevice:              2000,
 		ChatBacklogPerSenderPerDevice:     300,
+		PulseSearchPagesPerDay:            300,
+		SupportMessagesPerDay:             20,
+		PulseVoiceSeconds:                 MaxVoiceSeconds,
+		ChatPinsMax:                       5,
+		VoiceMaxSeconds:                   300,
+		VoiceMaxBlobBytes:                 8 << 20,
+		VideoMaxSeconds:                   60,
+		VideoMaxBlobBytes:                 40 << 20,
+
+		LanguagesMax:       5,
+		InterestsMax:       10,
+		PersonalityTagsMax: 5,
+		ProfilePhotosMax:   8,
 	}
+	free.Plan = PlanFree
+	free.Features = AllFeaturesOn()
 	switch plan {
-	case PlanFree:
-		return free
+	case PlanPremium:
+		return premiumFrom(free)
 	}
 	return free
 }

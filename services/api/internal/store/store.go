@@ -176,7 +176,7 @@ func provision(ctx context.Context, tx pgx.Tx, id, username, name string, onboar
 		return err
 	}
 	privacyDefaults := domain.DefaultPrivacy()
-	profile := domain.Profile{Username: username, DisplayName: name, Timezone: "Asia/Kolkata", Locale: "en", Languages: domain.Languages{{Code: "en"}}, ProfileAudience: privacyDefaults.ProfileAudience, ProfileAccent: "lime", ProfilePattern: "glow", AvatarFrame: "minimal"}
+	profile := domain.Profile{Username: username, DisplayName: name, Timezone: "Asia/Kolkata", Locale: "en", Languages: domain.Languages{{Code: "en", Level: domain.LanguageLevelDefault}}, PersonalityTags: []string{}, ProfileAudience: privacyDefaults.ProfileAudience, ProfileAccent: "lime", ProfilePattern: "glow", AvatarFrame: "minimal"}
 	data, _ := json.Marshal(profile)
 	if _, err := tx.Exec(ctx, `INSERT INTO profiles(user_id,username,data) VALUES($1,$2,$3)`, id, username, data); err != nil {
 		return err
@@ -437,7 +437,11 @@ func (s *Store) GetProfile(ctx context.Context, id string, sign Signer) (domain.
  'visitors',`+visitorsSQL("p.user_id")+`,
  'stories',(SELECT count(*) FROM stories st WHERE st.author_id=p.user_id AND st.deleted_at IS NULL AND st.expires_at>now()))),p.version,p.created_at,p.updated_at,`+avatarThumbKey("av")+`,`+avatarFullKey("av")+`
  FROM profiles p JOIN users u USING(user_id) LEFT JOIN social_counters c USING(user_id)`+avatarJoin("av", "p")+`WHERE p.user_id=$1 AND u.status='active'`, id), &thumb, &full)
-	return domain.ProfileView{Profile: p, AvatarURL: avatarURL(sign, thumb), AvatarFullURL: avatarURL(sign, full)}, err
+	if err != nil {
+		return domain.ProfileView{}, err
+	}
+	photos, err := profilePhotos(ctx, s.Pool, id, sign)
+	return domain.ProfileView{Profile: p, AvatarURL: avatarURL(sign, thumb), AvatarFullURL: avatarURL(sign, full), Photos: photos}, err
 }
 func (s *Store) GetPrivacy(ctx context.Context, id string) (domain.Privacy, error) {
 	var p domain.Privacy
@@ -465,15 +469,36 @@ func appendEvent(context.Context, pgx.Tx, string, string, int64) error { return 
 // A new avatarMediaId must be the caller's own ready, unattached photo; it is attached in the same
 // transaction as the update, and the photo it replaces (or that null clears) is released for deletion.
 func (s *Store) UpdateProfile(ctx context.Context, id string, expected int64, patch map[string]json.RawMessage, sign Signer) (domain.ProfileView, error) {
-	if err := s.updateProfile(ctx, id, expected, patch); err != nil {
+	return s.UpdateProfileFor(ctx, id, expected, patch, domain.Free(), sign)
+}
+
+// UpdateProfileFor is UpdateProfile under the member's own limits (languages, interests and personality tags).
+func (s *Store) UpdateProfileFor(ctx context.Context, id string, expected int64, patch map[string]json.RawMessage, e domain.Entitlements, sign Signer) (domain.ProfileView, error) {
+	if err := s.updateProfileFor(ctx, id, expected, patch, e); err != nil {
 		return domain.ProfileView{}, err
 	}
 	return s.GetProfile(ctx, id, sign)
 }
 
 func (s *Store) updateProfile(ctx context.Context, id string, expected int64, patch map[string]json.RawMessage) error {
-	if err := domain.ValidateProfilePatch(patch); err != nil {
+	return s.updateProfileFor(ctx, id, expected, patch, domain.Free())
+}
+
+func (s *Store) updateProfileFor(ctx context.Context, id string, expected int64, patch map[string]json.RawMessage, e domain.Entitlements) error {
+	if err := domain.ValidateProfilePatchFor(patch, e); err != nil {
 		return err
+	}
+	// A member under 18 may set a hometown too, a shorter one (it is shown only to their friends).
+	if raw, ok := patch["hometown"]; ok && string(raw) != `""` {
+		var value string
+		_ = json.Unmarshal(raw, &value)
+		if minor, err := s.IsMinor(ctx, id); err != nil {
+			return err
+		} else if minor {
+			if err = domain.ValidateHometown(value, true); err != nil {
+				return err
+			}
+		}
 	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -514,6 +539,28 @@ func (s *Store) updateProfile(ctx context.Context, id string, expected int64, pa
 				previous := *p.AvatarMediaID
 				released = &previous
 			}
+			// The profile photo is the first photo of the gallery (profile_photos): a new one takes its place, and
+			// clearing it removes it and promotes the next photo, so the two never disagree.
+			ids, gerr := galleryIDs(ctx, tx, id)
+			if gerr != nil {
+				return gerr
+			}
+			switch {
+			case next != nil && len(ids) == 0:
+				ids = []string{*next}
+			case next != nil:
+				ids[0] = *next
+			case len(ids) > 0:
+				ids = ids[1:]
+			}
+			if gerr = writeGalleryRows(ctx, tx, id, ids); gerr != nil {
+				return gerr
+			}
+			var first json.RawMessage = []byte("null")
+			if len(ids) > 0 {
+				first, _ = json.Marshal(ids[0])
+			}
+			patch["avatarMediaId"] = first
 		}
 	}
 	data, _ := json.Marshal(p)
@@ -641,10 +688,11 @@ func (s *Store) VisibleProfile(ctx context.Context, viewer, target string, onlin
 	var data, policyData []byte
 	var username string
 	var counts domain.SocialStats
-	var age *int
+	var age, birthMonth, birthDay *int
 	var thumb, full *string
 	err = tx.QueryRow(ctx, `SELECT p.data,p.username,q.data,greatest(coalesce(c.friends,0),0),greatest(coalesce(c.following,0),0),greatest(coalesce(c.followers,0),0),`+visitorsSQL("p.user_id")+`,
- (SELECT count(*) FROM stories st WHERE st.author_id=p.user_id AND st.deleted_at IS NULL AND st.expires_at>now() AND `+visibleTo("st.author_id", "st.audience")+`),member_age(p.user_id),`+avatarThumbKey("av")+`,`+avatarFullKey("av")+` FROM profiles p JOIN privacy_settings q USING(user_id) JOIN users u USING(user_id) LEFT JOIN social_counters c USING(user_id)`+avatarJoin("av", "p")+`WHERE p.user_id=$2 AND u.status='active' AND ($1=$2 OR (NOT `+barredBetween+` AND EXISTS(SELECT 1 FROM onboarding o WHERE o.user_id=p.user_id AND o.completed_at IS NOT NULL)))`, viewer, target).Scan(&data, &username, &policyData, &counts.Friends, &counts.Following, &counts.Followers, &counts.Visitors, &counts.Stories, &age, &thumb, &full)
+ (SELECT count(*) FROM stories st WHERE st.author_id=p.user_id AND st.deleted_at IS NULL AND st.expires_at>now() AND `+visibleTo("st.author_id", "st.audience")+`),member_age(p.user_id),`+avatarThumbKey("av")+`,`+avatarFullKey("av")+`,
+ (SELECT extract(month FROM birth_date)::int FROM member_ages WHERE user_id=p.user_id),(SELECT extract(day FROM birth_date)::int FROM member_ages WHERE user_id=p.user_id) FROM profiles p JOIN privacy_settings q USING(user_id) JOIN users u USING(user_id) LEFT JOIN social_counters c USING(user_id)`+avatarJoin("av", "p")+`WHERE p.user_id=$2 AND u.status='active' AND ($1=$2 OR (NOT `+barredBetween+` AND EXISTS(SELECT 1 FROM onboarding o WHERE o.user_id=p.user_id AND o.completed_at IS NOT NULL)))`, viewer, target).Scan(&data, &username, &policyData, &counts.Friends, &counts.Following, &counts.Followers, &counts.Visitors, &counts.Stories, &age, &thumb, &full, &birthMonth, &birthDay)
 	if err != nil {
 		return nil, mapped(err)
 	}
@@ -725,6 +773,41 @@ func (s *Store) VisibleProfile(ctx context.Context, viewer, target string, onlin
 	if show("location") && p.Country != nil {
 		result["country"] = *p.Country
 	}
+	// Profile v2. A member under 18 (a known age under 18; no birth date is an adult) never shows a birthday or a
+	// visitor list, whatever their stored settings say.
+	minor := age != nil && *age < domain.AdultAge
+	if show("aboutMe") {
+		result["aboutMe"] = p.AboutMe
+	}
+	// A minor's hometown is for confirmed friends only (the same age band is already guaranteed above), whatever
+	// audience is stored; an adult's follows their audience.
+	if (!minor && show("hometown")) || (minor && (self || (q.FieldAudiences["hometown"] == "friends" && rel.Friends()))) {
+		result["hometown"] = p.Hometown
+	}
+	if show("personality") {
+		tags := p.PersonalityTags
+		if tags == nil {
+			tags = []string{}
+		}
+		result["personalityTags"] = tags
+	}
+	// Month and day only, never the year; adults only, and only to the audience the member chose.
+	if !self && !minor && q.ShowBirthday && birthMonth != nil && birthDay != nil && rel.Allows(q.FieldAudiences["birthday"]) {
+		result["birthday"] = map[string]int{"month": *birthMonth, "day": *birthDay}
+	}
+	if q.ShowLocalTime || self {
+		if lt := domain.LocalTimeFor(p.Timezone, time.Now()); lt != nil {
+			result["localTime"] = lt
+		}
+	}
+	if !self && !minor && q.VisitorsVisibleToOthers {
+		result["visitorsVisible"] = true
+	}
+	photos, err := profilePhotos(ctx, tx, target, sign)
+	if err != nil {
+		return nil, err
+	}
+	result["photos"] = photos
 	return result, nil
 }
 
@@ -892,7 +975,9 @@ func (s *Store) RecordProfileVisit(ctx context.Context, viewer, target string) (
   ON CONFLICT DO NOTHING RETURNING 1),
  bump AS (
   INSERT INTO profile_visit_counts(profile_id,slot,visitors) SELECT $2::uuid,$3::smallint,1 FROM ins
-  ON CONFLICT (profile_id,slot) DO UPDATE SET visitors=profile_visit_counts.visitors+1 RETURNING 1)
+  ON CONFLICT (profile_id,slot) DO UPDATE SET visitors=profile_visit_counts.visitors+1 RETURNING 1),
+ touch AS (
+  UPDATE profile_visits SET last_visited_at=now() WHERE profile_id=$2::uuid AND visitor_id=$1::uuid AND last_visited_at<now()-interval '1 hour' RETURNING 1)
  SELECT EXISTS(SELECT 1 FROM ins)`, viewer, target, rand.IntN(8)).Scan(&inserted)
 	return inserted, err
 }

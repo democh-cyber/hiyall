@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 )
 
+// Language is one language of a profile and how well the member speaks it: Level is LanguageLevelMin (just
+// starting) to LanguageLevelMax (native). Display names and level names belong to the app.
 type Language struct {
 	Code  string `json:"code"`
-	Level string `json:"level,omitempty"`
+	Level int    `json:"level"`
 }
 
-// Languages reads legacy tag arrays without inventing proficiency. All writes
-// marshal into structured entries; display names belong to localization.
+// Languages reads what profiles stored before levels were numbers: bare tags and the words basic,
+// conversational, fluent and native, and an entry without a level. Every entry comes out with a numeric level
+// (LanguageLevelDefault when none was given); all writes marshal into structured entries.
 type Languages []Language
 
 func (languages *Languages) UnmarshalJSON(raw []byte) error {
@@ -21,7 +24,7 @@ func (languages *Languages) UnmarshalJSON(raw []byte) error {
 	}
 	result := make(Languages, 0, len(entries))
 	for _, entry := range entries {
-		var language Language
+		language := Language{Level: LanguageLevelDefault}
 		var tag string
 		if json.Unmarshal(entry, &tag) == nil && tag != "" {
 			language.Code = tag
@@ -31,13 +34,22 @@ func (languages *Languages) UnmarshalJSON(raw []byte) error {
 				return err
 			}
 			if level, exists := fields["level"]; exists && bytes.Equal(bytes.TrimSpace(level), []byte("null")) {
-				return invalid("languages", "proficiency must be text")
+				return invalid("languages", "proficiency must be a number")
 			}
-			decoder := json.NewDecoder(bytes.NewReader(entry))
-			decoder.DisallowUnknownFields()
-			if err := decoder.Decode(&language); err != nil {
+			for name := range fields {
+				if name != "code" && name != "level" {
+					return invalid("languages", "unknown language field")
+				}
+			}
+			if err := json.Unmarshal(fields["code"], &language.Code); err != nil {
 				return err
 			}
+			level, err := parseLanguageLevel(fields["level"], true)
+			if err != nil {
+				// A stored level outside 1..6 cannot be shown; the default is the safe reading.
+				level = LanguageLevelDefault
+			}
+			language.Level = level
 		}
 		result = append(result, language)
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"hiyall/services/api/internal/domain"
@@ -38,6 +39,19 @@ func discoveryItem(id, username string, p domain.Profile, q domain.Privacy, avat
 	if q.FieldAudiences["languages"] == "everyone" {
 		item["languages"] = p.Languages
 	}
+	if q.FieldAudiences["personality"] == "everyone" {
+		tags := p.PersonalityTags
+		if tags == nil {
+			tags = []string{}
+		}
+		item["personalityTags"] = tags
+	}
+	// The member's local time, only when they chose to show it (computed from their stored zone, never the zone).
+	if q.ShowLocalTime {
+		if lt := domain.LocalTimeFor(p.Timezone, time.Now()); lt != nil {
+			item["localTime"] = lt
+		}
+	}
 	if q.FieldAudiences["vibe"] == "everyone" {
 		item["currentVibe"] = p.CurrentVibe
 	}
@@ -60,16 +74,21 @@ func discoveryItem(id, username string, p domain.Profile, q domain.Privacy, avat
 func peopleFilterSQL(n int) string {
 	return fmt.Sprintf(`AND ($%[1]d='' OR (q.data->'fieldAudiences'->>'location'='everyone' AND p.data->>'country'=$%[1]d))
  AND ($%[2]d='' OR (q.data->'fieldAudiences'->>'vibe'='everyone' AND lower(p.data->>'currentVibe')=lower($%[2]d)))
- AND (cardinality($%[3]d::text[])=0 OR (q.data->'fieldAudiences'->>'interests'='everyone' AND EXISTS(SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(p.data->'interests')='array' THEN p.data->'interests' ELSE '[]'::jsonb END) i WHERE lower(i)=ANY($%[3]d::text[]))))
- AND (cardinality($%[4]d::text[])=0 OR (q.data->'fieldAudiences'->>'languages'='everyone' AND EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.data->'languages')='array' THEN p.data->'languages' ELSE '[]'::jsonb END) l WHERE lower(CASE WHEN jsonb_typeof(l)='string' THEN l#>>'{}' ELSE l->>'code' END)=ANY($%[4]d::text[]))))
+ AND (cardinality($%[3]d::text[])=0 OR (q.data->'fieldAudiences'->>'interests'='everyone' AND EXISTS(SELECT 1 FROM profile_interests pi WHERE pi.user_id=p.user_id AND pi.interest=ANY($%[3]d::text[]))))
+ AND (cardinality($%[4]d::text[])=0 OR (q.data->'fieldAudiences'->>'languages'='everyone' AND EXISTS(SELECT 1 FROM profile_languages pl WHERE pl.user_id=p.user_id AND pl.code=ANY($%[4]d::text[]) AND pl.level>=$%[9]d::int)))
+ AND (cardinality($%[10]d::text[])=0 OR (q.data->'fieldAudiences'->>'personality'='everyone' AND EXISTS(SELECT 1 FROM profile_personality_tags pt WHERE pt.user_id=p.user_id AND pt.tag=ANY($%[10]d::text[]))))
  AND ($%[5]d::int=0 AND $%[6]d::int=0 OR EXISTS(SELECT 1 FROM member_ages mi WHERE mi.user_id=p.user_id AND mi.birth_date>(now() AT TIME ZONE 'UTC')::date-make_interval(years=>18))
   OR q.data->'fieldAudiences'->>'age'='everyone' AND EXISTS(SELECT 1 FROM member_ages ma WHERE ma.user_id=p.user_id
   AND ($%[5]d::int=0 OR ma.birth_date<=(now() AT TIME ZONE 'UTC')::date-make_interval(years=>$%[5]d::int))
   AND ($%[6]d::int=0 OR ma.birth_date>(now() AT TIME ZONE 'UTC')::date-make_interval(years=>$%[6]d::int+1))))
  AND ($%[7]d::text='' OR EXISTS(SELECT 1 FROM member_ages mi WHERE mi.user_id=p.user_id AND mi.birth_date>(now() AT TIME ZONE 'UTC')::date-make_interval(years=>18))
   OR (q.data->'fieldAudiences'->>'gender'='everyone' AND p.data->>'gender'=$%[7]d::text))
- AND (NOT $%[8]d::boolean OR `+onlineFilterSQL+`)`, n, n+1, n+2, n+3, n+4, n+5, n+6, n+7)
+ AND (NOT $%[8]d::boolean OR `+onlineFilterSQL+`)`, n, n+1, n+2, n+3, n+4, n+5, n+6, n+7, n+8, n+9)
 }
+
+// filterParams is how many placeholders peopleFilterSQL takes, starting at its n: country, vibe, interests, languages,
+// age minimum, age maximum, gender, online, language minimum level, personality tags (see peopleFilterArgs).
+const filterParams = 10
 
 // onlineFilterSQL is the predicate of the Online filter, for a viewer $1 and a candidate p with
 // settings q. Candidates match only when
@@ -101,10 +120,15 @@ type filterArgs struct {
 	ageMin, ageMax       int
 	gender               string
 	online               bool
+	languageMin          int
+	personality          []string
 }
 
 func peopleFilterArgs(f domain.PeopleFilters) filterArgs {
-	a := filterArgs{country: f.Country, vibe: f.Vibe, interests: make([]string, len(f.Interests)), languages: f.Languages, gender: f.Gender, online: f.Online}
+	a := filterArgs{country: f.Country, vibe: f.Vibe, interests: make([]string, len(f.Interests)), languages: f.Languages, gender: f.Gender, online: f.Online, languageMin: f.LanguageMinLevel, personality: f.PersonalityTags}
+	if a.personality == nil {
+		a.personality = []string{}
+	}
 	for i, v := range f.Interests {
 		a.interests[i] = strings.ToLower(v)
 	}
@@ -122,7 +146,7 @@ func peopleFilterArgs(f domain.PeopleFilters) filterArgs {
 
 // list is the arguments in the order of the placeholders.
 func (a filterArgs) list() []any {
-	return []any{a.country, a.vibe, a.interests, a.languages, a.ageMin, a.ageMax, a.gender, a.online}
+	return []any{a.country, a.vibe, a.interests, a.languages, a.ageMin, a.ageMax, a.gender, a.online, a.languageMin, a.personality}
 }
 
 // ageFilterCannotMatch reports that the viewer's own age band makes an age filter impossible
@@ -158,6 +182,9 @@ func (s *Store) SearchPeople(ctx context.Context, viewer string, f domain.People
 // selective filter, or a minor viewer barred from most of the table); the caller offers resume as the next
 // cursor, so the list does not end early (round-3 audit D8 residual).
 func (s *Store) SearchPeoplePage(ctx context.Context, viewer string, f domain.PeopleFilters, after string, limit int, online Presence, sign Signer) (items []map[string]any, resume string, err error) {
+	if f, err = s.resolveFilters(ctx, viewer, f); err != nil {
+		return nil, "", err
+	}
 	if f.UsesAgeOrGender() {
 		minor, err := s.IsMinor(ctx, viewer)
 		if err != nil {
@@ -187,7 +214,7 @@ func (s *Store) SearchPeoplePage(ctx context.Context, viewer string, f domain.Pe
  AND q.data->>'discoverable'='true' AND q.data->>'profileAudience'='public'
  AND `+notBarred("$1::uuid", "p.user_id")+`
  `+peopleFilterSQL(3)+`
- ORDER BY p.user_id LIMIT $11)
+ ORDER BY p.user_id LIMIT $`+strconv.Itoa(3+filterParams)+`)
  SELECT res.user_id::text,res.username,res.data,res.policy,res.avatar,meta.resume FROM meta LEFT JOIN res ON true ORDER BY res.user_id`, append(args, limit)...)
 	if err != nil {
 		return nil, "", err

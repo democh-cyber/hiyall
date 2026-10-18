@@ -25,7 +25,8 @@ const (
 )
 
 // uploadPurposes are what a photo upload may be for; an avatar is attached through the profile.
-var uploadPurposes = map[string]bool{"post": true, "story": true, "avatar": true}
+// A voice clip is an audio upload (docs/api/27-stories-notices-support.md); the other purposes are photos.
+var uploadPurposes = map[string]bool{"post": true, "story": true, "avatar": true, "voice": true}
 
 // signer mints read URLs for media the store just authorized.
 func (a *API) signer(ctx context.Context) store.Signer {
@@ -68,6 +69,9 @@ func (a *API) completeUpload(ctx context.Context, owner, id string) (map[string]
 	upload, err := a.Store.PendingUpload(ctx, owner, id)
 	if err != nil {
 		return nil, err
+	}
+	if upload.Purpose == "voice" {
+		return a.completeVoice(ctx, owner, id, upload)
 	}
 	slots := a.mediaSlots
 	wait := time.NewTimer(mediaSlotWait)
@@ -201,14 +205,22 @@ func (a *API) uploadMedia(w http.ResponseWriter, r *http.Request, p store.Princi
 		SizeBytes   int64  `json:"sizeBytes"`
 	}
 	if strictDecode(raw, &in) != nil || !uploadPurposes[in.Purpose] {
-		a.failure(w, r, 422, "VALIDATION", "send purpose (post, story or avatar), contentType and sizeBytes")
+		a.failure(w, r, 422, "VALIDATION", "send purpose (post, story, avatar or voice), contentType and sizeBytes")
 		return
 	}
-	if !media.ContentTypes[in.ContentType] {
+	if in.Purpose == "voice" {
+		if !media.AudioContentTypes[in.ContentType] {
+			a.failure(w, r, 415, "UNSUPPORTED_MEDIA", "Voice notes must be audio/mp4 (AAC)")
+			return
+		}
+		if in.SizeBytes < 1 || in.SizeBytes > media.MaxAudioBytes {
+			a.failure(w, r, 413, "TOO_LARGE", "Voice notes can be up to 4 MB")
+			return
+		}
+	} else if !media.ContentTypes[in.ContentType] {
 		a.failure(w, r, 415, "UNSUPPORTED_MEDIA", "Photos must be JPEG, PNG or WebP")
 		return
-	}
-	if in.SizeBytes < 1 || in.SizeBytes > media.MaxUploadBytes {
+	} else if in.SizeBytes < 1 || in.SizeBytes > media.MaxUploadBytes {
 		a.failure(w, r, 413, "TOO_LARGE", "Photos can be up to 15 MB")
 		return
 	}
@@ -252,9 +264,18 @@ func (a *API) feed(w http.ResponseWriter, r *http.Request, p store.Principal) {
 		a.failure(w, r, 422, "VALIDATION", "mode must be following or everyone")
 		return
 	}
+	topic, err := domain.ParseTopic(queryPtr(r, "topic"))
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	kind := "feed:" + mode
+	if topic != nil {
+		kind += ":" + *topic
+	}
 	sign := a.signer(ctx)
-	paged(a, w, r, p, "feed:"+mode, func(pg page) ([]domain.Post, error) {
-		return a.Store.Feed(ctx, p.UserID, mode, pg.before, pg.id, pg.limit, sign)
+	paged(a, w, r, p, kind, func(pg page) ([]domain.Post, error) {
+		return a.Store.FeedTopic(ctx, p.UserID, mode, topic, pg.before, pg.id, pg.limit, sign)
 	}, postKey, nil)
 }
 
@@ -313,6 +334,7 @@ func (a *API) setReaction(w http.ResponseWriter, r *http.Request, p store.Princi
 	}
 	if author != p.UserID {
 		a.signal(ctx, "activity", nil, author)
+		a.wakeFrom("reaction", p.UserID, author)
 	}
 	a.ok(w, r, map[string]string{"reaction": in.Reaction})
 }
@@ -329,9 +351,16 @@ func (a *API) savePost(w http.ResponseWriter, r *http.Request, p store.Principal
 
 func (a *API) postComments(w http.ResponseWriter, r *http.Request, p store.Principal) {
 	ctx, id := r.Context(), r.PathValue("postId")
+	// parent: absent lists every comment flat (what the first apps read); "none" lists the top-level comments (each
+	// with its replyCount); a comment id lists the replies to that comment.
+	parent := r.URL.Query().Get("parent")
+	if parent != "" && parent != store.CommentsTopLevel && !isID(parent) {
+		a.failure(w, r, 422, "VALIDATION", "parent must be none or a comment id")
+		return
+	}
 	sign := a.signer(ctx)
-	paged(a, w, r, p, "comments:"+id, func(pg page) ([]domain.Comment, error) {
-		return a.Store.Comments(ctx, p.UserID, id, pg.before, pg.id, pg.limit, sign)
+	paged(a, w, r, p, "comments:"+id+":"+parent, func(pg page) ([]domain.Comment, error) {
+		return a.Store.CommentsOf(ctx, p.UserID, id, parent, pg.before, pg.id, pg.limit, sign)
 	}, commentKey, nil)
 }
 
@@ -346,15 +375,13 @@ func (a *API) addComment(w http.ResponseWriter, r *http.Request, p store.Princip
 		a.error(w, r, err)
 		return
 	}
-	comment, author, hidden, err := a.Store.AddComment(ctx, p.UserID, r.PathValue("postId"), in, a.signer(ctx), a.entitlementsFor(ctx, p.UserID))
+	res, err := a.Store.AddCommentFull(ctx, p.UserID, r.PathValue("postId"), in, a.signer(ctx), a.entitlementsFor(ctx, p.UserID))
 	if err != nil {
 		a.error(w, r, err)
 		return
 	}
-	if author != p.UserID && !hidden {
-		a.signal(ctx, "activity", nil, author)
-	}
-	a.created(w, r, comment, nil)
+	a.commentSignals(ctx, p.UserID, res)
+	a.created(w, r, res.Comment, nil)
 }
 
 func (a *API) deleteComment(w http.ResponseWriter, r *http.Request, p store.Principal) {
@@ -401,7 +428,12 @@ func (a *API) createStory(w http.ResponseWriter, r *http.Request, p store.Princi
 
 func (a *API) storyTray(w http.ResponseWriter, r *http.Request, p store.Principal) {
 	ctx := r.Context()
-	groups, err := a.Store.StoryTray(ctx, p.UserID, a.signer(ctx))
+	topic, err := domain.ParseTopic(queryPtr(r, "topic"))
+	if err != nil {
+		a.error(w, r, err)
+		return
+	}
+	groups, err := a.Store.StoryTrayTopic(ctx, p.UserID, topic, a.signer(ctx))
 	a.respond(w, r, map[string]any{"items": groups}, err)
 }
 

@@ -130,4 +130,6 @@ var NotificationCopy = map[string][3]string{
 	"friend.accepted":  {"friend_request", "profile", "accepted your friend request"},
 	"post.reacted":     {"reaction", "post", "reacted to your post"},
 	"post.commented":   {"comment", "post", "commented on your post"},
+	"comment.replied":  {"comment", "post", "replied to your comment"},
+	"profile.visited":  {"visit", "profile", "visited your profile"},
 }

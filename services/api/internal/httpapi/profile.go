@@ -55,7 +55,7 @@ func (a *API) patchProfile(w http.ResponseWriter, r *http.Request, p store.Princ
 		return
 	}
 	ctx := r.Context()
-	value, err := a.Store.UpdateProfile(ctx, p.UserID, v, body, a.signer(ctx))
+	value, err := a.Store.UpdateProfileFor(ctx, p.UserID, v, body, a.entitlementsFor(ctx, p.UserID), a.signer(ctx))
 	if err != nil {
 		a.error(w, r, err)
 		return
@@ -120,6 +120,11 @@ func (a *API) viewProfile(w http.ResponseWriter, r *http.Request, p store.Princi
 		a.error(w, r, err)
 		return
 	}
+	// Detailed fields are a Premium feature (or a coin unlock) while plans are enforced (billing.go).
+	if err = a.gateProfileDetails(ctx, p.UserID, target, value); err != nil {
+		a.error(w, r, err)
+		return
+	}
 	// The profile opened, so this is a visit (a locked card counts; one's own profile, and a request
 	// refused above as blocked, in the other age band or not found, do not). A first visit shows up in
 	// this response's count too. Failing to record it never fails the request.
@@ -128,6 +133,7 @@ func (a *API) viewProfile(w http.ResponseWriter, r *http.Request, p store.Princi
 	} else if first, err := a.Store.RecordProfileVisit(ctx, p.UserID, target); err != nil {
 		slog.Warn("profile visit not recorded", "requestId", ctx.Value(requestIDKey{}))
 	} else if first {
+		a.visitNotice(ctx, p.UserID, target)
 		if stats, ok := value["socialStats"].(domain.SocialStats); ok {
 			stats.Visitors++
 			value["socialStats"] = stats

@@ -88,6 +88,9 @@ func run() error {
 	api.Migrations = expectedMigrations(cfg)
 	api.GrantsCheck = grantsCheck
 	api.SpacesEvents = cfg.SpacesEventsEnabled
+	if api.Billing, err = billingService(cfg); err != nil {
+		return err
+	}
 	api.ClientIP = cfg.ClientIPResolver()
 	logClientIPMode(cfg)
 	if cfg.CursorKey != nil {
@@ -147,7 +150,7 @@ func run() error {
 			return targets, err
 		},
 		Check: func(ctx context.Context, n push.Notice, category string) (push.Eligibility, error) {
-			ok, name, err := db.PushAudience(ctx, n.Recipient, n.Actor, n.Conversation, category)
+			ok, name, err := db.PushAudienceFor(ctx, n.Recipient, n.Actor, n.Conversation, category, n.Kind)
 			return push.Eligibility{OK: ok, ActorName: name}, err
 		},
 		Forget: func(ctx context.Context, t push.Target) error {
@@ -155,6 +158,8 @@ func run() error {
 		},
 	})
 	api.Push.Run(background, 4)
+	// Staff replies written in the admin console wait in the database for their content-free push (docs/api/27).
+	go api.RunSupportPush(background)
 	if cfg.MediaEndpoint != "" {
 		objects, err := media.NewS3(ctx, media.S3Config{Endpoint: cfg.MediaEndpoint, AccessKey: cfg.MediaAccessKey, SecretKey: cfg.MediaSecretKey, Bucket: cfg.MediaBucket, Region: cfg.MediaRegion, Secure: cfg.MediaSecure})
 		if err != nil {
@@ -355,6 +360,10 @@ func maintenanceJobs(db *store.Store, objects, chatObjects media.Store, identiti
 		{"session purge", func(ctx context.Context) (int64, error) { return db.PurgeSessions(ctx, 30*24*time.Hour, 5000) }, 0},
 		{"key claim purge", func(ctx context.Context) (int64, error) { return db.PurgeKeyClaims(ctx, 5000) }, 0},
 		{"story purge", func(ctx context.Context) (int64, error) { return db.PurgeStories(ctx, 5000) }, 0},
+		// Support threads, 365 days after they closed (docs/api/27-stories-notices-support.md).
+		{"support thread purge", func(ctx context.Context) (int64, error) {
+			return db.PurgeSupportThreads(ctx, store.SupportRetention, 1000)
+		}, 0},
 		{"location purge", func(ctx context.Context) (int64, error) {
 			return db.PurgeLocations(ctx, domain.LocationRetentionDays*24*time.Hour, 5000)
 		}, 0},
@@ -387,6 +396,8 @@ func maintenanceJobs(db *store.Store, objects, chatObjects media.Store, identiti
 			}
 			return db.PurgeReleasedHolds(ctx, heldObjects, 50)
 		}, 20 * time.Minute},
+		// Rewarded-ad sessions after three days and detailed-profile unlocks a month after they ran out (billing; the ledger stays).
+		{"billing purge", func(ctx context.Context) (int64, error) { return db.PurgeBilling(ctx, 5000) }, 0},
 		{"nearby probe purge", func(ctx context.Context) (int64, error) { return db.PurgeNearbyProbes(ctx, 3, 5000) }, 0},
 		{"chat blob cleanup", func(ctx context.Context) (int64, error) {
 			if chatObjects == nil {
@@ -395,6 +406,11 @@ func maintenanceJobs(db *store.Store, objects, chatObjects media.Store, identiti
 			return db.PurgeChatBlobs(ctx, chatObjects, 5000)
 		}, 20 * time.Minute},
 		{"chat blob tombstone purge", func(ctx context.Context) (int64, error) { return db.PurgeChatBlobTombstones(ctx, 5000) }, 0},
+		// A chat a member deleted from their list and did not restore within 30 days is closed for them (it leaves
+		// the Deleted-chats list and the app wipes its local history).
+		{"hidden chat close", func(ctx context.Context) (int64, error) {
+			return db.CloseExpiredHiddenChats(ctx, domain.HiddenChatRetention, 5000)
+		}, 0},
 		// Accounts past their 30 day grace period (docs/api/22-account-deletion-and-export.md). After the
 		// cleanups above, so a purge that marked files deleted last time finds them removed this time.
 		{"account purge", func(ctx context.Context) (int64, error) { return db.PurgeDeletedAccounts(ctx, identities, 50) }, 20 * time.Minute},

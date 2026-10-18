@@ -1,0 +1,22 @@
+{
+  "policy": {
+    "premiumFeatures": ["autoTranslate", "visitorsList", "nearbyFilter", "genderFilter", "detailedProfile", "groupChat"],
+    "freeNewChatsPerDay": 3,
+    "chatSlotCoinCost": 2,
+    "profileDetailCoinCost": 1,
+    "profileDetailDays": 30
+  },
+  "coinPacks": [
+    { "id": "coins_s",  "name": "Pocket of coins",  "coins": 40,  "bonusCoins": 0,   "priceTier": 1 },
+    { "id": "coins_m",  "name": "Handful of coins", "coins": 120, "bonusCoins": 10,  "priceTier": 2 },
+    { "id": "coins_l",  "name": "Bag of coins",     "coins": 300, "bonusCoins": 40,  "priceTier": 3 },
+    { "id": "coins_xl", "name": "Chest of coins",   "coins": 700, "bonusCoins": 120, "priceTier": 4 }
+  ],
+  "subscriptions": [
+    { "id": "premium_1m",  "name": "Premium, 1 month",   "periodMonths": 1,  "priceTier": 1 },
+    { "id": "premium_3m",  "name": "Premium, 3 months",  "periodMonths": 3,  "priceTier": 2 },
+    { "id": "premium_12m", "name": "Premium, 12 months", "periodMonths": 12, "priceTier": 3 }
+  ],
+  "ads": { "coinsPerAd": 1, "dailyCap": 5, "sessionMinutes": 10 },
+  "bonuses": { "profileCompletion": 5 }
+}

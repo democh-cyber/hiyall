@@ -51,6 +51,16 @@ const (
 	// and following lists open to friends only, where an adult's open to followers too
 	// (AdultConnectionsAudience). Applied once, with the settings above.
 	MinorConnectionsAudience = "friends"
+
+	// MinorAboutMeAudience and MinorHometownAudience are where a minor's about-me text and hometown start
+	// (hidden); a minor may share either with friends (the Floor values) and no wider. A minor's hometown is shown
+	// only to a confirmed friend in the same age band, is at most MinorHometownMax characters and never reaches
+	// search, Discover or Nearby. MinorBirthdayAudience is hidden for good: a minor can never show a birthday.
+	MinorAboutMeAudience  = "nobody"
+	MinorAboutMeFloor     = "friends"
+	MinorHometownAudience = "nobody"
+	MinorHometownFloor    = "friends"
+	MinorBirthdayAudience = "nobody"
 )
 
 // MinorNearbyBuckets are the only distances a minor is shown in Nearby, in km: coarser than
@@ -76,4 +86,9 @@ func ApplyMinorDefaults(p *Privacy) {
 	}
 	p.FieldAudiences["location"] = MinorLocationFieldAudience
 	p.FieldAudiences["connections"] = MinorConnectionsAudience
+	p.FieldAudiences["aboutMe"] = MinorAboutMeAudience
+	p.FieldAudiences["hometown"] = MinorHometownAudience
+	p.FieldAudiences["birthday"] = MinorBirthdayAudience
+	p.ShowLocalTime, p.ShowDistance = false, false
+	p.VisitorsVisibleToOthers, p.ShowBirthday = false, false
 }

@@ -566,7 +566,7 @@ var receiptsOn = `coalesce((mq.data->>'readReceipts')::boolean,false) AND coales
 // conversationSelect reads the caller's member row ($1) and joins the peer's.
 var conversationSelect = `SELECT c.conversation_id::text,c.status,c.created_at,c.last_message_at,p.user_id::text,p.username,coalesce(p.data->>'displayName',''),` + avatarThumbKey("av") + `,
  m.unread_count,m.read_at,CASE WHEN ` + receiptsOn + ` THEN pm.read_at END,m.sort_at,
- CASE WHEN m.muted_until>now() THEN m.muted_until END,coalesce(pq.data->>'onlineAudience','nobody')
+ CASE WHEN m.muted_until>now() THEN m.muted_until END,coalesce(pq.data->>'onlineAudience','nobody'),m.pinned_at,m.hidden_at
  FROM conversation_members m
  JOIN conversations c ON c.conversation_id=m.conversation_id
  JOIN conversation_members pm ON pm.conversation_id=m.conversation_id AND pm.user_id=m.peer_id
@@ -581,8 +581,12 @@ func scanConversation(row pgx.Row, sign Signer) (domain.Conversation, error) {
 	var c domain.Conversation
 	var avatar *string
 	c.SharedInterests = []string{}
-	err := row.Scan(&c.ConversationID, &c.Status, &c.CreatedAt, &c.LastMessageAt, &c.Peer.UserID, &c.Peer.Username, &c.Peer.DisplayName, &avatar, &c.UnreadCount, &c.ReadAt, &c.PeerReadAt, &c.SortAt, &c.MutedUntil, &c.PeerOnlineAudience)
+	err := row.Scan(&c.ConversationID, &c.Status, &c.CreatedAt, &c.LastMessageAt, &c.Peer.UserID, &c.Peer.Username, &c.Peer.DisplayName, &avatar, &c.UnreadCount, &c.ReadAt, &c.PeerReadAt, &c.SortAt, &c.MutedUntil, &c.PeerOnlineAudience, &c.PinnedAt, &c.HiddenAt)
 	c.Peer.AvatarURL = avatarURL(sign, avatar)
+	if c.HiddenAt != nil {
+		until := c.HiddenAt.Add(domain.HiddenChatRetention)
+		c.RestoreUntil = &until
+	}
 	return c, mapped(err)
 }
 
@@ -598,10 +602,11 @@ func (s *Store) OpenConversation(ctx context.Context, actor, target string, e do
 		if err := lockPair(ctx, tx, actor, target); err != nil {
 			return err
 		}
-		var status string
-		err := tx.QueryRow(ctx, `SELECT status FROM conversations WHERE user_low_id=least($1::uuid,$2::uuid) AND user_high_id=greatest($1::uuid,$2::uuid)`, actor, target).Scan(&status)
+		var status, existing string
+		err := tx.QueryRow(ctx, `SELECT status,conversation_id::text FROM conversations WHERE user_low_id=least($1::uuid,$2::uuid) AND user_high_id=greatest($1::uuid,$2::uuid)`, actor, target).Scan(&status, &existing)
 		if err == nil && status == "active" {
-			return nil
+			// Opening a chat on purpose brings it back from the caller's Deleted chats (their own row only).
+			return unhideOwn(ctx, tx, actor, existing)
 		}
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
@@ -618,6 +623,10 @@ func (s *Store) OpenConversation(ctx context.Context, actor, target string, e do
 			if err := checkNewChatQuota(ctx, tx, actor, e); err != nil {
 				return err
 			}
+			// Past the free allowance a new conversation costs coins, when plans are enforced (coins.go).
+			if err := chargeChatSlot(ctx, tx, actor, e, newID()); err != nil {
+				return err
+			}
 		}
 		var id string
 		var created time.Time
@@ -625,8 +634,10 @@ func (s *Store) OpenConversation(ctx context.Context, actor, target string, e do
  ON CONFLICT (user_low_id,user_high_id) DO UPDATE SET status='active' RETURNING conversation_id::text,created_at`, newID(), actor, target).Scan(&id, &created); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO conversation_members(conversation_id,user_id,peer_id,sort_at) VALUES($1,$2,$3,$4),($1,$3,$2,$4) ON CONFLICT DO NOTHING`, id, actor, target, created)
-		return err
+		if _, err = tx.Exec(ctx, `INSERT INTO conversation_members(conversation_id,user_id,peer_id,sort_at) VALUES($1,$2,$3,$4),($1,$3,$2,$4) ON CONFLICT DO NOTHING`, id, actor, target, created); err != nil {
+			return err
+		}
+		return unhideOwn(ctx, tx, actor, id)
 	})
 	if err != nil {
 		return domain.Conversation{}, err
@@ -661,8 +672,11 @@ func (s *Store) ConversationFor(ctx context.Context, user, id string, sign Signe
 	return s.withPresence(ctx, user, c, online)
 }
 
+// ListConversations pages the caller's visible chats that are not pinned, newest first; the pinned ones lead
+// the first page (PinnedConversations) and the cursor runs over this list only. Hidden chats are not here.
 func (s *Store) ListConversations(ctx context.Context, user string, before *time.Time, beforeID string, limit int, sign Signer, online Presence) ([]domain.Conversation, error) {
 	rows, err := s.Pool.Query(ctx, conversationSelect+` AND c.status='active'
+ AND m.hidden_at IS NULL AND m.pinned_at IS NULL
  AND ($2::timestamptz IS NULL OR (m.sort_at,m.conversation_id)<($2,$3::uuid))
  ORDER BY m.sort_at DESC,m.conversation_id DESC LIMIT $4`, user, before, beforeID, limit)
 	if err != nil {
@@ -910,7 +924,9 @@ func (s *Store) SendMessage(ctx context.Context, user, conversationID string, m 
 		}
 		// The sender has read up to their own message; the peer has one more unread.
 		// Both rows are named by their primary key (conversation_id, user_id): two index probes.
-		rows, err = tx.Query(ctx, `UPDATE conversation_members SET sort_at=$2,
+		// A message that is a conversation turn also brings the chat back for any member who had deleted it
+		// from their list (hidden_at, and closed_at once the 30 days had passed): both rows, in this one UPDATE.
+		rows, err = tx.Query(ctx, `UPDATE conversation_members SET sort_at=$2,hidden_at=NULL,closed_at=NULL,
  unread_count=CASE WHEN user_id=$3 THEN 0 ELSE unread_count+1 END,
  read_at=CASE WHEN user_id=$3 THEN greatest(read_at,$2) ELSE read_at END
  WHERE conversation_id=$1 AND user_id IN ($3::uuid,$4::uuid)
@@ -1109,11 +1125,11 @@ func (s *Store) ReadReceiptsShared(ctx context.Context, a, b string) (bool, erro
 }
 
 // Unread totals the caller's unread messages across active conversations,
-// leaving out muted chats and people the caller restricted.
+// leaving out muted chats, chats the caller deleted from their list and people the caller restricted.
 func (s *Store) Unread(ctx context.Context, user string) (domain.UnreadSummary, error) {
 	var u domain.UnreadSummary
 	err := s.Pool.QueryRow(ctx, `SELECT coalesce(sum(m.unread_count),0)::int,count(*)::int FROM conversation_members m JOIN conversations c ON c.conversation_id=m.conversation_id
- WHERE m.user_id=$1 AND m.unread_count>0 AND c.status='active' AND (m.muted_until IS NULL OR m.muted_until<=now())
+ WHERE m.user_id=$1 AND m.unread_count>0 AND m.hidden_at IS NULL AND c.status='active' AND (m.muted_until IS NULL OR m.muted_until<=now())
  AND NOT EXISTS(SELECT 1 FROM user_controls rc WHERE rc.actor_id=$1 AND rc.target_id=m.peer_id AND rc.control='restrict')
  AND NOT interaction_barred($1::uuid,m.peer_id)`, user).Scan(&u.Messages, &u.Conversations)
 	return u, err

@@ -27,35 +27,40 @@ func (e *ValidationError) Error() string  { return e.Field + ": " + e.Message }
 func invalid(field, message string) error { return &ValidationError{field, message} }
 
 type Profile struct {
-	UserID          string       `json:"userId"`
-	Username        string       `json:"username"`
-	DisplayName     string       `json:"displayName"`
-	Bio             string       `json:"bio"`
-	Headline        string       `json:"headline"`
-	Quote           string       `json:"quote"`
-	SocialStats     *SocialStats `json:"socialStats,omitempty"`
-	Interests       []string     `json:"interests"`
-	CurrentVibe     string       `json:"currentVibe"`
-	ProfileAccent   string       `json:"profileAccent"`
-	ProfilePattern  string       `json:"profilePattern"`
-	AvatarFrame     string       `json:"avatarFrame"`
-	AvatarMediaID   *string      `json:"avatarMediaId"`
-	CoverMediaID    *string      `json:"coverMediaId"`
-	Pronouns        string       `json:"pronouns"`
-	Gender          string       `json:"gender"`
-	Country         *string      `json:"country"`
-	Region          string       `json:"region"`
-	City            string       `json:"city"`
-	Timezone        string       `json:"timezone"`
-	WebsiteURL      *string      `json:"websiteUrl"`
-	Profession      string       `json:"profession"`
-	Education       string       `json:"education"`
-	Languages       Languages    `json:"languages"`
-	ProfileAudience string       `json:"profileAudience"`
-	Locale          string       `json:"locale"`
-	Version         string       `json:"version"`
-	CreatedAt       time.Time    `json:"createdAt"`
-	UpdatedAt       time.Time    `json:"updatedAt"`
+	UserID         string       `json:"userId"`
+	Username       string       `json:"username"`
+	DisplayName    string       `json:"displayName"`
+	Bio            string       `json:"bio"`
+	Headline       string       `json:"headline"`
+	Quote          string       `json:"quote"`
+	SocialStats    *SocialStats `json:"socialStats,omitempty"`
+	Interests      []string     `json:"interests"`
+	CurrentVibe    string       `json:"currentVibe"`
+	ProfileAccent  string       `json:"profileAccent"`
+	ProfilePattern string       `json:"profilePattern"`
+	AvatarFrame    string       `json:"avatarFrame"`
+	AvatarMediaID  *string      `json:"avatarMediaId"`
+	CoverMediaID   *string      `json:"coverMediaId"`
+	Pronouns       string       `json:"pronouns"`
+	Gender         string       `json:"gender"`
+	Country        *string      `json:"country"`
+	Region         string       `json:"region"`
+	City           string       `json:"city"`
+	Timezone       string       `json:"timezone"`
+	WebsiteURL     *string      `json:"websiteUrl"`
+	Profession     string       `json:"profession"`
+	Education      string       `json:"education"`
+	Languages      Languages    `json:"languages"`
+	// PersonalityTags are ids from PersonalityTags; AboutMe and Hometown are optional short text. Each has its own
+	// field audience (personality, aboutMe, hometown). Hometown can only be set by an adult.
+	PersonalityTags []string  `json:"personalityTags"`
+	AboutMe         string    `json:"aboutMe"`
+	Hometown        string    `json:"hometown"`
+	ProfileAudience string    `json:"profileAudience"`
+	Locale          string    `json:"locale"`
+	Version         string    `json:"version"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
 // ProfileView is the own-profile response: the stored profile plus signed URLs for the
@@ -65,6 +70,17 @@ type ProfileView struct {
 	Profile
 	AvatarURL     *string `json:"avatarUrl"`
 	AvatarFullURL *string `json:"avatarFullUrl"`
+	// Photos is the gallery in order; the first is the profile photo (avatarUrl).
+	Photos []ProfilePhoto `json:"photos"`
+}
+
+// ProfilePhoto is one gallery photo with signed URLs (full size and thumbnail), never stored.
+type ProfilePhoto struct {
+	MediaID  string `json:"mediaId"`
+	URL      string `json:"url"`
+	ThumbURL string `json:"thumbUrl"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
 }
 
 // SocialStats is derived from stored relationships, visits and stories, never editable profile data.
@@ -79,23 +95,35 @@ type SocialStats struct {
 }
 
 type Privacy struct {
-	ProfileAudience     string            `json:"profileAudience"`
-	MessagesFrom        string            `json:"messagesFrom"`
-	FollowPolicy        string            `json:"followPolicy"`
-	RequestsFrom        string            `json:"requestsFrom"`
-	StoryAudience       string            `json:"storyAudience"`
-	ActivityAudience    string            `json:"activityAudience"`
-	OnlineAudience      string            `json:"onlineAudience"`
-	LastSeenAudience    string            `json:"lastSeenAudience"`
-	LocationAudience    string            `json:"locationAudience"`
-	CommentsFrom        string            `json:"commentsFrom"`
-	MentionsFrom        string            `json:"mentionsFrom"`
-	Discoverable        bool              `json:"discoverable"`
-	ShowInterestOverlap bool              `json:"showInterestOverlap"`
-	ReadReceipts        bool              `json:"readReceipts"`
-	FieldAudiences      map[string]string `json:"fieldAudiences"`
-	Version             string            `json:"version"`
-	UpdatedAt           time.Time         `json:"updatedAt"`
+	ProfileAudience     string `json:"profileAudience"`
+	MessagesFrom        string `json:"messagesFrom"`
+	FollowPolicy        string `json:"followPolicy"`
+	RequestsFrom        string `json:"requestsFrom"`
+	StoryAudience       string `json:"storyAudience"`
+	ActivityAudience    string `json:"activityAudience"`
+	OnlineAudience      string `json:"onlineAudience"`
+	LastSeenAudience    string `json:"lastSeenAudience"`
+	LocationAudience    string `json:"locationAudience"`
+	CommentsFrom        string `json:"commentsFrom"`
+	MentionsFrom        string `json:"mentionsFrom"`
+	Discoverable        bool   `json:"discoverable"`
+	ShowInterestOverlap bool   `json:"showInterestOverlap"`
+	ReadReceipts        bool   `json:"readReceipts"`
+	// ShowLocalTime lets viewers of the profile (and Discover rows) see the member's local time, computed from
+	// their stored time zone. Default on for adults, off for members under 18.
+	ShowLocalTime bool `json:"showLocalTime"`
+	// ShowDistance lets Nearby show the member's distance bucket to the people who find them. Default on for
+	// adults, off for members under 18.
+	ShowDistance bool `json:"showDistance"`
+	// VisitorsVisibleToOthers (adults only, default off) lets people who may view the profile see who visited it in
+	// the last 30 days. The owner's own visitor list is unchanged and always theirs.
+	VisitorsVisibleToOthers bool `json:"visitorsVisibleToOthers"`
+	// ShowBirthday (adults only, default off) shows month and day of birth, never the year, to the people the
+	// "birthday" field audience admits.
+	ShowBirthday   bool              `json:"showBirthday"`
+	FieldAudiences map[string]string `json:"fieldAudiences"`
+	Version        string            `json:"version"`
+	UpdatedAt      time.Time         `json:"updatedAt"`
 }
 
 // AdultConnectionsAudience is the starting audience of the "connections" field (who may open the
@@ -103,7 +131,15 @@ type Privacy struct {
 // A minor starts with MinorConnectionsAudience instead (see ApplyMinorDefaults).
 const AdultConnectionsAudience = "followers"
 
-var Fields = []string{"pronouns", "gender", "age", "counts", "location", "profession", "education", "website", "timezone", "languages", "interests", "vibe", "connections"}
+var Fields = []string{"pronouns", "gender", "age", "counts", "location", "profession", "education", "website", "timezone", "languages", "interests", "vibe", "connections", "aboutMe", "hometown", "personality", "birthday"}
+
+// Default audiences of the v2 fields for an adult. A member under 18 starts with MinorAboutMeAudience,
+// MinorHometownAudience and MinorBirthdayAudience instead (ApplyMinorDefaults).
+const (
+	AdultAboutMeAudience  = "followers"
+	AdultHometownAudience = "followers"
+	AdultBirthdayAudience = "friends"
+)
 
 // Genders are the values of the optional profile field gender. An empty value is
 // unset or prefer not to say. Gender is a profile field with its own audience, and the
@@ -128,7 +164,10 @@ func DefaultPrivacy() Privacy {
 		fields[name] = "everyone"
 	}
 	fields["connections"] = AdultConnectionsAudience
-	return Privacy{ProfileAudience: "public", MessagesFrom: "everyone", FollowPolicy: "everyone", RequestsFrom: "everyone", StoryAudience: "friends", ActivityAudience: "nobody", OnlineAudience: "everyone", LastSeenAudience: "nobody", LocationAudience: "nobody", CommentsFrom: "friends", MentionsFrom: "friends", Discoverable: true, ShowInterestOverlap: true, FieldAudiences: fields, Version: "1"}
+	fields["aboutMe"] = AdultAboutMeAudience
+	fields["hometown"] = AdultHometownAudience
+	fields["birthday"] = AdultBirthdayAudience
+	return Privacy{ShowLocalTime: true, ShowDistance: true, ProfileAudience: "public", MessagesFrom: "everyone", FollowPolicy: "everyone", RequestsFrom: "everyone", StoryAudience: "friends", ActivityAudience: "nobody", OnlineAudience: "everyone", LastSeenAudience: "nobody", LocationAudience: "nobody", CommentsFrom: "friends", MentionsFrom: "friends", Discoverable: true, ShowInterestOverlap: true, FieldAudiences: fields, Version: "1"}
 }
 
 func member(value string, allowed ...string) bool {
@@ -173,10 +212,16 @@ func validateString(name string, raw json.RawMessage, min, max int) (string, err
 // unused is decided in the store, inside the update's transaction. coverMediaId is not
 // enabled yet, so only null passes.
 func ValidateProfilePatch(patch map[string]json.RawMessage) error {
+	return ValidateProfilePatchFor(patch, Free())
+}
+
+// ValidateProfilePatchFor is ValidateProfilePatch with the member's own limits (languages, interests and
+// personality tags come from their Entitlements).
+func ValidateProfilePatchFor(patch map[string]json.RawMessage, e Entitlements) error {
 	if len(patch) == 0 {
 		return invalid("profile", "at least one field is required")
 	}
-	limits := map[string][2]int{"username": {3, 30}, "displayName": {1, 80}, "bio": {0, 300}, "headline": {0, 100}, "quote": {0, 160}, "currentVibe": {0, 80}, "profileAccent": {1, 12}, "profilePattern": {1, 12}, "avatarFrame": {1, 12}, "pronouns": {0, 40}, "region": {0, 100}, "city": {0, 100}, "timezone": {1, 100}, "profession": {0, 100}, "education": {0, 150}, "locale": {2, 35}, "profileAudience": {1, 20}, "gender": {0, 12}}
+	limits := map[string][2]int{"username": {3, 30}, "displayName": {1, 80}, "bio": {0, 300}, "headline": {0, 100}, "quote": {0, 160}, "currentVibe": {0, 80}, "profileAccent": {1, 12}, "profilePattern": {1, 12}, "avatarFrame": {1, 12}, "pronouns": {0, 40}, "region": {0, 100}, "city": {0, 100}, "timezone": {1, 100}, "profession": {0, 100}, "education": {0, 150}, "locale": {2, 35}, "profileAudience": {1, 20}, "gender": {0, 12}, "aboutMe": {0, AboutMeMax}, "hometown": {0, HometownMax}}
 	for name, raw := range patch {
 		if bound, ok := limits[name]; ok {
 			value, err := validateString(name, raw, bound[0], bound[1])
@@ -214,6 +259,10 @@ func ValidateProfilePatch(patch map[string]json.RawMessage) error {
 			case "gender":
 				if value != "" && !member(value, Genders...) {
 					return invalid(name, "choose woman, man, nonbinary or leave it empty")
+				}
+			case "hometown":
+				if err := ValidateHometown(value, false); err != nil {
+					return err
 				}
 			case "timezone":
 				// "Local" would mean the server's own zone, not a place.
@@ -257,22 +306,21 @@ func ValidateProfilePatch(patch map[string]json.RawMessage) error {
 				return invalid(name, "media uploads are not enabled yet")
 			}
 		case "languages":
-			var values Languages
-			if string(raw) == "null" || json.Unmarshal(raw, &values) != nil || len(values) > 9 {
-				return invalid(name, "select up to nine languages")
+			canonical, err := normaliseLanguages(raw, e.LanguagesMax)
+			if err != nil {
+				return err
 			}
-			seen := map[string]bool{}
-			for _, value := range values {
-				key := strings.ToLower(value.Code)
-				if len(value.Code) > 35 || !localePattern.MatchString(value.Code) || seen[key] || !member(value.Level, "", "basic", "conversational", "fluent", "native") {
-					return invalid(name, "invalid or duplicate language or proficiency")
-				}
-				seen[key] = true
+			patch[name] = canonical
+		case "personalityTags":
+			canonical, err := normalisePersonalityTags(raw, e.PersonalityTagsMax)
+			if err != nil {
+				return err
 			}
+			patch[name] = canonical
 		case "interests":
 			var values []string
-			if string(raw) == "null" || json.Unmarshal(raw, &values) != nil || len(values) > 10 {
-				return invalid(name, "choose up to ten interests")
+			if string(raw) == "null" || json.Unmarshal(raw, &values) != nil || len(values) > e.InterestsMax {
+				return invalid(name, "choose up to "+itoa(e.InterestsMax)+" interests")
 			}
 			seen := map[string]bool{}
 			for i, value := range values {
@@ -316,7 +364,7 @@ func ValidatePrivacyPatch(patch map[string]json.RawMessage) error {
 			if !member(value, "everyone", "approval", "nobody") {
 				return invalid(name, "invalid follow policy")
 			}
-		case "discoverable", "showInterestOverlap", "readReceipts":
+		case "discoverable", "showInterestOverlap", "readReceipts", "showLocalTime", "showDistance", "visitorsVisibleToOthers", "showBirthday":
 			var value bool
 			if string(raw) == "null" || json.Unmarshal(raw, &value) != nil {
 				return invalid(name, "must be true or false")
