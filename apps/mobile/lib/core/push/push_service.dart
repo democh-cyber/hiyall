@@ -20,6 +20,9 @@ class PushTap {
   /// A device was added to this account: opens the chat devices screen.
   const PushTap.device() : kind = 'device', conversationId = null;
 
+  /// The team replied to a support message: opens Message support.
+  const PushTap.support() : kind = 'support', conversationId = null;
+
   static final _id = RegExp(r'^[0-9a-fA-F-]{36}$');
 
   /// The payload the server sends is `{kind: chat, conversationId}`,
@@ -33,6 +36,8 @@ class PushTap {
         return const PushTap.social();
       case 'device':
         return const PushTap.device();
+      case 'support':
+        return const PushTap.support();
     }
     return null;
   }
@@ -41,6 +46,7 @@ class PushTap {
   String get location => switch (kind) {
     'chat' => '/chats/$conversationId',
     'device' => '/profile/devices',
+    'support' => '/profile/support',
     _ => '/notifications',
   };
 }

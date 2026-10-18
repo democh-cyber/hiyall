@@ -10,6 +10,8 @@ import '../../src/rust/api/e2ee.dart';
 import '../presence.dart';
 import 'chat_api.dart';
 import 'chat_attachment.dart';
+import 'chat_av.dart';
+import 'chat_av_outbox.dart';
 import 'chat_blob_cache.dart';
 import 'chat_blob_codec.dart';
 import 'chat_blob_transport.dart';
@@ -18,6 +20,8 @@ import 'chat_key_upload.dart';
 import 'chat_local_data.dart';
 import 'chat_media.dart';
 import 'chat_padding.dart';
+import 'chat_play_files.dart';
+import 'chat_prefs.dart';
 import 'chat_outbox.dart';
 import 'chat_reactions.dart';
 import 'chat_snapshot.dart' show SnapshotChatStore;
@@ -68,6 +72,14 @@ class ChatMessage {
   /// An image message whose descriptor did not pass validation.
   final bool unsupportedPhoto;
 
+  /// The voice message or the video of this message, or null (a message carries at most one of the three
+  /// attachments).
+  final VoiceAttachment? voice;
+  final VideoAttachment? video;
+
+  /// `voice` or `video` for a message of that kind whose descriptor did not pass validation.
+  final String? unsupportedKind;
+
   /// Where an outgoing message is; received ones are always sent.
   final SendStatus status;
 
@@ -90,6 +102,9 @@ class ChatMessage {
     this.notice = false,
     this.attachment,
     this.unsupportedPhoto = false,
+    this.voice,
+    this.video,
+    this.unsupportedKind,
     this.status = SendStatus.sent,
     this.failure,
     this.reply,
@@ -103,6 +118,11 @@ class ChatMessage {
   };
 
   bool get isPhoto => attachment != null || unsupportedPhoto;
+  bool get isVoice => voice != null || unsupportedKind == 'voice';
+  bool get isVideo => video != null || unsupportedKind == 'video';
+
+  /// Anything that is not text: a photo, a voice message or a video.
+  bool get isMedia => isPhoto || isVoice || isVideo;
 
   /// Where the message sits in the conversation: the relay's time when there is
   /// one, so a peer's clock cannot move a message around or evict history.
@@ -132,6 +152,12 @@ class ChatMessage {
       ? (attachment!.caption.isEmpty ? 'Photo' : attachment!.caption)
       : unsupportedPhoto
       ? 'Photo'
+      : isVoice
+      ? (voice == null
+            ? 'Voice message'
+            : 'Voice message (${clockOf(voice!.durationMs)})')
+      : isVideo
+      ? (video == null ? 'Video' : 'Video (${clockOf(video!.durationMs)})')
       : text;
 
   ChatMessage copyWith({
@@ -152,6 +178,9 @@ class ChatMessage {
     notice: notice,
     attachment: attachment,
     unsupportedPhoto: unsupportedPhoto,
+    voice: voice,
+    video: video,
+    unsupportedKind: unsupportedKind,
     status: status ?? this.status,
     failure: clearFailure ? null : failure ?? this.failure,
     reply: reply ?? this.reply,
@@ -168,6 +197,9 @@ class ChatMessage {
     'notice': notice,
     if (attachment != null) 'att': attachment!.toLocalJson(),
     if (unsupportedPhoto) 'bad': true,
+    if (voice != null) 'voice': voice!.toLocalJson(),
+    if (video != null) 'video': video!.toLocalJson(),
+    'badk': ?unsupportedKind,
     if (status != SendStatus.sent) 'st': status.name,
     'err': ?failure,
     if (reply != null) 're': reply!.toJson(),
@@ -184,6 +216,24 @@ class ChatMessage {
         unsupported = true;
       }
     }
+    VoiceAttachment? voice;
+    VideoAttachment? video;
+    var badKind = j['badk'] as String?;
+    if (badKind != 'voice' && badKind != 'video') badKind = null;
+    if (j['voice'] != null) {
+      try {
+        voice = VoiceAttachment.fromLocal(j['voice']);
+      } on FormatException {
+        badKind = 'voice';
+      }
+    }
+    if (j['video'] != null) {
+      try {
+        video = VideoAttachment.fromLocal(j['video']);
+      } on FormatException {
+        badKind = 'video';
+      }
+    }
     return ChatMessage(
       messageId: j['id'] as String,
       senderId: j['from'] as String,
@@ -194,6 +244,9 @@ class ChatMessage {
       notice: j['notice'] as bool? ?? false,
       attachment: attachment,
       unsupportedPhoto: unsupported,
+      voice: voice,
+      video: video,
+      unsupportedKind: voice == null && video == null ? badKind : null,
       status: SendStatus.values.asNameMap()[j['st']] ?? SendStatus.sent,
       failure: j['err'] as String?,
       // Both are optional: history written before replies and reactions has
@@ -257,6 +310,10 @@ class ChatConversation {
   /// "not online, never seen".
   final bool online;
   final DateTime? lastSeenAt;
+
+  /// When this account pinned the chat (null: not pinned), and, for a chat in the Deleted chats list, when
+  /// it was deleted from the list and when it can no longer be restored. Per account; the peer never sees them.
+  final DateTime? pinnedAt, hiddenAt, restoreUntil;
   const ChatConversation(
     this.id,
     this.peerId,
@@ -270,8 +327,12 @@ class ChatConversation {
     this.sharedInterests = const [],
     this.online = false,
     this.lastSeenAt,
+    this.pinnedAt,
+    this.hiddenAt,
+    this.restoreUntil,
   });
 
+  bool get pinned => pinnedAt != null;
   bool get muted => mutedUntil?.isAfter(DateTime.now()) ?? false;
 }
 
@@ -488,6 +549,7 @@ class ChatEngine {
   bool _awaitingRegistration = false;
   ChatMedia? _media;
   PhotoOutbox? _outbox;
+  AvOutbox? _avOutbox;
 
   ChatEngine({
     required this.userId,
@@ -549,8 +611,20 @@ class ChatEngine {
         Iterable<String> keysOf(List<ChatMessage> messages) sync* {
           for (final m in messages) {
             final a = m.attachment;
-            if (a == null) continue;
-            for (final part in [a.full, a.thumb]) {
+            if (a != null) {
+              for (final part in [a.full, a.thumb]) {
+                final id = part.blobId;
+                if (id != null) {
+                  yield blobCacheKey(conversationId, id, part.ctSha256);
+                }
+              }
+            }
+            final v = m.voice, vd = m.video;
+            final avParts = [
+              if (v != null) v.part,
+              if (vd != null) ...[vd.video, vd.poster],
+            ];
+            for (final part in avParts) {
               final id = part.blobId;
               if (id != null) {
                 yield blobCacheKey(conversationId, id, part.ctSha256);
@@ -583,8 +657,31 @@ class ChatEngine {
           () => _deliver(conversation, peer, id, jsonEncode(payload), blobIds),
         ),
       );
+      _avOutbox = AvOutbox(
+        userId: userId,
+        api: api,
+        transport: blobTransport,
+        codec: blobCodec,
+        store: _store,
+        history: _log,
+        cache: cache,
+        dir: Directory('${root.path}/chat_outbox/av'),
+        storeKey: _k('outbox_av'),
+        deliver: (conversation, peer, id, payload, blobIds) => _locked(
+          () => _deliver(conversation, peer, id, jsonEncode(payload), blobIds),
+        ),
+      );
     }
   }
+
+  /// The private folder for the short-lived plaintext of a recording and of a voice message or video while it
+  /// plays (see [PlayFiles]); null without a media folder. Emptied when the engine starts.
+  late final PlayFiles? playFiles = mediaRoot == null
+      ? null
+      : PlayFiles(Directory('${mediaRoot!.path}/chat_play'));
+
+  /// Choices that stay on this phone (auto-translate per chat, the translation language); never sent anywhere.
+  late final ChatPrefs prefs = ChatPrefs(_store, _k('prefs'));
 
   /// Fetching, verifying and decrypting received photos; null without a media folder.
   ChatMedia? get media => _media;
@@ -665,6 +762,10 @@ class ChatEngine {
 
   /// Housekeeping that must never stop chat from starting.
   Future<void> _afterStart() async {
+    // Plaintext left by a recording or a playback that was cut short (the app was closed meanwhile).
+    try {
+      await playFiles?.purge();
+    } catch (_) {}
     try {
       // A removal of an earlier device (sign-out or reinstall offline) that
       // was waiting for a connection.
@@ -702,15 +803,20 @@ class ChatEngine {
     _timer = null;
     _keyRetry?.cancel();
     _keyRetry = null;
-    final outbox = _outbox;
+    final outbox = _outbox, avOutbox = _avOutbox;
     outbox?.dispose();
+    avOutbox?.dispose();
     _media?.cache.close();
     _changes.close();
     _ownDeviceChanges.close();
     ChatLocalData.unregisterDrain(userId, dispose);
     try {
-      await Future.wait<void>([_queue, ?outbox?.drain(), _store.drain()])
-          .timeout(drainTimeout);
+      await Future.wait<void>([
+        _queue,
+        ?outbox?.drain(),
+        ?avOutbox?.drain(),
+        _store.drain(),
+      ]).timeout(drainTimeout);
     } catch (_) {
       // Whatever is still running can no longer write.
     }
@@ -1513,8 +1619,12 @@ class ChatEngine {
       ..addAll(next);
   }
 
-  Future<String> open(String peerId) async =>
-      (await api.openConversation(peerId))['conversationId'] as String;
+  Future<String> open(String peerId, {int? confirmCost}) async =>
+      (await api.openConversation(
+            peerId,
+            confirmCost: confirmCost,
+          ))['conversationId']
+          as String;
 
   /// Sends a text message. [replyTo] quotes a message of this conversation: a
   /// short plain snippet of that message's own text (never of what it quotes,
@@ -1571,7 +1681,7 @@ class ChatEngine {
               m.messageId == messageId &&
               m.mine &&
               !m.notice &&
-              !m.isPhoto &&
+              !m.isMedia &&
               m.status == SendStatus.failed,
         )
         .firstOrNull;
@@ -1885,10 +1995,52 @@ class ChatEngine {
   /// The thumbnail of a photo sent in this session, so it appears at once.
   Uint8List? localThumb(String messageId) => _outbox?.localThumb(messageId);
 
-  /// Removes every photo file and unsent upload of this account from the
+  // ------------------------------------------------- voice messages, videos
+
+  AvOutbox get _av {
+    final outbox = _avOutbox;
+    if (outbox == null) {
+      throw const ChatFailure(
+        'PHOTOS_UNAVAILABLE',
+        'Voice messages and videos can only be sent from the Hiyall app on a phone.',
+      );
+    }
+    return outbox;
+  }
+
+  /// Seals and sends a recorded voice message. It shows at once as sending; the upload continues in the
+  /// background and a failure leaves it failed, ready for [retryAv].
+  Future<ChatMessage> sendVoice(
+    String conversationId,
+    String peerId,
+    VoiceClip clip, {
+    ChatMessage? replyTo,
+  }) => _av.enqueueVoice(conversationId, peerId, clip, replyTo: replyTo);
+
+  /// Seals and sends a prepared video (see [PreparedVideo]).
+  Future<ChatMessage> sendVideo(
+    String conversationId,
+    String peerId,
+    PreparedVideo video, {
+    ChatMessage? replyTo,
+  }) => _av.enqueueVideo(conversationId, peerId, video, replyTo: replyTo);
+
+  Future<void> retryAv(String conversationId, String messageId) =>
+      _av.retry(conversationId, messageId);
+  void cancelAv(String messageId) => _avOutbox?.cancel(messageId);
+  Future<void> discardAv(String conversationId, String messageId) =>
+      _av.discard(conversationId, messageId);
+  TransferProgress? avProgress(String messageId) =>
+      _avOutbox?.progress(messageId);
+
+  /// The poster of a video sent in this session, so it appears at once.
+  Uint8List? localPoster(String messageId) => _avOutbox?.localPoster(messageId);
+
+  /// Removes every photo, voice message and video file and unsent upload of this account from the
   /// device; called on sign-out.
   Future<void> wipeMedia() async {
     await _outbox?.wipe();
+    await _avOutbox?.wipe();
     await _media?.cache.wipe();
   }
 
@@ -2309,6 +2461,10 @@ class ChatEngine {
   /// Most recent first. Only the returned chats' local history is read.
   Future<List<ChatConversation>> conversations({int limit = 50}) async => [
     for (final c in await api.conversations(limit: limit))
+      await _conversationOf(c),
+  ];
+
+  Future<ChatConversation> _conversationOf(Map<String, dynamic> c) async =>
       ChatConversation(
         c['conversationId'] as String,
         (c['peer'] as Map)['userId'] as String,
@@ -2322,8 +2478,95 @@ class ChatEngine {
         sharedInterests: parseSharedInterests(c['sharedInterests']),
         online: parsePresence(c['peer']).online,
         lastSeenAt: parsePresence(c['peer']).lastSeenAt,
-      ),
-  ];
+        pinnedAt: DateTime.tryParse(c['pinnedAt'] as String? ?? ''),
+        hiddenAt: DateTime.tryParse(c['hiddenAt'] as String? ?? ''),
+        restoreUntil: DateTime.tryParse(c['restoreUntil'] as String? ?? ''),
+      );
+
+  /// The chats this account deleted from its list, still restorable. The local history of every chat the
+  /// relay reports closed (deleted from the list more than 30 days ago), and of any listed chat whose
+  /// restore window has passed on this phone's clock, is wiped here: this is where the 30 days end.
+  Future<List<ChatConversation>> hiddenConversations() async {
+    final result = await api.hiddenConversations();
+    final now = _clock();
+    final out = <ChatConversation>[];
+    final expired = <String>[...result.closedIds];
+    for (final c in result.items) {
+      final conversation = await _conversationOf(c);
+      final until = conversation.restoreUntil;
+      if (until != null && !until.isAfter(now)) {
+        expired.add(conversation.id);
+      } else {
+        out.add(conversation);
+      }
+    }
+    await wipeConversations(expired);
+    return out;
+  }
+
+  /// Pins or unpins a chat (the relay enforces the limit of five).
+  Future<void> pinConversation(String id, bool pinned) =>
+      api.pinConversation(id, pinned);
+
+  /// Deletes a chat from the list. The local history is kept for the 30 days it can be restored.
+  Future<void> hideConversation(String id) => api.hideConversation(id);
+  Future<void> restoreConversation(String id) => api.restoreConversation(id);
+
+  /// Deletes this phone's copy of a conversation: its history, the cached files of its media and its unsent
+  /// uploads. "Clear history", and the end of a deleted chat's 30 days. Nothing changes on the relay.
+  Future<void> clearHistory(String conversationId) =>
+      wipeConversations([conversationId]);
+
+  Future<void> wipeConversations(Iterable<String> ids) async {
+    for (final id in ids) {
+      final unsent = [
+        for (final m in await history(id))
+          if (m.mine && m.status != SendStatus.sent) m,
+      ];
+      for (final m in unsent) {
+        if (m.isPhoto) {
+          await _outbox?.discard(id, m.messageId);
+        } else if (m.isVoice || m.isVideo) {
+          await _avOutbox?.discard(id, m.messageId);
+        }
+      }
+      await _log.clear(id);
+    }
+  }
+
+  /// Searches the decrypted history on this phone, never the relay. [query] is matched case-insensitively
+  /// against message text and photo captions; returns, per conversation id, how many messages match and the
+  /// newest matching one. Only the given [ids] are read.
+  Future<Map<String, ChatSearchHit>> searchHistory(
+    String query,
+    Iterable<String> ids,
+  ) async {
+    final q = query.trim().toLowerCase();
+    final out = <String, ChatSearchHit>{};
+    if (q.isEmpty) return out;
+    for (final id in ids) {
+      ChatMessage? newest;
+      var count = 0;
+      for (final m in await history(id)) {
+        if (m.notice) continue;
+        final text = m.attachment != null ? m.attachment!.caption : m.text;
+        if (m.isVoice || m.isVideo || text.toLowerCase().contains(q) == false) {
+          continue;
+        }
+        count++;
+        newest = m;
+      }
+      if (newest != null) out[id] = ChatSearchHit(count, newest);
+    }
+    return out;
+  }
+}
+
+/// A conversation with messages that match a search of the local history.
+class ChatSearchHit {
+  final int count;
+  final ChatMessage newest;
+  const ChatSearchHit(this.count, this.newest);
 }
 
 /// What a decrypted payload turned out to be.
@@ -2355,11 +2598,25 @@ class IncomingIgnored extends Incoming {
 ChatReply? replyOf(ChatMessage m, String me) {
   if (m.notice || !isCanonicalUuid(m.messageId)) return null;
   final photo = m.isPhoto;
+  // A voice message and a video quote as their kind with no text; the quote line names the kind.
+  final kind = photo
+      ? 'image'
+      : m.isVoice
+      ? 'voice'
+      : m.isVideo
+      ? 'video'
+      : 'text';
   return ChatReply(
     id: m.messageId,
     by: m.mine ? me : m.senderId,
-    snippet: snippetOf(photo ? (m.attachment?.caption ?? '') : m.text),
-    kind: photo ? 'image' : 'text',
+    snippet: snippetOf(
+      photo
+          ? (m.attachment?.caption ?? '')
+          : m.isVoice || m.isVideo
+          ? ''
+          : m.text,
+    ),
+    kind: kind,
   );
 }
 
@@ -2445,16 +2702,35 @@ Incoming parseIncoming(
       ),
     );
   }
-  if (kind != null && kind != 'text' && kind != 'image') {
+  if (kind != null &&
+      kind != 'text' &&
+      kind != 'image' &&
+      kind != 'voice' &&
+      kind != 'video') {
     return const IncomingIgnored();
   }
   ChatAttachment? attachment;
+  VoiceAttachment? voice;
+  VideoAttachment? video;
   var unsupported = false;
+  String? unsupportedKind;
   if (kind == 'image') {
     try {
       attachment = ChatAttachment.parse(body['att']);
     } on FormatException {
       unsupported = true;
+    }
+  } else if (kind == 'voice') {
+    try {
+      voice = VoiceAttachment.parse(body['att']);
+    } on FormatException {
+      unsupportedKind = 'voice';
+    }
+  } else if (kind == 'video') {
+    try {
+      video = VideoAttachment.parse(body['att']);
+    } on FormatException {
+      unsupportedKind = 'video';
     }
   }
   return IncomingMessage(
@@ -2467,6 +2743,9 @@ Incoming parseIncoming(
       mine: senderId == me,
       attachment: attachment,
       unsupportedPhoto: unsupported,
+      voice: voice,
+      video: video,
+      unsupportedKind: unsupportedKind,
       reply: ChatReply.parse(
         body['re'],
         members: members ?? (senderId == me ? null : {me, senderId}),

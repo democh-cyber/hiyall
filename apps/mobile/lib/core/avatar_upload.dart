@@ -26,6 +26,9 @@ enum AvatarProblem {
   noPermission,
   network,
   quota,
+
+  /// The scanner or the server would not take this photo. It never says why.
+  rejected,
   other,
 }
 
@@ -38,7 +41,8 @@ class AvatarError implements Exception {
   /// Choosing a different photo is the only way out of these two.
   bool get needsAnotherPhoto =>
       problem == AvatarProblem.tooLarge ||
-      problem == AvatarProblem.unsupportedType;
+      problem == AvatarProblem.unsupportedType ||
+      problem == AvatarProblem.rejected;
 
   /// Whether sending the same photo again could work now. A limit (the day's uploads or a full
   /// storage) will not lift by retrying at once, so it offers no retry.
@@ -56,6 +60,7 @@ class AvatarError implements Exception {
         'That photo didn’t upload. Check your connection and try again.',
       AvatarProblem.quota =>
         'You’ve reached today’s photo limit. Try again later.',
+      AvatarProblem.rejected => 'That photo can’t be used. Try another one.',
       AvatarProblem.other => 'Something went wrong with that photo. Try again.',
     },
   );
@@ -78,6 +83,7 @@ class AvatarError implements Exception {
       return AvatarError.of(switch (error.code) {
         'TOO_LARGE' => AvatarProblem.tooLarge,
         'UNSUPPORTED_MEDIA' => AvatarProblem.unsupportedType,
+        'UPLOAD_REJECTED' => AvatarProblem.rejected,
         _ =>
           error.status == null || error.status! >= 500 || error.status == 429
               ? AvatarProblem.network

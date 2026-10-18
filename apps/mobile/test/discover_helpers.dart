@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/app.dart';
 import 'package:hiyall/core/api.dart';
 import 'package:hiyall/core/chat_peers.dart';
+import 'package:hiyall/core/discover_prefs.dart';
 import 'package:hiyall/core/discovery.dart';
 import 'package:hiyall/core/say_hi_prefs.dart';
 import 'package:hiyall/core/state.dart';
@@ -29,6 +30,9 @@ Map<String, dynamic> person(
   bool? online,
   int? distanceKm,
   String? avatarUrl,
+  List<String>? personalityTags,
+  Map<String, dynamic>? localTime,
+  List<String>? reasons,
 }) => {
   'userId': id,
   'username': id,
@@ -43,6 +47,9 @@ Map<String, dynamic> person(
   'online': ?online,
   'distanceKm': ?distanceKm,
   'avatarUrl': ?avatarUrl,
+  'personalityTags': ?personalityTags,
+  'localTime': ?localTime,
+  'reasons': ?reasons,
 };
 
 /// A fake server for Discover: pages of people, with the filters it was sent.
@@ -52,6 +59,12 @@ class DiscoverFake extends FakeApi {
   int pageSize;
   final searches = <Map<String, dynamic>>[];
   final nearbyCalls = <PeopleFilters?>[];
+
+  /// The possible-matches calls (limit, excludeFollowing, cursor) and what the server answers with.
+  final possibleCalls =
+      <({int limit, bool excludeFollowing, String? cursor})>[];
+  List<Map<String, dynamic>> possible = [];
+  ApiFailure? possibleFailure;
   Completer<void>? hold;
   ApiFailure? failure;
   Object? failureOnce;
@@ -162,6 +175,27 @@ class DiscoverFake extends FakeApi {
   }
 
   @override
+  Future<ApiPage<Profile>> possibleMatches(
+    Session s, {
+    int limit = 20,
+    bool excludeFollowing = false,
+    String? cursor,
+  }) async {
+    possibleCalls.add((
+      limit: limit,
+      excludeFollowing: excludeFollowing,
+      cursor: cursor,
+    ));
+    if (possibleFailure != null) throw possibleFailure!;
+    final start = cursor == null ? 0 : int.parse(cursor);
+    final end = (start + limit).clamp(0, possible.length);
+    return ApiPage.fromJson({
+      'items': possible.sublist(start, end),
+      'nextCursor': end < possible.length ? '$end' : null,
+    }, Profile.fromJson);
+  }
+
+  @override
   Future<ApiPage<Profile>> nearby(
     Session s, {
     PeopleFilters? filters,
@@ -268,6 +302,7 @@ Future<ProviderContainer> mountDiscover(
   bool chat = true,
   HiLog? hi,
   SayHiPrefsStore? sayHiStore,
+  DiscoverPrefsStore? discoverPrefs,
   HiClock? clock,
 
   /// What the chat list last said (peer id -> conversation id), or null for "not loaded".
@@ -289,6 +324,9 @@ Future<ProviderContainer> mountDiscover(
       // The platform keystore never answers in tests.
       sayHiPrefsStoreProvider.overrideWithValue(
         sayHiStore ?? MemorySayHiPrefsStore(),
+      ),
+      discoverPrefsStoreProvider.overrideWithValue(
+        discoverPrefs ?? MemoryDiscoverPrefsStore(),
       ),
       hiChatLinkProvider.overrideWithValue(log.link),
       if (clock != null) sayHiClockProvider.overrideWithValue(clock.call),
@@ -321,6 +359,7 @@ Future<ProviderContainer> mountDiscover(
   await tester.pumpAndSettle();
   api.searches.clear();
   api.nearbyCalls.clear();
+  api.possibleCalls.clear();
   api.followingReads = 0;
   if (peers != null) container.read(chatPeersProvider.notifier).load(peers);
   container.read(routerProvider).go('/discover');

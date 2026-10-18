@@ -4,8 +4,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/api.dart';
 import '../core/profile_labels.dart';
 import '../core/state.dart';
+import '../shared/language_chip.dart';
+import '../shared/local_time_label.dart';
 import '../shared/person_avatar.dart';
 import '../shared/presence_dot.dart';
+import '../shared/profile_space/profile_details.dart';
+import '../shared/profile_space/profile_gallery.dart';
 import '../shared/profile_stats.dart';
 
 /// Another member's profile, as opened from Discover: who they are, how to
@@ -124,6 +128,11 @@ class _VisitorProfileState extends ConsumerState<VisitorProfile> {
                   place: place,
                 ),
               ),
+              if (p.photos.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 16),
+                  child: ProfileGalleryStrip(photos: p.photos),
+                ),
               if (p.headline.isNotEmpty || p.bio.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(24, 18, 24, 0),
@@ -170,6 +179,11 @@ class _VisitorProfileState extends ConsumerState<VisitorProfile> {
                 padding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
                 child: widget.actions,
               ),
+              if (p.visitorsVisible)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+                  child: RecentVisitorsEntry(userId: p.userId),
+                ),
               const SizedBox(height: 22),
               _Tabs(selected: tab, onSelect: (i) => setState(() => tab = i)),
               Padding(
@@ -340,48 +354,27 @@ class _Header extends StatelessWidget {
   }
 }
 
-/// Language code with up to four dots for the self-reported level.
+/// Language code with the level meter; the level is in the semantics ("English, fluent") and in words in the
+/// detailed profile.
 class _LanguageMark extends StatelessWidget {
   final ProfileLanguage language;
   const _LanguageMark({required this.language});
   @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final dots = switch (language.level) {
-      'basic' => 1,
-      'conversational' => 2,
-      'fluent' => 3,
-      'native' => 4,
-      _ => 0,
-    };
-    return Semantics(
-      label:
-          '${languageLabel(language.code)}${language.level.isEmpty ? '' : ', ${languageLevels[language.level] ?? ''}'}',
-      excludeSemantics: true,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            language.code.split('-').first.toUpperCase(),
-            style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800),
-          ),
-          if (dots > 0) ...[
-            const SizedBox(width: 5),
-            for (var i = 0; i < 4; i++)
-              Container(
-                margin: const EdgeInsetsDirectional.only(end: 2),
-                width: 5,
-                height: 5,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: i < dots ? scheme.primary : scheme.outlineVariant,
-                ),
-              ),
-          ],
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Semantics(
+    label: languageSemantics(language),
+    excludeSemantics: true,
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          language.code.split('-').first.toUpperCase(),
+          style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(width: 5),
+        LevelMeter(level: language.level, height: 10),
+      ],
+    ),
+  );
 }
 
 /// Two icon tabs under the actions, as in the reference: details and posts.
@@ -494,20 +487,18 @@ class _Details extends StatelessWidget {
         ],
       ),
     );
-    Widget chip(String text, {bool highlight = false}) => Container(
+    Widget chip(String text) => Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
-        color: highlight
-            ? scheme.primary.withValues(alpha: .12)
-            : scheme.surfaceContainerHighest.withValues(alpha: .6),
+        color: scheme.surfaceContainerHighest.withValues(alpha: .6),
         borderRadius: BorderRadius.circular(100),
       ),
       child: Text(
         text,
         style: TextStyle(
           fontSize: 14.5,
-          fontWeight: highlight ? FontWeight.w800 : FontWeight.w600,
-          color: highlight ? scheme.primary : scheme.onSurface,
+          fontWeight: FontWeight.w600,
+          color: scheme.onSurface,
         ),
       ),
     );
@@ -548,11 +539,19 @@ class _Details extends StatelessWidget {
           ),
         ),
     ];
+    final aboutMe = p.aboutMe.trim();
+    final hometown = p.hometown.trim();
+    final birthday = birthdayText(p.birthday);
     final empty =
         facts.isEmpty &&
         p.interests.isEmpty &&
+        p.personalityTags.isEmpty &&
         p.currentVibe.isEmpty &&
         p.languages.isEmpty &&
+        aboutMe.isEmpty &&
+        hometown.isEmpty &&
+        birthday == null &&
+        p.localTime == null &&
         rows.isEmpty;
     if (empty) {
       return Padding(
@@ -576,6 +575,42 @@ class _Details extends StatelessWidget {
           const SizedBox(height: 20),
           Row(crossAxisAlignment: CrossAxisAlignment.start, children: facts),
         ],
+        if (aboutMe.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          heading('About me'),
+          Text(
+            aboutMe,
+            key: const Key('visitor-about-me'),
+            style: const TextStyle(fontSize: 15, height: 1.5),
+          ),
+        ],
+        if (hometown.isNotEmpty || p.localTime != null || birthday != null) ...[
+          const SizedBox(height: 20),
+          if (hometown.isNotEmpty)
+            ProfileFactRow(
+              key: const Key('visitor-hometown'),
+              icon: Icons.home_outlined,
+              label: 'From',
+              value: hometown,
+              muted: muted,
+              fontSize: 14.5,
+            ),
+          if (p.localTime != null)
+            Padding(
+              key: const Key('visitor-local-time'),
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: LocalTimeLabel(time: p.localTime!, full: true),
+            ),
+          if (birthday != null)
+            ProfileFactRow(
+              key: const Key('visitor-birthday'),
+              icon: Icons.cake_outlined,
+              label: 'Birthday',
+              value: birthday,
+              muted: muted,
+              fontSize: 14.5,
+            ),
+        ],
         if (p.interests.isNotEmpty) ...[
           const SizedBox(height: 28),
           Divider(color: scheme.outlineVariant, height: 1),
@@ -584,16 +619,13 @@ class _Details extends StatelessWidget {
             'Interests',
             trailing: shared.isEmpty ? null : '${shared.length} in common',
           ),
-          Wrap(
-            spacing: 8,
-            runSpacing: 10,
-            children: [
-              // Shared interests first, highlighted.
-              for (final i in shared) chip(i, highlight: true),
-              for (final i in p.interests)
-                if (!shared.contains(i)) chip(i),
-            ],
-          ),
+          // Shared interests first, with a check mark.
+          InterestChips(interests: p.interests, shared: shared),
+        ],
+        if (p.personalityTags.isNotEmpty) ...[
+          const SizedBox(height: 28),
+          heading('Personality'),
+          PersonalityChips(tags: p.personalityTags),
         ],
         if (p.currentVibe.isNotEmpty) ...[
           const SizedBox(height: 28),
@@ -603,30 +635,7 @@ class _Details extends StatelessWidget {
         if (p.languages.isNotEmpty) ...[
           const SizedBox(height: 28),
           heading('Languages'),
-          Wrap(
-            spacing: 24,
-            runSpacing: 10,
-            children: [
-              for (final l in p.languages)
-                Text.rich(
-                  TextSpan(
-                    children: [
-                      TextSpan(
-                        text: languageLabel(l.code),
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                      if (l.level.isNotEmpty)
-                        TextSpan(
-                          text:
-                              ' · ${languageLevels[l.level] ?? 'Not specified'}',
-                          style: TextStyle(color: muted),
-                        ),
-                    ],
-                  ),
-                  style: const TextStyle(fontSize: 15, height: 1.5),
-                ),
-            ],
-          ),
+          ProfileLanguageChips(languages: p.languages),
         ],
         if (rows.isNotEmpty) ...[
           const SizedBox(height: 28),

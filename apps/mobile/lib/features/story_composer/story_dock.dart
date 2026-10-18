@@ -13,6 +13,10 @@ class StoryDock extends StatelessWidget {
   final int hours;
   final String audience;
   final Widget panel;
+
+  /// The topic on the story and whether it has a voice note (for their tabs).
+  final String? topic;
+  final bool voiceAttached;
   final VoidCallback onGallery, onCamera, onChange, onRemove;
   final ValueChanged<StoryTool> onOpenTool;
   const StoryDock({
@@ -29,6 +33,8 @@ class StoryDock extends StatelessWidget {
     required this.onChange,
     required this.onRemove,
     required this.onOpenTool,
+    this.topic,
+    this.voiceAttached = false,
   });
 
   @override
@@ -56,10 +62,13 @@ class StoryDock extends StatelessWidget {
             hours: hours,
             audience: audience,
             onOpen: onOpenTool,
+            topic: topic,
+            voiceAttached: voiceAttached,
           ),
           if (!typing)
             SizedBox(
-              height: 88,
+              // The voice recorder needs more room than the one-row panels.
+              height: tool == StoryTool.voice ? 150 : 88,
               child: AnimatedSwitcher(
                 duration: VibeMotion.duration(context),
                 child: KeyedSubtree(key: ValueKey(tool), child: panel),

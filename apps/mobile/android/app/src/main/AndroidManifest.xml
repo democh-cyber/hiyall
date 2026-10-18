@@ -5,8 +5,13 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <!-- Android 13+: asked at a meaningful moment (after a first message or follow, or from Settings), never at launch. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Microphone, only while a voice message is being recorded in a chat (the `record` plugin; asked at the first
+         recording, never at launch). Nothing is recorded in the background. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- Google Play Billing (the in_app_purchase plugin): coin packs and Premium, adults only (docs/mobile/NN-shop-and-ads.md). -->
+    <uses-permission android:name="com.android.vending.BILLING"/>
     <!-- Permission audit (release): INTERNET, ACCESS_COARSE_LOCATION and POST_NOTIFICATIONS are the only ones this app
-         asks for itself. Plugins add ACCESS_NETWORK_STATE and WAKE_LOCK (firebase_messaging) through manifest merge.
+         asks for itself, plus RECORD_AUDIO for voice messages. Plugins add ACCESS_NETWORK_STATE and WAKE_LOCK (firebase_messaging) through manifest merge.
          Nothing needs the two below, so they are removed from the merged manifest even if a plugin adds them later:
          - ACCESS_FINE_LOCATION: location_service.dart requests LocationAccuracy.low; the server rounds it further.
          - CAMERA: image_picker opens the system camera app (ACTION_IMAGE_CAPTURE). Declaring CAMERA would make that
@@ -49,6 +54,12 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- AdMob application id (google_mobile_ads crashes the app at start without one). It comes from the build, never from the
+             repository: ADMOB_APP_ID_ANDROID (environment or gradle property); debug builds fall back to Google's published TEST id,
+             release builds fail without it (android/app/build.gradle.kts). -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="${admobAppId}" />
         <!-- Pushes that arrive while the app is closed use this channel (created in MainActivity). -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"

@@ -3,9 +3,12 @@ import 'package:flutter/material.dart';
 import '../../core/theme.dart';
 
 /// A row with a switch, for a setting that is simply on or off.
+///
+/// With [enabled] false the row is dimmed, the switch is off and nothing can be toggled; [value] then says why.
 class SwitchRow extends StatelessWidget {
   final String label, value;
   final bool on;
+  final bool enabled;
   final ValueChanged<bool> onChanged;
   const SwitchRow({
     super.key,
@@ -13,6 +16,7 @@ class SwitchRow extends StatelessWidget {
     required this.value,
     required this.on,
     required this.onChanged,
+    this.enabled = true,
   });
 
   @override
@@ -21,10 +25,11 @@ class SwitchRow extends StatelessWidget {
     final radius = BorderRadius.circular(14);
     return Semantics(
       toggled: on,
+      enabled: enabled,
       label: label,
       hint: value,
       excludeSemantics: true,
-      onTap: () => onChanged(!on),
+      onTap: enabled ? () => onChanged(!on) : null,
       child: Material(
         color: on ? scheme.primary.withValues(alpha: .06) : scheme.surface,
         shape: RoundedRectangleBorder(
@@ -37,7 +42,7 @@ class SwitchRow extends StatelessWidget {
         ),
         child: InkWell(
           borderRadius: radius,
-          onTap: () => onChanged(!on),
+          onTap: enabled ? () => onChanged(!on) : null,
           child: ConstrainedBox(
             constraints: const BoxConstraints(minHeight: 64),
             child: Padding(
@@ -53,7 +58,11 @@ class SwitchRow extends StatelessWidget {
                           style: TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
-                            color: on ? scheme.primary : scheme.onSurface,
+                            color: !enabled
+                                ? scheme.onSurfaceVariant
+                                : on
+                                ? scheme.primary
+                                : scheme.onSurface,
                           ),
                         ),
                         const SizedBox(height: 4),
@@ -69,7 +78,7 @@ class SwitchRow extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  Switch(value: on, onChanged: onChanged),
+                  Switch(value: on, onChanged: enabled ? onChanged : null),
                 ],
               ),
             ),
@@ -193,11 +202,15 @@ class FilterPill extends StatelessWidget {
   final String label;
   final bool selected;
   final VoidCallback? onTap;
+
+  /// An icon before the label (a personality tag).
+  final IconData? icon;
   const FilterPill({
     super.key,
     required this.label,
     required this.selected,
     required this.onTap,
+    this.icon,
   });
 
   @override
@@ -237,6 +250,12 @@ class FilterPill extends StatelessWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    if (icon != null) ...[
+                      ExcludeSemantics(
+                        child: Icon(icon, size: 16, color: foreground),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
                     Flexible(
                       child: Text(
                         label,

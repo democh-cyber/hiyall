@@ -298,21 +298,26 @@ void main() {
       handle.dispose();
     });
 
-    testWidgets(
-      'there is never a word on the control, before or after a wave',
-      (tester) async {
-        final hi = HiLog();
-        await mount(tester, hi: hi);
-        expect(find.text('Say hi'), findsNothing);
-        await tapHi(tester, 'mira');
-        await tester.pumpAndSettle();
-        expect(stateOf(tester, 'mira'), SayHiState.done);
-        expect(find.text('Say hi'), findsNothing);
-        // Still named for a screen reader and in the tooltip.
-        expect(find.byTooltip('Hi sent to Mira Kapoor'), findsOneWidget);
-        expect(find.byTooltip('Say hi to Noor'), findsOneWidget);
-      },
-    );
+    testWidgets('there is never a word on the control, before or after a wave', (
+      tester,
+    ) async {
+      final hi = HiLog();
+      await mount(tester, hi: hi);
+      expect(find.text('Say hi'), findsNothing);
+      await tapHi(tester, 'mira');
+      await tester.pumpAndSettle();
+      expect(stateOf(tester, 'mira'), SayHiState.done);
+      expect(find.text('Say hi'), findsNothing);
+      // Still named for a screen reader and in the tooltip.
+      expect(find.byTooltip('Hi sent to Mira Kapoor'), findsOneWidget);
+      // Rows carry language chips now, so Noor is further down: scroll to her.
+      await tester.scrollUntilVisible(
+        find.byTooltip('Say hi to Noor'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.byTooltip('Say hi to Noor'), findsOneWidget);
+    });
   });
 
   group('failures', () {

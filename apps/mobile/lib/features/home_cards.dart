@@ -10,28 +10,37 @@ import '../core/discovery.dart';
 import '../core/home_prefs.dart';
 import '../core/state.dart';
 import '../core/theme.dart';
+import '../shared/coach_tip.dart';
 import '../shared/person_avatar.dart';
 import '../shared/person_link.dart';
 import '../shared/press_scale.dart';
 import '../shared/story_canvas.dart';
+import 'discovery.dart' show discoverFiltersProvider;
 import 'live_sync.dart';
 import '../core/user_error.dart';
 
-/// A short, unfiltered first page of Discover: the same opted-in members the
-/// Discover tab would show, so Home never widens who can be found. Kept for the
-/// session; pull-to-refresh or a new sign-in reloads it.
+/// The most people the "People you may like" strip shows.
+const homeSuggestionsMax = 12;
+
+/// The best possible matches (the server ranks them by what they share with the member and leaves out the
+/// people they already follow), at most [homeSuggestionsMax]: the same eligible members Discover shows, so Home
+/// never widens who can be found. Kept for the session; pull-to-refresh or a new sign-in reloads it.
 final homeSuggestionsProvider = FutureProvider.autoDispose<List<Profile>>(
   (ref) async {
     final session = requireSession(ref);
     // Suggestions change slowly; don't re-query on every tab switch.
     ref.keepAlive();
-    final data = await ref
+    final page = await ref
         .watch(apiProvider)
-        .searchPeople(session, PeopleFilters().toJson());
-    return [
-      for (final item in data['items'] as List)
-        Profile.fromJson(Map<String, dynamic>.from(item as Map)),
-    ].where((p) => p.userId != session.userId).take(10).toList();
+        .possibleMatches(
+          session,
+          limit: homeSuggestionsMax,
+          excludeFollowing: true,
+        );
+    return page.items
+        .where((p) => p.userId != session.userId)
+        .take(homeSuggestionsMax)
+        .toList();
   },
   // Suggestions are a nicety: a failed load stays quiet until the next pull to
   // refresh instead of retrying in the background.
@@ -563,8 +572,9 @@ class HomeProfileNudge extends ConsumerWidget {
   }
 }
 
-/// "People you might vibe with": a snap carousel of members from Discover's
-/// opted-in first page, with what you share and a Follow button.
+/// "People you may like": a snap carousel of the best possible matches, with what you share and a Follow
+/// button. It stays hidden while loading, when there is nobody and when the load failed. The first time it is
+/// seen a small tip says what it is.
 class HomeSuggestions extends ConsumerWidget {
   final bool rail;
   const HomeSuggestions({super.key, this.rail = false});
@@ -582,10 +592,22 @@ class HomeSuggestions extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         HomeHeading(
-          'People you might vibe with',
+          'People you may like',
           action: 'See all',
-          onAction: () => context.go('/discover'),
+          onAction: () {
+            ref
+                .read(discoverFiltersProvider.notifier)
+                .set(PeopleFilters(possible: true));
+            context.go('/discover');
+          },
           padding: EdgeInsets.symmetric(horizontal: rail ? 0 : 20),
+        ),
+        CoachTip(
+          tipKey: 'home.people_you_may_like',
+          title: 'People you may like',
+          message: 'Picked from what you share: interests, personality and languages you can practise together.',
+          icon: Icons.auto_awesome_outlined,
+          margin: EdgeInsets.fromLTRB(rail ? 0 : 20, 6, rail ? 0 : 20, 2),
         ),
         const SizedBox(height: 10),
         MediaQuery.withClampedTextScaling(
@@ -628,6 +650,21 @@ StoryBackground _bandFor(String userId) => storyBackgroundFor(
   _bandNames[userId.codeUnits.fold(0, (a, b) => a + b) % _bandNames.length],
 );
 
+/// One short reason a possible match was suggested, from what the card carries.
+String? _reasonChip(Profile p) {
+  for (final reason in p.reasons) {
+    switch (reason) {
+      case 'languages':
+        return 'Language match';
+      case 'personality':
+        return 'Similar personality';
+      case 'country':
+        return 'Same country';
+    }
+  }
+  return null;
+}
+
 class _PersonCard extends StatelessWidget {
   final Profile person;
   final List<String> common;
@@ -645,7 +682,8 @@ class _PersonCard extends StatelessWidget {
         );
     final chip = common.isNotEmpty
         ? '${common.length} in common'
-        : (person.interests.isNotEmpty ? person.interests.first : null);
+        : (_reasonChip(person) ??
+              (person.interests.isNotEmpty ? person.interests.first : null));
     return PressScale(
       key: Key('home-person-${person.userId}'),
       borderRadius: BorderRadius.circular(VibeRadius.surface),

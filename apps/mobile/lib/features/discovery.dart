@@ -2,18 +2,22 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../core/api.dart';
+import '../core/discover_prefs.dart';
 import '../core/discovery.dart';
 import '../core/location_service.dart';
 import '../core/location_sync.dart';
 import '../core/state.dart';
 import '../core/surprise.dart';
 import '../shared/chat_tokens.dart';
+import '../shared/coach_tip.dart';
 import '../shared/person_link.dart';
 import '../shared/press_scale.dart';
 import 'discover_header.dart';
 import 'discover_menu.dart';
+import 'discover_summary.dart';
 import 'discover_person.dart';
 import 'discover_states.dart';
 import 'nearby_optin.dart';
@@ -95,8 +99,35 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       ref.read(sayHiControllerProvider.notifier).reset();
+      // The filters used last on this device come back, unless a chip put others on (a drill-down wins). The
+      // list never waits for the keystore: it loads at once, and loads again if saved filters turn up.
+      if (filters.isEmpty) unawaited(restoreSavedFilters());
       search();
     });
+  }
+
+  /// Puts the filters this account used last on this device back (see [DiscoverPrefsStore]). Nothing is read from
+  /// the server; an account with nothing saved keeps the empty selection.
+  Future<void> restoreSavedFilters() async {
+    final userId = ref.read(sessionProvider).asData?.value?.userId;
+    if (userId == null) return;
+    final saved = await ref
+        .read(discoverPrefsStoreProvider)
+        .savedFilters(userId);
+    if (!mounted || saved == null || saved.isEmpty || !filters.isEmpty) return;
+    // A chip may have put other filters on while the saved ones were read.
+    if (!ref.read(discoverFiltersProvider).isEmpty) return;
+    setState(() => filters = saved);
+    ref.read(discoverFiltersProvider.notifier).set(saved);
+    search();
+  }
+
+  /// Keeps the search fields (not the Nearby or Possible matches modes) as the filters used last on this device.
+  void saveFilters(PeopleFilters next) {
+    final userId = ref.read(sessionProvider).asData?.value?.userId;
+    if (userId == null) return;
+    final saved = next.copyWith(nearby: false, possible: false);
+    ref.read(discoverPrefsStoreProvider).saveFilters(userId, saved);
   }
 
   @override
@@ -127,7 +158,13 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
     try {
       final List<Profile> page;
       final String? next;
-      if (filters.nearby) {
+      if (filters.possible) {
+        final result = await ref
+            .read(apiProvider)
+            .possibleMatches(session, cursor: more ? cursor : null);
+        page = result.items;
+        next = result.nextCursor;
+      } else if (filters.nearby) {
         final result = await ref
             .read(apiProvider)
             .nearby(session, filters: filters, cursor: more ? cursor : null);
@@ -179,6 +216,12 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
               locationTried = true;
               readLocation = true;
             }
+          } else if (failure.code == 'COUNTRY_NOT_SET') {
+            // The shortcut needs a country on the member's own profile: say so and drop it.
+            filters = filters.copyWith(sameCountry: false);
+            ref.read(discoverFiltersProvider.notifier).set(filters);
+            error =
+                'Add your country in your profile first. Try again after that.';
           } else if (more && failure.code == 'INVALID_CURSOR') {
             // The page marker expired; start over rather than resend it.
             cursor = null;
@@ -231,6 +274,7 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
   void applyVisibleFilters(PeopleFilters next) {
     setState(() => filters = next);
     ref.read(discoverFiltersProvider.notifier).set(next);
+    saveFilters(next);
     search();
   }
 
@@ -260,6 +304,7 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
   List<_Category> categories(Profile? own) => [
     _Category('everyone', 'Everyone', PeopleFilters()),
     _Category('online', 'Online', PeopleFilters(online: true)),
+    _Category('possible', 'Possible matches', PeopleFilters(possible: true)),
     if (own != null && own.currentVibe.isNotEmpty)
       _Category('vibe', 'Same vibe', PeopleFilters(vibe: own.currentVibe)),
     if (own != null && own.interests.isNotEmpty)
@@ -414,6 +459,17 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
   // --------------------------------------------------------------- Build
 
   Widget empty() {
+    if (filters.possible) {
+      return DiscoveryEmptyState(
+        key: const Key('possible-empty'),
+        title: 'No matches yet',
+        body: 'Add interests, languages and personality tags to your profile to get matches.',
+        primaryLabel: 'Edit profile',
+        onPrimary: () => context.go('/profile/edit'),
+        secondaryLabel: 'Show everyone',
+        onSecondary: () => applyVisibleFilters(PeopleFilters()),
+      );
+    }
     final onlyOnline =
         filters.online && filters.sameAs(PeopleFilters(online: true));
     if (onlyOnline) {
@@ -444,6 +500,14 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
 
   @override
   Widget build(BuildContext context) {
+    // A chip elsewhere (an interest, a language or a personality tag on a profile or a row) put filters on Discover.
+    ref.listen(discoverFiltersProvider, (previous, next) {
+      if (!next.sameAs(filters)) {
+        setState(() => filters = next);
+        saveFilters(next);
+        search();
+      }
+    });
     ref.listen(sessionProvider, (previous, next) {
       if (previous?.asData?.value != next.asData?.value) {
         ref.read(discoverFiltersProvider.notifier).set(PeopleFilters());
@@ -458,7 +522,10 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
           surpriseStatus = SurpriseStatus.ready;
           lastSurprise = null;
         });
-        if (next.asData?.value != null) search();
+        if (next.asData?.value != null) {
+          unawaited(restoreSavedFilters());
+          search();
+        }
       }
     });
     final own = ref.watch(profileProvider).asData?.value;
@@ -519,6 +586,21 @@ class _PeopleDiscoveryState extends ConsumerState<PeopleDiscovery> {
                               ),
                           ]),
                         ),
+                        SliverToBoxAdapter(
+                          child: DiscoverActiveFilters(
+                            filters: filters,
+                            onChange: applyVisibleFilters,
+                          ),
+                        ),
+                        if (filters.possible)
+                          const SliverToBoxAdapter(
+                            child: CoachTip(
+                              tipKey: 'discover.possible_matches',
+                              title: 'Possible matches',
+                              message: 'People ranked by what you share: interests, personality, and languages you can help each other with.',
+                              icon: Icons.auto_awesome_outlined,
+                            ),
+                          ),
                         if (nearbyOff)
                           SliverToBoxAdapter(
                             child: NearbyOptInCard(onEnable: enableNearby),

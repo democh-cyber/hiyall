@@ -9,10 +9,13 @@ import 'package:image_picker/image_picker.dart';
 import '../core/api.dart';
 import '../core/feed_state.dart';
 import '../core/picked_file.dart';
+import '../core/pulse7.dart' show VoiceUpload;
 import '../core/state.dart';
 import '../core/story_draft.dart';
 import '../shared/widgets.dart';
 import 'pulse.dart';
+import 'pulse/topic_widgets.dart';
+import 'pulse/voice_recorder.dart';
 import 'story_composer/story_actions.dart';
 import 'story_composer/story_canvas_stage.dart';
 import 'story_composer/story_dialogs.dart';
@@ -48,6 +51,10 @@ class _StoryComposerScreenState extends ConsumerState<StoryComposerScreen> {
   int hours = 24;
   String? audience;
   StoryTool tool = StoryTool.colour;
+
+  /// The optional topic and voice note of the story.
+  String? topic;
+  VoiceUpload? voice;
   bool sharing = false, shared = false;
 
   /// Set by the first change, so a draft that loads late never overwrites what was just typed.
@@ -128,7 +135,8 @@ class _StoryComposerScreenState extends ConsumerState<StoryComposerScreen> {
   // ---- Leaving ----------------------------------------------------------------------------
 
   bool get _hasUnsent =>
-      !shared && (text.text.trim().isNotEmpty || photo != null);
+      !shared &&
+      (text.text.trim().isNotEmpty || photo != null || voice != null);
 
   void _leave() {
     final router = GoRouter.maybeOf(context);
@@ -216,7 +224,10 @@ class _StoryComposerScreenState extends ConsumerState<StoryComposerScreen> {
   // ---- Share ------------------------------------------------------------------------------
 
   bool get ready =>
-      !sharing && (photo == null ? text.text.trim().isNotEmpty : photo!.done);
+      !sharing &&
+      (photo == null
+          ? (text.text.trim().isNotEmpty || voice != null)
+          : photo!.done);
 
   Future<void> share(String chosen) async {
     if (!ready) return;
@@ -232,6 +243,8 @@ class _StoryComposerScreenState extends ConsumerState<StoryComposerScreen> {
             lifetimeHours: hours,
             mediaId: photo?.mediaId,
             audience: chosen,
+            topic: topic,
+            voiceMediaId: voice?.mediaId,
           );
       shared = true;
       _draftKeeper.cancel();
@@ -330,6 +343,8 @@ class _StoryComposerScreenState extends ConsumerState<StoryComposerScreen> {
       StoryTool.vibes,
       StoryTool.time,
       StoryTool.who,
+      StoryTool.topic,
+      StoryTool.voice,
     ];
     if (!tools.contains(tool)) tool = StoryTool.text;
     return StoryDock(
@@ -347,6 +362,8 @@ class _StoryComposerScreenState extends ConsumerState<StoryComposerScreen> {
         _touched = true;
       }),
       onOpenTool: _openTool,
+      topic: topic,
+      voiceAttached: voice != null,
       panel: StoryToolPanel(
         tool: tool,
         background: background,
@@ -360,6 +377,16 @@ class _StoryComposerScreenState extends ConsumerState<StoryComposerScreen> {
         onAlign: (a) => _set(() => align = a),
         onHours: (h) => _set(() => hours = h),
         onVibe: _addVibe,
+        topicPanel: TopicPicker(
+          singleRow: true,
+          selected: topic,
+          onChanged: (t) => _set(() => topic = t),
+        ),
+        voicePanel: VoiceNoteField(
+          compact: true,
+          value: voice,
+          onChanged: (v) => _set(() => voice = v),
+        ),
       ),
     );
   }

@@ -25,8 +25,8 @@ Profile other({
   bool? online,
   String vibe = 'Chill',
   List<ProfileLanguage> languages = const [
-    ProfileLanguage('en', 'fluent'),
-    ProfileLanguage('hi', 'native'),
+    ProfileLanguage('en', 4),
+    ProfileLanguage('hi', 6),
   ],
   String headline = 'i am cute girl',
   String bio = '',

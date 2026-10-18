@@ -13,6 +13,9 @@ import 'chat_format.dart';
 import 'chat_parts.dart';
 import 'chat_photo.dart';
 import 'chat_reactions_ui.dart';
+import 'chat_translate_ui.dart';
+import 'chat_video_ui.dart';
+import 'chat_voice_ui.dart';
 
 export 'chat_composer.dart';
 export 'chat_header.dart';
@@ -277,6 +280,9 @@ class ChatBubble extends StatelessWidget {
 
   /// Briefly lit after a quote was tapped and brought this message into view.
   final bool highlight;
+
+  /// A translation to draw under the message's text (manual or automatic); null draws none.
+  final BubbleTranslation? translation;
   const ChatBubble({
     super.key,
     required this.row,
@@ -291,6 +297,7 @@ class ChatBubble extends StatelessWidget {
     this.actions,
     this.quote,
     this.highlight = false,
+    this.translation,
   });
 
   static const radius = ChatMetrics.bubbleRadius,
@@ -306,11 +313,12 @@ class ChatBubble extends StatelessWidget {
     final t = ChatTokens.of(context);
     final mine = m.mine;
     final photo = m.attachment;
+    final video = m.video;
     final caption = photo?.caption ?? '';
     final showMeta = row.last || m.status != SendStatus.sent;
     final meta = _Meta(message: m, seen: seen, markKey: newestMine);
     final ink = mine ? t.outgoingInk : t.incomingInk;
-    final emoji = !m.isPhoto && isEmojiOnly(m.text) && quote == null;
+    final emoji = !m.isMedia && isEmojiOnly(m.text) && quote == null;
     final quoteBlock = quote == null
         ? null
         : QuoteBlock(
@@ -354,9 +362,51 @@ class ChatBubble extends StatelessWidget {
         tail: tail,
       );
       Widget inner;
-      if (m.isPhoto) {
+      if (m.isVoice) {
+        final voice = m.voice;
+        inner = Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (quoteBlock != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: QuoteBlock(
+                  who: quote!.who,
+                  line: quote!.line,
+                  image: quote!.image,
+                  onOutgoing: mine,
+                  fill: true,
+                  onTap: quoteBlock.onTap,
+                ),
+              ),
+            voice != null && engine != null
+                ? VoiceBody(
+                    message: m,
+                    engine: engine!,
+                    conversationId: conversationId,
+                    peerName: peerName,
+                    ink: ink,
+                  )
+                : UnsupportedMedia(kind: 'voice', mine: mine),
+            if (showMeta) Align(alignment: Alignment.centerRight, child: meta),
+          ],
+        );
+      } else if (m.isPhoto || m.isVideo) {
         final hasCaption = caption.isNotEmpty;
-        final Widget media = photo != null && engine != null
+        final Widget media = m.isVideo
+            ? (video != null && engine != null
+                  ? VideoBody(
+                      message: m,
+                      engine: engine!,
+                      conversationId: conversationId,
+                      peerName: peerName,
+                    )
+                  : Padding(
+                      padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+                      child: UnsupportedMedia(kind: 'video', mine: mine),
+                    ))
+            : photo != null && engine != null
             ? PhotoBody(
                 message: m,
                 engine: engine!,
@@ -368,7 +418,10 @@ class ChatBubble extends StatelessWidget {
                 child: UnsupportedPhoto(mine: mine),
               );
         final overlay =
-            !hasCaption && showMeta && photo != null && engine != null;
+            !hasCaption &&
+            showMeta &&
+            (photo != null || video != null) &&
+            engine != null;
         // The bubble is as wide as the photo: a caption wraps beneath it and
         // the time sits at the end, so nothing stretches to the maximum.
         inner = SizedBox(
@@ -432,8 +485,25 @@ class ChatBubble extends StatelessWidget {
           meta: showMeta ? meta : null,
           metaWidth: showMeta ? _metaWidth(context, m) : 0,
         );
-        inner = quoteBlock == null
+        final line = translation == null
             ? text
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  text,
+                  TranslationLine(
+                    ink: ink,
+                    text: translation!.text,
+                    from: translation!.from,
+                    pending: translation!.pending,
+                    failed: translation!.failed,
+                    onHide: translation!.onHide,
+                  ),
+                ],
+              );
+        inner = quoteBlock == null
+            ? line
             : LayoutBuilder(
                 builder: (context, box) {
                   // The bubble is as wide as the wider of the text and the
@@ -469,7 +539,7 @@ class ChatBubble extends StatelessWidget {
                           onTap: quoteBlock.onTap,
                         ),
                         const SizedBox(height: 6),
-                        text,
+                        line,
                       ],
                     ),
                   );
@@ -499,7 +569,11 @@ class ChatBubble extends StatelessWidget {
                 ],
         ),
         child: Padding(
-          padding: m.isPhoto ? const EdgeInsets.all(4) : textPadding,
+          padding: m.isPhoto || m.isVideo
+              ? const EdgeInsets.all(4)
+              : m.isVoice
+              ? const EdgeInsets.fromLTRB(6, 6, 12, 6)
+              : textPadding,
           child: inner,
         ),
       );
@@ -515,7 +589,7 @@ class ChatBubble extends StatelessWidget {
     ) {
       // Text reads as one thing; a photo keeps its own button semantics.
       final bubble = KeyedSubtree(key: bubbleKey, child: body);
-      return m.isPhoto
+      return m.isMedia
           ? Semantics(
               container: true,
               label: label,
@@ -580,7 +654,8 @@ class ChatBubble extends StatelessWidget {
                   selfId: selfId,
                   actions: actions!,
                   alignEnd: mine,
-                  doubleTapHeart: !m.isPhoto,
+                  // A tap on a photo, a video or the play button of a voice message must act at once.
+                  doubleTapHeart: !m.isMedia,
                   builder: (context, key, custom) =>
                       bubbleRow(semanticFor(key, custom)),
                 )
@@ -610,6 +685,87 @@ class ChatBubble extends StatelessWidget {
           );
           return highlight ? _Lit(child: column) : column;
         },
+      ),
+    );
+  }
+}
+
+/// "Seen" or "Not read yet" under your newest sent message. Only drawn when the relay says both people have
+/// read receipts on (the peer's read time is sent only then), so it tells nothing that a person who turned
+/// receipts off has not agreed to share, in either direction.
+class ReceiptLine extends StatelessWidget {
+  final bool seen;
+  const ReceiptLine({super.key, required this.seen});
+  @override
+  Widget build(BuildContext context) {
+    final t = ChatTokens.of(context);
+    return Align(
+      alignment: AlignmentDirectional.centerEnd,
+      child: Padding(
+        padding: const EdgeInsetsDirectional.only(top: 3, end: 6),
+        child: clampedChrome(
+          context,
+          Text(
+            seen ? 'Seen' : 'Not read yet',
+            key: Key(seen ? 'receipt-seen' : 'receipt-unread'),
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              color: seen ? t.outgoingSeen : t.textTertiary,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// What a bubble draws under a message's text: the translation, or that it is being made or failed.
+class BubbleTranslation {
+  final String? text, from;
+  final bool pending, failed;
+  final VoidCallback? onHide;
+  const BubbleTranslation({
+    this.text,
+    this.from,
+    this.pending = false,
+    this.failed = false,
+    this.onHide,
+  });
+}
+
+/// The line that stands in for a voice message or a video this app could not read.
+class UnsupportedMedia extends StatelessWidget {
+  final String kind;
+  final bool mine;
+  const UnsupportedMedia({super.key, required this.kind, required this.mine});
+  @override
+  Widget build(BuildContext context) {
+    final color = mine
+        ? VibeColors.ink
+        : Theme.of(context).colorScheme.onSurfaceVariant;
+    final what = kind == 'voice' ? 'voice message' : 'video';
+    return Semantics(
+      label: 'Unsupported $what',
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            kind == 'voice'
+                ? Icons.mic_off_outlined
+                : Icons.videocam_off_outlined,
+            size: 20,
+            color: color,
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              'Unsupported $what',
+              key: Key('$kind-unsupported'),
+              style: TextStyle(color: color, fontSize: 14),
+            ),
+          ),
+        ],
       ),
     );
   }

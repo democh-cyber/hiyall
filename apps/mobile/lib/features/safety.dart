@@ -294,16 +294,8 @@ Future<ReportReceipt?> showReportSheet(
                   'fromMe': m.mine,
                   // The key to open a photo leaves the device only when the
                   // reporter ticked the photo consent as well.
-                  if (sharePhotos && m.attachment?.uploaded == true)
-                    'attachments': [
-                      {
-                        'blobIds': [
-                          m.attachment!.full.blobId,
-                          m.attachment!.thumb.blobId,
-                        ],
-                        'descriptor': m.attachment!.toJson(),
-                      },
-                    ],
+                  if (sharePhotos && evidenceAttachment(m) != null)
+                    'attachments': [evidenceAttachment(m)!],
                 },
             ],
             disclosureConsent: consent,
@@ -312,6 +304,31 @@ Future<ReportReceipt?> showReportSheet(
     },
   ),
 );
+
+/// The attachment of a photo, a voice message or a video that went out, as a report carries it: the blob ids
+/// and the decrypted descriptor (which holds the key). Null for text and for anything not uploaded.
+Map<String, dynamic>? evidenceAttachment(ChatMessage m) {
+  final photo = m.attachment, voice = m.voice, video = m.video;
+  if (photo != null && photo.uploaded) {
+    return {
+      'blobIds': [photo.full.blobId, photo.thumb.blobId],
+      'descriptor': photo.toJson(),
+    };
+  }
+  if (voice != null && voice.uploaded) {
+    return {
+      'blobIds': [voice.part.blobId],
+      'descriptor': voice.toJson(),
+    };
+  }
+  if (video != null && video.uploaded) {
+    return {
+      'blobIds': [video.video.blobId, video.poster.blobId],
+      'descriptor': video.toJson(),
+    };
+  }
+  return null;
+}
 
 typedef _Submit = Future<ReportReceipt> Function(
   String reason,
@@ -352,7 +369,7 @@ class _ReportSheetState extends State<_ReportSheet> {
 
   /// A picked message carries a photo the safety team could open.
   bool get photoPicked => widget.messages.any(
-    (m) => selected.contains(m.messageId) && m.attachment?.uploaded == true,
+    (m) => selected.contains(m.messageId) && evidenceAttachment(m) != null,
   );
 
   bool get ready => reason != null && !sending && (selected.isEmpty || consent);
@@ -473,14 +490,24 @@ class _ReportSheetState extends State<_ReportSheet> {
                       }),
                       secondary: m.isPhoto
                           ? const Icon(Icons.photo_outlined)
+                          : m.isVoice
+                          ? const Icon(Icons.mic_none_rounded)
+                          : m.isVideo
+                          ? const Icon(Icons.videocam_outlined)
                           : null,
                       title: Text(
-                        m.isPhoto ? m.preview : m.text,
+                        m.isMedia ? m.preview : m.text,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
                       subtitle: Text(
-                        '${m.mine ? 'You' : widget.name}${m.isPhoto ? ' · Photo' : ''}',
+                        '${m.mine ? 'You' : widget.name}${m.isPhoto
+                            ? ' · Photo'
+                            : m.isVoice
+                            ? ' · Voice message'
+                            : m.isVideo
+                            ? ' · Video'
+                            : ''}',
                       ),
                     ),
                 ],
@@ -507,9 +534,11 @@ class _ReportSheetState extends State<_ReportSheet> {
                 contentPadding: EdgeInsets.zero,
                 value: sharePhotos,
                 onChanged: (v) => setState(() => sharePhotos = v!),
-                title: const Text('Also share the photo itself'),
+                title: const Text(
+                  'Also share the photo, voice message or video itself',
+                ),
                 subtitle: const Text(
-                  'This gives Hiyall’s safety team the key to open the photo you picked. Without it they only see the caption.',
+                  'This gives Hiyall’s safety team the key to open the photo, voice message or video you picked. Without it they only see the words that came with it.',
                 ),
               ),
           ],

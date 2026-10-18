@@ -3,10 +3,20 @@ import 'package:flutter/material.dart';
 import '../shared/chat_tokens.dart';
 
 /// What the conversation menu can do, in the order it lists them. Only
-/// actions that exist: mute or unmute, open the profile, the safety number
-/// (with whether it was verified), report (whose sheet also offers blocking)
-/// and block.
-enum ChatMenuAction { mute, profile, safety, report, block }
+/// actions that exist: mute or unmute, pin or unpin, auto-translate (kept on this phone only), clear this
+/// phone's history, delete the chat from the list (restorable for 30 days), open the profile, the safety
+/// number (with whether it was verified), report (whose sheet also offers blocking) and block.
+enum ChatMenuAction {
+  mute,
+  pin,
+  autoTranslate,
+  clearHistory,
+  deleteChat,
+  profile,
+  safety,
+  report,
+  block,
+}
 
 /// Opens the conversation menu and returns the chosen action, or null.
 Future<ChatMenuAction?> showChatSafetyMenu(
@@ -14,6 +24,8 @@ Future<ChatMenuAction?> showChatSafetyMenu(
   required bool muted,
   required String peerName,
   bool verified = false,
+  bool pinned = false,
+  bool autoTranslate = false,
 }) {
   final t = ChatTokens.of(context);
   return showModalBottomSheet<ChatMenuAction>(
@@ -26,8 +38,13 @@ Future<ChatMenuAction?> showChatSafetyMenu(
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
     ),
-    builder: (context) =>
-        ChatSafetyMenu(muted: muted, peerName: peerName, verified: verified),
+    builder: (context) => ChatSafetyMenu(
+      muted: muted,
+      peerName: peerName,
+      verified: verified,
+      pinned: pinned,
+      autoTranslate: autoTranslate,
+    ),
   );
 }
 
@@ -39,11 +56,16 @@ class ChatSafetyMenu extends StatelessWidget {
 
   /// The person compared the safety number and nothing has changed since.
   final bool verified;
+
+  /// This chat is pinned to the top of the list; auto-translate is on for it (this phone only).
+  final bool pinned, autoTranslate;
   const ChatSafetyMenu({
     super.key,
     required this.muted,
     required this.peerName,
     this.verified = false,
+    this.pinned = false,
+    this.autoTranslate = false,
   });
 
   @override
@@ -66,6 +88,26 @@ class ChatSafetyMenu extends StatelessWidget {
               onTap: () => Navigator.pop(context, ChatMenuAction.mute),
             ),
             _Tile(
+              key: const Key('chat-pin'),
+              icon: pinned ? Icons.push_pin : Icons.push_pin_outlined,
+              title: pinned ? 'Unpin chat' : 'Pin chat',
+              subtitle: pinned
+                  ? 'It goes back to its place by time.'
+                  : 'Keeps it at the top of your chats. Up to 5.',
+              onTap: () => Navigator.pop(context, ChatMenuAction.pin),
+            ),
+            _Tile(
+              key: const Key('chat-auto-translate'),
+              icon: Icons.translate_rounded,
+              title: autoTranslate
+                  ? 'Turn off auto-translate'
+                  : 'Auto-translate',
+              subtitle: autoTranslate
+                  ? 'Their messages are translated on your phone.'
+                  : 'Translate their messages on your phone. Kept only on this phone.',
+              onTap: () => Navigator.pop(context, ChatMenuAction.autoTranslate),
+            ),
+            _Tile(
               key: const Key('chat-profile'),
               icon: Icons.person_outline_rounded,
               title: 'View $peerName’s profile',
@@ -81,6 +123,28 @@ class ChatSafetyMenu extends StatelessWidget {
                   ? 'Verified. It shows again if their keys change.'
                   : 'Not verified. Compare it with $peerName in person.',
               onTap: () => Navigator.pop(context, ChatMenuAction.safety),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
+              child: Divider(
+                height: 1,
+                color: t.hairline.withValues(alpha: .6),
+              ),
+            ),
+            _Tile(
+              key: const Key('chat-clear'),
+              icon: Icons.cleaning_services_outlined,
+              title: 'Clear history on this phone',
+              subtitle: 'Removes the messages here. $peerName keeps theirs.',
+              onTap: () => Navigator.pop(context, ChatMenuAction.clearHistory),
+            ),
+            _Tile(
+              key: const Key('chat-delete'),
+              icon: Icons.delete_outline_rounded,
+              title: 'Delete chat',
+              subtitle:
+                  'Takes it out of your list. You can restore it for 30 days.',
+              onTap: () => Navigator.pop(context, ChatMenuAction.deleteChat),
             ),
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),

@@ -9,6 +9,8 @@ import '../core/api.dart';
 import '../core/app_info.dart' show FeatureFlags;
 import '../core/feed_state.dart';
 import '../core/home_prefs.dart';
+import '../core/notices.dart' show noticeSummaryProvider;
+import '../core/pulse_tabs.dart' show storyExploreProvider;
 import '../core/state.dart';
 import '../core/theme.dart';
 import '../shared/press_scale.dart';
@@ -17,6 +19,9 @@ import '../shared/widgets.dart';
 import 'home_cards.dart';
 import 'home_vibe.dart';
 import 'live_sync.dart';
+import 'notices.dart' show PinnedSafetyBanner;
+import 'pulse/story_explore.dart' show StoryExploreStrip;
+import 'pulse/topic_widgets.dart' show TopicChipsRow;
 import 'pulse.dart';
 
 export 'home_cards.dart' show homeSuggestionsProvider, missingProfileParts;
@@ -66,6 +71,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ref.invalidate(homeSuggestionsProvider);
     ref.invalidate(profileProvider);
     ref.invalidate(storyTrayProvider);
+    ref.invalidate(storyExploreProvider);
+    ref.invalidate(noticeSummaryProvider);
     try {
       await ref.read(feedProvider(mode).notifier).refresh();
       await ref.read(activityProvider.notifier).refresh();
@@ -157,10 +164,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           parent: AlwaysScrollableScrollPhysics(),
         ),
         slivers: [
+          // A pinned safety notice from the Hiyall team, when there is one (hidden until dismissed).
+          if (wide) const SliverToBoxAdapter(child: PinnedSafetyBanner()),
           if (!wide) ...[
             const SliverToBoxAdapter(
               child: StaggerIn(index: 0, child: _Greeting()),
             ),
+            const SliverToBoxAdapter(child: PinnedSafetyBanner()),
             const SliverToBoxAdapter(
               child: StaggerIn(index: 1, child: HomeVibeStrip()),
             ),
@@ -171,7 +181,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           SliverToBoxAdapter(
             child: Padding(
               padding: EdgeInsets.only(top: wide ? 12 : 10),
-              child: const StaggerIn(index: 3, child: StoryTray()),
+              // Following shows the tray of your circle, Everyone the public stories (docs/api/27).
+              child: StaggerIn(
+                index: 3,
+                child: mode == 'everyone'
+                    ? const StoryExploreStrip()
+                    : const StoryTray(),
+              ),
             ),
           ),
           if (!wide)
@@ -180,20 +196,44 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
           SliverToBoxAdapter(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
+              padding: const EdgeInsets.fromLTRB(16, 18, 16, 4),
               child: StaggerIn(
                 index: 5,
-                child: VibeSegmented<String>(
-                  key: const Key('feed-mode'),
-                  segments: const [
-                    ('following', 'Your people'),
-                    ('everyone', 'Everyone'),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: VibeSegmented<String>(
+                        key: const Key('feed-mode'),
+                        segments: const [
+                          ('following', 'Your people'),
+                          ('everyone', 'Everyone'),
+                        ],
+                        selected: mode,
+                        onChanged: setMode,
+                        keyFor: (v) => Key('feed-mode-$v'),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    IconButton(
+                      key: const Key('pulse-search-open'),
+                      tooltip: 'Search posts and stories',
+                      constraints: const BoxConstraints(
+                        minWidth: 48,
+                        minHeight: 48,
+                      ),
+                      icon: const Icon(Icons.search_rounded),
+                      onPressed: () => context.push('/search'),
+                    ),
                   ],
-                  selected: mode,
-                  onChanged: setMode,
-                  keyFor: (v) => Key('feed-mode-$v'),
                 ),
               ),
+            ),
+          ),
+          // Topic chips narrow both the stories above and the posts below to one topic.
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: TopicChipsRow(mode: mode),
             ),
           ),
           _FeedSlivers(mode: mode, wide: wide),

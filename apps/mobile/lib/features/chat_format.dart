@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart' show DateFormat;
 
 import '../core/chat/chat_attachment.dart' show SendStatus;
 import '../core/chat/chat_engine.dart';
@@ -77,12 +78,24 @@ String lastSeenText(
   return 'last seen ${shortDate(a, n)}';
 }
 
-/// The chip between days in a conversation: Today, Yesterday, 12 Oct.
-String chatDayLabel(DateTime at, DateTime now) {
+/// The chip between days in a conversation: Today, Yesterday, 12 Oct. For a locale other than English the
+/// date is written the way that locale writes it ("12. Okt.", "١٢ أكتوبر"), with the year only when it is not
+/// this one; the words Today and Yesterday stay English until the app has translations.
+String chatDayLabel(DateTime at, DateTime now, {String? locale}) {
   final a = at.toLocal(), n = now.toLocal();
   final days = _day(n).difference(_day(a)).inDays;
   if (days == 0) return 'Today';
   if (days == 1) return 'Yesterday';
+  if (locale != null && !locale.toLowerCase().startsWith('en')) {
+    try {
+      final format = a.year == n.year
+          ? DateFormat.MMMd(locale)
+          : DateFormat.yMMMd(locale);
+      return format.format(a);
+    } catch (_) {
+      // No date data for that locale: the English form below.
+    }
+  }
   return shortDate(a, n);
 }
 
@@ -124,12 +137,14 @@ bool _isEmoji(String cluster) {
   return true;
 }
 
-/// Chats whose name, username or last message contains [query], ignoring case
-/// and a leading `@`. An empty query keeps everything.
+/// Chats whose name, username or last message contains [query], ignoring case and a leading `@`, or whose id is
+/// in [textHits] (the chats whose decrypted history on this phone has a matching message: the screen asks
+/// the engine, never the relay). An empty query keeps everything.
 List<ChatConversation> filterConversations(
   List<ChatConversation> all,
-  String query,
-) {
+  String query, {
+  Set<String> textHits = const {},
+}) {
   final q = query.trim().toLowerCase().replaceFirst(RegExp(r'^@'), '');
   if (q.isEmpty) return all;
   bool hit(String? s) => s != null && s.toLowerCase().contains(q);
@@ -137,9 +152,21 @@ List<ChatConversation> filterConversations(
     for (final c in all)
       if (hit(c.peerName) ||
           hit(c.peerUsername) ||
-          hit(c.last == null || c.last!.notice ? null : c.last!.preview))
+          hit(c.last == null || c.last!.notice ? null : c.last!.preview) ||
+          textHits.contains(c.id))
         c,
   ];
+}
+
+/// One line of the newest matching message of a search, cut around the match: "…see you at the café at 8".
+String searchSnippet(String text, String query, {int span = 64}) {
+  final flat = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+  final q = query.trim().toLowerCase().replaceFirst(RegExp(r'^@'), '');
+  final at = q.isEmpty ? -1 : flat.toLowerCase().indexOf(q);
+  if (at < 0 || flat.length <= span) return flat;
+  final start = (at - span ~/ 3).clamp(0, flat.length);
+  final end = (start + span).clamp(0, flat.length);
+  return '${start > 0 ? '…' : ''}${flat.substring(start, end).trim()}${end < flat.length ? '…' : ''}';
 }
 
 /// The two list filters that real data backs: everything, or chats with
@@ -152,8 +179,9 @@ List<ChatConversation> filterChats(
   List<ChatConversation> all, {
   String query = '',
   ChatFilter filter = ChatFilter.all,
+  Set<String> textHits = const {},
 }) {
-  final byText = filterConversations(all, query);
+  final byText = filterConversations(all, query, textHits: textHits);
   if (filter == ChatFilter.all) return byText;
   return [
     for (final c in byText)
@@ -181,7 +209,7 @@ String badgeCount(int count) => count > 99 ? '99+' : '$count';
 /// What a last message is, for the list preview. New message types get a
 /// value here and a line in [previewFor]; anything not handled reads
 /// "Message" rather than nothing.
-enum ChatPreviewKind { none, text, photo, notice, failed }
+enum ChatPreviewKind { none, text, photo, voice, video, notice, failed }
 
 class ChatPreview {
   final ChatPreviewKind kind;
@@ -194,6 +222,8 @@ class ChatPreview {
   /// The whole line as read aloud and shown: "You: sounds good".
   String get line => (mine ? 'You: ' : '') + text;
   bool get isPhoto => kind == ChatPreviewKind.photo;
+  bool get isVoice => kind == ChatPreviewKind.voice;
+  bool get isVideo => kind == ChatPreviewKind.video;
   bool get isFailed => kind == ChatPreviewKind.failed;
 }
 
@@ -206,12 +236,18 @@ ChatPreview previewFor(ChatMessage? last, {required String username}) {
       ? ChatPreviewKind.notice
       : last.isPhoto
       ? ChatPreviewKind.photo
+      : last.isVoice
+      ? ChatPreviewKind.voice
+      : last.isVideo
+      ? ChatPreviewKind.video
       : ChatPreviewKind.text;
   final text = switch (kind) {
     ChatPreviewKind.failed => 'Not sent',
     ChatPreviewKind.none => '@$username',
     ChatPreviewKind.notice ||
     ChatPreviewKind.photo ||
+    ChatPreviewKind.voice ||
+    ChatPreviewKind.video ||
     ChatPreviewKind.text => last.preview.trim(),
   };
   return ChatPreview(

@@ -33,7 +33,15 @@ class ChatLocalData {
   static String pendingRevokeKey(String userId) => 'hiyall.chatrevoke.$userId';
 
   static const markerName = 'chat_install_marker';
-  static const folders = ['chat_blobs', 'chat_outbox', 'chat_state'];
+
+  /// `chat_play` holds the short-lived plaintext of a voice message or video while it plays (the players need a
+  /// file) and a recording before it is sealed; it is emptied at every start and removed with the rest.
+  static const folders = [
+    'chat_blobs',
+    'chat_outbox',
+    'chat_state',
+    'chat_play',
+  ];
 
   static final _drains = <String, Future<void> Function()>{};
 

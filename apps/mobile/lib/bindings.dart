@@ -5,6 +5,7 @@ import 'core/app_bindings.dart';
 import 'core/chat/chat_store.dart' show ChatStore;
 import 'features/chat.dart'
     show SecureChatStore, chatEngineProvider, chatSupported;
+import 'features/shop/locked_feature_sheet.dart' show showLockedFeatureSheet;
 
 /// Fills the seams in `core/app_bindings.dart` with the real app. The only
 /// place that knows both sides; `main` installs it on the root scope.
@@ -14,6 +15,10 @@ List<Override> appBindings() => [
   ),
   chatEngineSourceProvider.overrideWith(
     (ref) => ref.watch(chatEngineProvider.future),
+  ),
+  premiumRequiredHandlerProvider.overrideWith(
+    (ref) =>
+        (context, feature) => showLockedFeatureSheet(context, feature: feature),
   ),
   routeOpenerProvider.overrideWith(
     (ref) =>

@@ -16,7 +16,9 @@ import 'package:hiyall/core/app_bindings.dart';
 import 'package:hiyall/features/notification_settings.dart';
 
 import 'widget_test.dart' show SignedIn;
+import 'notification_prefs_test.dart' show PrefsServer;
 import 'support/fixtures.dart';
+import 'support/scripted_api.dart';
 
 const conversation = '019a4000-0000-7000-8000-0000000000c1';
 
@@ -498,15 +500,28 @@ void main() {
     testWidgets(
       'Settings: the switch asks first, the choices are saved on the server',
       (tester) async {
-        final rig = Rig();
+        // The choices travel through the API client (docs/api/27): a scripted server stands in for it.
+        final api = ScriptedApi();
+        final server = PrefsServer()..install(api);
+        final rig = Rig(api: api);
         addTearDown(rig.dispose);
         await pumpApp(tester, rig);
         await tester.pumpAndSettle();
-        expect(find.text('NOTIFICATIONS'), findsOneWidget);
-        // Off: the two choices wait for it.
         final chat = find.byKey(const Key('notifications-chat'));
-        expect(tester.widget<SwitchListTile>(chat).onChanged, isNull);
+        await tester.scrollUntilVisible(
+          chat,
+          300,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.ensureVisible(chat);
+        await tester.pumpAndSettle();
+        expect(find.text('NOTIFICATIONS'), findsOneWidget);
+        // The choices are the server's: they do not wait for this phone's permission (only the master switch
+        // of the choices disables them).
+        expect(tester.widget<SwitchListTile>(chat).onChanged, isNotNull);
 
+        await tester.ensureVisible(find.byKey(const Key('notifications-push')));
+        await tester.pumpAndSettle();
         await tester.tap(find.byKey(const Key('notifications-push')));
         await tester.pumpAndSettle();
         expect(find.byKey(const Key('push-explainer-accept')), findsOneWidget);
@@ -516,13 +531,17 @@ void main() {
         await tester.pumpAndSettle();
         expect(rig.state.on, isTrue);
 
+        await tester.ensureVisible(chat);
+        await tester.pumpAndSettle();
         await tester.tap(chat);
         await tester.pumpAndSettle();
         await tester.runAsync(pumpEventQueue);
-        expect(rig.backend.patches, [
+        expect(server.patches, [
           {'chat': false},
         ]);
 
+        await tester.ensureVisible(find.byKey(const Key('notifications-push')));
+        await tester.pumpAndSettle();
         await tester.tap(find.byKey(const Key('notifications-push')));
         await tester.pumpAndSettle();
         await tester.runAsync(pumpEventQueue);

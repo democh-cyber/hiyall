@@ -26,6 +26,17 @@ if (releaseRequested) {
     }
 }
 
+// AdMob app id for the manifest (google_mobile_ads). Never committed: ADMOB_APP_ID_ANDROID from the environment or a gradle property.
+// Debug and profile builds fall back to Google's published TEST app id; a release build without one fails here, with the reason.
+val admobTestAppId = "ca-app-pub-3940256099942544~3347511713"
+val admobAppId = (System.getenv("ADMOB_APP_ID_ANDROID") ?: (project.findProperty("ADMOB_APP_ID_ANDROID") as String?)).orEmpty().trim()
+if (releaseRequested && admobAppId.isEmpty()) {
+    throw GradleException("ADMOB_APP_ID_ANDROID is not set: the release build needs the AdMob app id of the Android app (ca-app-pub-<publisher>~<app>). See docs/mobile/NN-shop-and-ads.md. The Google TEST id is for debug builds only.")
+}
+if (releaseRequested && admobAppId == admobTestAppId) {
+    throw GradleException("ADMOB_APP_ID_ANDROID is Google's TEST app id: a release build needs the real one.")
+}
+
 android {
     namespace = "app.hiyall.hiyall"
     compileSdk = flutter.compileSdkVersion
@@ -50,6 +61,7 @@ android {
         // versionCode it has seen before, so the build number must grow on every upload.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        manifestPlaceholders["admobAppId"] = if (admobAppId.isEmpty()) admobTestAppId else admobAppId
     }
 
     signingConfigs {

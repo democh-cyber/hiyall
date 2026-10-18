@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/push/push_controller.dart';
 import '../core/push/push_service.dart';
-import '../shared/widgets.dart';
+import 'notification_settings/notification_choices.dart';
 
 /// The short explainer shown before the system's permission dialog. True means
 /// "Turn on"; "Not now" and dismissing the sheet are false.
@@ -89,8 +89,9 @@ class _PushHostState extends ConsumerState<PushHost> {
   }
 }
 
-/// The Notifications group of Settings. Hidden where push cannot work (web,
-/// desktop, builds without Firebase keys).
+/// The Notifications group of Settings: this phone's permission, then the choices the server enforces
+/// (master switch, messages, social, names; see `notification_choices.dart`). Hidden where push cannot
+/// work (web, desktop, builds without Firebase keys).
 class NotificationSettingsGroup extends ConsumerWidget {
   const NotificationSettingsGroup({super.key});
 
@@ -100,7 +101,6 @@ class NotificationSettingsGroup extends ConsumerWidget {
       return const SizedBox.shrink();
     }
     final push = ref.watch(pushControllerProvider);
-    final prefs = ref.watch(notificationPrefsProvider).asData?.value;
     final denied = push.permission == PushPermission.denied;
     Future<void> toggle(bool on) async {
       final controller = ref.read(pushControllerProvider.notifier);
@@ -111,86 +111,28 @@ class NotificationSettingsGroup extends ConsumerWidget {
       await controller.notNow();
     }
 
-    Future<void> choose(String key, bool on) async {
-      try {
-        await ref.read(pushBackendProvider).setPrefs({key: on});
-      } catch (_) {}
-      ref.invalidate(notificationPrefsProvider);
-    }
-
-    final live = push.on;
-    return Padding(
-      padding: const EdgeInsets.only(top: 22),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsetsDirectional.only(start: 4, bottom: 8),
-            child: Semantics(
-              header: true,
-              child: Text(
-                'NOTIFICATIONS',
-                style: TextStyle(
-                  fontSize: 12,
-                  letterSpacing: 1.2,
-                  fontWeight: FontWeight.w800,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        NotificationSection('Notifications', [
+          SwitchListTile(
+            key: const Key('notifications-push'),
+            secondary: const Icon(Icons.smartphone_rounded),
+            title: const Text(
+              'On this phone',
+              style: TextStyle(fontWeight: FontWeight.w700),
             ),
-          ),
-          VibePanel(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Column(
-              children: [
-                SwitchListTile(
-                  key: const Key('notifications-push'),
-                  secondary: const Icon(Icons.notifications_active_outlined),
-                  title: const Text(
-                    'Push notifications',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  subtitle: Text(
-                    denied
-                        ? 'Off in your phone’s settings. Turn Hiyall on there.'
-                        : 'Never shows what a message says',
-                  ),
-                  value: live,
-                  onChanged: denied ? null : toggle,
-                ),
-                SwitchListTile(
-                  key: const Key('notifications-chat'),
-                  secondary: const Icon(Icons.chat_bubble_outline_rounded),
-                  title: const Text(
-                    'Messages',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  subtitle: const Text('When someone writes to you'),
-                  value: prefs?['chat'] ?? true,
-                  onChanged: live && prefs != null
-                      ? (on) => unawaited(choose('chat', on))
-                      : null,
-                ),
-                SwitchListTile(
-                  key: const Key('notifications-social'),
-                  secondary: const Icon(Icons.favorite_border_rounded),
-                  title: const Text(
-                    'Friends and followers',
-                    style: TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  subtitle: const Text(
-                    'Friend requests, new followers, space invitations',
-                  ),
-                  value: prefs?['social'] ?? true,
-                  onChanged: live && prefs != null
-                      ? (on) => unawaited(choose('social', on))
-                      : null,
-                ),
-              ],
+            subtitle: Text(
+              denied
+                  ? 'Off in your phone’s settings. Turn Hiyall on there.'
+                  : 'Never shows what a message says',
             ),
+            value: push.on,
+            onChanged: denied ? null : toggle,
           ),
-        ],
-      ),
+        ]),
+        const NotificationChoices(),
+      ],
     );
   }
 }

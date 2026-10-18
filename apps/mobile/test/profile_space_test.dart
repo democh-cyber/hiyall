@@ -29,9 +29,9 @@ const expressive = Profile(
   pronouns: 'she / her',
   interests: ['Finance', 'Technology', 'Travel', 'Photography', 'Music'],
   languages: [
-    ProfileLanguage('en', 'fluent'),
-    ProfileLanguage('hi', 'native'),
-    ProfileLanguage('ko', 'basic'),
+    ProfileLanguage('en', 4),
+    ProfileLanguage('hi', 6),
+    ProfileLanguage('ko', 2),
   ],
   currentVibe: '☕ Coffee + work',
   profileAccent: 'lime',
@@ -81,15 +81,16 @@ void main() {
       'displayName': 'Test',
       'languages': [
         'ko',
-        {'code': 'en', 'level': 'fluent'},
+        {'code': 'en', 'level': 4},
       ],
       'email': 'secret',
       'coin': 900,
       'birthYear': 2004,
     });
     expect(p.languages.first.code, 'ko');
-    expect(p.languages.first.level, '');
-    expect(p.languages.last.level, 'fluent');
+    // A language without a level reads as the default (3); the older words map to numbers.
+    expect(p.languages.first.level, 3);
+    expect(p.languages.last.level, 4);
     expect(p.interests, isEmpty);
     expect(p.currentVibe, isEmpty);
     expect(p.socialStats, isNull);
@@ -321,9 +322,9 @@ void main() {
     expect(api.saved!['bio'], expressive.bio);
     expect(api.saved!.keys, isNot(contains('socialStats')));
     expect(api.saved!['languages'], [
-      {'code': 'en', 'level': 'fluent'},
-      {'code': 'hi', 'level': 'native'},
-      {'code': 'ko', 'level': 'basic'},
+      {'code': 'en', 'level': 4},
+      {'code': 'hi', 'level': 6},
+      {'code': 'ko', 'level': 2},
     ]);
     expect(api.saved!['interests'], expressive.interests);
     expect(api.saved!['profileAccent'], 'lime');

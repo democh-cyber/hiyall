@@ -458,7 +458,7 @@ void main() {
       expect(failed.failure, 'ATTACHMENTS_NOT_ALLOWED');
       expect(
         photoFailureText(failed.failure),
-        'You can send photos once they reply.',
+        'You can send photos, voice messages and videos once they reply.',
       );
     });
 
@@ -482,11 +482,11 @@ void main() {
       }
       expect(
         chatError(const ChatFailure('ATTACHMENTS_NOT_ALLOWED', 'x', 403)),
-        'You can send photos once they reply.',
+        'You can send photos, voice messages and videos once they reply.',
       );
       expect(
         chatError(const ChatFailure('QUOTA', 'x', 429)),
-        contains('a lot of photos'),
+        contains('a lot of media'),
       );
       expect(
         chatError(const ChatFailure('CHAT_MEDIA_UNAVAILABLE', 'x', 503)),

@@ -321,6 +321,9 @@ void main() {
       await tester.tap(find.byKey(const Key('chat-options')));
       await tester.pumpAndSettle();
       expect(find.byKey(const Key('chat-block')), findsOneWidget);
+      // The menu has grown (pin, translate, clear, delete): scroll to Block first.
+      await tester.ensureVisible(find.byKey(const Key('chat-block')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const Key('chat-block')));
       await tester.pumpAndSettle();
       expect(find.text('Block Niko?'), findsOneWidget);

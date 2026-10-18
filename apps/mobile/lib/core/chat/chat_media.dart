@@ -6,6 +6,7 @@ import 'package:dio/dio.dart';
 
 import 'chat_api.dart';
 import 'chat_attachment.dart';
+import 'chat_av.dart' show BlobSpec;
 import 'chat_blob_cache.dart';
 import 'chat_blob_codec.dart';
 import 'chat_blob_transport.dart';
@@ -77,48 +78,72 @@ class ChatMedia {
     BlobRole role, {
     void Function(double progress)? onProgress,
   }) {
-    final id = att.part(role).blobId;
+    final part = att.part(role);
+    final id = part.blobId;
     if (id == null) {
       return Future.error(const ChatMediaFailure(MediaProblem.other));
     }
-    final running = _inflight[id];
+    return plaintextBlob(
+      conversationId,
+      BlobSpec(
+        blobId: id,
+        role: role.name,
+        salt: att.salt,
+        mime: att.mime,
+        key: att.key,
+        chunk: att.chunk,
+        plainLen: part.plainLen,
+        ctSize: part.ctSize,
+        ctSha256: part.ctSha256,
+      ),
+      onProgress: onProgress,
+    );
+  }
+
+  /// The decrypted bytes of any blob (a photo part, a voice message, a video or its poster) described by
+  /// [spec]: the same order for all of them (hash before anything else, verified ciphertext cached,
+  /// plaintext in memory only). Throws [ChatMediaFailure].
+  Future<Uint8List> plaintextBlob(
+    String conversationId,
+    BlobSpec spec, {
+    void Function(double progress)? onProgress,
+  }) {
+    final running = _inflight[spec.blobId];
     if (running != null) {
       if (onProgress != null) running.listeners.add(onProgress);
       return running.future;
     }
     final fetch = _Fetch();
     if (onProgress != null) fetch.listeners.add(onProgress);
-    _inflight[id] = fetch;
-    fetch.future = _fetch(conversationId, att, role, fetch).whenComplete(() {
-      _inflight.remove(id);
+    _inflight[spec.blobId] = fetch;
+    fetch.future = _fetch(conversationId, spec, fetch).whenComplete(() {
+      _inflight.remove(spec.blobId);
     });
     return fetch.future;
   }
 
   Future<Uint8List> _fetch(
     String conversationId,
-    ChatAttachment att,
-    BlobRole role,
+    BlobSpec spec,
     _Fetch fetch,
   ) async {
-    final part = att.part(role);
-    final id = part.blobId!;
+    final id = spec.blobId;
     Future<Uint8List> open(Uint8List ciphertext) => codec.decrypt(
-      key: att.key,
-      role: role.name,
-      salt: att.salt,
+      key: spec.key,
+      role: spec.role,
+      salt: spec.salt,
       conversationId: conversationId,
-      mime: att.mime,
-      chunkSize: att.chunk,
-      plainLen: part.plainLen,
-      ctSha256: part.ctSha256,
+      mime: spec.mime,
+      chunkSize: spec.chunk,
+      plainLen: spec.plainLen,
+      ctSha256: spec.ctSha256,
       ciphertext: ciphertext,
     );
 
-    final key = blobCacheKey(conversationId, id, part.ctSha256);
+    final key = blobCacheKey(conversationId, id, spec.ctSha256);
     final cached = await cache.read(key);
     if (cached != null) {
-      if (_matches(cached, part)) {
+      if (_matches(cached, spec.ctSize, spec.ctSha256)) {
         // A file that verifies against its own descriptor is never deleted
         // because of what a message says: if it will not decrypt, the
         // descriptor is the problem, and the same bytes would come again.
@@ -136,12 +161,12 @@ class ChatMedia {
       final Uint8List ciphertext;
       try {
         final link = await api.blobDownloadUrl(conversationId, id);
-        if (link.sizeBytes != null && link.sizeBytes != part.ctSize) {
+        if (link.sizeBytes != null && link.sizeBytes != spec.ctSize) {
           throw const ChatMediaFailure(MediaProblem.corrupt);
         }
         ciphertext = await transport.download(
           link.url,
-          maxBytes: part.ctSize,
+          maxBytes: spec.ctSize,
           onProgress: (got, total) => fetch.report(total > 0 ? got / total : 0),
         );
       } on ChatMediaFailure {
@@ -150,7 +175,7 @@ class ChatMedia {
         throw ChatMediaFailure(_classify(e));
       }
       // Hash first: nothing unverified is cached or decrypted.
-      if (!_matches(ciphertext, part)) {
+      if (!_matches(ciphertext, spec.ctSize, spec.ctSha256)) {
         throw const ChatMediaFailure(MediaProblem.corrupt);
       }
       final Uint8List plain;
@@ -171,13 +196,13 @@ class ChatMedia {
     }
   }
 
-  static bool _matches(Uint8List ciphertext, BlobPart part) {
-    if (ciphertext.length != part.ctSize) return false;
+  static bool _matches(Uint8List ciphertext, int ctSize, Uint8List ctSha256) {
+    if (ciphertext.length != ctSize) return false;
     final digest = sha256.convert(ciphertext).bytes;
-    if (digest.length != part.ctSha256.length) return false;
+    if (digest.length != ctSha256.length) return false;
     var diff = 0;
     for (var i = 0; i < digest.length; i++) {
-      diff |= digest[i] ^ part.ctSha256[i];
+      diff |= digest[i] ^ ctSha256[i];
     }
     return diff == 0;
   }

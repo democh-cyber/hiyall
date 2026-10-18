@@ -4,3 +4,7 @@
 // Written by scripts/build-release.sh in CI only: manual signing (team, profile, Apple Distribution) for the Runner target.
 // This file is this target's base configuration, so nothing else in the build sees the settings. Absent everywhere else.
 #include? "Signing.xcconfig"
+// AdMob application id (GADApplicationIdentifier in Info.plist): empty here on purpose. scripts/build-release.sh (or the owner) writes
+// Admob.xcconfig (git-ignored) with ADMOB_APP_ID_IOS=ca-app-pub-<publisher>~<app>; a release without it has no ads and must not call the ads SDK.
+ADMOB_APP_ID_IOS=
+#include? "Admob.xcconfig"

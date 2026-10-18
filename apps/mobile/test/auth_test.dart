@@ -321,8 +321,8 @@ Future<void> next(WidgetTester tester, [String key = 'onb-next']) async {
 }
 
 /// Walks the onboarding steps with valid answers, stopping before Finish.
-Future<void> fillOnboarding(WidgetTester tester) async {
-  await chooseBirthDate(tester);
+Future<void> fillOnboarding(WidgetTester tester, {String year = '2000'}) async {
+  await chooseBirthDate(tester, year: year);
   await tester.tap(find.byKey(const Key('onb-terms')));
   await tester.pump();
   await next(tester);
@@ -338,6 +338,8 @@ Future<void> fillOnboarding(WidgetTester tester) async {
     await tester.tap(find.widgetWithText(FilterChip, interest));
     await tester.pump();
   }
+  // The last step, "Find people near you", is optional: 'Not now' (onb-finish) enters the app without it.
+  await next(tester);
 }
 
 void main() {
@@ -1127,9 +1129,11 @@ void main() {
         await tester.tap(find.widgetWithText(FilterChip, interest));
         await tester.pump();
       }
+      await next(tester); // interests -> the optional Nearby step
       await next(tester, 'onb-finish');
+      // Onboarding sends no level question: a language starts at Conversational (3), editable in the profile.
       expect(api.profilePatch!['languages'], [
-        {'code': 'en'},
+        {'code': 'en', 'level': 3},
       ]);
     });
 
@@ -1151,6 +1155,7 @@ void main() {
         await tester.tap(find.widgetWithText(FilterChip, interest));
         await tester.pump();
       }
+      await next(tester); // interests -> the optional Nearby step
       await next(tester, 'onb-finish');
       expect(api.profilePatch!['gender'], 'nonbinary');
     });
@@ -1175,7 +1180,7 @@ void main() {
       await tester.tap(find.byKey(const Key('onb-skip')));
       await tester.pumpAndSettle();
       FilledButton button() =>
-          tester.widget<FilledButton>(find.byKey(const Key('onb-finish')));
+          tester.widget<FilledButton>(find.byKey(const Key('onb-next')));
       expect(button().onPressed, isNull);
       await tester.tap(find.widgetWithText(FilterChip, 'Music'));
       await tester.tap(find.widgetWithText(FilterChip, 'Art'));
@@ -1356,6 +1361,7 @@ void main() {
         await tester.tap(find.widgetWithText(FilterChip, interest));
         await tester.pump();
       }
+      await next(tester); // interests -> the optional Nearby step
       await next(tester, 'onb-finish');
     }
 
@@ -1366,10 +1372,10 @@ void main() {
       tester,
     ) async {
       await start(tester, AuthApi());
-      expect(find.text('STEP 1 OF 5'), findsOneWidget);
+      expect(find.text('STEP 1 OF 6'), findsOneWidget);
       await toPhotoStep(tester);
-      expect(find.text('STEP 3 OF 5'), findsOneWidget);
-      expect(find.bySemanticsLabel('Step 3 of 5'), findsOneWidget);
+      expect(find.text('STEP 3 OF 6'), findsOneWidget);
+      expect(find.bySemanticsLabel('Step 3 of 6'), findsOneWidget);
       expect(find.byKey(const Key('onb-photo')), findsOneWidget);
       expect(find.byKey(const Key('onb-photo-choose')), findsOneWidget);
       expect(find.byKey(const Key('onb-photo-remove')), findsNothing);
@@ -1377,10 +1383,10 @@ void main() {
       expect(find.textContaining('public'), findsOneWidget);
       await tester.tap(find.byKey(const Key('onb-skip')));
       await tester.pumpAndSettle();
-      expect(find.text('STEP 4 OF 5'), findsOneWidget);
+      expect(find.text('STEP 4 OF 6'), findsOneWidget);
       await next(tester);
-      expect(find.text('STEP 5 OF 5'), findsOneWidget);
-      expect(find.byKey(const Key('onb-finish')), findsOneWidget);
+      expect(find.text('STEP 5 OF 6'), findsOneWidget);
+      expect(find.byKey(const Key('onb-next')), findsOneWidget);
     });
 
     testWidgets('Skipping the photo saves and uploads nothing extra', (

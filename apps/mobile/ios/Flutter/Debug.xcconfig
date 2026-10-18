@@ -1,3 +1,5 @@
 #include "Generated.xcconfig"
 // Written by scripts/firebase-setup.sh; holds FIREBASE_IOS_URL_SCHEME for Google sign-in.
 #include? "Firebase.xcconfig"
+// AdMob application id (GADApplicationIdentifier in Info.plist). Debug: Google's published TEST id. Never a real id in the repository.
+ADMOB_APP_ID_IOS=ca-app-pub-3940256099942544~1458002511

@@ -155,14 +155,18 @@ Future<Uint8List?> pickChatPhoto(ImagePicker picker, PhotoSource source) async {
   return bytes;
 }
 
-/// The attach menu: gallery, and the camera where the phone has one.
-Future<PhotoSource?> showAttachSheet(BuildContext context) =>
-    showModalBottomSheet<PhotoSource>(
+/// What the attach menu can pick: a photo or a video, from the gallery or the camera.
+enum AttachChoice { photoGallery, photoCamera, videoGallery, videoCamera }
+
+/// The attach menu: photos and videos from the gallery, and the camera where the phone has one.
+Future<AttachChoice?> showAttachSheet(BuildContext context) =>
+    showModalBottomSheet<AttachChoice>(
       context: context,
       useRootNavigator: true,
       showDragHandle: true,
+      isScrollControlled: true,
       builder: (context) => SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -171,7 +175,7 @@ Future<PhotoSource?> showAttachSheet(BuildContext context) =>
               Padding(
                 padding: const EdgeInsets.fromLTRB(4, 0, 4, 12),
                 child: Text(
-                  'Send a photo',
+                  'Send a photo or video',
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
@@ -181,7 +185,7 @@ Future<PhotoSource?> showAttachSheet(BuildContext context) =>
                 tint: VibeColors.lilac,
                 title: 'Choose photo',
                 subtitle: 'Pick one from your gallery',
-                onTap: () => Navigator.pop(context, PhotoSource.gallery),
+                onTap: () => Navigator.pop(context, AttachChoice.photoGallery),
               ),
               if (canTakePhoto) ...[
                 const SizedBox(height: 8),
@@ -191,7 +195,27 @@ Future<PhotoSource?> showAttachSheet(BuildContext context) =>
                   tint: VibeColors.lime,
                   title: 'Take photo',
                   subtitle: 'Use your camera right now',
-                  onTap: () => Navigator.pop(context, PhotoSource.camera),
+                  onTap: () => Navigator.pop(context, AttachChoice.photoCamera),
+                ),
+              ],
+              const SizedBox(height: 8),
+              _AttachTile(
+                key: const Key('attach-video-gallery'),
+                icon: Icons.video_library_rounded,
+                tint: VibeColors.lilac,
+                title: 'Choose video',
+                subtitle: 'Up to 1 minute',
+                onTap: () => Navigator.pop(context, AttachChoice.videoGallery),
+              ),
+              if (canTakePhoto) ...[
+                const SizedBox(height: 8),
+                _AttachTile(
+                  key: const Key('attach-video-camera'),
+                  icon: Icons.videocam_rounded,
+                  tint: VibeColors.lime,
+                  title: 'Record video',
+                  subtitle: 'Up to 1 minute',
+                  onTap: () => Navigator.pop(context, AttachChoice.videoCamera),
                 ),
               ],
             ],
@@ -701,7 +725,7 @@ class _PhotoBodyState extends ConsumerState<PhotoBody> {
                     child: StreamBuilder<double>(
                       initialData: progress?.value ?? 0,
                       stream: progress?.changes,
-                      builder: (context, snap) => _UploadBadge(
+                      builder: (context, snap) => UploadBadge(
                         key: Key('photo-stop-${m.messageId}'),
                         value: (snap.data ?? 0) > 0 ? snap.data : null,
                         onCancel: () => widget.engine.cancelPhoto(m.messageId),
@@ -711,7 +735,7 @@ class _PhotoBodyState extends ConsumerState<PhotoBody> {
                 else if (failed)
                   overlay(
                     key: 'photo-failed-${m.messageId}',
-                    child: const _BadgeCircle(
+                    child: const BadgeCircle(
                       child: Icon(
                         Icons.priority_high_rounded,
                         color: Colors.white,
@@ -766,9 +790,9 @@ class _PhotoBodyState extends ConsumerState<PhotoBody> {
 
 /// A dark round plate for an icon or progress ring on top of a photo. The
 /// child is centred on the plate exactly.
-class _BadgeCircle extends StatelessWidget {
+class BadgeCircle extends StatelessWidget {
   final Widget child;
-  const _BadgeCircle({required this.child});
+  const BadgeCircle({super.key, required this.child});
   @override
   Widget build(BuildContext context) => Container(
     width: 56,
@@ -784,10 +808,10 @@ class _BadgeCircle extends StatelessWidget {
 
 /// The ring and cancel cross on an uploading photo: one plate, the ring and
 /// the cross centred on the same point, and the whole plate is the target.
-class _UploadBadge extends StatelessWidget {
+class UploadBadge extends StatelessWidget {
   final double? value;
   final VoidCallback onCancel;
-  const _UploadBadge({super.key, required this.value, required this.onCancel});
+  const UploadBadge({super.key, required this.value, required this.onCancel});
   @override
   Widget build(BuildContext context) => Tooltip(
     message: 'Cancel upload',
@@ -795,7 +819,7 @@ class _UploadBadge extends StatelessWidget {
       onTap: onCancel,
       semanticLabel: 'Cancel upload',
       borderRadius: BorderRadius.circular(28),
-      child: _BadgeCircle(
+      child: BadgeCircle(
         child: Stack(
           alignment: Alignment.center,
           children: [

@@ -288,6 +288,8 @@ void main() {
     await open(tester, api, '/profile/settings');
     api.serverVersion = '2';
     final toggle = find.byKey(const Key('online-toggle'));
+    await tester.ensureVisible(toggle);
+    await tester.pumpAndSettle();
     await tester.tap(toggle);
     await tester.pumpAndSettle();
     expect(
@@ -297,6 +299,8 @@ void main() {
     expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
     // Let the message go so it doesn't cover the switch.
     await tester.pump(const Duration(seconds: 10));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(toggle);
     await tester.pumpAndSettle();
     await tester.tap(toggle);
     await tester.pumpAndSettle();
@@ -333,6 +337,8 @@ void main() {
         await open(tester, api, '/profile/settings');
         final toggle = find.byKey(const Key('online-toggle'));
         expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+        await tester.ensureVisible(toggle);
+        await tester.pumpAndSettle();
         await tester.tap(toggle);
         await tester.pumpAndSettle();
         expect(api.saved, {'onlineAudience': 'nobody'});
@@ -340,6 +346,8 @@ void main() {
           'onlineAudience',
         ], reason: 'no lastSeenAudience');
         expect(tester.widget<SwitchListTile>(toggle).value, isFalse);
+        await tester.ensureVisible(toggle);
+        await tester.pumpAndSettle();
         await tester.tap(toggle);
         await tester.pumpAndSettle();
         expect(api.saved, {'onlineAudience': 'everyone'});

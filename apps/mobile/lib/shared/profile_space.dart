@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../core/api.dart';
 import '../core/theme.dart';
+import 'profile_space/profile_details.dart';
+import 'profile_space/profile_gallery.dart';
 import 'profile_space/profile_hero.dart';
 import 'profile_space/profile_sections.dart';
 import 'profile_space/profile_sticky_header.dart';
@@ -95,6 +97,13 @@ class _ProfileSpaceState extends State<ProfileSpace> {
                   muted: muted,
                 ),
               ),
+              if (p.photos.isNotEmpty)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: ProfileGalleryStrip(photos: p.photos),
+                  ),
+                ),
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
@@ -112,6 +121,10 @@ class _ProfileSpaceState extends State<ProfileSpace> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (!widget.isOwner && p.visitorsVisible) ...[
+          RecentVisitorsEntry(userId: p.userId),
+          const SizedBox(height: 24),
+        ],
         ProfileAbout(
           profile: p,
           isOwner: widget.isOwner,
@@ -124,10 +137,12 @@ class _ProfileSpaceState extends State<ProfileSpace> {
             profile: p,
             isOwner: widget.isOwner,
             onEdit: widget.onEdit,
-            accent: accent,
             muted: muted,
-            dark: dark,
           ),
+        ],
+        if (p.personalityTags.isNotEmpty) ...[
+          const SizedBox(height: 24),
+          ProfilePersonality(tags: p.personalityTags, muted: muted),
         ],
         if (p.languages.isNotEmpty) ...[
           const SizedBox(height: 24),

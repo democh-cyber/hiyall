@@ -34,6 +34,13 @@ class ChatRow extends StatelessWidget {
 
   /// The hairline under the row; the last row of a list has none.
   final bool showDivider;
+
+  /// Edit mode: the row shows a check circle in place of the pin and a tap selects instead of opening.
+  final bool selecting, selected;
+
+  /// A line of a message that matches the search, shown in place of the last message.
+  final String? snippet;
+  final VoidCallback? onLongPress;
   const ChatRow({
     super.key,
     required this.chat,
@@ -41,6 +48,10 @@ class ChatRow extends StatelessWidget {
     required this.typing,
     required this.onTap,
     this.showDivider = true,
+    this.selecting = false,
+    this.selected = false,
+    this.snippet,
+    this.onLongPress,
   });
 
   @override
@@ -51,9 +62,13 @@ class ChatRow extends StatelessWidget {
     final when = c.last == null || c.last!.notice
         ? null
         : chatListTime(c.last!.shownAt, now);
-    final preview = previewFor(c.last, username: c.peerUsername);
+    final preview = snippet != null
+        ? ChatPreview(ChatPreviewKind.text, snippet!)
+        : previewFor(c.last, username: c.peerUsername);
     final label = [
       c.peerName,
+      if (c.pinned) 'pinned',
+      if (selecting) (selected ? 'selected' : 'not selected'),
       if (unread) '${c.unreadCount} unread',
       if (c.muted) 'muted',
       if (c.online) PresenceDot.label,
@@ -68,6 +83,16 @@ class ChatRow extends StatelessWidget {
 
     final top = Row(
       children: [
+        if (c.pinned && !selecting) ...[
+          Icon(
+            Icons.push_pin,
+            key: Key('pinned-${c.id}'),
+            semanticLabel: 'Pinned',
+            size: 14,
+            color: t.textTertiary,
+          ),
+          const SizedBox(width: 5),
+        ],
         Expanded(
           child: Text(
             c.peerName,
@@ -117,10 +142,17 @@ class ChatRow extends StatelessWidget {
                 )
               : Row(
                   children: [
-                    if (preview.isPhoto || preview.isFailed) ...[
+                    if (preview.isPhoto ||
+                        preview.isVoice ||
+                        preview.isVideo ||
+                        preview.isFailed) ...[
                       Icon(
                         preview.isFailed
                             ? Icons.error_outline_rounded
+                            : preview.isVoice
+                            ? Icons.mic_none_rounded
+                            : preview.isVideo
+                            ? Icons.videocam_outlined
                             : Icons.photo_camera_outlined,
                         size: 15,
                         color: previewColor,
@@ -184,6 +216,7 @@ class ChatRow extends StatelessWidget {
             ),
             child: PressScale(
               onTap: onTap,
+              onLongPress: onLongPress,
               semanticLabel: label,
               borderRadius: BorderRadius.circular(18),
               pressedScale: .98,
@@ -196,6 +229,13 @@ class ChatRow extends StatelessWidget {
                 ),
                 child: Row(
                   children: [
+                    if (selecting) ...[
+                      SelectionDot(
+                        key: Key('select-${c.id}'),
+                        selected: selected,
+                      ),
+                      const SizedBox(width: 12),
+                    ],
                     Stack(
                       clipBehavior: Clip.none,
                       children: [
@@ -870,6 +910,32 @@ class ChatListSkeleton extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// The check circle of a selected chat in edit mode.
+class SelectionDot extends StatelessWidget {
+  final bool selected;
+  const SelectionDot({super.key, required this.selected});
+  @override
+  Widget build(BuildContext context) {
+    final t = ChatTokens.of(context);
+    return AnimatedContainer(
+      duration: VibeMotion.duration(context),
+      width: 24,
+      height: 24,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: selected ? t.lime : Colors.transparent,
+        border: Border.all(
+          color: selected ? t.lime : t.textTertiary,
+          width: 1.6,
+        ),
+      ),
+      child: selected
+          ? Icon(Icons.check_rounded, size: 16, color: t.onLime)
+          : null,
     );
   }
 }

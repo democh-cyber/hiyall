@@ -408,7 +408,7 @@ void main() {
         'snippet control': re(snip: 'a\u0007b'),
         'snippet bidi override': re(snip: 'a\u202Eb'),
         'snippet not text': re(snip: 5),
-        'kind unknown': re(k: 'video'),
+        'kind unknown': re(k: 'file'),
         'kind missing': re(k: null),
         'not a map': 'quote',
         'a list': [1, 2],

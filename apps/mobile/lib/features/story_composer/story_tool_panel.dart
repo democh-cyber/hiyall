@@ -19,6 +19,9 @@ class StoryToolPanel extends StatelessWidget {
   final ValueChanged<TextAlign> onAlign;
   final ValueChanged<int> onHours;
   final void Function(String emoji, String word) onVibe;
+
+  /// The topic picker and the voice recorder, built by the composer (they hold their own state).
+  final Widget? topicPanel, voicePanel;
   const StoryToolPanel({
     super.key,
     required this.tool,
@@ -33,6 +36,8 @@ class StoryToolPanel extends StatelessWidget {
     required this.onAlign,
     required this.onHours,
     required this.onVibe,
+    this.topicPanel,
+    this.voicePanel,
   });
 
   @override
@@ -53,5 +58,7 @@ class StoryToolPanel extends StatelessWidget {
     StoryTool.vibes => StoryVibesPanel(onVibe: onVibe),
     StoryTool.time => StoryLifetimePanel(hours: hours, onHours: onHours),
     StoryTool.who => StoryAudiencePanel(chosen: audience, onChoose: onAudience),
+    StoryTool.topic => topicPanel ?? const SizedBox.shrink(),
+    StoryTool.voice => voicePanel ?? const SizedBox.shrink(),
   };
 }

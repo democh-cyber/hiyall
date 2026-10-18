@@ -2,19 +2,32 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hiyall/core/state.dart';
 import 'package:hiyall/features/help_safety.dart';
 import 'package:hiyall/l10n/l10n.dart';
+
+import 'widget_test.dart' show FakeApi, SignedIn;
+
+/// Help & Safety shows a pinned-notice and support dot, which read the server: a signed-in fake one.
+final _overrides = [
+  apiProvider.overrideWithValue(FakeApi()),
+  sessionProvider.overrideWith(SignedIn.new),
+];
 
 void main() {
   testWidgets('Help & Safety reads its words from the localization scope', (
     tester,
   ) async {
     await tester.pumpWidget(
-      const MaterialApp(
-        localizationsDelegates: AppLocalizations.localizationsDelegates,
-        supportedLocales: AppLocalizations.supportedLocales,
-        home: Scaffold(body: HelpSafetyScreen()),
+      ProviderScope(
+        overrides: _overrides,
+        child: const MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(body: HelpSafetyScreen()),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -26,7 +39,10 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      const MaterialApp(home: Scaffold(body: HelpSafetyScreen())),
+      ProviderScope(
+        overrides: _overrides,
+        child: const MaterialApp(home: Scaffold(body: HelpSafetyScreen())),
+      ),
     );
     await tester.pumpAndSettle();
     expect(find.text('Help & Safety'), findsOneWidget);

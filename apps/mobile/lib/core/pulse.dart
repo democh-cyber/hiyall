@@ -38,6 +38,21 @@ class PostMedia {
   double get aspect => width > 0 && height > 0 ? width / height : 1;
 }
 
+/// A voice clip on a post or story: at most 60 seconds, played from a signed read URL (valid an hour).
+class PostVoice {
+  final String mediaId, url;
+  final int durationMs;
+  const PostVoice(this.mediaId, this.url, this.durationMs);
+  static PostVoice? fromJson(Object? json) => json is Map
+      ? PostVoice(
+          json['mediaId'] as String,
+          json['url'] as String? ?? '',
+          (json['durationMs'] as num?)?.toInt() ?? 0,
+        )
+      : null;
+  Duration get duration => Duration(milliseconds: durationMs);
+}
+
 /// The photo type from its first bytes, or null if it isn't one we accept.
 /// Uploads are labelled by content, never by file name.
 String? sniffImageType(Uint8List b) {
@@ -76,6 +91,12 @@ class Post {
   final int reactionCount, commentCount;
   final String? myReaction;
   final bool saved, mine;
+
+  /// One of the server's topics (see `topics.dart`), or null; a name this app does not know is kept as is.
+  final String? topic;
+
+  /// A voice note on the post, or null. A post may be only a voice note (no text, no photo).
+  final PostVoice? voice;
   const Post({
     required this.postId,
     required this.author,
@@ -88,6 +109,8 @@ class Post {
     this.myReaction,
     this.saved = false,
     this.mine = false,
+    this.topic,
+    this.voice,
   });
   factory Post.fromJson(Map<String, dynamic> json) => Post(
     postId: json['postId'] as String,
@@ -104,6 +127,8 @@ class Post {
     myReaction: json['myReaction'] as String?,
     saved: json['saved'] as bool? ?? false,
     mine: json['mine'] as bool? ?? false,
+    topic: _topicOf(json['topic']),
+    voice: PostVoice.fromJson(json['voice']),
   );
   Post copyWith({
     String? Function()? myReaction,
@@ -122,8 +147,14 @@ class Post {
     myReaction: myReaction == null ? this.myReaction : myReaction(),
     saved: saved ?? this.saved,
     mine: mine,
+    topic: topic,
+    voice: voice,
   );
 }
+
+/// A topic name as sent, or null for none (absent, null or empty).
+String? _topicOf(Object? value) =>
+    value is String && value.trim().isNotEmpty ? value.trim() : null;
 
 class PostComment {
   final String commentId, postId, body;
@@ -131,6 +162,9 @@ class PostComment {
   final Person author;
   final DateTime createdAt;
   final bool mine, canDelete;
+
+  /// The replies the viewer can see (top-level comments only; 0 on a reply).
+  final int replyCount;
   const PostComment({
     required this.commentId,
     required this.postId,
@@ -140,6 +174,7 @@ class PostComment {
     this.parentId,
     this.mine = false,
     this.canDelete = false,
+    this.replyCount = 0,
   });
   factory PostComment.fromJson(Map<String, dynamic> json) => PostComment(
     commentId: json['commentId'] as String,
@@ -150,6 +185,18 @@ class PostComment {
     parentId: json['parentId'] as String?,
     mine: json['mine'] as bool? ?? false,
     canDelete: json['canDelete'] as bool? ?? false,
+    replyCount: (json['replyCount'] as num?)?.toInt() ?? 0,
+  );
+  PostComment copyWith({int? replyCount}) => PostComment(
+    commentId: commentId,
+    postId: postId,
+    body: body,
+    author: author,
+    createdAt: createdAt,
+    parentId: parentId,
+    mine: mine,
+    canDelete: canDelete,
+    replyCount: replyCount ?? this.replyCount,
   );
 }
 
@@ -165,6 +212,12 @@ class Story {
 
   /// More than 99 members saw it: [viewCount] stops at 99, show "99+".
   final bool viewCountMore;
+
+  /// A topic name, or null.
+  final String? topic;
+
+  /// A voice note on the story, or null. A story may be only a voice note.
+  final PostVoice? voice;
   const Story({
     required this.storyId,
     required this.body,
@@ -177,6 +230,8 @@ class Story {
     this.seen = false,
     this.viewCount,
     this.viewCountMore = false,
+    this.topic,
+    this.voice,
   });
 
   /// "Seen by 3", or "Seen by 99+" once the server stops counting.
@@ -195,6 +250,8 @@ class Story {
     seen: json['seen'] as bool? ?? false,
     viewCount: json['viewCount'] as int?,
     viewCountMore: json['viewCountMore'] as bool? ?? false,
+    topic: _topicOf(json['topic']),
+    voice: PostVoice.fromJson(json['voice']),
   );
 }
 
