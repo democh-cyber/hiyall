@@ -11,7 +11,10 @@ import { ContentCases } from './pages/ContentCases'
 import { ContentCaseView } from './pages/ContentCaseView'
 import { EvidenceOrphans } from './pages/EvidenceOrphans'
 import { Login } from './pages/Login'
+import { Notices } from './pages/Notices'
 import { Operators } from './pages/Operators'
+import { Support } from './pages/Support'
+import { SupportThread } from './pages/SupportThread'
 import { Queue } from './pages/Queue'
 import { User } from './pages/User'
 
@@ -51,6 +54,8 @@ function Shell() {
         <nav aria-label="Main">
           <NavLink to="/" end>Reports</NavLink>
           {op.role !== 'viewer' && <NavLink to="/content">Quarantine</NavLink>}
+          <NavLink to="/support">Support</NavLink>
+          <NavLink to="/notices">Notices</NavLink>
           {op.role === 'admin' && <NavLink to="/approvals">Approvals</NavLink>}
           {op.role === 'admin' && <NavLink to="/apple-revocations">Apple deletions</NavLink>}
           {op.role === 'admin' && <NavLink to="/evidence-orphans">Evidence orphans</NavLink>}
@@ -73,6 +78,9 @@ function Shell() {
           <Route path="/evidence-orphans" element={<Guard role="admin"><EvidenceOrphans /></Guard>} />
           <Route path="/audit" element={<Guard role="admin"><Audit /></Guard>} />
           <Route path="/operators" element={<Guard role="admin"><Operators /></Guard>} />
+          <Route path="/notices" element={<Notices />} />
+          <Route path="/support" element={<Support />} />
+          <Route path="/support/:id" element={<SupportThread />} />
           <Route path="/account" element={<Account />} />
           <Route path="*" element={<p>Page not found.</p>} />
         </Routes>

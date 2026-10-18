@@ -271,7 +271,7 @@ export function setSignedOutHandler(fn: () => void) {
   onSignedOut = fn
 }
 
-export async function api<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+export async function api<T>(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = { Accept: 'application/json' }
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (method !== 'GET' && csrfToken) headers['X-CSRF-Token'] = csrfToken
@@ -317,4 +317,77 @@ export function hasPreview(targetType: string): boolean {
 
 export function canModerate(role: Role | undefined): boolean {
   return role === 'moderator' || role === 'admin'
+}
+
+// ---- Notices and the support inbox (docs/api/27-stories-notices-support.md, "Admin console endpoints").
+
+export type NoticeCategory = 'safety' | 'news' | 'update'
+export type NoticeAudience = 'all' | 'minors' | 'adults'
+export type NoticeStatus = 'live' | 'scheduled' | 'ended' | 'unpublished'
+
+export interface NoticeRecord {
+  noticeId: string
+  category: NoticeCategory
+  title: string
+  body: string
+  audience: NoticeAudience
+  /** Empty: every language. */
+  locale: string
+  pinned: boolean
+  publishedAt: string
+  expiresAt: string | null
+  unpublishedAt: string | null
+  createdBy: string
+  updatedAt: string
+  status: NoticeStatus
+}
+
+/** What the notice form sends; publishedAt and expiresAt are ISO times, omitted when empty. */
+export interface NoticeInput {
+  category: NoticeCategory
+  title: string
+  body: string
+  audience: NoticeAudience
+  locale: string
+  pinned: boolean
+  publishedAt?: string
+  expiresAt?: string
+  reason: string
+}
+
+export type SupportCategory = 'account' | 'safety' | 'bug' | 'other'
+
+/** All the console shows of the member behind a thread. */
+export interface SupportMember {
+  userId: string
+  username: string
+  displayName: string
+  ageBand: 'minor' | 'adult'
+  status: string
+}
+
+export interface SupportThreadRecord {
+  threadId: string
+  category: SupportCategory
+  status: 'open' | 'closed'
+  member: SupportMember
+  assignedTo: string | null
+  assignedToMe: boolean
+  createdAt: string
+  lastMessageAt: string
+  lastAuthor: 'member' | 'staff'
+  messageCount: number
+}
+
+export interface SupportMessageRecord {
+  messageId: string
+  author: 'member' | 'staff'
+  operator: string | null
+  body: string
+  createdAt: string
+}
+
+export interface SupportThreadView {
+  thread: SupportThreadRecord
+  messages: SupportMessageRecord[]
 }
