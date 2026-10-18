@@ -31,7 +31,7 @@ if (releaseRequested) {
 val admobTestAppId = "ca-app-pub-3940256099942544~3347511713"
 val admobAppId = (System.getenv("ADMOB_APP_ID_ANDROID") ?: (project.findProperty("ADMOB_APP_ID_ANDROID") as String?)).orEmpty().trim()
 if (releaseRequested && admobAppId.isEmpty()) {
-    throw GradleException("ADMOB_APP_ID_ANDROID is not set: the release build needs the AdMob app id of the Android app (ca-app-pub-<publisher>~<app>). See docs/mobile/NN-shop-and-ads.md. The Google TEST id is for debug builds only.")
+    throw GradleException("ADMOB_APP_ID_ANDROID is not set: the release build needs the AdMob app id of the Android app (ca-app-pub-<publisher>~<app>). See docs/mobile/18-shop-and-ads.md. The Google TEST id is for debug builds only.")
 }
 if (releaseRequested && admobAppId == admobTestAppId) {
     throw GradleException("ADMOB_APP_ID_ANDROID is Google's TEST app id: a release build needs the real one.")

@@ -38,6 +38,8 @@ env:
   SAFETY_EMAIL: dryrun@dryrun.invalid
   PRIVACY_EMAIL: dryrun@dryrun.invalid
   APP_BUILD_NUMBER: '1'
+  # A made-up AdMob app id (not Google's test id, which Gradle refuses in a release build): the dry run needs one to get past Gradle.
+  ADMOB_APP_ID_ANDROID: 'ca-app-pub-0000000000000000~0000000000'
 
 jobs:
   android:

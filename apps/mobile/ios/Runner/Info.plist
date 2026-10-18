@@ -15,9 +15,9 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Hiyall uses a photo you choose as your profile picture or in your posts. Photos are only shared when you pick them.</string>
+	<string>Hiyall uses a photo or video you choose as your profile or gallery photo, or in a post, story or chat. Only what you pick is shared.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Hiyall uses the camera so you can take a profile picture, a photo for a post or story, or a photo to send in a chat. Nothing is shared until you confirm it.</string>
+	<string>Hiyall uses the camera so you can take a profile picture, a photo for a post or story, or a photo or short video to send in a chat. Nothing is shared until you confirm it.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Hiyall uses the microphone only while you record a voice message or a video to send in a chat. It is encrypted on your phone before it is sent, and nothing is recorded in the background.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>

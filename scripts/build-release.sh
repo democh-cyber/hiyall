@@ -14,6 +14,12 @@
 #            APP_VERSION (MAJOR.MINOR.PATCH; defaults to the v-tag in GITHUB_REF_NAME, then pubspec.yaml)
 #            APP_BUILD_NUMBER (integer; defaults to GITHUB_RUN_NUMBER)
 # Warned if missing: SENTRY_DSN (the build has no crash reporting without it), APP_STORE_URL, PLAY_STORE_URL.
+# AdMob (rewarded ads, docs/mobile/18-shop-and-ads.md): ADMOB_APP_ID_ANDROID (read by Gradle from the environment; a release
+#            Android build fails without it) and ADMOB_APP_ID_IOS (written to the git-ignored ios/Flutter/Admob.xcconfig, which
+#            Release.xcconfig includes) are the AdMob APP ids (ca-app-pub-<publisher>~<app>); ADMOB_REWARDED_ANDROID and
+#            ADMOB_REWARDED_IOS are the rewarded AD UNIT ids (ca-app-pub-<publisher>/<unit>), passed as dart-defines: an app
+#            without its unit id has no ads. Google's published TEST ids are refused by the preflight (gate s) when ads or
+#            PLANS_ENFORCED are on, and warned about here.
 #            WEB_CANONICAL_URL (web only: the public https address of the site, ending in "/"; written into
 #            build/web/index.html for the canonical and Open Graph tags)
 # Optional:  FIREBASE_API_KEY_ANDROID / _IOS / _WEB (per platform keys), FIREBASE_AUTH_DOMAIN,
@@ -113,6 +119,24 @@ fi
 build="${APP_BUILD_NUMBER:-${GITHUB_RUN_NUMBER:-}}"
 [[ "$build" =~ ^[1-9][0-9]*$ ]] || errors+=("APP_BUILD_NUMBER must be a positive integer (stores reject a repeated build number)")
 
+# AdMob ids: shape and Google's published test publisher (3940256099942544). Warnings only here: whether they are a hard failure
+# depends on whether ads or PLANS_ENFORCED are on in production, which only the release preflight (gate s) knows.
+admob_test_publisher="ca-app-pub-3940256099942544"
+for name in ADMOB_APP_ID_ANDROID ADMOB_APP_ID_IOS ADMOB_REWARDED_ANDROID ADMOB_REWARDED_IOS; do
+  value="${!name:-}"
+  [[ -n "$value" ]] || continue
+  [[ "$value" == "$admob_test_publisher"* ]] && warnings+=("$name is one of Google's published TEST ids: a release build must use the real AdMob id")
+  case "$name" in
+    ADMOB_APP_ID_*) [[ "$value" =~ ^ca-app-pub-[0-9]{16}~[0-9]{10}$ ]] || warnings+=("$name is not an AdMob app id (ca-app-pub-<publisher>~<app>)") ;;
+    *) [[ "$value" =~ ^ca-app-pub-[0-9]{16}/[0-9]{10}$ ]] || warnings+=("$name is not an AdMob ad unit id (ca-app-pub-<publisher>/<unit>)") ;;
+  esac
+done
+if [[ "$platform" == android && -z "${ADMOB_APP_ID_ANDROID:-}" ]]; then warnings+=("ADMOB_APP_ID_ANDROID is not set: the Android release build will fail in Gradle (google_mobile_ads needs an app id)"); fi
+if [[ "$platform" == ios && -z "${ADMOB_APP_ID_IOS:-}" ]]; then warnings+=("ADMOB_APP_ID_IOS is not set: the iOS release has an empty GADApplicationIdentifier and must not start the ads SDK (it has no ads)"); fi
+if [[ "$platform" == android && -n "${ADMOB_APP_ID_ANDROID:-}" && -z "${ADMOB_REWARDED_ANDROID:-}" ]] || [[ "$platform" == ios && -n "${ADMOB_APP_ID_IOS:-}" && -z "${ADMOB_REWARDED_IOS:-}" ]]; then
+  warnings+=("the AdMob rewarded ad unit id (ADMOB_REWARDED_$(echo "$platform" | tr a-z A-Z)) is not set: this build has no ads")
+fi
+
 if [[ -z "${SENTRY_DSN:-}" ]]; then
   warnings+=("SENTRY_DSN is not set: this build will have NO crash or error reporting")
 fi
@@ -155,10 +179,13 @@ defines_dir="$root/apps/mobile/build"
 mkdir -p "$defines_dir"
 defines="$defines_dir/release-defines.json"
 signing_xcconfig="$root/apps/mobile/ios/Flutter/Signing.xcconfig"
+admob_xcconfig="$root/apps/mobile/ios/Flutter/Admob.xcconfig"
 wrote_signing=0
+wrote_admob=0
 cleanup() {
   rm -f "$defines" "$defines_dir/ExportOptions.plist" "$defines_dir/ios-build-settings.txt"
   if ((wrote_signing)); then rm -f "$signing_xcconfig"; fi
+  if ((wrote_admob)); then rm -f "$admob_xcconfig"; fi
 }
 trap cleanup EXIT
 umask 077
@@ -182,6 +209,11 @@ for k in ("FIREBASE_AUTH_DOMAIN", "FIREBASE_STORAGE_BUCKET", "SENTRY_DSN", "SUPP
           "PRIVACY_EMAIL", "APP_STORE_URL", "PLAY_STORE_URL", "ENABLE_EVENTS", "APPLE_SIGN_IN_WEB"):
     if e.get(k):
         d[k] = e[k] if k not in ("ENABLE_EVENTS", "APPLE_SIGN_IN_WEB") else e[k] == "true"
+# The rewarded ad unit id of the platform being built (lib/core/billing/ads_service.dart reads ADMOB_REWARDED_ANDROID / _IOS).
+if p in ("android", "ios"):
+    k = "ADMOB_REWARDED_" + p.upper()
+    if e.get(k):
+        d[k] = e[k]
 json.dump(d, open(sys.argv[1], "w"), indent=2)
 PY
 
@@ -199,6 +231,13 @@ case "$platform" in
     ;;
   web) cmd=(flutter build web "${flags[@]}") ;; # Flutter web has no Dart obfuscation
 esac
+
+# The iOS AdMob app id (GADApplicationIdentifier = $(ADMOB_APP_ID_IOS)): ios/Flutter/Release.xcconfig includes this git-ignored file.
+# Written only when the id is set, deleted when the build ends. Without it the id is empty and the release has no ads.
+if [[ "$platform" == ios && -n "${ADMOB_APP_ID_IOS:-}" && "$ADMOB_APP_ID_IOS" =~ ^ca-app-pub-[0-9]{16}~[0-9]{10}$ && ! -e "$admob_xcconfig" ]] && ((check == 0)); then
+  printf '// Written by scripts/build-release.sh. Do not commit; deleted when the build ends.\nADMOB_APP_ID_IOS=%s\n' "$ADMOB_APP_ID_IOS" > "$admob_xcconfig"
+  wrote_admob=1
+fi
 
 if ((check)); then
   echo "OK: would run in apps/mobile: ${cmd[*]}"

@@ -161,7 +161,9 @@ JSON under `/admin/v1`, the same envelope as [the console](../security/15-admin-
 | `POST /support/threads/{id}/close` and `/reopen` | moderator | `409 SUPPORT_THREAD_OPEN` when reopening beside another open thread of the category; audited |
 | `POST /support/threads/{id}/assign` | moderator | `{assignTo:"me"\|null}`; audited `support_assign` |
 
-## Legal items for the release agent (not edited here)
+## Legal items for the release agent
+
+Carried into `docs/legal` and `apps/mobile/assets/legal` in the Wave 7 release pass (Terms 4, 7 and 8; Privacy 2, 4, 7, 10; Data Retention; Children and Teens). The list below is what those texts must keep saying.
 
 - Support threads are **plaintext** and readable by staff; kept **365 days after they close**, deleted with the account; included in the export.
 - The notice board: staff-written, no reading is tracked; one "last seen" pointer per member, deleted with the account.

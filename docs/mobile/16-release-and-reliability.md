@@ -228,7 +228,8 @@ unmet gate with a one-line fix and exits non-zero; it does not build or run test
 (a) git tree clean and tag-able, (b) legal text final, copies equal, one terms version, (c) mobile release inputs,
 (d) production API environment, validated by the server itself (`api check-config -release`), (e) Android signing,
 (f) versions and bundle ids, (g) icons and launch assets, (h) owner placeholders, (i) store-listing fields, (j)
-migrations, (k) OpenAPI contract, (l) `go vet` and `govulncheck`, (m) the release workflow touches no dev script.
+migrations, (k) OpenAPI contract, (l) `go vet` and `govulncheck`, (m) the release workflow touches no dev script, (s) the AdMob release ids are real when ads or `PLANS_ENFORCED` are on (a warning otherwise; docs/mobile/18-shop-and-ads.md).
+The store forms and owner accounts are in [the store submission checklist](../deployment/13-store-submission-checklist.md).
 The ordered release procedure is [the release runbook](../deployment/12-release-runbook.md).
 
 ## Versions and bumping
@@ -287,14 +288,14 @@ the contract revision and is unrelated to the app version.
   memory pages: the NDK in use (28.2) aligns them by default; verify with Google's `check_elf_alignment.sh` on the
   release APK, or Play Console warns.
 - **Play Console.** App content: privacy policy URL, Data safety (`store-listing.md`), account-deletion URL, target
-  audience (13+ with teens: complete the teen and families questions), ads declaration (none), content rating
+  audience (13+ with teens: complete the teen and families questions), ads declaration (none while rewarded ads are off, yes once on, plus the Advertising ID declaration), content rating
   questionnaire, news app (no), government app (no), financial features (none), health (none).
 
 ## iOS release readiness (file level; no Xcode was available where this was written)
 
 Already in the repo: `CFBundleDisplayName` `Hiyall`; version keys from Flutter; usage strings for location (when in
-use; approximate), photo library and camera, each stating the real purpose, and none for things the app does not do
-(no microphone, contacts, Bluetooth, tracking, or saving to the library, so no `NSPhotoLibraryAddUsageDescription`);
+use; approximate), photo library, camera and microphone (voice messages, voice notes and videos, only while recording), each stating the real purpose, and none for things the app does not do
+(no contacts, Bluetooth, tracking, or saving to the library, so no `NSPhotoLibraryAddUsageDescription`);
 no ATS exceptions (HTTPS only); `UIBackgroundModes` is only `remote-notification`;
 `ITSAppUsesNonExemptEncryption` is `true` (see Export compliance); `PrivacyInfo.xcprivacy`; the full AppIcon set (opaque,
 generated from the brand mark) and a launch storyboard with the brand background and mark; `aps-environment` in

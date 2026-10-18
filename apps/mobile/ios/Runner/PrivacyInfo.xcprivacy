@@ -49,7 +49,21 @@
 				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
 			</array>
 		</dict>
-		<!-- Profile photos, post and story photos, chat photos (chat photos are end-to-end encrypted) -->
+		<!-- Voice notes on posts and stories (stored as uploaded) and chat voice messages (end-to-end encrypted: the server stores
+		     ciphertext). Only while the person records; nothing is recorded in the background. -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeAudioData</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<!-- Profile photos and gallery, post and story photos, chat photos and videos (chat photos and videos are end-to-end encrypted) -->
 		<dict>
 			<key>NSPrivacyCollectedDataType</key>
 			<string>NSPrivacyCollectedDataTypePhotosorVideos</string>
