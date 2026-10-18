@@ -79,6 +79,13 @@ type MediaView struct {
 	Height   int    `json:"height"`
 }
 
+// VoiceView is a voice clip attached to a post or a story. URL is a short-lived signed read URL.
+type VoiceView struct {
+	MediaID    string `json:"mediaId"`
+	URL        string `json:"url"`
+	DurationMs int    `json:"durationMs"`
+}
+
 type Post struct {
 	PostID     string      `json:"postId"`
 	Author     UserSummary `json:"author"`
@@ -87,6 +94,8 @@ type Post struct {
 	CreatedAt  time.Time   `json:"createdAt"`
 	EditedAt   *time.Time  `json:"editedAt"`
 	Media      []MediaView `json:"media"`
+	Topic      *string     `json:"topic"`
+	Voice      *VoiceView  `json:"voice"`
 	Reactions  int         `json:"reactionCount"`
 	Comments   int         `json:"commentCount"`
 	MyReaction *string     `json:"myReaction"`
@@ -104,6 +113,9 @@ type Comment struct {
 	Body      string      `json:"body"`
 	CreatedAt time.Time   `json:"createdAt"`
 	Mine      bool        `json:"mine"`
+	// ReplyCount is how many replies a top-level comment has that the viewer can see (0 for a reply: threads
+	// are one level deep).
+	ReplyCount int `json:"replyCount"`
 	// CanDelete is true for the writer and for the post's author.
 	CanDelete bool `json:"canDelete"`
 }
@@ -114,6 +126,8 @@ type Story struct {
 	Background string     `json:"background"`
 	TextStyle  string     `json:"textStyle"`
 	Media      *MediaView `json:"media"`
+	Topic      *string    `json:"topic"`
+	Voice      *VoiceView `json:"voice"`
 	Audience   string     `json:"audience"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	ExpiresAt  time.Time  `json:"expiresAt"`
@@ -138,6 +152,9 @@ type NewPost struct {
 	Body     string   `json:"body"`
 	Audience string   `json:"audience"`
 	MediaIDs []string `json:"mediaIds"`
+	// Topic is one of Topics, or empty/absent for none. VoiceMediaID is a ready voice clip of the author.
+	Topic        *string `json:"topic"`
+	VoiceMediaID *string `json:"voiceMediaId"`
 }
 
 func strict(raw []byte, v any) error {
@@ -168,8 +185,15 @@ func ParsePost(raw []byte) (NewPost, error) {
 		}
 		seen[id] = true
 	}
-	if p.Body == "" && len(p.MediaIDs) == 0 {
-		return p, invalid("body", "write something or add a photo")
+	var err error
+	if p.Topic, err = ParseTopic(p.Topic); err != nil {
+		return p, err
+	}
+	if p.VoiceMediaID != nil && !IsID(*p.VoiceMediaID) {
+		return p, invalid("voiceMediaId", "must be an id")
+	}
+	if p.Body == "" && len(p.MediaIDs) == 0 && p.VoiceMediaID == nil {
+		return p, invalid("body", "write something, add a photo or record a voice note")
 	}
 	return p, nil
 }
@@ -202,6 +226,9 @@ type NewStory struct {
 	TextStyle  string  `json:"textStyle"`
 	MediaID    *string `json:"mediaId"`
 	Audience   string  `json:"audience"`
+	// Topic is one of Topics, or empty/absent for none. VoiceMediaID is a ready voice clip of the author.
+	Topic        *string `json:"topic"`
+	VoiceMediaID *string `json:"voiceMediaId"`
 	// LifetimeHours is how long the story stays up. Parsing only fixes the default (StoryLifetime); the
 	// hours a member may choose are their entitlements (StoryLifetimeError), checked where it is stored.
 	LifetimeHours *int `json:"lifetimeHours"`
@@ -266,8 +293,51 @@ func ParseStory(raw []byte) (NewStory, error) {
 			return s, invalid("mediaId", "must be an id")
 		}
 	}
-	if s.MediaID == nil && s.Body == "" {
-		return s, invalid("body", "add a photo or some words")
+	var err error
+	if s.Topic, err = ParseTopic(s.Topic); err != nil {
+		return s, err
+	}
+	if s.VoiceMediaID != nil && !IsID(*s.VoiceMediaID) {
+		return s, invalid("voiceMediaId", "must be an id")
+	}
+	if s.MediaID == nil && s.VoiceMediaID == nil && s.Body == "" {
+		return s, invalid("body", "add a photo, a voice note or some words")
 	}
 	return s, nil
+}
+
+// StoryItem is one story in a flat list (the Everyone tab, search results): the story with its author.
+type StoryItem struct {
+	Author UserSummary `json:"author"`
+	Story
+}
+
+// ActivityPost is the short card of the post an activity row belongs to. State is "available" or "removed": a removed
+// post (deleted, or no longer visible to the member) carries only its id.
+type ActivityPost struct {
+	PostID   string       `json:"postId"`
+	State    string       `json:"state"`
+	Author   *UserSummary `json:"author,omitempty"`
+	Excerpt  string       `json:"excerpt"`
+	Topic    *string      `json:"topic"`
+	HasMedia bool         `json:"hasMedia"`
+	HasVoice bool         `json:"hasVoice"`
+}
+
+// ActivityComment is a comment the member wrote, for My activity.
+type ActivityComment struct {
+	CommentID string       `json:"commentId"`
+	PostID    string       `json:"postId"`
+	ParentID  *string      `json:"parentId"`
+	Body      string       `json:"body"`
+	CreatedAt time.Time    `json:"createdAt"`
+	Post      ActivityPost `json:"post"`
+}
+
+// ActivityReaction is a reaction the member left on a post, for My activity.
+type ActivityReaction struct {
+	PostID    string       `json:"postId"`
+	Reaction  string       `json:"reaction"`
+	CreatedAt time.Time    `json:"createdAt"`
+	Post      ActivityPost `json:"post"`
 }

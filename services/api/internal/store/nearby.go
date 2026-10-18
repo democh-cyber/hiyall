@@ -147,7 +147,7 @@ type NearbyAfter struct {
 // viewer who is a minor, domain.MinorNearbyBuckets), and
 // nearbySQL uses the same sphere (6371.0 km) as domain.EarthRadiusKm; tests compare
 // the two against a reference implementation.
-const nearbyBucketSQL = `CASE WHEN $23::boolean THEN CASE WHEN km<=10 THEN 10 WHEN km<=25 THEN 25 WHEN km<=50 THEN 50 ELSE 100 END
+const nearbyBucketSQL = `CASE WHEN $25::boolean THEN CASE WHEN km<=10 THEN 10 WHEN km<=25 THEN 25 WHEN km<=50 THEN 50 ELSE 100 END
  ELSE CASE WHEN km<=5 THEN 5 WHEN km<=10 THEN 10 WHEN km<=15 THEN 15 WHEN km<=25 THEN 25 WHEN km<=50 THEN 50 ELSE 100 END END`
 
 // NearbyCandidateCap bounds how many stored points one Nearby page measures (audit D16). The bounding box
@@ -182,7 +182,7 @@ func nearbyBoxSQL(wrap bool) string {
 // viewer, $2/$3 caller latitude/longitude, $4 radius km, $5/$6 box latitude
 // min/max, $7 box is longitude limited, $8 box wraps the antimeridian, $9/$10 box
 // longitude min/max, $11/$12 keyset bucket and user id, $13 limit, $14 freshness
-// hours, $15 to $22 the filters (see peopleFilterSQL), $23 whether the viewer is a minor.
+// hours, $15 to $24 the filters (see peopleFilterSQL, filterParams of them), $25 whether the viewer is a minor.
 //
 // Rows come back ordered by distance bucket and then user id. Ordering by the
 // bucket (the only distance a member is ever shown) rather than the exact
@@ -211,8 +211,8 @@ WHERE (w.bucket,w.user_id)>($11::int,$12::uuid)
 `
 }
 
-// nearbySQL adds the people-search filters ($15 to $22: country, vibe, interests, languages,
-// age minimum, age maximum, gender, online) before the order and the limit. nearbyWrapSQL is the variant
+// nearbySQL adds the people-search filters ($15 to $24: country, vibe, interests, languages,
+// age minimum, age maximum, gender, online, language minimum level, personality tags) before the order and the limit. nearbyWrapSQL is the variant
 // for a box that crosses the antimeridian.
 var (
 	nearbySQL     = nearbySQLFor(false) + peopleFilterSQL(15) + ` ORDER BY w.bucket,w.user_id LIMIT $13`
@@ -227,6 +227,10 @@ var (
 // and nothing finer: no coordinates, grid cells or exact distances leave this
 // function.
 func (s *Store) NearbyPeople(ctx context.Context, viewer string, centre domain.Location, minorViewer bool, radiusKm int, f domain.PeopleFilters, after NearbyAfter, limit int, online Presence, sign Signer) ([]map[string]any, error) {
+	f, err := s.resolveFilters(ctx, viewer, f)
+	if err != nil {
+		return nil, err
+	}
 	if minorViewer && f.UsesAgeOrGender() {
 		return nil, domain.ErrFilterNotAvailable
 	}
@@ -272,6 +276,11 @@ func (s *Store) NearbyPeople(ctx context.Context, viewer string, centre domain.L
 		}
 		item := discoveryItem(id, username, p, q, avatarURL(sign, avatar), mine)
 		item["distanceKm"] = bucket
+		if !q.ShowDistance {
+			// The bucket stays in the item for the page cursor; the handler removes it before the response is written
+			// (httpapi.hideDistances).
+			item["distanceHidden"] = true
+		}
 		result = append(result, item)
 		audiences = append(audiences, q.OnlineAudience)
 	}

@@ -212,14 +212,14 @@ func (e *exportWriter) sections(ctx context.Context, q querier, user string, o E
 		},
 		func() error {
 			return e.one(ctx, q, "settings", `SELECT jsonb_build_object('privacy',q.data,'privacyVersion',q.version,'privacyUpdatedAt',q.updated_at,
- 'notifications',coalesce((SELECT jsonb_build_object('chat',n.chat,'social',n.social,'updatedAt',n.updated_at) FROM notification_prefs n WHERE n.user_id=$1),jsonb_build_object('chat',true,'social',true)))
+ 'notifications',coalesce((SELECT jsonb_build_object('enabled',n.enabled,'chat',n.chat,'social',n.social,'follows',n.follows,'comments',n.comments,'reactions',n.reactions,'replies',n.replies,'friendRequests',n.friend_requests,'visits',n.visits,'hideNames',n.hide_names,'updatedAt',n.updated_at) FROM notification_prefs n WHERE n.user_id=$1),jsonb_build_object('enabled',true,'chat',true,'social',true,'visits',false)))
  FROM privacy_settings q WHERE q.user_id=$1`, user)
 		},
 		func() error {
 			return e.one(ctx, q, "interests", `SELECT CASE WHEN jsonb_typeof(data->'interests')='array' THEN data->'interests' ELSE '[]'::jsonb END FROM profiles WHERE user_id=$1`, user)
 		},
 		func() error {
-			return e.list(ctx, q, "posts", `SELECT jsonb_build_object('postId',p.post_id,'body',p.body,'audience',p.audience,'createdAt',p.created_at,'editedAt',p.edited_at,
+			return e.list(ctx, q, "posts", `SELECT jsonb_build_object('postId',p.post_id,'body',p.body,'audience',p.audience,'topic',p.topic,'voiceMediaId',p.voice_media_id,'voiceMs',p.voice_ms,'createdAt',p.created_at,'editedAt',p.edited_at,
  'mediaIds',coalesce((SELECT jsonb_agg(pm.media_id ORDER BY pm.position) FROM post_media pm WHERE pm.post_id=p.post_id),'[]'::jsonb),
  'reactionCount',coalesce((SELECT sum(c.reactions) FROM post_counters c WHERE c.post_id=p.post_id),0),
  'commentCount',coalesce((SELECT sum(c.comments) FROM post_counters c WHERE c.post_id=p.post_id),0))
@@ -236,7 +236,7 @@ func (e *exportWriter) sections(ctx context.Context, q querier, user string, o E
 			return e.list(ctx, q, "saves", `SELECT jsonb_build_object('postId',s.post_id,'savedAt',s.saved_at) FROM saved_posts s WHERE s.user_id=$1 ORDER BY s.saved_at DESC,s.post_id DESC`, user)
 		},
 		func() error {
-			return e.list(ctx, q, "stories", `SELECT jsonb_build_object('storyId',st.story_id,'body',st.body,'background',st.background,'textStyle',st.text_style,'audience',st.audience,'mediaId',st.media_id,'createdAt',st.created_at,'expiresAt',st.expires_at)
+			return e.list(ctx, q, "stories", `SELECT jsonb_build_object('storyId',st.story_id,'body',st.body,'background',st.background,'textStyle',st.text_style,'audience',st.audience,'topic',st.topic,'voiceMediaId',st.voice_media_id,'voiceMs',st.voice_ms,'mediaId',st.media_id,'createdAt',st.created_at,'expiresAt',st.expires_at)
  FROM stories st WHERE st.author_id=$1 AND st.deleted_at IS NULL ORDER BY st.created_at DESC,st.story_id DESC`, user)
 		},
 		// People: ids and usernames of accounts that are active and that the member may still see (not
@@ -262,6 +262,22 @@ func (e *exportWriter) sections(ctx context.Context, q querier, user string, o E
 			}
 			e.end()
 			return nil
+		},
+		// Support conversations with the Hiyall team: plaintext, kept 365 days after a thread closes (docs/api/27).
+		func() error {
+			return e.list(ctx, q, "support", `SELECT jsonb_build_object('threadId',t.thread_id,'category',t.category,'status',t.status,'createdAt',t.created_at,'closedAt',t.closed_at,
+ 'messages',coalesce((SELECT jsonb_agg(jsonb_build_object('author',m.author,'body',m.body,'createdAt',m.created_at) ORDER BY m.created_at,m.message_id) FROM support_messages m WHERE m.thread_id=t.thread_id),'[]'::jsonb))
+ FROM support_threads t WHERE t.user_id=$1 ORDER BY t.created_at DESC,t.thread_id DESC`, user)
+		},
+		// Billing (docs/api/28-billing.md): the coin balance and ledger, purchases and subscriptions. Store ids are kept only as hashes and are not exported.
+		func() error {
+			return e.one(ctx, q, "coins", `SELECT jsonb_build_object('balance',coalesce((SELECT balance FROM coin_balances WHERE user_id=$1),0),
+ 'ledger',coalesce((SELECT jsonb_agg(jsonb_build_object('reason',l.reason,'delta',l.delta,'balanceAfter',l.balance_after,'createdAt',l.created_at) ORDER BY l.entry_id DESC)
+   FROM (SELECT * FROM coin_ledger WHERE user_id=$1 ORDER BY entry_id DESC LIMIT 1000) l),'[]'::jsonb),
+ 'purchases',coalesce((SELECT jsonb_agg(jsonb_build_object('store',p.store,'productId',p.product_id,'state',p.state,'coins',p.coins,'createdAt',p.created_at) ORDER BY p.created_at DESC)
+   FROM (SELECT * FROM purchases WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1000) p),'[]'::jsonb),
+ 'subscriptions',coalesce((SELECT jsonb_agg(jsonb_build_object('store',s.store,'productId',s.product_id,'status',s.status,'currentPeriodEnd',s.current_period_end,'autoRenew',s.auto_renew,'createdAt',s.created_at) ORDER BY s.created_at DESC)
+   FROM (SELECT * FROM subscriptions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100) s),'[]'::jsonb))`, user)
 		},
 		func() error {
 			return e.list(ctx, q, "blocks", `SELECT jsonb_build_object('userId',b.blocked_id,'username',p.username,'createdAt',b.created_at)

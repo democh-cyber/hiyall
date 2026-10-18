@@ -161,6 +161,10 @@ var ExpectedGrants = []GrantSpec{
 	{Role: AdminRole, Kind: "column", Privs: []string{"SELECT"}, Objects: []string{"apple_revocations"}, Columns: []string{"revocation_id", "issuer", "subject", "user_id", "status", "reason", "created_at"}},
 	{Role: AdminRole, Kind: "table", Privs: []string{"SELECT", "INSERT", "UPDATE", "DELETE"}, Objects: []string{"evidence_orphan_report"}},
 	{Role: AdminRole, Kind: "table", Privs: []string{"DELETE"}, Objects: []string{"operator_sessions", "operator_login_attempts"}},
+	// Notice board and support inbox (migration 0050): the console writes notices and thread state, reads and appends messages.
+	{Role: AdminRole, Kind: "table", Privs: []string{"SELECT", "INSERT", "UPDATE"}, Objects: []string{"notices"}},
+	{Role: AdminRole, Kind: "table", Privs: []string{"SELECT", "UPDATE"}, Objects: []string{"support_threads"}},
+	{Role: AdminRole, Kind: "table", Privs: []string{"SELECT", "INSERT"}, Objects: []string{"support_messages"}},
 	{Role: AdminRole, Kind: "sequence", Privs: []string{"USAGE", "SELECT"}, Objects: []string{"operator_login_attempts_attempt_id_seq", "operator_audit_audit_id_seq"}},
 	{Role: AdminRole, Kind: "function", Objects: []string{"held_objects_due(integer)", "mark_hold_purged(uuid)", "prune_operator_audit(uuid, text, text, integer)",
 		"evidence_propose(uuid, uuid, text, uuid, text, text)", "operator_promotion_propose(uuid, uuid, uuid, text)", "evidence_decide(uuid, uuid, text, text)",

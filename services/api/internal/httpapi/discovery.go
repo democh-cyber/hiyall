@@ -40,6 +40,10 @@ func (a *API) searchPeople(w http.ResponseWriter, r *http.Request, p store.Princ
 		a.error(w, r, err)
 		return
 	}
+	// The gender filter is a Premium feature while plans are enforced (billing.go).
+	if f.Gender != "" && !a.featureAllowed(w, r, p, domain.FeatureGenderFilter) {
+		return
+	}
 	// Every page counts against the day: a script cannot walk the member base with filters and cursors.
 	if err = a.Store.BumpDaily(r.Context(), p.UserID, domain.DailySearchPages, a.entitlementsFor(r.Context(), p.UserID).SearchPagesPerDay); err != nil {
 		a.error(w, r, err)

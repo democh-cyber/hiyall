@@ -42,7 +42,7 @@ func peerMayReceiveImages(ctx context.Context, q querier, conversationID, sender
 }
 
 var (
-	errBlobQuota   = &domain.PolicyError{Status: 429, Code: "QUOTA", Message: "You've sent a lot of photos today. Try again later."}
+	errBlobQuota   = &domain.PolicyError{Status: 429, Code: "QUOTA", Message: "You've sent a lot of media today. Try again later."}
 	errBlobPending = &domain.PolicyError{Status: 429, Code: "RATE_LIMITED", Message: "Finish your current uploads first"}
 )
 

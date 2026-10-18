@@ -45,6 +45,7 @@ const (
 	stagePublic         // probes, answered before rate limiting and authentication (health in ops.go)
 	stageDev            // POST /dev/session, only with development authentication
 	stageRealtime       // the WebSocket, outside the request deadline (realtimeGateway)
+	stageWebhook        // store and ad callbacks: served before the bearer check, each proves itself (billing_webhooks.go)
 )
 
 // limitSpec is the per-account budget a route takes before its handler runs: the limiter, the Retry-After
@@ -106,6 +107,9 @@ var routes = []route{
 	{Method: "GET", Pattern: "/health/ready", Stage: stagePublic},
 	{Method: "POST", Pattern: "/dev/session", Stage: stageDev},
 	{Method: "GET", Pattern: "/v1/realtime", Stage: stageRealtime},
+	{Method: "POST", Pattern: googleRTDNPath, Stage: stageWebhook},
+	{Method: "POST", Pattern: appleNotifyPath, Stage: stageWebhook},
+	{Method: "GET", Pattern: admobCallbackPath, Stage: stageWebhook},
 
 	// ---- Sessions, own profile and privacy (profile.go, server.go).
 	{Method: "GET", Pattern: "/v1/me/profile", Access: pre, Handler: (*API).getProfile},
@@ -135,6 +139,16 @@ var routes = []route{
 	{Method: "POST", Pattern: "/v1/users/{userId}/block", BadID: badMember, Handler: (*API).setBlock},
 	{Method: "DELETE", Pattern: "/v1/users/{userId}/block", BadID: badMember, Handler: (*API).setBlock},
 	{Method: "POST", Pattern: "/v1/discovery/search", Limit: limitSearch, Handler: (*API).searchPeople},
+	{Method: "POST", Pattern: "/v1/discovery/possible-matches", Limit: limitSearch, Handler: (*API).possibleMatches},
+	// ---- Profile v2 (profilev2.go): the photo gallery, recent visitors and the member's own visit history.
+	{Method: "GET", Pattern: "/v1/me/photos", Handler: (*API).listPhotos},
+	{Method: "POST", Pattern: "/v1/me/photos", Limit: limitProfileEdits, Handler: (*API).addPhoto},
+	{Method: "PUT", Pattern: "/v1/me/photos/order", Limit: limitProfileEdits, Handler: (*API).reorderPhotos},
+	{Method: "PUT", Pattern: "/v1/me/photos/{mediaId}", Limit: limitProfileEdits, Handler: (*API).replacePhoto},
+	{Method: "DELETE", Pattern: "/v1/me/photos/{mediaId}", Limit: limitProfileEdits, Handler: (*API).deletePhoto},
+	{Method: "GET", Pattern: "/v1/users/{userId}/visitors", Limit: limitLists, BadID: badMember, Handler: (*API).recentVisitors},
+	{Method: "GET", Pattern: "/v1/me/visited", Limit: limitLists, Handler: (*API).placesVisited},
+	{Method: "DELETE", Pattern: "/v1/me/visited", Limit: limitProfileEdits, Handler: (*API).clearPlacesVisited},
 	{Method: "GET", Pattern: "/v1/me/location", Handler: (*API).location},
 	{Method: "PUT", Pattern: "/v1/me/location", Handler: (*API).location},
 	{Method: "DELETE", Pattern: "/v1/me/location", Handler: (*API).location},
@@ -223,6 +237,15 @@ var routes = []route{
 	{Method: "POST", Pattern: "/v1/spaces/{spaceId}/entries", Limit: limitSpaces, BadID: badSpace, Handler: (*API).createSpaceEntry},
 	{Method: "DELETE", Pattern: "/v1/spaces/{spaceId}/entries/{entryId}", Limit: limitSpaces, BadID: badSpace, Handler: (*API).deleteSpaceEntry},
 
+	// ---- Plans, coins and purchases (billing.go): adults only, checked inside the handlers.
+	{Method: "GET", Pattern: "/v1/me/billing", Limit: limitLists, Handler: (*API).getBilling},
+	{Method: "POST", Pattern: "/v1/me/billing/purchases/verify", Limit: limitGraph, Handler: (*API).verifyPurchase},
+	{Method: "GET", Pattern: "/v1/me/billing/history", Limit: limitLists, Handler: (*API).billingHistory},
+	{Method: "POST", Pattern: "/v1/me/billing/ads/session", Limit: limitContent, Handler: (*API).adsSession},
+	{Method: "POST", Pattern: "/v1/me/billing/ads/reward", Limit: limitLists, Handler: (*API).adsReward},
+	{Method: "POST", Pattern: "/v1/me/billing/bonuses/profile-completion", Limit: limitGraph, Handler: (*API).profileCompletionBonus},
+	{Method: "POST", Pattern: "/v1/users/{userId}/profile-details/unlock", Limit: limitGraph, BadID: badMember, Handler: (*API).unlockProfileDetails},
+
 	// ---- Chat (chat.go, chatmedia.go): device keys, conversations, the ciphertext relay, push choices and
 	// encrypted attachments. serveChat asks chatRoute, which does its own method and id checks.
 	{Method: "POST", Pattern: "/v1/devices", Handler: (*API).serveChat},
@@ -239,6 +262,10 @@ var routes = []route{
 	{Method: "POST", Pattern: "/v1/conversations", Handler: (*API).serveChat},
 	{Method: "GET", Pattern: "/v1/conversations", Handler: (*API).serveChat},
 	{Method: "GET", Pattern: "/v1/conversations/unread", Handler: (*API).serveChat},
+	{Method: "GET", Pattern: "/v1/conversations/hidden", Handler: (*API).serveChat},
+	{Method: "PUT", Pattern: "/v1/conversations/{conversationId}/pin", Handler: (*API).serveChat},
+	{Method: "POST", Pattern: "/v1/conversations/{conversationId}/hide", Handler: (*API).serveChat},
+	{Method: "POST", Pattern: "/v1/conversations/{conversationId}/restore", Handler: (*API).serveChat},
 	{Method: "GET", Pattern: "/v1/conversations/{conversationId}", Handler: (*API).serveChat},
 	{Method: "POST", Pattern: "/v1/conversations/{conversationId}/read", Handler: (*API).serveChat},
 	{Method: "POST", Pattern: "/v1/conversations/{conversationId}/messages", Handler: (*API).serveChat},
@@ -246,8 +273,26 @@ var routes = []route{
 	{Method: "GET", Pattern: "/v1/conversations/{conversationId}/blobs/{blobId}/url", Handler: (*API).serveChat},
 	{Method: "POST", Pattern: "/v1/blobs/{blobId}/complete", Handler: (*API).serveChat},
 	{Method: "DELETE", Pattern: "/v1/blobs/{blobId}", Handler: (*API).serveChat},
-	{Method: "GET", Pattern: "/v1/me/notifications", Handler: (*API).serveChat},
-	{Method: "PATCH", Pattern: "/v1/me/notifications", Handler: (*API).serveChat},
+
+	// ---- Wave 7 social (social7.go, docs/api/27-stories-notices-support.md): notification choices, topics,
+	// Everyone stories and search, My activity, the notice board and in-app support.
+	{Method: "GET", Pattern: "/v1/me/notifications", Handler: (*API).getNotificationPrefs},
+	{Method: "PATCH", Pattern: "/v1/me/notifications", Limit: limitGraph, Handler: (*API).patchNotificationPrefs},
+	{Method: "GET", Pattern: "/v1/topics", Handler: (*API).topics},
+	{Method: "GET", Pattern: "/v1/stories/explore", Limit: limitLists, Handler: (*API).exploreStories},
+	{Method: "GET", Pattern: "/v1/search/pulse", Limit: limitSearch, Handler: (*API).searchPulse},
+	{Method: "GET", Pattern: "/v1/me/activity/comments", Limit: limitLists, Handler: (*API).myActivityComments},
+	{Method: "GET", Pattern: "/v1/me/activity/reactions", Limit: limitLists, Handler: (*API).myActivityReactions},
+	{Method: "GET", Pattern: "/v1/notices", Limit: limitLists, Handler: (*API).listNotices},
+	{Method: "GET", Pattern: "/v1/notices/summary", Limit: limitLists, Handler: (*API).noticeSummary},
+	{Method: "POST", Pattern: "/v1/notices/seen", Limit: limitLists, Handler: (*API).markNoticesSeen},
+	{Method: "GET", Pattern: "/v1/support/threads", Limit: limitLists, Handler: (*API).supportThreads},
+	{Method: "POST", Pattern: "/v1/support/threads", Limit: limitContent, Handler: (*API).createSupportThread},
+	{Method: "GET", Pattern: "/v1/support/unread", Limit: limitLists, Handler: (*API).supportUnread},
+	{Method: "GET", Pattern: "/v1/support/threads/{threadId}", Limit: limitLists, Handler: (*API).getSupportThread},
+	{Method: "GET", Pattern: "/v1/support/threads/{threadId}/messages", Limit: limitLists, Handler: (*API).supportMessages},
+	{Method: "POST", Pattern: "/v1/support/threads/{threadId}/messages", Limit: limitContent, Handler: (*API).addSupportMessage},
+	{Method: "POST", Pattern: "/v1/support/threads/{threadId}/close", Limit: limitContent, Handler: (*API).closeSupportThread},
 }
 
 // patternOf is how a row is registered with the ServeMux: "METHOD /path", or "/path" for every method.

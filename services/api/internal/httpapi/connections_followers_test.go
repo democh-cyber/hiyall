@@ -209,7 +209,8 @@ func TestVisitorsOfAnotherMemberAreNeverListedEvenToFollowers(t *testing.T) {
 			t.Fatalf("%s listed visitors: %v", path, r.data)
 		}
 	}
-	h.expect(h.call(cara, "GET", "/v1/users/"+bob+"/visitors"), 404, "NOT_FOUND")
+	// The one route that exists (profile v2) is opt-in: with the default settings nobody gets a list, not even the owner.
+	h.expect(h.call(cara, "GET", "/v1/users/"+bob+"/visitors"), 403, "VISITORS_PRIVATE")
 }
 
 // A follower sees a followed member's followers and public stories, a stranger only the public ones, and the

@@ -403,6 +403,11 @@ func (s *Store) purgeContent(ctx context.Context, id string) error {
 		`DELETE FROM sessions WHERE user_id=$1`,
 		`DELETE FROM key_claims WHERE claimer_id=$1 OR device_id IN (SELECT device_id FROM devices WHERE user_id=$1)`,
 		`DELETE FROM notification_prefs WHERE user_id=$1`,
+		// Support threads (plaintext, with their messages by cascade) and the notice board's seen pointer (docs/api/27).
+		`DELETE FROM support_threads WHERE user_id=$1`,
+		`DELETE FROM notice_seen WHERE user_id=$1`,
+		// Coins, the ledger, purchases and subscriptions (hashed store ids), ad sessions and detail unlocks (migration 0051).
+		`SELECT purge_member_billing($1)`,
 		`UPDATE devices SET push_provider=NULL,push_token=NULL WHERE user_id=$1 AND push_token IS NOT NULL`,
 	); err != nil {
 		return err

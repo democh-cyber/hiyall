@@ -80,7 +80,12 @@ var privacyRank = map[string]int{"everyone": 0, "followers": 1, "friends": 2, "n
 // minorLocked are the settings of a member under AdultAge that cannot be loosened past these values:
 // presence, the location audience, and the country ("location") and connections fields.
 var minorLocked = map[string]string{"onlineAudience": MinorOnlineAudience, "locationAudience": "nobody"}
-var minorLockedFields = map[string]string{"location": MinorLocationFieldAudience, "connections": MinorConnectionsAudience}
+var minorLockedFields = map[string]string{"location": MinorLocationFieldAudience, "connections": MinorConnectionsAudience,
+	"aboutMe": MinorAboutMeFloor, "hometown": MinorHometownFloor, "birthday": MinorBirthdayAudience}
+
+// minorNeverOn are the settings a member under AdultAge can never switch on: sharing who visited their profile
+// and showing a birthday. (Local time and distance start off for them but are their own choice.)
+var minorNeverOn = []string{"visitorsVisibleToOthers", "showBirthday"}
 
 // ValidateMinorPrivacyPatch refuses a privacy patch (already validated by ValidatePrivacyPatch) that
 // would make a locked setting of a member under AdultAge more open than its minor default.
@@ -92,6 +97,11 @@ func ValidateMinorPrivacyPatch(patch map[string]json.RawMessage) error {
 		}
 		var value string
 		if json.Unmarshal(raw, &value) != nil || privacyRank[value] < privacyRank[floor] {
+			return ErrMinorSettingLocked
+		}
+	}
+	for _, name := range minorNeverOn {
+		if raw, ok := patch[name]; ok && string(raw) != "false" {
 			return ErrMinorSettingLocked
 		}
 	}

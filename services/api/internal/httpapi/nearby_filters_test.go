@@ -118,7 +118,7 @@ func TestNearbyFiltersCombineWithDistanceOrder(t *testing.T) {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		if fmt.Sprint(keys) != "[avatarUrl bio country currentVibe displayName distanceKm headline interests languages sharedInterests userId username]" {
+		if fmt.Sprint(keys) != "[avatarUrl bio country currentVibe displayName distanceKm headline interests languages localTime personalityTags sharedInterests userId username]" {
 			t.Fatalf("item keys %v", keys)
 		}
 	}

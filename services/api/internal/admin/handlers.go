@@ -36,6 +36,7 @@ func (s *Server) routeAPI() {
 
 	s.routeContent()
 	s.routeSafety()
+	s.routeSocial()
 
 	s.handle("GET", "/admin/v1/audit", RoleAdmin, s.listAudit)
 	s.handle("POST", "/admin/v1/audit/prune", RoleAdmin, s.pruneAudit)

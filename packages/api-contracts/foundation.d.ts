@@ -420,6 +420,111 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/discovery/possible-matches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** People you may like, best first: active, onboarded, discoverable, public members in your own age band, never you or anyone blocked. The ranking is a weighted count of what you share (3 per shared interest up to 5, 2 per shared personality tag up to 5, 4 for each direction of complementary languages: they are at level 4 or above in a language you are at level 3 or below in, and the other way round; 1 for the same country), counting only fields the other member shows to everyone; ties by user id. Keyset pagination on (score, user id) with a signed cursor bound to you and the options, expiring after 15 minutes, at most 10 pages; every page counts against the day's search pages */
+        post: operations["postPossibleMatchesPage_v1_discovery_possible-matches"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/photos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Your photo gallery in order (the first photo is the profile photo) and how many photos fit */
+        get: operations["getGallery_v1_me_photos"];
+        put?: never;
+        /** Add an uploaded photo (purpose "avatar", finished, not yet used; the upload scanner has already run on completion, so a quarantined photo is never ready) at the end of the gallery. The first photo of an empty gallery becomes the profile photo */
+        post: operations["postGallery_v1_me_photos"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/photos/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set the order of the gallery; mediaIds must list every photo once. The first becomes the profile photo (avatarMediaId follows) */
+        put: operations["putGallery_v1_me_photos_order"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/photos/{mediaId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Put a new photo (body mediaId) in the place of this one, keeping its position; the replaced photo is released for deletion */
+        put: operations["putGallery_v1_me_photos_mediaId"];
+        post?: never;
+        /** Remove a photo from the gallery and release it for deletion; the photos after it move up and removing the first makes the next one the profile photo */
+        delete: operations["deleteGallery_v1_me_photos_mediaId"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/users/{userId}/visitors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Who opened this adult member's profile in the last 30 days (at most 200), most recent visit first, only when they turned "let people see who visited me" on and you may open their profile. Members under 18, inactive accounts and anyone blocked with you or the member in either direction or in the other age band are left out. Opening a profile adds the visitor to this list for 30 days. Cursor bound to you and the member */
+        get: operations["getVisitedPersonPage_v1_users_userId_visitors"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/visited": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The profiles you opened in the last 30 days (at most 200), most recent first: your own history, readable by nobody else. People who are inactive or barred from you now are left out */
+        get: operations["getVisitedPersonPage_v1_me_visited"];
+        put?: never;
+        post?: never;
+        /** Delete your visit history. The all-time visitor counts of the profiles you opened are not lowered */
+        delete: operations["deleteCleared_v1_me_visited"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/users/{userId}/friend-requests": {
         parameters: {
             query?: never;
@@ -802,7 +907,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Your active conversations, most recent first */
+        /** Your active conversations that you have not deleted, most recent first. Your pinned chats (at most 5, most recent first) lead the FIRST page, in front of up to limit others, so the first page may hold up to limit plus the pinned ones; the cursor runs over the unpinned chats only and a pinned chat never appears on a later page */
         get: operations["getDirectConversationPage_v1_conversations"];
         put?: never;
         /** Open or reopen the direct conversation with a person. Anyone may message anyone who is not blocked and is in the same age band (a member in the other band, or who blocked you, is 404 as for a block), with no friendship or follow needed. Opening a conversation with someone you have never exchanged a message with uses a tighter budget on top of the general limit: a burst of 10, then one a minute, then 429 RATE_LIMITED with Retry-After 60. Starting a conversation (being the first to open it) also counts against a per-member daily limit (Free: 40 per rolling 24 hours, counted by creation time and never refunded; reopening one never counts), then 429 QUOTA with Retry-After */
@@ -905,7 +1010,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** The Chats badge: unread messages and conversations with any, leaving out muted chats, restricted people and barred pairs */
+        /** The Chats badge: unread messages and conversations with any, leaving out muted chats, chats you deleted from your list, restricted people and barred pairs */
         get: operations["getChatUnread_v1_conversations_unread"];
         put?: never;
         post?: never;
@@ -957,14 +1062,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Your push notification choices; both are on until you change them */
+        /** Your push notification choices (every field; defaults apply until you change them) */
         get: operations["getNotificationPrefs_v1_me_notifications"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        /** Change one or both push choices (a key left out keeps its value; at least one is required). Enforced on the server when it decides to push; muting a chat or a person applies on top */
+        /** Change any of the push choices (a key left out keeps its value; at least one is required). Enforced on the server when it decides to push; muting a chat or a person, blocks and the age band apply on top; hideNames makes social pushes generic */
         patch: operations["patchNotificationPrefs_v1_me_notifications"];
         trace?: never;
     };
@@ -1236,7 +1341,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Comments on a post you may see, oldest first */
+        /** Comments on a post you may see, oldest first. parent absent: every comment, flat; parent=none: top-level comments with replyCount; parent={commentId}: the replies to that comment */
         get: operations["getCommentPage_v1_posts_postId_comments"];
         put?: never;
         /** Comment or reply (parentId); the post's comment setting applies (403 COMMENTS_NOT_ALLOWED) */
@@ -1417,6 +1522,229 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/topics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The topics a post or story can be filed under */
+        get: operations["getTopicList_v1_topics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/stories/explore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The "Everyone" stories: public stories that are up now from other members, newest first (muted, blocked, other-band and inactive authors and your own never appear) */
+        get: operations["getStoryItemPage_v1_stories_explore"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/search/pulse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Full text search (Postgres simple configuration) over posts of the last 180 days or active stories you may see; 20 per page, at most 10 pages, each page counts against 300 a UTC day */
+        get: operations["getPulseSearchPage_v1_search_pulse"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/activity/comments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The comments you wrote, newest first, with the post each belongs to (state removed when it is gone or no longer visible to you) */
+        get: operations["getActivityCommentPage_v1_me_activity_comments"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/activity/reactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The reactions you left, newest first, with the post each belongs to (state removed when it is gone or no longer visible to you) */
+        get: operations["getActivityReactionPage_v1_me_activity_reactions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/notices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Live notices for your age band and language, newest first, with unreadCount and the pinned ones */
+        get: operations["getNoticePage_v1_notices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/notices/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The unread count and up to 3 live pinned notices (the Home safety banner and the unread dot) */
+        get: operations["getNoticeSummary_v1_notices_summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/notices/seen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark every notice published so far as seen (one pointer per member; nothing about what was opened is kept) */
+        post: operations["postNoticesSeen_v1_notices_seen"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/support/threads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Your support conversations, most recent activity first, with unreadCount */
+        get: operations["getSupportThreadPage_v1_support_threads"];
+        put?: never;
+        /** Open a conversation with Hiyall support. Support messages are plaintext that staff read; they are not end-to-end encrypted. One open thread per category; 20 messages a UTC day */
+        post: operations["postSupportThread_v1_support_threads"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/support/unread": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** How many of your support conversations have a reply you have not opened */
+        get: operations["getSupportUnread_v1_support_unread"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/support/threads/{threadId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One of your support conversations */
+        get: operations["getSupportThread_v1_support_threads_threadId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/support/threads/{threadId}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Its messages, oldest first; opening the first page marks the conversation read. Staff are shown only as the Hiyall team */
+        get: operations["getSupportMessagePage_v1_support_threads_threadId_messages"];
+        put?: never;
+        /** Write to an open conversation */
+        post: operations["postSupportMessage_v1_support_threads_threadId_messages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/support/threads/{threadId}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Close your own conversation (staff can reopen it) */
+        post: operations["postThreadClosed_v1_support_threads_threadId_close"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/conversations/{conversationId}/blobs": {
         parameters: {
             query?: never;
@@ -1426,7 +1754,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Reserve an upload slot for one end-to-end encrypted attachment blob (ciphertext the server cannot read; role full or thumb). You must be in an active conversation, not blocked or in the other age band, allowed to message the peer, and the peer must have replied in it or be your friend. Per member: at most 100 blobs and 300 MiB per rolling 24 hours (counted by creation time, deleting does not refund), at most 10 pending. 503 CHAT_MEDIA_UNAVAILABLE without chat storage */
+        /** Reserve an upload slot for one end-to-end encrypted attachment blob (ciphertext the server cannot read; role full or thumb for a photo, voice for a voice message, video for a video). You must be in an active conversation, not blocked or in the other age band, allowed to message the peer, and the peer must have replied in it or be your friend. Per member: at most 100 blobs and 300 MiB per rolling 24 hours (counted by creation time, deleting does not refund), at most 10 pending. 503 CHAT_MEDIA_UNAVAILABLE without chat storage */
         post: operations["postChatBlobSlot_v1_conversations_conversationId_blobs"];
         delete?: never;
         options?: never;
@@ -1480,6 +1808,74 @@ export interface paths {
         post?: never;
         /** Delete your own blob (any state); the object is removed at once, or by the hourly clean-up if storage fails. Idempotent. A blob held as evidence in a report is left alone and the answer is the same. Someone else's blob or an unknown id is 404 */
         delete: operations["deleteDeleted_v1_blobs_blobId"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/conversations/{conversationId}/pin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Pin or unpin your side of a chat (body exactly {"pinned": true|false}). Pinned chats lead the first page of the list. At most 5 (Entitlements.ChatPinsMax), counted under your own lock so concurrent pins cannot both pass; pinning a pinned chat succeeds and keeps its pinnedAt. Pinning needs a chat in your visible list (not deleted, not barred): otherwise 404. Your other devices are signalled (inbox); the peer never learns */
+        put: operations["putConversationPin_v1_conversations_conversationId_pin"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/conversations/{conversationId}/hide": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Delete the chat from your list (no body): hiddenAt is set and the pin is cleared; the unread count, the messages and the attachments are untouched and the peer never learns. Restorable for 30 days. Idempotent: hiding a hidden chat keeps the earlier hiddenAt. Not a member, or a chat already closed: 404. A message from the peer, or opening the chat, brings it back */
+        post: operations["postConversationHidden_v1_conversations_conversationId_hide"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/conversations/{conversationId}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Bring a deleted chat back into your list (no body). Only a chat that is hidden, not closed and still inside its 30 day window; anything else is 404 */
+        post: operations["postConversationRestored_v1_conversations_conversationId_restore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/conversations/hidden": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Your Deleted chats (hidden, not closed, at most 30 days old, at most 100, most recently hidden first, no paging) and closedIds, the conversations closed for you in the last 90 days (at most 200, newest first), whose local history the app wipes */
+        get: operations["getHiddenConversations_v1_conversations_hidden"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1678,6 +2074,176 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/me/billing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Plan, coins, entitlements, catalog and eligibility in one read. Nothing here is a price. A minor or a member with no known age is told monetizable false and sees nothing about plans */
+        get: operations["getBillingState_v1_me_billing"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/billing/purchases/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify a store purchase on the server (Google Play purchases API, App Store Server API with Apple's signed JWS verified to its root) and grant it once. Idempotent per store transaction (a hashed id is UNIQUE); restore purchases is this call again. Adults only. 402 SPEND_CONFIRMATION_REQUIRED / INSUFFICIENT_COINS / PREMIUM_REQUIRED carry error.details (reason, cost, balance, feature). */
+        post: operations["postPurchaseResult_v1_me_billing_purchases_verify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/billing/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The coin ledger, newest first. Adults only */
+        get: operations["getCoinHistoryPage_v1_me_billing_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/billing/ads/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start a rewarded ad (adults, plans enforced, ad units configured). DAILY_LIMIT at the day's cap; ADS_UNAVAILABLE when off */
+        post: operations["postAdSession_v1_me_billing_ads_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/billing/ads/reward": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** The status of a started rewarded ad. Credited only by the signed AdMob callback, never by the app's say-so; poll while pending */
+        post: operations["postAdRewardStatus_v1_me_billing_ads_reward"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me/billing/bonuses/profile-completion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Claim the one-time coin bonus for a complete profile (photo, a few words, an interest, a language). Adults only */
+        post: operations["postProfileBonusResult_v1_me_billing_bonuses_profile-completion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/users/{userId}/profile-details/unlock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Spend coins to see a member's detailed profile fields for a while (free for Premium). Needs confirmCost equal to the price. 402 SPEND_CONFIRMATION_REQUIRED / INSUFFICIENT_COINS / PREMIUM_REQUIRED carry error.details (reason, cost, balance, feature). */
+        post: operations["postProfileDetailsUnlock_v1_users_userId_profile-details_unlock"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/billing/google/rtdn": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Google Play real-time developer notification (Pub/Sub push). Proven by the secret ?token= of the push URL, compared in constant time; the purchase is re-read from Google */
+        post: operations["postWebhookAck_v1_billing_google_rtdn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/billing/apple/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** App Store Server Notification V2. Proven by the signed payload's certificate chain to Apple's root and the bundle id */
+        post: operations["postWebhookAck_v1_billing_apple_notifications"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/billing/admob/ssv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** AdMob rewarded-ad server-side verification callback. Proven by the ECDSA signature over the query, with Google's published keys; the reward is the catalog's, not the query's reward_amount */
+        get: operations["getWebhookAck_v1_billing_admob_ssv"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1705,8 +2271,8 @@ export interface components {
             education?: string;
             languages?: {
                 code: string;
-                /** @enum {string} */
-                level?: "" | "basic" | "conversational" | "fluent" | "native";
+                /** @description Proficiency, 1 just starting, 2 beginner, 3 conversational, 4 fluent, 5 advanced, 6 native. Writes may still send the older words basic (2), conversational (3), fluent (4) or native (6), or no level (3); the API always answers with the number. */
+                level?: number;
             }[] | null;
             /** @enum {string} */
             profileAudience?: "public" | "friends" | "followers" | "private";
@@ -1744,6 +2310,14 @@ export interface components {
              * @description Signed URL of the full-size (at most 2048 px) profile photo, valid for an hour; null when there is no photo. On another member's profile it is null on the locked card, which shows the thumbnail only.
              */
             readonly avatarFullUrl: string | null;
+            /** @description None, or three to five tags from the fixed list. Shown to the people the "personality" field audience admits (default everyone); matches the personality filter only for members whose audience is everyone. */
+            personalityTags: ("curious" | "night_owl" | "early_bird" | "homebody" | "explorer" | "bookish" | "foodie" | "maker" | "playful" | "sporty" | "music_lover" | "film_fan" | "jokester" | "deep_thinker" | "planner" | "spontaneous" | "empathetic" | "chatty" | "low_key")[];
+            /** @description Optional one line about the member. Own audience "aboutMe": adults start followers, members under 18 start nobody (they may choose friends). */
+            aboutMe: string;
+            /** @description Optional coarse hometown or city, free text, never an address (more than two digits, # @ / :, or street, apartment or box words are 422 VALIDATION, and the message never repeats the text). A member under 18 may write at most 40 characters and it is shown only to their confirmed friends in the same age band (audience nobody or friends, never wider); it is never in search, Discover or Nearby rows. Adults start with the audience "hometown" followers. */
+            hometown: string;
+            /** @description Your gallery in order; the first photo is the profile photo. */
+            photos: components["schemas"]["ProfilePhoto"][];
             /** @description Friends, following and followers count active persisted relationships, excluding inactive and blocked accounts; visitors and stories are described on SocialStats. Shown when the member's counts field audience allows the viewer (default everyone); omitted otherwise and never on the locked card. The owner always sees their own. */
             socialStats?: components["schemas"]["SocialStats"];
         };
@@ -1767,11 +2341,10 @@ export interface components {
             websiteUrl?: string | null;
             profession?: string;
             education?: string;
-            /** @description Structured language entries. Legacy tag strings remain accepted without inferred proficiency. */
+            /** @description Up to LanguagesMax (5) entries with a level 1 to 6 (default 3 when missing). Legacy tag strings and the older level words are accepted and stored as numbers. */
             languages?: ({
                 code: string;
-                /** @enum {string} */
-                level?: "" | "basic" | "conversational" | "fluent" | "native";
+                level?: number | ("" | "basic" | "conversational" | "fluent" | "native");
             } | string)[];
             /** @enum {string} */
             profileAudience?: "public" | "friends" | "followers" | "private";
@@ -1791,6 +2364,12 @@ export interface components {
              * @enum {string}
              */
             gender?: "" | "woman" | "man" | "nonbinary";
+            /** @description None, or three to five tags from the fixed list. Shown to the people the "personality" field audience admits (default everyone); matches the personality filter only for members whose audience is everyone. */
+            personalityTags?: ("curious" | "night_owl" | "early_bird" | "homebody" | "explorer" | "bookish" | "foodie" | "maker" | "playful" | "sporty" | "music_lover" | "film_fan" | "jokester" | "deep_thinker" | "planner" | "spontaneous" | "empathetic" | "chatty" | "low_key")[];
+            /** @description Optional one line about the member. Own audience "aboutMe": adults start followers, members under 18 start nobody (they may choose friends). */
+            aboutMe?: string;
+            /** @description Optional coarse hometown or city, free text, never an address (more than two digits, # @ / :, or street, apartment or box words are 422 VALIDATION, and the message never repeats the text). A member under 18 may write at most 40 characters and it is shown only to their confirmed friends in the same age band (audience nobody or friends, never wider); it is never in search, Discover or Nearby rows. Adults start with the audience "hometown" followers. */
+            hometown?: string;
         };
         PrivacySettings: {
             /**
@@ -1869,8 +2448,36 @@ export interface components {
                  * @enum {string}
                  */
                 counts: "everyone" | "friends" | "followers" | "nobody";
+                /**
+                 * @description Adults start followers; members under 18 start nobody and may choose friends, not wider.
+                 * @enum {string}
+                 */
+                aboutMe: "everyone" | "friends" | "followers" | "nobody";
+                /**
+                 * @description Adults start followers; members under 18 start nobody and may choose friends, not wider. A minor's hometown is read as friends-only whatever is stored.
+                 * @enum {string}
+                 */
+                hometown: "everyone" | "friends" | "followers" | "nobody";
+                /**
+                 * @description Default everyone.
+                 * @enum {string}
+                 */
+                personality: "everyone" | "friends" | "followers" | "nobody";
+                /**
+                 * @description Adults start friends; members under 18 are locked to nobody.
+                 * @enum {string}
+                 */
+                birthday: "everyone" | "friends" | "followers" | "nobody";
             };
             readReceipts: boolean;
+            /** @description Show your local time on your profile and in Discover. Adults default true, members under 18 false. */
+            showLocalTime: boolean;
+            /** @description Show your Nearby distance bucket to the people who find you. Adults default true, members under 18 false. */
+            showDistance: boolean;
+            /** @description Adults only, default false: people who can open your profile see who visited it in the last 30 days. Members under 18 can never turn it on (422 MINOR_SETTING_LOCKED). Your own visitors list is unchanged. */
+            visitorsVisibleToOthers: boolean;
+            /** @description Adults only, default false: show the month and day of your birthday (never the year) to the audience of the birthday field. Members under 18 can never turn it on (422 MINOR_SETTING_LOCKED). */
+            showBirthday: boolean;
         };
         PrivacyPatch: {
             /**
@@ -1945,8 +2552,36 @@ export interface components {
                  * @enum {string}
                  */
                 counts?: "everyone" | "friends" | "followers" | "nobody";
+                /**
+                 * @description Adults start followers; members under 18 start nobody and may choose friends, not wider.
+                 * @enum {string}
+                 */
+                aboutMe?: "everyone" | "friends" | "followers" | "nobody";
+                /**
+                 * @description Adults start followers; members under 18 start nobody and may choose friends, not wider. A minor's hometown is read as friends-only whatever is stored.
+                 * @enum {string}
+                 */
+                hometown?: "everyone" | "friends" | "followers" | "nobody";
+                /**
+                 * @description Default everyone.
+                 * @enum {string}
+                 */
+                personality?: "everyone" | "friends" | "followers" | "nobody";
+                /**
+                 * @description Adults start friends; members under 18 are locked to nobody.
+                 * @enum {string}
+                 */
+                birthday?: "everyone" | "friends" | "followers" | "nobody";
             };
             readReceipts?: boolean;
+            /** @description Show your local time on your profile and in Discover. Adults default true, members under 18 false. */
+            showLocalTime?: boolean;
+            /** @description Show your Nearby distance bucket to the people who find you. Adults default true, members under 18 false. */
+            showDistance?: boolean;
+            /** @description Adults only, default false: people who can open your profile see who visited it in the last 30 days. Members under 18 can never turn it on (422 MINOR_SETTING_LOCKED). Your own visitors list is unchanged. */
+            visitorsVisibleToOthers?: boolean;
+            /** @description Adults only, default false: show the month and day of your birthday (never the year) to the audience of the birthday field. Members under 18 can never turn it on (422 MINOR_SETTING_LOCKED). */
+            showBirthday?: boolean;
         };
         /** @description Viewer-specific projection. Optional fields are omitted when hidden. Counts are bounded/projection-safe and never reveal private graph memberships. */
         PublicProfile: {
@@ -1968,8 +2603,8 @@ export interface components {
             education?: string;
             languages?: {
                 code: string;
-                /** @enum {string} */
-                level?: "" | "basic" | "conversational" | "fluent" | "native";
+                /** @description Proficiency, 1 just starting, 2 beginner, 3 conversational, 4 fluent, 5 advanced, 6 native. Writes may still send the older words basic (2), conversational (3), fluent (4) or native (6), or no level (3); the API always answers with the number. */
+                level?: number;
             }[] | null;
             /** @enum {string} */
             profileAudience?: "public" | "friends" | "followers" | "private";
@@ -2000,6 +2635,31 @@ export interface components {
              * @description Signed URL of the full-size (at most 2048 px) profile photo, valid for an hour; null when there is no photo. On another member's profile it is null on the locked card, which shows the thumbnail only.
              */
             readonly avatarFullUrl: string | null;
+            /** @description None, or three to five tags from the fixed list. Shown to the people the "personality" field audience admits (default everyone); matches the personality filter only for members whose audience is everyone. */
+            personalityTags?: ("curious" | "night_owl" | "early_bird" | "homebody" | "explorer" | "bookish" | "foodie" | "maker" | "playful" | "sporty" | "music_lover" | "film_fan" | "jokester" | "deep_thinker" | "planner" | "spontaneous" | "empathetic" | "chatty" | "low_key")[];
+            /** @description Optional one line about the member. Own audience "aboutMe": adults start followers, members under 18 start nobody (they may choose friends). */
+            aboutMe?: string;
+            /** @description Optional coarse hometown or city, free text, never an address (more than two digits, # @ / :, or street, apartment or box words are 422 VALIDATION, and the message never repeats the text). A member under 18 may write at most 40 characters and it is shown only to their confirmed friends in the same age band (audience nobody or friends, never wider); it is never in search, Discover or Nearby rows. Adults start with the audience "hometown" followers. */
+            hometown?: string;
+            /** @description The member's gallery in order, for anyone who may open the profile (same audience as the profile); absent on the locked card. */
+            photos?: components["schemas"]["ProfilePhoto"][];
+            /** @description The member's local time zone, present only when their showLocalTime setting is on (adults default on, members under 18 default off) and the zone is known. The zone name is never sent. */
+            localTime?: {
+                /** @description Offset from UTC right now, from the member's stored IANA time zone (daylight saving included). */
+                utcOffsetMinutes: number;
+                /** @description For example "UTC+5:30". */
+                label: string;
+            };
+            /** @description Month and day of birth, never the year. Present only for an adult who turned showBirthday on, to the audience of the "birthday" field (default friends); never for a member under 18 and never on your own profile. */
+            birthday?: {
+                month: number;
+                day: number;
+            };
+            /**
+             * @description Present and true when this adult member shares who visited their profile in the last 30 days (GET /v1/users/{userId}/visitors).
+             * @constant
+             */
+            visitorsVisible?: true;
             /** @description Friends, following and followers count active persisted relationships, excluding inactive and blocked accounts; visitors and stories are described on SocialStats. Shown when the member's counts field audience allows the viewer (default everyone); omitted otherwise and never on the locked card. The owner always sees their own. */
             socialStats?: components["schemas"]["SocialStats"];
             /** @description Whether you may open this member's followers and following lists (GET /v1/users/{userId}/followers and /following): their profile audience and their connections field audience both admit you, the rule behind 403 CONNECTIONS_PRIVATE. For an adult member (connections defaults to followers) that is true when you actively follow them or are their friend; a pending follow request does not count; for a member under 18 (friends) only friends. Friends lists are not opened by following. Absent on the locked card. The counts on socialStats have their own audience, so a count can show while its list is private. */
@@ -2017,6 +2677,16 @@ export interface components {
             relationship?: components["schemas"]["Relationship"];
             /** @description True when the profile audience excludes the viewer. A locked card carries only identity (name and photo thumbnail), style and relationship. */
             locked?: boolean;
+        };
+        ProfilePhoto: {
+            /** Format: uuid */
+            mediaId: string;
+            /** @description Signed URL of the full-size photo (valid for an hour, never stored). */
+            url: string;
+            /** @description Signed URL of the 640 px thumbnail. */
+            thumbUrl: string;
+            width: number;
+            height: number;
         };
         SocialStats: {
             readonly friends: number;
@@ -2088,6 +2758,12 @@ export interface components {
             gender?: "" | "woman" | "man" | "nonbinary";
             /** @description True keeps only members whose onlineAudience admits you (same rule as the per-row online flag) and who had session activity within the last 2 minutes. Live realtime connections are per node and not part of the filter, so it can only under-report; every returned row carries the precise flag. false is the same as omitting it. Part of the cursor binding. */
             online?: boolean;
+            /** @description Only people at this language level or above in at least one of the selected languages; 0 or absent is any level. Needs languages. */
+            languageMinLevel?: number;
+            /** @description Any one of these tags matches, for members whose personality audience is everyone. */
+            personalityTags?: ("curious" | "night_owl" | "early_bird" | "homebody" | "explorer" | "bookish" | "foodie" | "maker" | "playful" | "sporty" | "music_lover" | "film_fan" | "jokester" | "deep_thinker" | "planner" | "spontaneous" | "empathetic" | "chatty" | "low_key")[];
+            /** @description The "same country" shortcut: the server uses the country on your own profile (422 COUNTRY_NOT_SET when you have none). Not combinable with country. */
+            sameCountry?: boolean;
             cursor?: string;
         };
         DiscoveryPerson: {
@@ -2105,11 +2781,20 @@ export interface components {
             interests?: string[] | null;
             languages?: {
                 code: string;
-                /** @enum {string} */
-                level?: "" | "basic" | "conversational" | "fluent" | "native";
+                /** @description Proficiency, 1 just starting, 2 beginner, 3 conversational, 4 fluent, 5 advanced, 6 native. Writes may still send the older words basic (2), conversational (3), fluent (4) or native (6), or no level (3); the API always answers with the number. */
+                level?: number;
             }[] | null;
             currentVibe?: string;
             country?: string;
+            /** @description None, or three to five tags from the fixed list. Shown to the people the "personality" field audience admits (default everyone); matches the personality filter only for members whose audience is everyone. */
+            personalityTags?: ("curious" | "night_owl" | "early_bird" | "homebody" | "explorer" | "bookish" | "foodie" | "maker" | "playful" | "sporty" | "music_lover" | "film_fan" | "jokester" | "deep_thinker" | "planner" | "spontaneous" | "empathetic" | "chatty" | "low_key")[];
+            /** @description The member's local time zone, present only when their showLocalTime setting is on (adults default on, members under 18 default off) and the zone is known. The zone name is never sent. */
+            localTime?: {
+                /** @description Offset from UTC right now, from the member's stored IANA time zone (daylight saving included). */
+                utcOffsetMinutes: number;
+                /** @description For example "UTC+5:30". */
+                label: string;
+            };
             /** @description Up to 3 interests you and this member share, matched case-insensitively and spelled and ordered as you wrote them. Present, possibly empty, exactly when interests is present (the member's interests audience is everyone); one batched read of your own interests per page. */
             sharedInterests?: string[];
             /**
@@ -2142,11 +2827,20 @@ export interface components {
             interests?: string[] | null;
             languages?: {
                 code: string;
-                /** @enum {string} */
-                level?: "" | "basic" | "conversational" | "fluent" | "native";
+                /** @description Proficiency, 1 just starting, 2 beginner, 3 conversational, 4 fluent, 5 advanced, 6 native. Writes may still send the older words basic (2), conversational (3), fluent (4) or native (6), or no level (3); the API always answers with the number. */
+                level?: number;
             }[] | null;
             currentVibe?: string;
             country?: string;
+            /** @description None, or three to five tags from the fixed list. Shown to the people the "personality" field audience admits (default everyone); matches the personality filter only for members whose audience is everyone. */
+            personalityTags?: ("curious" | "night_owl" | "early_bird" | "homebody" | "explorer" | "bookish" | "foodie" | "maker" | "playful" | "sporty" | "music_lover" | "film_fan" | "jokester" | "deep_thinker" | "planner" | "spontaneous" | "empathetic" | "chatty" | "low_key")[];
+            /** @description The member's local time zone, present only when their showLocalTime setting is on (adults default on, members under 18 default off) and the zone is known. The zone name is never sent. */
+            localTime?: {
+                /** @description Offset from UTC right now, from the member's stored IANA time zone (daylight saving included). */
+                utcOffsetMinutes: number;
+                /** @description For example "UTC+5:30". */
+                label: string;
+            };
             /** @description Up to 3 interests you and this member share, matched case-insensitively and spelled and ordered as you wrote them. Present, possibly empty, exactly when interests is present (the member's interests audience is everyone); one batched read of your own interests per page. */
             sharedInterests?: string[];
             /**
@@ -2160,10 +2854,10 @@ export interface components {
              */
             lastSeenAt?: string;
             /**
-             * @description A bucket: the smallest of 5, 10, 15, 25, 50, 100 that is at least the distance between the two stored (grid-rounded) points. A viewer who is a minor sees only 10, 25, 50 and 100. Never a coordinate, grid cell or finer distance.
+             * @description Absent for a member who turned showDistance off (the order of the page is still by bucket). A bucket: the smallest of 5, 10, 15, 25, 50, 100 that is at least the distance between the two stored (grid-rounded) points. A viewer who is a minor sees only 10, 25, 50 and 100. Never a coordinate, grid cell or finer distance.
              * @enum {integer}
              */
-            distanceKm: 5 | 10 | 15 | 25 | 50 | 100;
+            distanceKm?: 5 | 10 | 15 | 25 | 50 | 100;
         };
         NearbyPage: {
             items: components["schemas"]["NearbyPerson"][];
@@ -2191,6 +2885,12 @@ export interface components {
             gender?: "" | "woman" | "man" | "nonbinary";
             /** @description True keeps only members whose onlineAudience admits you (same rule as the per-row online flag) and who had session activity within the last 2 minutes. Live realtime connections are per node and not part of the filter, so it can only under-report; every returned row carries the precise flag. false is the same as omitting it. Part of the cursor binding. */
             online?: boolean;
+            /** @description Only people at this language level or above in at least one of the selected languages; 0 or absent is any level. Needs languages. */
+            languageMinLevel?: number;
+            /** @description Any one of these tags matches, for members whose personality audience is everyone. */
+            personalityTags?: ("curious" | "night_owl" | "early_bird" | "homebody" | "explorer" | "bookish" | "foodie" | "maker" | "playful" | "sporty" | "music_lover" | "film_fan" | "jokester" | "deep_thinker" | "planner" | "spontaneous" | "empathetic" | "chatty" | "low_key")[];
+            /** @description The "same country" shortcut: the server uses the country on your own profile (422 COUNTRY_NOT_SET when you have none). Not combinable with country. */
+            sameCountry?: boolean;
             /** @description Opaque, signed and expiring after 15 minutes; bound to you, the radius, the filters and your stored point. Changing any of them invalidates it (422 INVALID_CURSOR). */
             cursor?: string;
         };
@@ -2358,6 +3058,19 @@ export interface components {
             readAt?: string;
             text: string;
         };
+        VisitedPerson: {
+            user: components["schemas"]["UserSummary"];
+            /**
+             * Format: date-time
+             * @description When the profile was last opened within the last 30 days (refreshed at most once an hour).
+             */
+            visitedAt: string;
+            /**
+             * @description Your own follow state on this person.
+             * @enum {string}
+             */
+            following: "none" | "pending" | "active";
+        };
         ConnectionPage: {
             items: components["schemas"]["Connection"][];
             nextCursor: string | null;
@@ -2379,6 +3092,11 @@ export interface components {
         };
         VisitorPage: {
             items: components["schemas"]["Visitor"][];
+            nextCursor: string | null;
+            hasMore: boolean;
+        };
+        VisitedPersonPage: {
+            items: components["schemas"]["VisitedPerson"][];
             nextCursor: string | null;
             hasMore: boolean;
         };
@@ -2506,6 +3224,21 @@ export interface components {
             mutedUntil: string | null;
             /** @description Up to three interests you and the peer both list, matched case-insensitively and spelled and ordered as you wrote them. Empty when nothing is shared or when the peer's profile audience or interests audience does not admit you (the same rule as their profile). It never records a profile visit. */
             sharedInterests: string[];
+            /**
+             * Format: date-time
+             * @description When you pinned this chat, null when it is not pinned. Never shown to the peer.
+             */
+            pinnedAt: string | null;
+            /**
+             * Format: date-time
+             * @description When you deleted this chat from your list, null otherwise. Set in the Deleted-chats list and the single GET only; the chat is out of the main list while it is set. Never shown to the peer.
+             */
+            hiddenAt: string | null;
+            /**
+             * Format: date-time
+             * @description Only while hiddenAt is set: the end of the 30 day window in which the chat can be restored (hiddenAt plus 30 days).
+             */
+            restoreUntil?: string;
         };
         DirectConversationPage: {
             items: components["schemas"]["DirectConversation"][];
@@ -2695,6 +3428,80 @@ export interface components {
             data: components["schemas"]["SessionPage"];
             meta: components["schemas"]["Meta"];
         };
+        PossibleRequest: {
+            /** @default 20 */
+            limit: number;
+            /**
+             * @description Leave out people you already follow or have asked to follow.
+             * @default false
+             */
+            excludeFollowing: boolean;
+            cursor?: string;
+        };
+        PossibleMatch: {
+            /** Format: uuid */
+            userId: string;
+            username: string;
+            displayName: string;
+            /**
+             * Format: uri
+             * @description Signed URL of a 640 px thumbnail of the profile photo, valid for an hour; null when there is no photo (or photo storage is not configured). The URL is minted per response and never stored, so refresh it with the profile rather than caching it for long; cache the image bytes by avatarMediaId or the URL path.
+             */
+            readonly avatarUrl: string | null;
+            headline: string;
+            bio: string;
+            interests?: string[] | null;
+            languages?: {
+                code: string;
+                /** @description Proficiency, 1 just starting, 2 beginner, 3 conversational, 4 fluent, 5 advanced, 6 native. Writes may still send the older words basic (2), conversational (3), fluent (4) or native (6), or no level (3); the API always answers with the number. */
+                level?: number;
+            }[] | null;
+            currentVibe?: string;
+            country?: string;
+            /** @description None, or three to five tags from the fixed list. Shown to the people the "personality" field audience admits (default everyone); matches the personality filter only for members whose audience is everyone. */
+            personalityTags?: ("curious" | "night_owl" | "early_bird" | "homebody" | "explorer" | "bookish" | "foodie" | "maker" | "playful" | "sporty" | "music_lover" | "film_fan" | "jokester" | "deep_thinker" | "planner" | "spontaneous" | "empathetic" | "chatty" | "low_key")[];
+            /** @description The member's local time zone, present only when their showLocalTime setting is on (adults default on, members under 18 default off) and the zone is known. The zone name is never sent. */
+            localTime?: {
+                /** @description Offset from UTC right now, from the member's stored IANA time zone (daylight saving included). */
+                utcOffsetMinutes: number;
+                /** @description For example "UTC+5:30". */
+                label: string;
+            };
+            /** @description Up to 3 interests you and this member share, matched case-insensitively and spelled and ordered as you wrote them. Present, possibly empty, exactly when interests is present (the member's interests audience is everyone); one batched read of your own interests per page. */
+            sharedInterests?: string[];
+            /**
+             * @description Present, and always true, only while this member is online and their onlineAudience admits you (everyone; friends for accepted friends; followers for friends and active followers; nobody never, except yourself). Online means a live realtime connection on this node or session activity within the last 2 minutes. Omitted otherwise: offline, hidden and any other audience look the same. Never false.
+             * @constant
+             */
+            online?: true;
+            /**
+             * Format: date-time
+             * @description The member's latest session activity, rounded DOWN to 5 minutes (UTC, never an exact time). Present only when the member is not online, has been active, and their onlineAudience admits you (last seen has no control of its own and follows it). Omitted otherwise, so a member who hides presence looks exactly like one who was never seen.
+             */
+            lastSeenAt?: string;
+            /** @description What you share, only from fields the member shows to everyone. The score itself is never sent. */
+            reasons: ("interests" | "personality" | "languages" | "country")[];
+        };
+        PossibleMatchesPage: {
+            items: components["schemas"]["PossibleMatch"][];
+            nextCursor: string | null;
+        };
+        Gallery: {
+            photos: components["schemas"]["ProfilePhoto"][];
+            /** @description How many photos fit (Entitlements.ProfilePhotosMax, 8 on Free). */
+            max: number;
+        };
+        PhotoRef: {
+            /** Format: uuid */
+            mediaId: string;
+        };
+        PhotoOrder: {
+            /** @description Every photo of the gallery, once, in the new order. */
+            mediaIds: string[];
+        };
+        Cleared: {
+            cleared: number;
+        };
         FollowStateResponse: {
             /** @constant */
             success: true;
@@ -2723,6 +3530,30 @@ export interface components {
             /** @constant */
             success: true;
             data: components["schemas"]["VisitorPage"];
+            meta: components["schemas"]["Meta"];
+        };
+        PossibleMatchesPageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["PossibleMatchesPage"];
+            meta: components["schemas"]["Meta"];
+        };
+        GalleryResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["Gallery"];
+            meta: components["schemas"]["Meta"];
+        };
+        VisitedPersonPageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["VisitedPersonPage"];
+            meta: components["schemas"]["Meta"];
+        };
+        ClearedResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["Cleared"];
             meta: components["schemas"]["Meta"];
         };
         FriendRequestResponse: {
@@ -2878,14 +3709,48 @@ export interface components {
             meta: components["schemas"]["Meta"];
         };
         NotificationPrefs: {
+            /** @description Master switch; off silences everything but security pushes. Default true. */
+            enabled: boolean;
             /** @description New messages. Default true. */
             chat: boolean;
-            /** @description Friend requests, new followers, follow requests and their acceptance, space invitations. Default true. */
+            /** @description Legacy umbrella: true while any social category is on; setting it sets follows, friendRequests, comments, replies and reactions (not visits). */
             social: boolean;
+            /** @description New followers, follow requests and their acceptance. Default true. */
+            follows: boolean;
+            /** @description Friend requests, their acceptance and space invitations. Default true. */
+            friendRequests: boolean;
+            /** @description Comments on your posts. Default true. */
+            comments: boolean;
+            /** @description Replies to your comments. Default true. */
+            replies: boolean;
+            /** @description Reactions to your posts. Default true. */
+            reactions: boolean;
+            /** @description Profile visit notices: an owner opt-in, default false. */
+            visits: boolean;
+            /** @description Social pushes never name the person. Default true for a member under 18, false for an adult. */
+            hideNames: boolean;
         };
         NotificationPrefsPatch: {
+            /** @description Master switch; off silences everything but security pushes. Default true. */
+            enabled?: boolean;
+            /** @description New messages. Default true. */
             chat?: boolean;
+            /** @description Legacy umbrella: true while any social category is on; setting it sets follows, friendRequests, comments, replies and reactions (not visits). */
             social?: boolean;
+            /** @description New followers, follow requests and their acceptance. Default true. */
+            follows?: boolean;
+            /** @description Friend requests, their acceptance and space invitations. Default true. */
+            friendRequests?: boolean;
+            /** @description Comments on your posts. Default true. */
+            comments?: boolean;
+            /** @description Replies to your comments. Default true. */
+            replies?: boolean;
+            /** @description Reactions to your posts. Default true. */
+            reactions?: boolean;
+            /** @description Profile visit notices: an owner opt-in, default false. */
+            visits?: boolean;
+            /** @description Social pushes never name the person. Default true for a member under 18, false for an adult. */
+            hideNames?: boolean;
         };
         NotificationPrefsResponse: {
             /** @constant */
@@ -3022,12 +3887,12 @@ export interface components {
         };
         MediaUploadRequest: {
             /**
-             * @description avatar is for a profile photo, attached through PATCH /v1/me/profile (avatarMediaId); post and story photos are attached when the post or story is created.
+             * @description avatar is for a profile photo, attached through PATCH /v1/me/profile (avatarMediaId); post and story photos are attached when the post or story is created. voice is a voice clip (audio/mp4, at most 4 MiB and 60 seconds, validated and not transcoded or scanned) attached with voiceMediaId (docs/api/27-stories-notices-support.md).
              * @enum {string}
              */
-            purpose: "post" | "story" | "avatar";
+            purpose: "post" | "story" | "avatar" | "voice";
             /** @enum {string} */
-            contentType: "image/jpeg" | "image/png" | "image/webp";
+            contentType: "image/jpeg" | "image/png" | "image/webp" | "audio/mp4";
             sizeBytes: number;
         };
         MediaUpload: {
@@ -3077,6 +3942,19 @@ export interface components {
             height: number;
             /** @constant */
             status: "ready";
+        } | {
+            /** Format: uuid */
+            mediaId: string;
+            /** @constant */
+            status: "ready";
+            durationMs: number;
+            url: string;
+        };
+        VoiceView: {
+            /** Format: uuid */
+            mediaId: string;
+            url: string;
+            durationMs: number;
         };
         /** @description Write something or add a photo (or both). Text may span lines; other control characters are refused (422). */
         NewPost: {
@@ -3084,6 +3962,13 @@ export interface components {
             /** @enum {string} */
             audience: "public" | "followers" | "friends";
             mediaIds?: string[];
+            /** @description One of GET /v1/topics, or null for none. */
+            topic?: string | null;
+            /**
+             * Format: uuid
+             * @description A ready voice clip of yours (purpose voice, up to 60 s).
+             */
+            voiceMediaId?: string | null;
         };
         Post: {
             /** Format: uuid */
@@ -3097,6 +3982,8 @@ export interface components {
             /** Format: date-time */
             editedAt: string | null;
             media: components["schemas"]["MediaView"][];
+            topic: string | null;
+            voice: components["schemas"]["VoiceView"] | null;
             reactionCount: number;
             commentCount: number;
             myReaction: ("heart" | "fire" | "laugh" | "wow" | "sad") | null;
@@ -3138,6 +4025,8 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
             mine: boolean;
+            /** @description Replies you can see on a top-level comment; 0 on a reply (threads are one level deep). */
+            replyCount: number;
             canDelete: boolean;
         };
         CommentPage: {
@@ -3170,6 +4059,13 @@ export interface components {
             lifetimeHours: number | null;
             /** Format: uuid */
             mediaId?: string | null;
+            /** @description One of GET /v1/topics, or null for none. */
+            topic?: string | null;
+            /**
+             * Format: uuid
+             * @description A ready voice clip of yours (purpose voice, up to 60 s).
+             */
+            voiceMediaId?: string | null;
             /** @enum {string} */
             audience: "public" | "followers" | "friends";
         };
@@ -3189,6 +4085,8 @@ export interface components {
              */
             textStyle: "clean" | "loud" | "soft" | "glow" | "stamp" | "type";
             media: components["schemas"]["MediaView"] | null;
+            topic?: string | null;
+            voice?: components["schemas"]["VoiceView"] | null;
             /** @enum {string} */
             audience: "public" | "followers" | "friends";
             /** Format: date-time */
@@ -3304,10 +4202,261 @@ export interface components {
             data: components["schemas"]["Viewed"];
             meta: components["schemas"]["Meta"];
         };
-        ChatBlobRequest: {
+        TopicList: {
+            items: string[];
+        };
+        StoryItem: {
+            /** Format: uuid */
+            storyId: string;
+            body: string;
             /** @enum {string} */
-            role: "full" | "thumb";
-            /** @description Exact ciphertext size. At most 4194304 (4 MiB) for full and 262144 (256 KiB) for thumb, otherwise 413 TOO_LARGE; under 32 is 422. */
+            background: "lime" | "lilac" | "pink" | "mint" | "peach" | "ink" | "sunset" | "bubblegum" | "aurora" | "ocean" | "grape" | "mango" | "midnight" | "freshmint";
+            /**
+             * @description Always present; stories made before text styles existed are clean. A newer server may add styles: draw an unknown one as clean.
+             * @enum {string}
+             */
+            textStyle: "clean" | "loud" | "soft" | "glow" | "stamp" | "type";
+            media: components["schemas"]["MediaView"] | null;
+            topic?: string | null;
+            voice?: components["schemas"]["VoiceView"] | null;
+            /** @enum {string} */
+            audience: "public" | "followers" | "friends";
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            seen: boolean;
+            /** @description Only on your own stories. Counted up to 99. */
+            viewCount?: number;
+            /** @description Only on your own stories, and only when true: more than 99 members saw it, show "99+". */
+            viewCountMore?: boolean;
+            author: components["schemas"]["UserSummary"];
+        };
+        StoryItemPage: {
+            items: components["schemas"]["StoryItem"][];
+            nextCursor: string | null;
+            hasMore: boolean;
+        };
+        PulseSearchPage: {
+            items: (components["schemas"]["Post"] | components["schemas"]["StoryItem"])[];
+            nextCursor: string | null;
+            hasMore: boolean;
+            /** @enum {string} */
+            scope: "posts" | "stories";
+        };
+        ActivityPost: {
+            /** Format: uuid */
+            postId: string;
+            /** @enum {string} */
+            state: "available" | "removed";
+            author?: components["schemas"]["UserSummary"];
+            excerpt?: string;
+            topic?: string | null;
+            hasMedia?: boolean;
+            hasVoice?: boolean;
+        };
+        ActivityComment: {
+            /** Format: uuid */
+            commentId: string;
+            /** Format: uuid */
+            postId: string;
+            /** Format: uuid */
+            parentId: string | null;
+            body: string;
+            /** Format: date-time */
+            createdAt: string;
+            post: components["schemas"]["ActivityPost"];
+        };
+        ActivityReaction: {
+            /** Format: uuid */
+            postId: string;
+            /** @enum {string} */
+            reaction: "heart" | "fire" | "laugh" | "wow" | "sad";
+            /** Format: date-time */
+            createdAt: string;
+            post: components["schemas"]["ActivityPost"];
+        };
+        ActivityCommentPage: {
+            items: components["schemas"]["ActivityComment"][];
+            nextCursor: string | null;
+            hasMore: boolean;
+        };
+        ActivityReactionPage: {
+            items: components["schemas"]["ActivityReaction"][];
+            nextCursor: string | null;
+            hasMore: boolean;
+        };
+        Notice: {
+            /** Format: uuid */
+            noticeId: string;
+            /** @enum {string} */
+            category: "safety" | "news" | "update";
+            title: string;
+            body: string;
+            pinned: boolean;
+            /** Format: date-time */
+            publishedAt: string;
+            /** Format: date-time */
+            expiresAt: string | null;
+            unread: boolean;
+        };
+        NoticePage: {
+            items: components["schemas"]["Notice"][];
+            nextCursor: string | null;
+            hasMore: boolean;
+            unreadCount?: number;
+            unreadMore?: boolean;
+            pinned?: components["schemas"]["Notice"][];
+        };
+        NoticeSummary: {
+            unreadCount: number;
+            unreadMore: boolean;
+            pinned: components["schemas"]["Notice"][];
+        };
+        NoticesSeen: {
+            seen: boolean;
+        };
+        SupportThread: {
+            /** Format: uuid */
+            threadId: string;
+            /** @enum {string} */
+            category: "account" | "safety" | "bug" | "other";
+            /** @enum {string} */
+            status: "open" | "closed";
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            lastMessageAt: string;
+            unread: boolean;
+            /** @enum {string} */
+            lastAuthor: "member" | "staff";
+            preview: string;
+        };
+        SupportThreadPage: {
+            items: components["schemas"]["SupportThread"][];
+            nextCursor: string | null;
+            hasMore: boolean;
+            unreadCount?: number;
+        };
+        SupportMessage: {
+            /** Format: uuid */
+            messageId: string;
+            /** @enum {string} */
+            author: "member" | "staff";
+            body: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        SupportMessagePage: {
+            items: components["schemas"]["SupportMessage"][];
+            nextCursor: string | null;
+            hasMore: boolean;
+        };
+        NewSupportThread: {
+            /** @enum {string} */
+            category: "account" | "safety" | "bug" | "other";
+            body: string;
+        };
+        NewSupportMessage: {
+            body: string;
+        };
+        SupportUnread: {
+            unreadCount: number;
+        };
+        ThreadClosed: {
+            closed: boolean;
+        };
+        TopicListResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["TopicList"];
+            meta: components["schemas"]["Meta"];
+        };
+        StoryItemPageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["StoryItemPage"];
+            meta: components["schemas"]["Meta"];
+        };
+        PulseSearchPageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["PulseSearchPage"];
+            meta: components["schemas"]["Meta"];
+        };
+        ActivityCommentPageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ActivityCommentPage"];
+            meta: components["schemas"]["Meta"];
+        };
+        ActivityReactionPageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ActivityReactionPage"];
+            meta: components["schemas"]["Meta"];
+        };
+        NoticePageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["NoticePage"];
+            meta: components["schemas"]["Meta"];
+        };
+        NoticeSummaryResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["NoticeSummary"];
+            meta: components["schemas"]["Meta"];
+        };
+        NoticesSeenResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["NoticesSeen"];
+            meta: components["schemas"]["Meta"];
+        };
+        SupportThreadPageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["SupportThreadPage"];
+            meta: components["schemas"]["Meta"];
+        };
+        SupportThreadResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["SupportThread"];
+            meta: components["schemas"]["Meta"];
+        };
+        SupportUnreadResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["SupportUnread"];
+            meta: components["schemas"]["Meta"];
+        };
+        SupportMessagePageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["SupportMessagePage"];
+            meta: components["schemas"]["Meta"];
+        };
+        SupportMessageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["SupportMessage"];
+            meta: components["schemas"]["Meta"];
+        };
+        ThreadClosedResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ThreadClosed"];
+            meta: components["schemas"]["Meta"];
+        };
+        ChatBlobRequest: {
+            /**
+             * @description full and thumb for a photo, voice for a voice message, video (with a thumb poster) for a video. The role only picks the size cap: the server cannot see inside the ciphertext.
+             * @enum {string}
+             */
+            role: "full" | "thumb" | "voice" | "video";
+            /** @description Exact ciphertext size. At most 4194304 (4 MiB) for full, 262144 (256 KiB) for thumb, 8388608 (8 MiB) for voice and 41943040 (40 MiB) for video (Free plan; the voice and video caps are per-member entitlements), otherwise 413 TOO_LARGE; under 32 is 422. */
             sizeBytes: number;
             /** @description Standard padded base64 of the 32-byte SHA-256 of the whole ciphertext object. */
             ctSha256: string;
@@ -3364,6 +4513,61 @@ export interface components {
             /** @constant */
             success: true;
             data: components["schemas"]["ChatBlobUrl"];
+            meta: components["schemas"]["Meta"];
+        };
+        ConversationPinRequest: {
+            pinned: boolean;
+        };
+        ConversationPin: {
+            pinned: boolean;
+            /** Format: date-time */
+            pinnedAt: string | null;
+        };
+        ConversationHidden: {
+            /** @constant */
+            hidden: true;
+            /** Format: date-time */
+            hiddenAt: string;
+            /**
+             * Format: date-time
+             * @description hiddenAt plus 30 days.
+             */
+            restoreUntil: string;
+        };
+        ConversationRestored: {
+            /** @constant */
+            hidden: false;
+        };
+        HiddenConversations: {
+            /** @description Your deleted chats that are not closed, hidden less than 30 days ago, with a peer you may still reach; most recently hidden first. Each has hiddenAt and restoreUntil. */
+            items: components["schemas"]["DirectConversation"][];
+            /** @description Conversations closed for you (deleted from your list and not restored for 30 days) in the last 90 days, newest first: wipe the local history of each. A closed chat cannot be restored; a message from the peer, or opening the chat, brings it back as a fresh visible chat. */
+            closedIds: string[];
+            /** @constant */
+            retentionDays: 30;
+        };
+        ConversationPinResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ConversationPin"];
+            meta: components["schemas"]["Meta"];
+        };
+        ConversationHiddenResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ConversationHidden"];
+            meta: components["schemas"]["Meta"];
+        };
+        ConversationRestoredResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ConversationRestored"];
+            meta: components["schemas"]["Meta"];
+        };
+        HiddenConversationsResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["HiddenConversations"];
             meta: components["schemas"]["Meta"];
         };
         NewSpace: {
@@ -3567,6 +4771,104 @@ export interface components {
         /** @description The member's data: exportVersion, generatedAt, note, account, settings, interests, posts, comments, reactions, saves, stories, connections {following, followers, friends}, blocks, mutes, restrictions, sessions, devices, notifications, visits {made, ownProfileVisitors}, location {sharing, updatedAt}, spaces {memberships, owned, entries}, reports (own words only), media (links valid 24 hours), chat (conversation ids, peers and counts; message content is end-to-end encrypted and not included), truncated (names of lists cut at 10,000 rows or 32 MiB), complete. */
         ExportDocument: {
             [key: string]: unknown;
+        };
+        /** @description enforced, locksApply, eligibility {monetizable, reason, shop, stores, ads}, balance, plan, entitlements {features, freeNewChatsPerDay, chatSlotCoinCost, profileDetailCoinCost, profileDetailDays}, catalog {coinPacks, subscriptions} (no prices: the stores' own localized prices are shown), benefits (the Free versus Premium table), ads, bonuses. A member who cannot buy gets locksApply false and empty lists. */
+        BillingState: {
+            [key: string]: unknown;
+        };
+        PurchaseVerification: {
+            /** @enum {string} */
+            store: "google_play" | "app_store";
+            /** @description The catalog product id (coins_s, coins_m, coins_l, coins_xl, premium_1m, premium_3m, premium_12m by default). */
+            productId: string;
+            /** @description Google Play only. Never stored or logged. */
+            purchaseToken?: string;
+            /** @description App Store only (StoreKit transaction id). Never stored or logged. */
+            transactionId?: string;
+        };
+        /** @description state (verified or pending), kind (coins or subscription), productId, coinsGranted, alreadyProcessed, balance, plan. */
+        PurchaseResult: {
+            [key: string]: unknown;
+        };
+        /** @description items [{id, reason, delta, balanceAfter, createdAt}] newest first, nextCursor, hasMore. */
+        CoinHistoryPage: {
+            [key: string]: unknown;
+        };
+        /** @description nonce, userId, customData (pass userId and customData as the ad's server-side verification options), coins, remainingToday, expiresAt. */
+        AdSession: {
+            [key: string]: unknown;
+        };
+        AdRewardRequest: {
+            /** Format: uuid */
+            nonce: string;
+        };
+        /** @description status (pending, credited, rejected, expired), coins, balance. Coins are credited only by the signed AdMob callback. */
+        AdRewardStatus: {
+            [key: string]: unknown;
+        };
+        /** @description granted, and coins and balance when granted, or alreadyClaimed. */
+        ProfileBonusResult: {
+            [key: string]: unknown;
+        };
+        ProfileDetailsUnlockRequest: {
+            /** @description The price the member confirmed; must equal the current price or the answer is 402 SPEND_CONFIRMATION_REQUIRED. */
+            confirmCost?: number;
+        };
+        /** @description unlocked, expiresAt, cost, balance. */
+        ProfileDetailsUnlock: {
+            [key: string]: unknown;
+        };
+        /** @description An empty object: the notification was handled or deliberately ignored. */
+        WebhookAck: {
+            [key: string]: unknown;
+        };
+        BillingStateResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["BillingState"];
+            meta: components["schemas"]["Meta"];
+        };
+        PurchaseResultResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["PurchaseResult"];
+            meta: components["schemas"]["Meta"];
+        };
+        CoinHistoryPageResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["CoinHistoryPage"];
+            meta: components["schemas"]["Meta"];
+        };
+        AdSessionResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["AdSession"];
+            meta: components["schemas"]["Meta"];
+        };
+        AdRewardStatusResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["AdRewardStatus"];
+            meta: components["schemas"]["Meta"];
+        };
+        ProfileBonusResultResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ProfileBonusResult"];
+            meta: components["schemas"]["Meta"];
+        };
+        ProfileDetailsUnlockResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["ProfileDetailsUnlock"];
+            meta: components["schemas"]["Meta"];
+        };
+        WebhookAckResponse: {
+            /** @constant */
+            success: true;
+            data: components["schemas"]["WebhookAck"];
+            meta: components["schemas"]["Meta"];
         };
     };
     responses: never;
@@ -7426,6 +8728,1107 @@ export interface operations {
                 };
             };
             /** @description Error 429 RATE_LIMITED: at most 30 reads in a burst, then two a second; retry after the Retry-After header (1 second). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    "postPossibleMatchesPage_v1_discovery_possible-matches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PossibleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PossibleMatchesPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422. VALIDATION: unknown key, a limit outside 1 to 20 or a non-boolean excludeFollowing. INVALID_CURSOR: tampered, expired, from another account or other options. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: the shared search limiter. DAILY_LIMIT: more than 300 search pages in a UTC day (Entitlements.SearchPagesPerDay). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getGallery_v1_me_photos: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GalleryResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postGallery_v1_me_photos: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PhotoRef"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GalleryResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409 PHOTOS_FULL: the gallery already holds Entitlements.ProfilePhotosMax photos. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422 VALIDATION on mediaId: not yours, not ready (pending, quarantined or deleted), already used, or not a profile photo upload. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: profile edit limiter. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putGallery_v1_me_photos_order: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PhotoOrder"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GalleryResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422 VALIDATION: the list is not exactly the gallery. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: profile edit limiter. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putGallery_v1_me_photos_mediaId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mediaId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PhotoRef"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GalleryResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404: the photo is not in your gallery. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422 VALIDATION on mediaId as for adding. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: profile edit limiter. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteGallery_v1_me_photos_mediaId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mediaId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GalleryResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404: the photo is not in your gallery. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: profile edit limiter. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getVisitedPersonPage_v1_users_userId_visitors: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VisitedPersonPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403 VISITORS_PRIVATE: the member does not share it (the default), is under 18, your profile access is locked, or it is your own id (use GET /v1/me/visitors). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404: the member is unavailable to you (blocked, other age band, inactive). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: list limiter. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getVisitedPersonPage_v1_me_visited: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VisitedPersonPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: list limiter. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteCleared_v1_me_visited: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClearedResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: profile edit limiter. */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -13495,6 +15898,8 @@ export interface operations {
         parameters: {
             query?: {
                 mode?: "following" | "everyone";
+                /** @description Narrow to one topic (GET /v1/topics). */
+                topic?: string;
                 limit?: number;
                 /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
                 cursor?: string;
@@ -14476,6 +16881,7 @@ export interface operations {
     getCommentPage_v1_posts_postId_comments: {
         parameters: {
             query?: {
+                parent?: string;
                 limit?: number;
                 /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
                 cursor?: string;
@@ -15954,6 +18360,1844 @@ export interface operations {
             };
         };
     };
+    getTopicList_v1_topics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopicListResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getStoryItemPage_v1_stories_explore: {
+        parameters: {
+            query?: {
+                /** @description One of GET /v1/topics. */
+                topic?: string;
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoryItemPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getPulseSearchPage_v1_search_pulse: {
+        parameters: {
+            query: {
+                q: string;
+                scope?: "posts" | "stories";
+                /** @description One of GET /v1/topics. */
+                topic?: string;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PulseSearchPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422. VALIDATION: q, scope or topic is not acceptable. INVALID_CURSOR: not this member's or this search's cursor, expired or past page 10. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429. RATE_LIMITED: the search limiter. DAILY_LIMIT: more than 300 pulse search pages in a UTC day. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getActivityCommentPage_v1_me_activity_comments: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityCommentPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getActivityReactionPage_v1_me_activity_reactions: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityReactionPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getNoticePage_v1_notices: {
+        parameters: {
+            query?: {
+                /** @description Language tag of the app (en, pt-BR): notices for every language and for this one. */
+                locale?: string;
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoticePageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getNoticeSummary_v1_notices_summary: {
+        parameters: {
+            query?: {
+                /** @description Language tag of the app (en, pt-BR): notices for every language and for this one. */
+                locale?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoticeSummaryResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postNoticesSeen_v1_notices_seen: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoticesSeenResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getSupportThreadPage_v1_support_threads: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupportThreadPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postSupportThread_v1_support_threads: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewSupportThread"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupportThreadResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409 SUPPORT_THREAD_OPEN: you already have an open conversation in this category. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 DAILY_LIMIT: more than 20 support messages in a UTC day. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getSupportUnread_v1_support_unread: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupportUnreadResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getSupportThread_v1_support_threads_threadId: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                threadId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupportThreadResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getSupportMessagePage_v1_support_threads_threadId_messages: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                threadId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupportMessagePageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postSupportMessage_v1_support_threads_threadId_messages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                threadId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewSupportMessage"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupportMessageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409 SUPPORT_THREAD_CLOSED: start a new conversation. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 DAILY_LIMIT: more than 20 support messages in a UTC day. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postThreadClosed_v1_support_threads_threadId_close: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                threadId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThreadClosedResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     postChatBlobSlot_v1_conversations_conversationId_blobs: {
         parameters: {
             query?: never;
@@ -16023,7 +20267,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description Error 413 TOO_LARGE: over the role's ciphertext cap (full 4 MiB, thumb 256 KiB). */
+            /** @description Error 413 TOO_LARGE: over the role's ciphertext cap (full 4 MiB, thumb 256 KiB, voice 8 MiB, video 40 MiB on Free). */
             413: {
                 headers: {
                     [name: string]: unknown;
@@ -16460,6 +20704,492 @@ export interface operations {
                 };
             };
             /** @description Error 503 CHAT_MEDIA_UNAVAILABLE: chat storage is not configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putConversationPin_v1_conversations_conversationId_pin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationPinRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationPinResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404: not a member, a deleted chat, a barred pair, or a closed conversation. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409 PIN_LIMIT: "You can pin up to 5 chats". */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422 VALIDATION: the body is not exactly {"pinned": true|false}. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: the per-account graph limiter (Retry-After 2). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postConversationHidden_v1_conversations_conversationId_hide: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationHiddenResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404: not a member of the conversation, or it is already closed for you. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: the per-account graph limiter (Retry-After 2). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postConversationRestored_v1_conversations_conversationId_restore: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationRestoredResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404: not hidden, already closed, past the 30 days, or not a member. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: the per-account graph limiter (Retry-After 2). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getHiddenConversations_v1_conversations_hidden: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HiddenConversationsResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 RATE_LIMITED: the per-account list limiter (Retry-After 2). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -18499,6 +23229,1214 @@ export interface operations {
                 };
             };
             /** @description Error 503 EXPORT_BUSY: every export slot on the machine is taken; Retry-After says when to retry. Today's export was not used up. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getBillingState_v1_me_billing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingStateResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postPurchaseResult_v1_me_billing_purchases_verify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PurchaseVerification"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PurchaseResultResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403 AGE_RESTRICTED: not an adult with a known age. PURCHASE_CLAIMED is 409. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409 PURCHASE_CLAIMED: the purchase belongs to another account. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422. VALIDATION: a bad field. PURCHASE_INVALID: the store does not confirm a completed purchase of this product for this app. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503 BILLING_NOT_CONFIGURED: no credentials for that store on this deployment. STORE_UNAVAILABLE (502) means the store could not be reached: retry. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getCoinHistoryPage_v1_me_billing_history: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description Opaque, principal- and list-bound, expires after 15 minutes. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoinHistoryPageResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postAdSession_v1_me_billing_ads_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdSessionResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429 DAILY_LIMIT: today's rewarded ads are used up (Retry-After: next UTC midnight). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503 ADS_UNAVAILABLE: rewarded ads are not configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postAdRewardStatus_v1_me_billing_ads_reward: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdRewardRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdRewardStatusResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    "postProfileBonusResult_v1_me_billing_bonuses_profile-completion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileBonusResultResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    "postProfileDetailsUnlock_v1_users_userId_profile-details_unlock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileDetailsUnlockRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileDetailsUnlockResponse"];
+                };
+            };
+            /** @description Error 401 UNAUTHENTICATED: missing, invalid, expired or revoked credentials. APP_CHECK_REQUIRED: the server enforces Firebase App Check (APP_CHECK_ENFORCE=true) and the X-Firebase-AppCheck header is missing or not a valid token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403. EMAIL_NOT_VERIFIED: a password sign-in whose email is not verified. ONBOARDING_REQUIRED: finish onboarding first. Other policy codes are listed on the operation. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503; includes AUTH_UNAVAILABLE when sign-in keys cannot be fetched and APP_CHECK_UNAVAILABLE when App Check keys cannot. Retry without signing the person out. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postWebhookAck_v1_billing_google_rtdn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookAckResponse"];
+                };
+            };
+            /** @description Error 401: the token is wrong. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403; no internal details disclosed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503 BILLING_NOT_CONFIGURED, or STORE_UNAVAILABLE so that Pub/Sub retries. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postWebhookAck_v1_billing_apple_notifications: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookAckResponse"];
+                };
+            };
+            /** @description Error 401: the signature, chain or bundle id does not verify. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403; no internal details disclosed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503 BILLING_NOT_CONFIGURED. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getWebhookAck_v1_billing_admob_ssv: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebhookAckResponse"];
+                };
+            };
+            /** @description Error 401: the signature or ad unit does not verify. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 403; no internal details disclosed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 404; no internal details disclosed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 409; no internal details disclosed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 412; no internal details disclosed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 422; no internal details disclosed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 426 UPGRADE_REQUIRED: this app version is older than the minimum the server accepts (X-Client-Version); update the app */
+            426: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 428; no internal details disclosed */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 429; no internal details disclosed */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 500; no internal details disclosed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Error 503 ADS_UNAVAILABLE. */
             503: {
                 headers: {
                     [name: string]: unknown;

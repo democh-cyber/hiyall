@@ -26,8 +26,17 @@ type PeopleFilters struct {
 	Gender    string   `json:"gender,omitempty"`
 	// Online narrows the list to members who show their presence to the viewer and have been
 	// active within PresenceOnlineWindow (see Store.SearchPeople). It is part of the cursor hash.
-	Online bool   `json:"online,omitempty"`
-	Cursor string `json:"cursor,omitempty"`
+	Online bool `json:"online,omitempty"`
+	// LanguageMinLevel narrows the language filter to people at this level (LanguageLevelMin to LanguageLevelMax) or
+	// above in at least one of the selected languages; 0 is any level. It needs Languages.
+	LanguageMinLevel int `json:"languageMinLevel,omitempty"`
+	// PersonalityTags: any one of these tags (ids of PersonalityTags) matches. A member matches only when their
+	// personality field audience is "everyone".
+	PersonalityTags []string `json:"personalityTags,omitempty"`
+	// SameCountry is the "same country" shortcut: the server fills Country from the viewer's own profile
+	// (ErrSameCountryUnknown when they have none). It is part of the cursor hash.
+	SameCountry bool   `json:"sameCountry,omitempty"`
+	Cursor      string `json:"cursor,omitempty"`
 }
 
 // MaxFilterAge is the top of the age filter range; the bottom is MinimumAge.
@@ -44,7 +53,7 @@ func parseFilterAge(key string, raw json.RawMessage) (*int, error) {
 }
 
 func ParsePeopleFilters(body map[string]json.RawMessage) (PeopleFilters, error) {
-	f := PeopleFilters{Interests: []string{}, Languages: []string{}}
+	f := PeopleFilters{Interests: []string{}, Languages: []string{}, PersonalityTags: []string{}}
 	for key, raw := range body {
 		switch key {
 		case "interests", "languages":
@@ -72,6 +81,30 @@ func ParsePeopleFilters(body map[string]json.RawMessage) (PeopleFilters, error) 
 					f.Languages = append(f.Languages, v)
 				}
 			}
+		case "personalityTags":
+			var values []string
+			if string(raw) == "null" || json.Unmarshal(raw, &values) != nil || len(values) > len(PersonalityTags) {
+				return f, invalid(key, "choose personality tags from the list")
+			}
+			seen := map[string]bool{}
+			for _, v := range values {
+				if !IsPersonalityTag(v) || seen[v] {
+					return f, invalid(key, "choose distinct personality tags from the list")
+				}
+				seen[v] = true
+				f.PersonalityTags = append(f.PersonalityTags, v)
+			}
+		case "languageMinLevel":
+			n, err := strconv.Atoi(string(raw))
+			if err != nil || strconv.Itoa(n) != string(raw) || n < 0 || n > LanguageLevelMax {
+				return f, invalid(key, fmt.Sprintf("must be a whole number from 0 to %d", LanguageLevelMax))
+			}
+			f.LanguageMinLevel = n
+		case "sameCountry":
+			if string(raw) != "true" && string(raw) != "false" {
+				return f, invalid(key, "must be true or false")
+			}
+			f.SameCountry = string(raw) == "true"
 		case "ageMin", "ageMax":
 			age, err := parseFilterAge(key, raw)
 			if err != nil {
@@ -122,6 +155,12 @@ func ParsePeopleFilters(body map[string]json.RawMessage) (PeopleFilters, error) 
 		default:
 			return f, invalid(key, "unsupported search field")
 		}
+	}
+	if f.LanguageMinLevel > 0 && len(f.Languages) == 0 {
+		return f, invalid("languageMinLevel", "choose at least one language to set a level for")
+	}
+	if f.SameCountry && f.Country != "" {
+		return f, invalid("sameCountry", "use either sameCountry or country")
 	}
 	if f.AgeMin != nil && f.AgeMax != nil && *f.AgeMin > *f.AgeMax {
 		return f, invalid("ageMin", "must not be above ageMax")

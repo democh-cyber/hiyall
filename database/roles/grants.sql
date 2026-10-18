@@ -60,6 +60,11 @@ GRANT UPDATE ON users, reports, sessions, operator_sessions, operator_login_atte
 -- active and the loss of the last one (round-4 N-2).
 GRANT UPDATE (password_hash, totp_secret, totp_last_step, last_login_at) ON operators TO hiyall_admin;
 GRANT INSERT ON moderation_actions, operator_sessions, operator_login_attempts, operator_audit TO hiyall_admin;
+-- Notice board and support inbox (migration 0050, docs/api/27-stories-notices-support.md). No DELETE on either: a notice is
+-- unpublished, a thread is closed and purged by the API's retention job.
+GRANT SELECT, INSERT, UPDATE ON notices TO hiyall_admin;
+GRANT SELECT, UPDATE ON support_threads TO hiyall_admin;
+GRANT SELECT, INSERT ON support_messages TO hiyall_admin;
 -- Two-person control over evidence (migrations 0041, 0043): the console reads proposals; the functions write them.
 GRANT SELECT ON evidence_approvals TO hiyall_admin;
 -- Sign in with Apple records ('manual': an operator tells the member; 'member_informed': the app did): every column

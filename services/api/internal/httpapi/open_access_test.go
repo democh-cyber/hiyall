@@ -32,8 +32,11 @@ func assertOpenDefaults(t *testing.T, got map[string]any) {
 	}
 	for _, name := range domain.Fields {
 		expected := "everyone"
-		if name == "connections" {
-			expected = "followers" // an adult's followers and following lists open to followers
+		switch name {
+		case "connections", "aboutMe", "hometown":
+			expected = "followers" // an adult's followers and following lists, about-me and hometown open to followers
+		case "birthday":
+			expected = "friends"
 		}
 		if fields[name] != expected {
 			t.Fatalf("fieldAudiences.%s is %v, want %v", name, fields[name], expected)
@@ -206,8 +209,14 @@ func TestMigration0016OpensExistingAccountsAndCreatesLocations(t *testing.T) {
 	_ = json.Unmarshal(wantRaw, &want)
 	// Migration 0017, not this one, adds the gender field audience.
 	delete(want["fieldAudiences"].(map[string]any), "gender")
-	delete(want["fieldAudiences"].(map[string]any), "age")             // and 0018 the age audience
-	delete(want["fieldAudiences"].(map[string]any), "counts")          // and 0019 the counts audience
+	delete(want["fieldAudiences"].(map[string]any), "age")    // and 0018 the age audience
+	delete(want["fieldAudiences"].(map[string]any), "counts") // and 0019 the counts audience
+	for _, field := range []string{"aboutMe", "hometown", "personality", "birthday"} {
+		delete(want["fieldAudiences"].(map[string]any), field) // and 0048 the profile v2 audiences
+	}
+	for _, key := range []string{"showLocalTime", "showDistance", "visitorsVisibleToOthers", "showBirthday"} {
+		delete(want, key) // and 0048 the v2 sharing settings
+	}
 	want["fieldAudiences"].(map[string]any)["connections"] = "friends" // 0026, not this one, opens it to followers
 	// 0019 also made messaging and follows open; 0016 set the values that were the defaults then.
 	want["messagesFrom"], want["followPolicy"] = "friends", "approval"

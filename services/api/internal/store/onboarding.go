@@ -93,8 +93,11 @@ func recordBirth(ctx context.Context, tx pgx.Tx, userID string, birth time.Time,
 	if !minor || !applyDefaults {
 		return nil
 	}
-	_, err := tx.Exec(ctx, `UPDATE privacy_settings SET data=jsonb_set(jsonb_set(data,'{onlineAudience}',to_jsonb($2::text)),'{fieldAudiences}',coalesce(data->'fieldAudiences','{}'::jsonb)||jsonb_build_object('location',$3::text,'connections',$4::text)),version=version+1,updated_at=now() WHERE user_id=$1`,
-		userID, domain.MinorOnlineAudience, domain.MinorLocationFieldAudience, domain.MinorConnectionsAudience)
+	// The minor defaults: presence, the country and connections audiences (as before) and, from profile v2, a hidden
+	// about-me, hometown and birthday, and local time, distance, visitor list and birthday all off.
+	_, err := tx.Exec(ctx, `UPDATE privacy_settings SET data=jsonb_set(jsonb_set(data,'{onlineAudience}',to_jsonb($2::text)),'{fieldAudiences}',coalesce(data->'fieldAudiences','{}'::jsonb)||jsonb_build_object('location',$3::text,'connections',$4::text,'aboutMe',$5::text,'hometown',$6::text,'birthday',$7::text))
+ ||'{"showLocalTime":false,"showDistance":false,"visitorsVisibleToOthers":false,"showBirthday":false}'::jsonb,version=version+1,updated_at=now() WHERE user_id=$1`,
+		userID, domain.MinorOnlineAudience, domain.MinorLocationFieldAudience, domain.MinorConnectionsAudience, domain.MinorAboutMeAudience, domain.MinorHometownAudience, domain.MinorBirthdayAudience)
 	return err
 }
 

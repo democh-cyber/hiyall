@@ -254,6 +254,13 @@ type Conversation struct {
 	// MutedUntil is set while the caller has this chat muted; 9999-12-31
 	// means until unmuted.
 	MutedUntil *time.Time `json:"mutedUntil"`
+	// PinnedAt is when the caller pinned this chat (null: not pinned). Pinned chats lead the first page of the list.
+	PinnedAt *time.Time `json:"pinnedAt"`
+	// HiddenAt is set while the caller has deleted this chat from their list (it shows in the Deleted-chats list
+	// and the single GET only); RestoreUntil is then the end of the restore window, HiddenAt plus
+	// HiddenChatRetention. The peer never learns of either.
+	HiddenAt     *time.Time `json:"hiddenAt"`
+	RestoreUntil *time.Time `json:"restoreUntil,omitempty"`
 	// SharedInterests lists up to MaxSharedInterests interests both members have on their profiles, matched
 	// case-insensitively and spelled and ordered as the caller wrote them. It is empty (never null) when
 	// nothing is shared or the peer's interests are not visible to the caller (see Store.fillSharedInterests).
@@ -263,6 +270,10 @@ type Conversation struct {
 	// for it (see Store.fillPresence). It is never serialised.
 	PeerOnlineAudience string `json:"-"`
 }
+
+// HiddenChatRetention is how long a member can restore a chat they deleted from their list. After it the hourly
+// job closes the chat for that member: it leaves the Deleted-chats list for good and the app wipes its local history.
+const HiddenChatRetention = 30 * 24 * time.Hour
 
 // MaxSharedInterests caps Conversation.SharedInterests.
 const MaxSharedInterests = 3

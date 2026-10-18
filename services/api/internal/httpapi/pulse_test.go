@@ -249,7 +249,8 @@ func TestReactionsCommentsAndSaves(t *testing.T) {
 	reply := items(h.ok(alice, "GET", path+"/comments"))[1]["commentId"].(string)
 	h.expect(h.call(bob, "DELETE", "/v1/comments/"+reply), 404, "NOT_FOUND")
 	h.ok(alice, "DELETE", "/v1/comments/"+c1["commentId"].(string))
-	if got := h.ok(alice, "GET", path); got["commentCount"] != float64(1) {
+	// Deleting a top-level comment takes its replies with it (docs/api/27: threads are one level deep).
+	if got := h.ok(alice, "GET", path); got["commentCount"] != float64(0) {
 		t.Fatalf("after delete %v", got)
 	}
 

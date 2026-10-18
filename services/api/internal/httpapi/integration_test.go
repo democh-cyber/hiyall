@@ -128,7 +128,7 @@ func TestAPIIntegration(t *testing.T) {
 		t.Fatal("public expressive fields missing")
 	}
 	language := publicProjection["languages"].([]any)[0].(map[string]any)
-	if language["code"] != "ko" || language["level"] != "basic" {
+	if language["code"] != "ko" || language["level"] != float64(2) { // the stored word "basic" reads as level 2
 		t.Fatal("language proficiency lost")
 	}
 	// A stored account/private canary must never enter the visitor allowlist.

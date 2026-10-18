@@ -145,7 +145,7 @@ func TestNearbyOrderingBucketsRadiusAndItemShape(t *testing.T) {
 	h.exec(`UPDATE profiles SET data=data||'{"headline":"hi","bio":"about","interests":["Music"],"currentVibe":"Chill","country":"IN","languages":[{"code":"en"}],"city":"secret city"}'::jsonb WHERE user_id=$1`, bob)
 	got, _, _ := h.nearbyList(alice, radius(5))
 	item := items(got.data)[0]
-	want := []string{"avatarUrl", "bio", "country", "currentVibe", "displayName", "distanceKm", "headline", "interests", "languages", "sharedInterests", "userId", "username"}
+	want := []string{"avatarUrl", "bio", "country", "currentVibe", "displayName", "distanceKm", "headline", "interests", "languages", "localTime", "personalityTags", "sharedInterests", "userId", "username"}
 	keys := make([]string, 0, len(item))
 	for k := range item {
 		keys = append(keys, k)

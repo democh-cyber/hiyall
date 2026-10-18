@@ -1,5 +1,7 @@
 # Pulse, stories and photos
 
+> Wave 7 adds topics, voice notes, threaded comments, post and story search, the Everyone stories list and My activity: see [27-stories-notices-support.md](27-stories-notices-support.md). `POST /v1/media/uploads` also takes `purpose: voice` (audio/mp4), and posts, stories and comments carry the new fields described there.
+
 Implemented in migrations `0010_pulse.sql`, `0011_report_content.sql` and `0024_pulse_quota_indexes.sql` (the quota indexes), plus:
 
 - server: `services/api/internal/media`, `store/pulse.go`, `store/pulsequota.go`, `httpapi/pulse.go`, `domain/entitlements.go`

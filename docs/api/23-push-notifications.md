@@ -68,11 +68,15 @@ it is queued. Title is always `Hiyall`.
 | `follow_request` | someone asked to follow you (approval accounts) | `<name> asked to follow you` | same |
 | `follow_accepted` | your follow request was approved | `<name> accepted your follow request` | same |
 | `space_invite` | you were invited to a space by username | `<name> invited you to a space` | same |
+| `reaction` | someone reacted to your post (Wave 7) | `<name> reacted to your post` / `Someone reacted to your post` | same |
+| `comment` | someone commented on your post | `<name> commented on your post` / `Someone commented on your post` | same |
+| `reply` | someone replied to your comment | `<name> replied to your comment` / `Someone replied to your comment` | same |
+| `visit` / `visit_anon` | someone opened your profile for the first time (opt-in, off by default); `visit_anon` when the visitor's own profile audience does not let you open it | `<name> visited your profile` / `Someone visited your profile` | same |
+| `support` | the Hiyall team replied to your support message (sent by whichever API node claims the reply, [docs/api/27](27-stories-notices-support.md#7-in-app-support)) | `Support replied` (never named) | `{kind: "support"}` |
 
-Not pushed: reactions, comments, story activity, space moderation. They still
-appear in Activity and reach open apps over the socket.
+Not pushed: story activity and space moderation. Reactions, comments and replies are pushed since Wave 7 (they were not before), each under its own choice: the member's per-category switches, the master switch and `hideNames` are enforced by `store.PushAudienceFor` ([docs/api/27](27-stories-notices-support.md#5-notification-choices)); with `hideNames` on (the default for a member under 18) the push is the generic line and no display name is passed to FCM or APNs. Everything still appears in Activity and reaches open apps over the socket.
 
-The app opens the conversation for `kind: chat`, Activity for `kind: social` and the Chat devices screen (`/profile/devices`) for `kind: device`.
+The app opens the conversation for `kind: chat`, Support for `kind: support`, Activity for `kind: social` and the Chat devices screen (`/profile/devices`) for `kind: device`.
 
 `deletion` is a security notice too (same category, ignores a live socket and the chat cap, counted against the security cap) with one difference: the account is already `pending_deletion` and its tokens are cleared in the same transaction, so neither the eligibility check nor the token lookup would find anything. `POST /v1/me/deletion` reads the tokens just before it clears them and hands the list to the notice (`push.Notice.Targets`, used only for this kind), which is why it still reaches the owner's devices. `appleCodeUnavailable` is a statement by the client, and a stolen token could delete an account; the push is how the owner finds out. A repeated request while pending sends nothing.
 

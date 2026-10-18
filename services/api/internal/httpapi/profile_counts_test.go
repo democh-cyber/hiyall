@@ -188,11 +188,17 @@ func TestNoResponseListsVisitors(t *testing.T) {
 	for _, v := range []string{alice, cara, dev} {
 		h.expect(h.call(v, "GET", "/v1/users/"+bob+"/profile"), 200, "")
 	}
-	for _, path := range []string{"/v1/me/profile/visitors", "/v1/users/" + bob + "/visitors", "/v1/me/profile-visits", "/v1/users/" + bob + "/profile/visitors", "/v1/me/views"} {
+	for _, path := range []string{"/v1/me/profile/visitors", "/v1/me/profile-visits", "/v1/users/" + bob + "/profile/visitors", "/v1/me/views"} {
 		for _, who := range []string{bob, alice} {
 			if got := h.call(who, "GET", path); got.status != 404 {
 				t.Fatalf("%s answered %d for %s", path, got.status, who)
 			}
+		}
+	}
+	// Opt-in recent visitors (profile v2) is its own route and refuses everyone while the owner has not shared it.
+	for _, who := range []string{bob, alice} {
+		if got := h.call(who, "GET", "/v1/users/"+bob+"/visitors"); got.status != 403 || got.code != "VISITORS_PRIVATE" {
+			t.Fatalf("recent visitors answered %d %s for %s", got.status, got.code, who)
 		}
 	}
 	// The one list: the owner's, and a member sees only visits to their own profile.

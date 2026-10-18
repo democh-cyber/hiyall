@@ -108,6 +108,19 @@ func newPurgeWorld(t *testing.T) *purgeWorld {
 	h.exec(`INSERT INTO auth_identities(issuer,subject,user_id) VALUES('https://securetoken.google.com/test-project','sub-xan',$1)`, xan)
 	h.exec(`INSERT INTO discovery_eligibility(user_id,age_group,confirmed_at,valid_until) VALUES($1,'adult',now(),now()+interval '1 day')`, xan)
 	h.exec(`INSERT INTO notification_prefs(user_id,chat,social) VALUES($1,false,true)`, xan)
+	// Wave 7: a support thread with a message, and the notice board's seen pointer.
+	supportThread := uuid.NewString()
+	h.exec(`INSERT INTO support_threads(thread_id,user_id,category) VALUES($1,$2,'bug')`, supportThread, xan)
+	h.exec(`INSERT INTO support_messages(message_id,thread_id,author,body) VALUES(gen_random_uuid(),$1,'member','it crashed')`, supportThread)
+	h.exec(`INSERT INTO notice_seen(user_id) VALUES($1)`, xan)
+	// Wave 7 billing: coins, ledger, a purchase and a subscription (hashed ids), an ad session, and a detail unlock in both directions.
+	h.exec(`INSERT INTO coin_balances(user_id,balance) VALUES($1,5)`, xan)
+	h.exec(`INSERT INTO coin_ledger(user_id,delta,reason,idempotency_key,balance_after) VALUES($1,5,'purchase','purge-test-xan',5)`, xan)
+	h.exec(`INSERT INTO purchases(purchase_id,user_id,store,tx_hash,product_id,kind,state,coins) VALUES(gen_random_uuid(),$1,'google_play',repeat('a',64),'coins_s','coins','verified',5)`, xan)
+	h.exec(`INSERT INTO subscriptions(subscription_id,user_id,plan,store,product_id,status,current_period_end,original_hash) VALUES(gen_random_uuid(),$1,'premium','app_store','premium_1m','active',now()+interval '1 day',repeat('b',64))`, xan)
+	h.exec(`INSERT INTO ad_reward_sessions(nonce,user_id,expires_at) VALUES(gen_random_uuid(),$1,now()+interval '1 hour')`, xan)
+	h.exec(`INSERT INTO profile_detail_unlocks(viewer_id,target_id,expires_at) VALUES($1,$2,now()+interval '1 day')`, xan, eli)
+	h.exec(`INSERT INTO profile_detail_unlocks(viewer_id,target_id,expires_at) VALUES($1,$2,now()+interval '1 day')`, eli, xan)
 	h.exec(`INSERT INTO idempotency_keys(user_id,key,scope,request_hash,ref_id) VALUES($1,gen_random_uuid(),'post','\x00',gen_random_uuid())`, xan)
 
 	// Spaces.
@@ -204,7 +217,8 @@ var purgedColumns = []string{
 	"user_controls.actor_id", "user_controls.target_id", "media_assets.owner_id", "posts.author_id", "post_reactions.user_id", "saved_posts.user_id",
 	"stories.author_id", "story_views.viewer_id", "spaces.owner_id", "space_members.user_id", "space_entries.author_id", "onboarding.user_id",
 	"user_locations.user_id", "nearby_prefs.user_id", "member_daily_counts.user_id", "member_ages.user_id", "idempotency_keys.user_id", "profile_visits.profile_id", "profile_visits.visitor_id", "profile_visit_counts.profile_id",
-	"key_claims.claimer_id", "notification_prefs.user_id", "social_counters.user_id",
+	"key_claims.claimer_id", "notification_prefs.user_id", "social_counters.user_id", "support_threads.user_id", "notice_seen.user_id",
+	"coin_balances.user_id", "coin_ledger.user_id", "purchases.user_id", "subscriptions.user_id", "ad_reward_sessions.user_id", "profile_detail_unlocks.viewer_id", "profile_detail_unlocks.target_id",
 }
 
 // retainedColumns maps "table.column" to a SQL condition (over the table's own alias t and $1, the member)

@@ -76,9 +76,18 @@ func TestMinorProtectionsAreNamedInOnePlace(t *testing.T) {
 		t.Fatalf("minor defaults changed more than they should: %+v", p)
 	}
 	for field, audience := range p.FieldAudiences {
-		if field != "location" && field != "connections" && audience != want.FieldAudiences[field] {
+		if field != "location" && field != "connections" && field != "aboutMe" && field != "hometown" && field != "birthday" && audience != want.FieldAudiences[field] {
 			t.Fatalf("field %s changed to %s", field, audience)
 		}
+	}
+	// Profile v2: hidden about-me, hometown and birthday; local time, distance, visitor list and birthday off.
+	for _, field := range []string{"aboutMe", "hometown", "birthday"} {
+		if p.FieldAudiences[field] != "nobody" {
+			t.Fatalf("minor %s audience %q", field, p.FieldAudiences[field])
+		}
+	}
+	if p.ShowLocalTime || p.ShowDistance || p.VisitorsVisibleToOthers || p.ShowBirthday {
+		t.Fatalf("minor defaults must switch the v2 sharing settings off: %+v", p)
 	}
 	var empty Privacy
 	ApplyMinorDefaults(&empty)

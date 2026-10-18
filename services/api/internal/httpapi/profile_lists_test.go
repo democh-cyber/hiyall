@@ -38,8 +38,9 @@ func TestVisitorListIsOwnerOnlyNewestFirstAndShapedAsASummary(t *testing.T) {
 	same(t, h.visitors(alice))
 	same(t, h.visitors(cara), alice)
 	// There is no route for someone else's visitors, and no way to pass a profile id.
-	h.expect(h.call(alice, "GET", "/v1/users/"+bob+"/visitors"), 404, "NOT_FOUND")
-	h.expect(h.call(bob, "GET", "/v1/users/"+bob+"/visitors"), 404, "NOT_FOUND")
+	// Someone else's visitor list is opt-in (profile v2): off by default, and never available for the owner here.
+	h.expect(h.call(alice, "GET", "/v1/users/"+bob+"/visitors"), 403, "VISITORS_PRIVATE")
+	h.expect(h.call(bob, "GET", "/v1/users/"+bob+"/visitors"), 403, "VISITORS_PRIVATE")
 	same(t, ids(h.ok(alice, "GET", "/v1/me/visitors?user="+bob+"&profile="+bob)))
 	h.expect(h.call(bob, "POST", "/v1/me/visitors"), 404, "NOT_FOUND")
 	h.expect(h.call(bob, "DELETE", "/v1/me/visitors"), 404, "NOT_FOUND")

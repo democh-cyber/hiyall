@@ -411,7 +411,7 @@ func TestChatBlobValidationAndSizeCaps(t *testing.T) {
 			t.Fatalf("size %v: %d %s", size, got.status, got.code)
 		}
 	}
-	for _, role := range []string{"", "video", "poster", "FULL", "Full"} {
+	for _, role := range []string{"", "poster", "audio", "FULL", "Full", "VIDEO", "voice "} {
 		e.expect(post(body(role, 1000, hash)), 422, "VALIDATION")
 	}
 	good := ctOf(noise(100))
