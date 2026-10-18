@@ -1,4 +1,4 @@
-# Encrypted chat attachments (phase 1: images)
+# Encrypted chat attachments (photos, voice messages and videos)
 
 Status: approved design, 12 October 2026. Step 3 (the Go server) is built, see [Implementation (server)](#implementation-server); the rest is tracked in the steps below. This extends [encrypted chat implementation](13-encrypted-chat-implementation.md) and follows the attachment rules in [encryption and interception](11-encryption-and-interception.md): the sender's device compresses and then encrypts; ciphertext goes straight to storage; the key, hash and descriptor travel inside the E2EE message; the server can authorize, size-check and expire blobs but cannot read, scan or transcode them.
 
@@ -174,6 +174,43 @@ Retrying is idempotent: each stage is saved before the next, so Retry resumes at
 **Reporting:** photo messages can be picked as evidence. The text consent is unchanged; a second, separate checkbox ("Also share the photo itself … gives Hiyall's safety team the key to open the photo") controls whether `attachments: [{blobIds: [full, thumb], descriptor}]` (the descriptor includes the key) is sent. Without it only the text goes. Photos that never went out and photos with an invalid descriptor can only be reported as text. Text-only reports are byte for byte unchanged.
 
 **Not covered:** no device testing of any of this (picker, camera, permissions, the native library, real storage, backgrounding mid-upload); no web (no attachments); no video or other formats; no save or share; no automatic retry of a failed photo; a device check of the iOS backup exclusion above; no push notification text for photos; a very large history of photos stores about 0.8 KB of descriptor per message in the secure store.
+
+## Voice messages and videos (Wave 7)
+
+Two more payload kinds on the same pipeline (same STREAM format, same Rust core, same slots, quotas, 30 day retention, "peer replied or friends" gate, report evidence). Server side and the byte caps: [API 26](../api/26-chat-voice-video-and-list.md). Everything below is the sender's and the receiver's job, because the server sees ciphertext only.
+
+| | Voice message | Video |
+|---|---|---|
+| `kind` / fallback `text` | `voice` / "Sent a voice message. Update Hiyall to play it." | `video` / "Sent a video. Update Hiyall to watch it." |
+| Blobs (role, mime) | `voice` (`audio/mp4`) | `thumb` (`image/jpeg`, the poster) then `video` (`video/mp4`) |
+| Ciphertext cap (server, Free) | 8 MiB | 40 MiB (poster 256 KiB) |
+| Length | at most 300 s (`maxVoiceMs`) | at most 60 s (`maxVideoMs`) |
+| Sender size | AAC-LC mono 48 kbit/s, about 360 KB a minute | at most 720p, bitrate capped so 60 s stay under 32 MiB (`maxVideoPlain`); padded ciphertext stays under 40 MiB |
+| Extras in `att` | `dur` (ms), `wave` (base64, 1 to 64 bytes of amplitude) | `w`, `h` (inside 1280 x 720 either way round), `dur`, `thumb`, `preview` (ThumbHash) |
+
+```json
+{"v":1,"kind":"voice","text":"Sent a voice message. Update Hiyall to play it.","messageId":"…","conversationId":"…","senderId":"…","sentAt":"…",
+ "att":{"v":1,"key":"<b64 32B>","salt":"<uuid>","mime":"audio/mp4","chunk":65536,"plainLen":96000,"ctSize":97392,"ctSha256":"<b64>",
+        "blobs":{"voice":"<uuid>"},"dur":23000,"wave":"<b64 <=64B>"}}
+{"v":1,"kind":"video","text":"Sent a video. Update Hiyall to watch it.","…":"…",
+ "att":{"v":1,"key":"…","salt":"…","mime":"video/mp4","chunk":65536,"plainLen":…,"ctSize":…,"ctSha256":"…","blobs":{"video":"<uuid>"},
+        "w":1280,"h":720,"dur":12000,"thumb":{"blob":"<uuid>","w":320,"h":180,"plainLen":…,"ctSize":…,"ctSha256":"…"},
+        "preview":{"t":"thumbhash","d":"<b64>"}}}
+```
+
+The Rust core accepts the roles `voice` and `video` only with their own mime (`full` and `thumb` with `image/jpeg`; any other pairing is refused) and a plaintext of at most 40 MiB (`MAX_PLAIN_LEN`). Tests in `blob.rs` (role and mime pairing, round trip, cap).
+
+**Validation on receipt** (`VoiceAttachment.parse`, `VideoAttachment.parse`, `core/chat/chat_av.dart`): version 1, 32-byte key, canonical UUIDs, mime exactly the allow-listed one, chunk a power of two from 4 KiB to 1 MiB, `ctSize` equals the padded length of `plainLen`, ciphertext within the cap (8 MiB, 40 MiB, 256 KiB), duration from 200 ms to the maximum, waveform 1 to 64 bytes of canonical base64, video picture inside 1280 x 720 (either orientation), poster at most 320 px, distinct blob ids, descriptor at most 4 KiB. A bad descriptor is not an error: the message shows "Unsupported voice message" or "Unsupported video" and nothing is fetched or decoded. As for photos, the relay's `aux` flag cannot carry either kind (dropped on receipt), and a quote of one names the kind (`k` is `text`, `image`, `voice` or `video`).
+
+**Hash before decrypt, never log.** The ciphertext is fetched whole (at most `ctSize` bytes, refused as it arrives beyond that), its length and SHA-256 are checked against the descriptor before it is cached or decrypted (`ChatMedia.plaintextBlob`, shared with photos), and only verified ciphertext is cached (least recently used, 200 MB). No audio, video, waveform or descriptor is ever logged; failures carry a code only.
+
+**Plaintext on the phone.** The recorder and the players need files. The recording is written to the app-private `chat_play` folder, read once and deleted at once (a cancelled recording is deleted unread); a voice message or video that plays is decrypted in memory, written to `chat_play` for as long as it is the active one, and deleted when it stops (another message starts, the viewer closes, sign-out). The folder is emptied every time the chat starts and removed with the rest of the chat data on sign-out (`ChatLocalData.folders`). On iOS it is flagged out of backups with the other chat folders. A phone that is lost mid-playback could leave that one file until the next start; that is the accepted residual (the folder is inside the app sandbox, never in the gallery or shared storage).
+
+**Metadata in videos: what is and is not removed.** The video is re-encoded on the phone (`pro_video_editor`: Android Media3 Transformer, Apple AVFoundation; BSD-3) to at most 720p. Re-encoding alone does not promise that GPS tags disappear (a phone writes the location into `udta` or into a QuickTime `meta` box, and a "fast path" can keep the source's container), so the app does not rely on the encoder: `scrubMp4` (`core/chat/chat_mp4.dart`) rewrites the file's boxes afterwards. Every `udta`, `meta`, `uuid`, `XMP_` and free box at the top level or inside `moov`, `trak`, `mdia`, `minf`, `stbl`, `edts`, `dinf`, `mvex`, `moof` or `traf` becomes a zeroed `free` box of exactly the same size, and the creation and modification times in `mvhd`, `tkhd` and `mdhd` are set to zero. Lengths do not change, so no offset moves and the video plays as before. `remainingMetadata` re-reads the result and the video is refused if anything is left. This is unit-tested on synthetic MP4s (GPS in `udta` and in a QuickTime `meta`, a 64-bit box, nested boxes, junk). What it cannot hide: the picture and the sound themselves, and the frame size, length and codec settings every player needs. Not verified on a real camera file: the device run must check a clip filmed with location on (`ProVideoEditor.getMetadata(...).gpsCoordinates` is null after preparation). The poster frame goes through the photo pipeline (decode limits, a JPEG re-encoded from pixels, so no EXIF).
+
+**Residual leaks.** As for photos: the relay sees the ciphertext size class, the number of blobs per message (one for voice, two for video) and the times, so it can tell a voice message from a video by blob count and size. Padme hides the exact size, not the class.
+
+**Not done / limits.** Whole-file encrypt and decrypt in memory (a 32 MiB video is held about twice); a file-based or range variant is still phase 2. No resumable multipart upload (a single signed `PUT`, 15 minutes; the HTTP client's send timeout is 12 minutes). Video is played full screen only (no inline play). No pause-and-review step before a voice message is sent. Proximity-sensor earpiece routing is not built; audio focus and interruptions (calls, another app, headphones unplugged) are handled through `audio_session` (`just_audio` listens and pauses). Voice and video are not played on the web (chat is unsupported there).
 
 ## Steps
 

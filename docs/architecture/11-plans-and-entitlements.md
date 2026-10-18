@@ -1,6 +1,6 @@
 # Plans and entitlements
 
-**Status:** structure only. Hiyall has no paid plans yet, and **nothing about plans is user-visible**: no billing, no plan column in the database, no plan field in any API response, no plan screen or upsell in the app. Every member is on the Free plan, which is today's behaviour.
+**Status:** built (Wave 7), switched OFF. `PlanFree` and `PlanPremium` are two answers of `domain.EntitlementsFor`; coins, store purchases, subscriptions and rewarded ads are implemented (docs/api/28-billing.md); but the master switch `PLANS_ENFORCED` defaults to **false**, so in the beta every adult member is unlocked (Premium numbers, every feature, nothing costs coins) and the app shows no shop, no price and no upsell. The owner flips it at launch. Members under 18, or whose age is unknown, are never gated, charged, shown a shop or served an ad, whatever the switch says.
 
 ## Principle
 
@@ -28,6 +28,11 @@ type Entitlements struct {
 	PendingBlobs        int
 	LinkedBlobRetention time.Duration // how long a blob is kept after its message
 	NewConversationsPerDay int        // conversations the member may start per rolling 24 h
+	ChatPinsMax            int        // chats a member may pin in their list (409 PIN_LIMIT past it)
+	VoiceMaxBlobBytes      int64      // largest ciphertext of one voice message blob (413 TOO_LARGE past it)
+	VideoMaxBlobBytes      int64      // largest ciphertext of one video blob
+	VoiceMaxSeconds        int        // policy the app applies (the server cannot see a duration)
+	VideoMaxSeconds        int
 }
 
 func EntitlementsFor(plan Plan) Entitlements // unknown plan -> Free; never grants more
@@ -46,10 +51,14 @@ Free values (today's limits, for every member including minors):
 | `BlobsPerDay` / `BlobBytesPerDay` / `PendingBlobs` | 100 / 300 MiB / 10 |
 | `LinkedBlobRetention` | 30 days |
 | `NewConversationsPerDay` | 40 |
+| `ChatPinsMax` | 5 |
+| `VoiceMaxBlobBytes` / `VoiceMaxSeconds` | 8 MiB / 300 s (5 minutes) |
+| `VideoMaxBlobBytes` / `VideoMaxSeconds` | 40 MiB / 60 s |
 | `FollowsPerDay` / `FriendRequestsPerDay` / `CommentsPerDay` | 200 / 50 / 300 |
 | `SpacesPerDay` / `SpaceEntriesPerDay` | 3 / 100 |
 | `SearchPagesPerDay` / `ProfileViewsPerDay` / `NearbyQueriesPerDay` | 300 / 500 / 200 |
 | `LocationChangesPerDay` | 5 |
+| `LanguagesMax` / `InterestsMax` / `PersonalityTagsMax` / `ProfilePhotosMax` | 5 / 10 / 5 / 8 (profile and discovery v2, [doc](../api/25-profile-and-discovery-v2.md)) |
 
 ### Daily caps
 
@@ -80,6 +89,8 @@ Tiered now means the value is already an `Entitlements` field. Candidate later m
 | Pulse upload slots per day (50), declared bytes per day (300 MiB), pending uploads (50) | `Entitlements` | tiered now |
 | Live photo storage (2 GiB) | `Entitlements.StorageBytes` | tiered now |
 | Visitor list length (200 most recent) | `Entitlements.VisitorListLimit` | tiered now |
+| Languages per profile (5), interests (10), personality tags (5), gallery photos (8) | `Entitlements.LanguagesMax`, `InterestsMax`, `PersonalityTagsMax`, `ProfilePhotosMax` | tiered now |
+| Recent-visitor and visit-history windows (30 days, 200 people) | constants `domain.VisitWindow`, `VisitListMax` | candidate later |
 | Chat blobs per day (100), chat bytes per day (300 MiB), pending slots (10) | `Entitlements` | tiered now |
 | Linked chat blob retention (30 days) | `Entitlements.LinkedBlobRetention` | tiered now |
 | New conversations started per day (40) | `Entitlements.NewConversationsPerDay` | tiered now |
@@ -90,7 +101,9 @@ Tiered now means the value is already an `Entitlements` field. Candidate later m
 | Post, story and comment length (2200, 280, 1000) | `domain` constants | candidate later |
 | One photo upload size (15 MB) | `media.MaxUploadBytes`, app `maxPhotoBytes` | candidate later (the app copy must come from the server first) |
 | Chat photo size (4 MiB full, 256 KiB thumb) and picker size (4096 px) | `domain/chatmedia.go`, app `chat_attachment.dart`, `chat_photo.dart` | candidate later (hardcoded in the app) |
-| Future video length and size | not accepted yet | candidate later |
+| Chat voice message size (8 MiB ciphertext) and length (300 s) | `Entitlements.VoiceMaxBlobBytes` (enforced) and `VoiceMaxSeconds` (client policy only: the length is inside the encrypted descriptor) | tiered now |
+| Chat video size (40 MiB ciphertext) and length (60 s) | `Entitlements.VideoMaxBlobBytes` (enforced) and `VideoMaxSeconds` (client policy only) | tiered now |
+| Pinned chats (5) | `Entitlements.ChatPinsMax` | tiered now |
 | Nearby radii (the buckets 5, 10, 15, 25, 50, 100 km, default 25) and Nearby or discovery filters | `domain/nearby.go`, `domain/discovery.go` | candidate later (never below 5 km) |
 | Number of circles or lists | not built | candidate later |
 | Chat history retention | not built (messages are kept) | candidate later |
@@ -102,3 +115,32 @@ Not knobs, and not meant to differ by plan: protocol and safety constants (crypt
 ## Open point: the app hardcodes some caps
 
 The app carries its own copies of some limits (the 15 MB photo cap, the 4 MiB chat photo cap, the 4096 px picker size, the 10 photos per post). The server enforces every one of them, so a modified app gains nothing, but the app cannot show or use a larger limit by itself. Before any of them can differ per plan the server must tell the client its limits, for example `GET /v1/me/entitlements` returning the member's numbers, and the app must read them instead of its constants (falling back to the Free values when the call fails). Until then, raising one of these limits for a plan needs an app release, so do not sell one.
+
+## Plans, features and the master switch (Wave 7)
+
+`domain.Resolve(plan, enforced, monetizable, policy)` is the one place that turns a member into `Entitlements` (`httpapi/entitlements.go` calls it through `BillingService.resolve`, with a 20 second per-member cache that a purchase or store notification on the node drops at once):
+
+| Member | Numbers | Features and coins |
+|---|---|---|
+| under 18, or age unknown (`monetizable` false) | Free | every feature on, nothing costs coins, `Enforced` false: **never gated**, at any switch value |
+| adult, `PLANS_ENFORCED=false` (beta) | Premium | every feature on, nothing costs coins |
+| adult, enforced, active subscription (status `active`, or `grace` until its end) | Premium | every feature on |
+| adult, enforced, otherwise | Free | the features the catalog policy does not reserve; coin prices apply |
+
+`Entitlements` gained `Plan`, `Enforced`, `Features` (`autoTranslate`, `visitorsList`, `nearbyFilter`, `genderFilter`, `detailedProfile`, `groupChat`), `FreeNewChatsPerDay`, `ChatSlotCoinCost`, `ProfileDetailCoinCost` and `ProfileDetailDays`. `Free()` and `EntitlementsFor` return `Enforced=false`, so code and tests that never go through the resolver gate nothing: a gate is `e.Allows(feature)`, which is true unless the entitlements are enforced and lack it.
+
+**Premium numbers** (`premiumFrom`): uploads 100/day and 600 MiB/day, posts 40, stories 60, storage 5 GiB, chat attachments 200/day and 600 MiB/day, pins 10, profile photos 12. Safety and abuse limits (follows, requests, comments, search pages, profile views, Nearby queries, location changes, new conversations per day, the chat relay caps) are **the same on every plan**: they protect other people and are not for sale. Note for the owner: in the beta every adult gets the Premium numbers, which costs storage.
+
+**What is gated while enforced** (the list is data: `policy.premiumFeatures` in `BILLING_CATALOG_FILE`, default all six):
+
+* gender filter in people search and in Nearby: `402 PREMIUM_REQUIRED` (`discovery.go`, `nearby.go`); any other Nearby filter (interests, languages, country, vibe, age, online): `nearbyFilter`.
+* the visitors list (`GET /v1/me/visitors`, the count on the profile is not gated): `visitorsList`.
+* detailed profile fields of another member (`bio`, `aboutMe`, `hometown`, `personalityTags`, `profession`, `education`, `websiteUrl`; `detailedProfileKeys` in `httpapi/billing.go`, **review it when the profile fields change**): left out of `GET /v1/users/{id}/profile` with `detailsLocked: true`, unlocked for `profileDetailDays` (30) for `profileDetailCoinCost` (1) coin per member, free with Premium.
+* `autoTranslate` and `groupChat` are exposed to the app for hints; the chat team's endpoints must call `entitlementsFor(...).Allows(...)` where they have a server path.
+* starting a conversation past `FreeNewChatsPerDay` (3) in a rolling 24 hours costs `ChatSlotCoinCost` (2) coins, taken inside the `OpenConversation` transaction under the member's quota lock (`store.chargeChatSlot`); free with Premium; only the member who starts it is charged; reopening is free. The price must be confirmed with the `Spend-Confirm` header, otherwise `402 SPEND_CONFIRMATION_REQUIRED` says the price first.
+
+**Coins** (migration `0051_plans_coins.sql`): `coin_balances` (CHECK balance >= 0) and an append-only `coin_ledger` with idempotency keys, written together under a per-member advisory lock. Reasons: `purchase`, `reward_ad`, `profile_completion`, `review_bonus` (reserved, never granted), `spend_chat_slot`, `spend_profile_detail`, `refund`, `refund_reversal`, `admin_adjust`. A refund takes back what the balance still holds (the shortfall is counted in `hiyall_coin_refund_shortfall_total`). Support adjusts a balance only through `coin_admin_adjust` (actor and reason required, audited in `operator_audit`), see docs/api/28-billing.md.
+
+**Purchases and subscriptions**: `purchases` (store transaction id stored only as a SHA-256 hash, UNIQUE), `subscriptions` (original transaction hash UNIQUE; one store account cannot feed two Hiyall accounts: `409 PURCHASE_CLAIMED`). Verification asks the store itself (Google Play Developer API with a service-account JWT; App Store Server API with an ES256 JWT, signed data verified to Apple's root); store notifications (Google RTDN, Apple ASN V2) re-read or verify and update, and refunds reverse grants. Account deletion removes all of it (`purge_member_billing`); a live subscription is cancelled by the member in the store.
+
+**What cannot be verified without store and ad accounts**: the three adapters are tested against fakes that follow the documented protocols (fake Google token and Play API, a fake Apple PKI with Apple's marker extensions and a fake App Store Server API, a fake AdMob key server). Nothing has run against Google, Apple or AdMob. First real purchase checklist: docs/deployment/10-deploy-guide.md, "Billing".

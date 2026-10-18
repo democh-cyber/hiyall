@@ -40,6 +40,8 @@ config/secrets/
 
 # Manual iOS signing settings written by scripts/build-release.sh in CI (Runner target only)
 apps/mobile/ios/Flutter/Signing.xcconfig
+# AdMob application id for the iOS release build, written by the release build (never committed)
+apps/mobile/ios/Flutter/Admob.xcconfig
 # Production admin console environment, any local-only env file, and the R2 admin keys
 config/admin.production.env
 config/r2.local.env
