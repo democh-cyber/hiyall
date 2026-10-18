@@ -25,6 +25,7 @@ import '../core/translate/translation_memory.dart';
 import '../core/translate/translation_service.dart';
 import '../core/chat/chat_backup_exclusion.dart';
 import '../core/chat/chat_engine.dart';
+import '../core/chat/chat_groups.dart';
 import '../core/chat/chat_local_data.dart';
 import '../core/chat/chat_reactions.dart';
 import '../core/chat/chat_snapshot.dart';
@@ -41,6 +42,10 @@ import '../shared/widgets.dart';
 import '../src/rust/frb_generated.dart';
 import 'chat_av_providers.dart';
 import 'chat_format.dart';
+import 'chat_groups_data.dart';
+import 'chat_groups_list.dart';
+import 'chat_groups_new.dart';
+import 'chat_groups_thread.dart';
 import 'chat_list_actions.dart';
 import 'chat_list.dart';
 import 'chat_menu.dart';
@@ -357,6 +362,7 @@ String? photoFailureText(String? code) => switch (code) {
 /// the caller knows it, for the refusals that are about them (`PEER_NO_DEVICES`).
 String chatError(Object error, {String? peerName}) =>
     (error is ChatFailure ? photoFailureText(error.code) : null) ??
+    groupFailureText(error, name: peerName) ??
     switch (error) {
       ChatStorageUnavailable() => 'Couldn’t open secure storage. Nothing was deleted. We’ll try again in a moment.',
       ChatFailure(code: 'MESSAGES_NOT_ALLOWED') =>
@@ -445,6 +451,14 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
   /// Chats whose decrypted history on this phone matches [query] (never asked of the server), with the newest
   /// matching message.
   Map<String, ChatSearchHit> hits = const {};
+
+  /// The groups of the chat list (kept by [groupsProvider]) as rows next to the one-to-one chats.
+  List<GroupInfo> get _groups => ref.read(groupsProvider).value ?? const [];
+  String get _me => engine?.userId ?? '';
+
+  /// One-to-one chats and groups in one list, pinned first, then by activity; null while loading.
+  List<ChatConversation>? get _all =>
+      items == null ? null : mergeChats(items!, _groups, _me);
   int _searchRun = 0;
   bool _closedChecked = false;
 
@@ -475,7 +489,12 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     if (identical(next, engine)) return;
     changes?.cancel();
     engine = next;
-    changes = next?.changes.listen((_) => load());
+    changes = next?.changes.listen((_) {
+      load();
+      // A new message can change a group's last line and a new invite can arrive.
+      ref.invalidate(groupsProvider);
+      ref.invalidate(groupInvitesProvider);
+    });
     _closedChecked = false;
     load();
   }
@@ -490,7 +509,7 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
   }
 
   Future<void> _searchHistory() async {
-    final current = engine, all = items;
+    final current = engine, all = _all;
     final text = query.trim();
     final run = ++_searchRun;
     if (current == null || all == null || text.isEmpty) {
@@ -513,9 +532,23 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
   });
 
   List<ChatConversation> get _selectedChats => [
-    for (final c in items ?? const <ChatConversation>[])
+    for (final c in _all ?? const <ChatConversation>[])
       if (selected.contains(c.id)) c,
   ];
+
+  /// Starts a group: the New group screen (over the whole app), and the new group's thread when it was created.
+  Future<void> newGroup() async {
+    final created = await Navigator.of(context, rootNavigator: true)
+        .push<GroupInfo>(
+          MaterialPageRoute(builder: (_) => const NewGroupScreen()),
+        );
+    if (created == null || !mounted) return;
+    await _refreshAfterChange();
+    if (!mounted) return;
+    context.go(
+      '/chats/${created.id}?peer=&name=${Uri.encodeQueryComponent(groupTitle(created, _me))}',
+    );
+  }
 
   Future<void> _refreshAfterChange() async {
     ref.read(chatSignalProvider.notifier).bump();
@@ -718,7 +751,12 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
       );
     }
     final now = ref.watch(chatClockProvider)();
-    final all = items;
+    // Groups and invitations are read on their own (and fail on their own): a failure leaves the chats as they are.
+    final groups = ref.watch(groupsProvider).value ?? const <GroupInfo>[];
+    final invites =
+        ref.watch(groupInvitesProvider).value ?? const <GroupInvite>[];
+    final groupById = {for (final g in groups) g.id: g};
+    final all = items == null ? null : mergeChats(items!, groups, _me);
     final shown = all == null
         ? null
         : filterChats(
@@ -735,6 +773,8 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
       onRefresh: () async {
         await engine?.pollNow();
         await load();
+        ref.invalidate(groupsProvider);
+        ref.invalidate(groupInvitesProvider);
       },
       child: LayoutBuilder(
         builder: (context, box) {
@@ -750,8 +790,16 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                 canEdit: hasChats,
                 onToggleEdit: toggleEdit,
                 onDeleted: openDeleted,
+                onNewGroup: () => unawaited(newGroup()),
               ),
             if (engine != null) NewDeviceBanner(engine: engine!),
+            if (engine != null && invites.isNotEmpty)
+              PendingInvitesSection(
+                key: const Key('pending-invites-section'),
+                engine: engine!,
+                invites: invites,
+                onChanged: () => unawaited(_refreshAfterChange()),
+              ),
             if (hasChats) ...[
               Padding(
                 padding: const EdgeInsets.symmetric(
@@ -842,6 +890,8 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                 now: now,
                 typing: typing[chat.id]?.isAfter(DateTime.now()) ?? false,
                 showDivider: row < rows.length - 1,
+                group: groupById[chat.id],
+                me: _me,
                 selecting: editing,
                 selected: selected.contains(chat.id),
                 snippet: hit == null || query.trim().isEmpty
@@ -906,14 +956,14 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
         Expanded(child: list),
         ChatEditBar(
           selected: picked.length,
-          total: items?.length ?? 0,
+          total: all?.length ?? 0,
           allPinned: picked.isNotEmpty && picked.every((c) => c.pinned),
           allMuted: picked.isNotEmpty && picked.every((c) => c.muted),
           onPin: () => unawaited(bulkPin()),
           onMute: () => unawaited(bulkMute()),
           onDelete: () => unawaited(deleteChats(picked)),
           onSelectAll: () => setState(() {
-            final all = items ?? const <ChatConversation>[];
+            final all = _all ?? const <ChatConversation>[];
             if (selected.length == all.length) {
               selected.clear();
             } else {
@@ -1218,6 +1268,15 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   /// From the route when opened from the chat list; otherwise loaded below.
   late String peerId = widget.peerId, peerName = widget.peerName;
   String? peerAvatarUrl;
+
+  /// A group chat: this conversation id is a group (see [_isKnownGroup]). It then has no peer: [peerId] stays
+  /// empty (the engine's [groupPeer]), [peerName] is the group's title, and [group] is what the relay lists.
+  bool groupMode = false;
+  GroupInfo? group;
+
+  /// The engine said there is nobody else in the group yet (GROUP_WAITING), or the relay does not know it.
+  bool groupWaiting = false, groupGone = false;
+  GroupDirectory _dir = GroupDirectory.empty;
   DateTime lastTyping = DateTime.fromMillisecondsSinceEpoch(0);
 
   /// The person is reading the bottom of the thread (or there is nothing to
@@ -1410,6 +1469,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
 
   /// Reloads the server-held state: the peer's read pointer and our mute.
   Future<void> loadReceipt() async {
+    if (groupMode) return loadGroup();
     try {
       final c = await engine?.api.conversation(widget.id);
       if (c == null || !mounted) return;
@@ -1456,10 +1516,125 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
           pinnedAt = pinned;
         });
       }
-    } catch (_) {
+    } catch (e) {
+      // A link or a push names a conversation by id only: one the relay has no one-to-one chat for may be a group.
+      if (peerId.isEmpty &&
+          e is ChatFailure &&
+          (e.code == 'NOT_FOUND' || e.status == 404)) {
+        await _probeGroup();
+      }
       // Without the first look the card simply waits less: show it as it is.
       if (mounted && !receiptLoaded) setState(() => receiptLoaded = true);
     }
+  }
+
+  /// Whether the engine already knows this conversation as a group (the chat list read it).
+  bool _isKnownGroup(ChatEngine e) {
+    try {
+      return e.isGroup(widget.id);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// A conversation opened by id alone (a push, a link): asks for it as a group, and switches to the group
+  /// thread when it is one.
+  Future<void> _probeGroup() async {
+    final current = engine;
+    if (current == null || groupMode) return;
+    final GroupInfo found;
+    try {
+      found = await current.group(widget.id);
+    } catch (_) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() => groupMode = true);
+    _applyGroup(found);
+  }
+
+  /// Reloads the group: its members, mute and pin.
+  Future<void> loadGroup() async {
+    final current = engine;
+    if (current == null) return;
+    try {
+      final g = await current.group(widget.id);
+      if (mounted) _applyGroup(g);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        receiptLoaded = true;
+        if (e is ChatFailure && e.code == 'NOT_FOUND' && group == null) {
+          groupGone = true;
+        }
+      });
+    }
+  }
+
+  void _applyGroup(GroupInfo g) {
+    setState(() {
+      group = g;
+      groupGone = false;
+      receiptLoaded = true;
+      if (g.members.length > 1) groupWaiting = false;
+      mutedUntil = g.mutedUntil;
+      pinnedAt = g.pinnedAt;
+      peerName = groupTitle(g, engine?.userId ?? '');
+      // The unread count is read before the chat marks everything read, as for a person.
+      if (!unreadCaptured) {
+        unreadCaptured = true;
+        unreadAtOpen = g.unreadCount;
+        _resolveUnread();
+      }
+    });
+  }
+
+  /// Nothing can be sent to the group: it closed, or this account left or was removed.
+  bool get _readOnly => groupMode && ((group?.readOnly ?? false) || groupGone);
+
+  /// Nobody else is in the group yet (everyone invited is still to answer).
+  bool get _waitingForOthers =>
+      groupMode &&
+      !_readOnly &&
+      (groupWaiting || (group != null && group!.members.length <= 1));
+
+  /// Whether messages have somewhere to go: a person, or a group.
+  bool get _hasPeer => groupMode || peerId.isNotEmpty;
+
+  /// A failed send, worded. In a group a member this phone has not confirmed stops the send, and the words come
+  /// with a button to Group info, where they can be confirmed.
+  void _sendFailed(Object e) {
+    if (!mounted) return;
+    if (groupMode && e is ChatFailure) {
+      if (e.code == 'GROUP_WAITING') {
+        // The line that replaces the composer says it.
+        setState(() => groupWaiting = true);
+        return;
+      }
+      if (e.code == 'GROUP_UNCONFIRMED_MEMBER') {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              key: const Key('group-unconfirmed-message'),
+              content: Text(chatError(e)),
+              duration: const Duration(seconds: 10),
+              action: SnackBarAction(
+                label: 'Group info',
+                onPressed: openGroupInfo,
+              ),
+            ),
+          );
+        return;
+      }
+    }
+    showMessage(context, chatError(e, peerName: peerName));
+  }
+
+  /// Group info: the members, safety numbers and leaving.
+  void openGroupInfo() {
+    if (!groupMode) return;
+    unawaited(context.push('/chats/${widget.id}/info'));
   }
 
   bool get muted => mutedUntil?.isAfter(DateTime.now()) ?? false;
@@ -1470,6 +1645,8 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
 
   /// Waiting for the peer: they have not written, and the cap is used up.
   bool get awaitingReply {
+    // A group has no first-contact cap: everyone in it agreed to be there.
+    if (groupMode) return false;
     if (messages.any((m) => !m.mine && !m.notice)) return false;
     final mine = messages.where(
       (m) => m.mine && !m.notice && m.status != SendStatus.failed,
@@ -1482,9 +1659,10 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
       context,
       muted: muted,
       peerName: peerName,
-      verified: engine?.isVerified(peerId) ?? false,
+      verified: !groupMode && (engine?.isVerified(peerId) ?? false),
       pinned: pinnedAt != null,
       autoTranslate: chatPrefs.autoTranslate.contains(widget.id),
+      group: groupMode,
     );
     if (!mounted || choice == null || engine == null) return;
     switch (choice) {
@@ -1525,6 +1703,8 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         await reportPeer();
       case ChatMenuAction.block:
         await blockPeer();
+      case ChatMenuAction.groupInfo:
+        openGroupInfo();
     }
   }
 
@@ -1560,8 +1740,9 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     final yes = await confirmChatAction(
       context,
       title: 'Clear history on this phone?',
-      body:
-          'The messages, photos, voice messages and videos of this chat are removed from this phone. $peerName keeps theirs, and new messages still arrive.',
+      body: groupMode
+          ? 'The messages, photos, voice messages and videos of this group are removed from this phone. The others keep theirs, and new messages still arrive.'
+          : 'The messages, photos, voice messages and videos of this chat are removed from this phone. $peerName keeps theirs, and new messages still arrive.',
       action: 'Clear history',
     );
     if (!yes || !mounted) return;
@@ -1587,8 +1768,9 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     final yes = await confirmChatAction(
       context,
       title: 'Delete this chat?',
-      body:
-          'It leaves your list. You can bring it back from Deleted chats for 30 days; after that this phone’s copy is removed. $peerName isn’t told, and a new message from them brings it back.',
+      body: groupMode
+          ? 'It leaves your list. You can bring it back from Deleted chats for 30 days; after that this phone’s copy is removed. Nobody is told.'
+          : 'It leaves your list. You can bring it back from Deleted chats for 30 days; after that this phone’s copy is removed. $peerName isn’t told, and a new message from them brings it back.',
       action: 'Delete chat',
     );
     if (!yes || !mounted) return;
@@ -1644,7 +1826,8 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
 
   /// At most one typing signal every three seconds while composing.
   void typed(String text) {
-    if (text.isEmpty) return;
+    // A group has no typing signal.
+    if (text.isEmpty || groupMode) return;
     final now = DateTime.now();
     if (now.difference(lastTyping) < const Duration(seconds: 3)) return;
     lastTyping = now;
@@ -1654,108 +1837,18 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   Future<void> showSafetyNumber() async {
     final current = engine;
     if (current == null) return;
-    SafetyInfo? info;
-    Object? failure;
-    try {
-      info = await current.safetyInfo(peerId);
-    } catch (e) {
-      failure = e;
-    }
-    if (!mounted) return;
-    var verified = info?.verified ?? false;
-    await showDialog<void>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setInner) => AlertDialog(
-          title: const Text('Verify safety number'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (info != null) ...[
-                  // A change comes first, before the number it changed.
-                  if (info.changedSinceVerified)
-                    Padding(
-                      key: const Key('safety-changed'),
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: Text(
-                        '$peerName’s safety number changed since you verified it. That happens when they add, remove or reset a device. Compare it again before you trust it.',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: Theme.of(context).colorScheme.error,
-                        ),
-                      ),
-                    ),
-                  if (info.newDevices > 0)
-                    Padding(
-                      key: const Key('safety-new-device'),
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: Text(
-                        '$peerName has a device that was added since your last message. Their number below already includes it, and it can read new messages you send them.',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: Theme.of(context).colorScheme.error,
-                        ),
-                      ),
-                    ),
-                  Text(
-                    'Messages and photos in this chat are end-to-end encrypted: only you and $peerName can read them.',
-                  ),
-                  const SizedBox(height: 12),
-                  SelectableText(
-                    [
-                      for (var i = 0; i < info.number.length; i += 5)
-                        info.number.substring(i, i + 5),
-                    ].join('  '),
-                    key: const Key('safety-number'),
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 18,
-                      height: 1.8,
-                      letterSpacing: 1,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    'Compare these numbers with $peerName in person or on a call. If they match, nobody is intercepting your chat. They change when either of you adds or removes a device.',
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    verified
-                        ? 'Verified. This mark goes away if either of you changes devices.'
-                        : 'Not verified yet.',
-                    key: const Key('safety-verified'),
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ] else
-                  Text(chatError(failure!)),
-              ],
-            ),
-          ),
-          actions: [
-            if (info != null && !verified)
-              TextButton(
-                key: const Key('safety-mark'),
-                onPressed: () async {
-                  await current.markVerified(peerId, info!);
-                  setInner(() => verified = true);
-                },
-                child: const Text('They match'),
-              ),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Done'),
-            ),
-          ],
-        ),
-      ),
+    await showSafetyNumberDialog(
+      context,
+      current,
+      userId: peerId,
+      name: peerName,
     );
   }
 
   void attach(ChatEngine? next) {
     if (next == null || identical(next, engine)) return;
     engine = next;
+    groupMode = widget.peerId.isEmpty && _isKnownGroup(next);
     final files = next.playFiles;
     if (files != null) {
       capture = VoiceCapture(
@@ -1784,7 +1877,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     reload();
     // A device added to the peer's account is announced in every chat with
     // them, not only the one that happened to see it first.
-    if (peerId.isNotEmpty) {
+    if (peerId.isNotEmpty && !groupMode) {
       next.showDeviceNotices(widget.id, peerId).catchError((_) {});
     }
     next.pollNow().catchError((_) {});
@@ -1795,7 +1888,11 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   /// a refusal puts the text back in the composer and says why.
   Future<void> send() async {
     final text = input.text.trim();
-    if (text.isEmpty || engine == null || peerId.isEmpty || awaitingReply) {
+    if (text.isEmpty ||
+        engine == null ||
+        !_hasPeer ||
+        _readOnly ||
+        awaitingReply) {
       return;
     }
     unawaited(sendHaptic());
@@ -1819,7 +1916,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
             selection: TextSelection.collapsed(offset: text.length),
           );
         }
-        showMessage(context, chatError(e, peerName: peerName));
+        _sendFailed(e);
       }
     }
   }
@@ -1835,9 +1932,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
       if (e is ChatFailure && e.code == 'OWN_BACKLOG') {
         showOwnBacklogMessage(context);
       }
-      if (!isTransientChatFailure(e)) {
-        showMessage(context, chatError(e, peerName: peerName));
-      }
+      if (!isTransientChatFailure(e)) _sendFailed(e);
     }
   }
 
@@ -1864,7 +1959,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   /// message appears at once; the upload carries on in the background.
   Future<void> attachPhoto() async {
     final current = engine;
-    if (current == null || peerId.isEmpty || attaching) return;
+    if (current == null || !_hasPeer || _readOnly || attaching) return;
     final choice = await showAttachSheet(context);
     if (choice == null || !mounted) return;
     switch (choice) {
@@ -1903,7 +1998,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
       );
       if (mounted) setState(() => replyingTo = null);
     } catch (e) {
-      if (mounted) showMessage(context, chatError(e, peerName: peerName));
+      _sendFailed(e);
     }
   }
 
@@ -1957,7 +2052,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
       await current.sendVideo(widget.id, peerId, prepared, replyTo: replyingTo);
       if (mounted) setState(() => replyingTo = null);
     } catch (e) {
-      if (mounted) showMessage(context, chatError(e, peerName: peerName));
+      _sendFailed(e);
     }
   }
 
@@ -1976,14 +2071,14 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   /// Sends a finished recording; the message is in the thread as sending at once.
   Future<void> _sendClip(VoiceClip clip) async {
     final current = engine;
-    if (current == null || peerId.isEmpty) return;
+    if (current == null || !_hasPeer || _readOnly) return;
     unawaited(sendHaptic());
     final reply = replyingTo;
     setState(() => replyingTo = null);
     try {
       await current.sendVoice(widget.id, peerId, clip, replyTo: reply);
     } catch (e) {
-      if (mounted) showMessage(context, chatError(e, peerName: peerName));
+      _sendFailed(e);
     }
   }
 
@@ -2001,7 +2096,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
 
   VoiceControls? get voiceControls {
     final c = capture;
-    if (c == null || engine == null || peerId.isEmpty) return null;
+    if (c == null || engine == null || !_hasPeer || _readOnly) return null;
     return VoiceControls(
       capture: c,
       onFinish: finishVoice,
@@ -2185,7 +2280,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   /// takes it back if it cannot be sent; the screen only says so.
   Future<void> reactTo(ChatMessage message, String? emoji) async {
     final current = engine;
-    if (current == null || peerId.isEmpty) return;
+    if (current == null || !_hasPeer || _readOnly) return;
     try {
       await current.react(widget.id, peerId, message.messageId, emoji);
       if (mounted && reactionNotice != null) {
@@ -2240,7 +2335,11 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     final original = _original(reply.id);
     final shown = original == null ? reply : resolveReply(reply, original, me);
     return QuoteData(
-      who: shown.by == me ? 'You' : peerName,
+      who: shown.by == me
+          ? 'You'
+          : groupMode
+          ? _dir.of(shown.by).name
+          : peerName,
       line: quoteLine(shown),
       image: shown.isImage,
       jumpTo: original?.messageId,
@@ -2375,7 +2474,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     super.dispose();
   }
 
-  late final BubbleActions _actions = BubbleActions(
+  late final BubbleActions _oneToOneActions = BubbleActions(
     onReact: reactTo,
     onReply: startReply,
     onQuoteTap: showOriginal,
@@ -2384,6 +2483,34 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     onTranslate: translateMessage,
     isTranslated: (m) => translations.containsKey(m.messageId),
   );
+
+  /// A group's bubbles can also report the message of one of its members.
+  late final BubbleActions _groupActions = BubbleActions(
+    onReact: reactTo,
+    onReply: startReply,
+    onQuoteTap: showOriginal,
+    onCopy: copyMessage,
+    onReadAloud: readAloud,
+    onReport: reportGroupMessage,
+    onTranslate: translateMessage,
+    isTranslated: (m) => translations.containsKey(m.messageId),
+  );
+
+  BubbleActions get _actions => groupMode ? _groupActions : _oneToOneActions;
+
+  /// Reports one member's message: the same sheet as for a chat, about the message (so about its sender), with
+  /// this phone's own decrypted copy as the evidence the person chooses to share.
+  Future<void> reportGroupMessage(ChatMessage message) async {
+    await showReportSheet(
+      context,
+      ref,
+      targetType: 'message',
+      targetId: message.messageId,
+      name: _dir.of(message.senderId).name,
+      messages: messages,
+      senderName: (m) => _dir.of(m.senderId).name,
+    );
+  }
 
   /// The bar and the notice above the composer.
   Widget? _aboveComposer() {
@@ -2400,7 +2527,11 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
           ),
         if (reply != null)
           ReplyBar(
-            who: reply.mine ? 'You' : peerName,
+            who: reply.mine
+                ? 'You'
+                : groupMode
+                ? _dir.of(reply.senderId).name
+                : peerName,
             line: reply.isPhoto
                 ? 'Photo'
                 : reply.isVoice
@@ -2449,20 +2580,24 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         );
       case MessageRow():
         final m = row.message;
+        // In a group every bubble of someone else is by a different person: their name and photo, not one peer's.
+        final sender = groupMode && !m.mine ? _dir.of(m.senderId) : null;
         Widget bubble = ChatBubble(
           row: row,
           engine: engine,
           conversationId: widget.id,
-          peerName: peerName,
-          peerId: peerId,
-          peerAvatarUrl: peerAvatarUrl,
+          peerName: sender?.name ?? peerName,
+          peerId: sender?.id ?? peerId,
+          peerAvatarUrl: sender == null ? peerAvatarUrl : sender.avatarUrl,
           seen: _seen(m),
           newestMine: m.messageId == newestMine,
           selfId: engine?.userId ?? '',
-          actions: engine == null || peerId.isEmpty ? null : _actions,
+          actions: engine == null || !_hasPeer || _readOnly ? null : _actions,
           quote: quoteFor(m),
           highlight: litId == m.messageId,
           translation: _translationFor(m),
+          senderLabel: sender != null && row.first ? sender.name : null,
+          reactorName: groupMode ? (id) => _dir.of(id).name : null,
         );
         if (fresh.contains(m.messageId)) {
           bubble = BubbleEntrance(
@@ -2539,7 +2674,13 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         );
     ref.listen(chatSignalProvider, (_, _) => loadReceipt());
     final until = ref.watch(typingProvider)[widget.id];
-    final typing = until != null && until.isAfter(DateTime.now());
+    final typing = !groupMode && until != null && until.isAfter(DateTime.now());
+    _dir = groupMode
+        ? GroupDirectory.of(
+            group,
+            known: engine?.groupDirectory(widget.id) ?? const {},
+          )
+        : GroupDirectory.empty;
     if (typing != _typingShown) {
       _typingShown = typing;
       if (typing && _nearBottom) _stickToBottom();
@@ -2560,17 +2701,31 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
             userId: peerId,
             avatarUrl: peerAvatarUrl,
             typing: typing,
-            online: peerOnline,
-            lastSeenAt: peerLastSeenAt,
+            online: groupMode ? false : peerOnline,
+            lastSeenAt: groupMode ? null : peerLastSeenAt,
             now: now,
             muted: muted,
             canAct: engine != null,
             onBack: () => context.go('/chats'),
             onSafety: showSafetyNumber,
             onOptions: options,
-            onProfile: peerId.isEmpty
+            onProfile: groupMode
+                ? openGroupInfo
+                : peerId.isEmpty
                 ? null
                 : () => openPerson(context, peerId),
+            leading: groupMode
+                ? GroupHeaderAvatar(group: group, me: engine?.userId ?? '')
+                : null,
+            subtitle: groupMode
+                ? (group == null
+                      ? 'Group'
+                      : memberCountText(group!.memberCount))
+                : null,
+            profileLabel: groupMode
+                ? groupHeaderLabel(peerName, group?.memberCount ?? 0)
+                : null,
+            showSafety: !groupMode,
           ),
           Expanded(
             child: Stack(
@@ -2582,7 +2737,9 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
                         child: ThreadLoading(),
                       )
                     : messages.isEmpty
-                    ? (introDismissed
+                    ? (groupMode
+                          ? GroupThreadStart(canSend: !_readOnly)
+                          : introDismissed
                           ? const QuietNewChat()
                           : NewChatCard(
                               name: peerName,
@@ -2637,20 +2794,27 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
               ],
             ),
           ),
-          ChatComposer(
-            controller: input,
-            focus: focus,
-            sending: false,
-            canSend: engine != null,
-            waitingFor: awaitingReply ? peerName : null,
-            canAttach: engine != null && peerId.isNotEmpty && !attaching,
-            showAttach: chatSupported,
-            onChanged: typed,
-            onSend: send,
-            onAttach: attachPhoto,
-            above: _aboveComposer(),
-            voice: voiceControls,
-          ),
+          if (_readOnly)
+            const GroupComposerNotice(
+              'You can’t send messages to this group anymore.',
+            )
+          else if (_waitingForOthers)
+            const GroupComposerNotice('Waiting for others to join.')
+          else
+            ChatComposer(
+              controller: input,
+              focus: focus,
+              sending: false,
+              canSend: engine != null,
+              waitingFor: awaitingReply ? peerName : null,
+              canAttach: engine != null && _hasPeer && !attaching,
+              showAttach: chatSupported,
+              onChanged: typed,
+              onSend: send,
+              onAttach: attachPhoto,
+              above: _aboveComposer(),
+              voice: voiceControls,
+            ),
         ],
       ),
     );
@@ -2812,6 +2976,113 @@ class _ChatDevicesState extends ConsumerState<ChatDevicesScreen> {
       ),
     );
   }
+}
+
+/// The safety number of [userId] (named [name]) with the way to mark it verified: the person's own chat and, in
+/// a group, each member in Group info.
+Future<void> showSafetyNumberDialog(
+  BuildContext context,
+  ChatEngine engine, {
+  required String userId,
+  required String name,
+}) async {
+  SafetyInfo? info;
+  Object? failure;
+  try {
+    info = await engine.safetyInfo(userId);
+  } catch (e) {
+    failure = e;
+  }
+  if (!context.mounted) return;
+  var verified = info?.verified ?? false;
+  await showDialog<void>(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setInner) => AlertDialog(
+        title: const Text('Verify safety number'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (info != null) ...[
+                // A change comes first, before the number it changed.
+                if (info.changedSinceVerified)
+                  Padding(
+                    key: const Key('safety-changed'),
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Text(
+                      '$name’s safety number changed since you verified it. That happens when they add, remove or reset a device. Compare it again before you trust it.',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ),
+                if (info.newDevices > 0)
+                  Padding(
+                    key: const Key('safety-new-device'),
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Text(
+                      '$name has a device that was added since your last message. Their number below already includes it, and it can read new messages you send them.',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ),
+                Text(
+                  'Messages and photos in this chat are end-to-end encrypted: only you and $name can read them.',
+                ),
+                const SizedBox(height: 12),
+                SelectableText(
+                  [
+                    for (var i = 0; i < info.number.length; i += 5)
+                      info.number.substring(i, i + 5),
+                  ].join('  '),
+                  key: const Key('safety-number'),
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 18,
+                    height: 1.8,
+                    letterSpacing: 1,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Compare these numbers with $name in person or on a call. If they match, nobody is intercepting your chat. They change when either of you adds or removes a device.',
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  verified
+                      ? 'Verified. This mark goes away if either of you changes devices.'
+                      : 'Not verified yet.',
+                  key: const Key('safety-verified'),
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ] else
+                Text(chatError(failure!)),
+            ],
+          ),
+        ),
+        actions: [
+          if (info != null && !verified)
+            TextButton(
+              key: const Key('safety-mark'),
+              onPressed: () async {
+                await engine.markVerified(userId, info!);
+                setInner(() => verified = true);
+              },
+              child: const Text('They match'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Done'),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 /// A plain yes/no before something that removes data from this phone or from the list.

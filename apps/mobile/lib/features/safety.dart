@@ -260,6 +260,9 @@ Future<ReportReceipt?> showReportSheet(
   required String targetId,
   required String name,
   List<ChatMessage> messages = const [],
+
+  /// Who wrote a message of someone else's, when that is not [name] (a group has many senders).
+  String Function(ChatMessage message)? senderName,
 }) => showModalBottomSheet<ReportReceipt>(
   context: context,
   useRootNavigator: true,
@@ -270,6 +273,7 @@ Future<ReportReceipt?> showReportSheet(
     targetType: targetType,
     targetId: targetId,
     name: name,
+    senderName: senderName,
     messages: [
       for (final m in messages.reversed)
         // Local notices and photos that never went out have nothing to share.
@@ -342,6 +346,7 @@ typedef _Submit = Future<ReportReceipt> Function(
 class _ReportSheet extends StatefulWidget {
   final String targetType, targetId, name;
   final List<ChatMessage> messages;
+  final String Function(ChatMessage message)? senderName;
   final _Submit submit;
   const _ReportSheet({
     required this.targetType,
@@ -349,6 +354,7 @@ class _ReportSheet extends StatefulWidget {
     required this.name,
     required this.messages,
     required this.submit,
+    this.senderName,
   });
   @override
   State<_ReportSheet> createState() => _ReportSheetState();
@@ -422,6 +428,7 @@ class _ReportSheetState extends State<_ReportSheet> {
         children: [
           Text(switch (widget.targetType) {
             'user' => 'Report ${widget.name}',
+            'message' => 'Report ${widget.name}’s message',
             'post' => 'Report this post',
             'comment' => 'Report this comment',
             'story' => 'Report this story',
@@ -501,7 +508,7 @@ class _ReportSheetState extends State<_ReportSheet> {
                         overflow: TextOverflow.ellipsis,
                       ),
                       subtitle: Text(
-                        '${m.mine ? 'You' : widget.name}${m.isPhoto
+                        '${m.mine ? 'You' : widget.senderName?.call(m) ?? widget.name}${m.isPhoto
                             ? ' · Photo'
                             : m.isVoice
                             ? ' · Voice message'

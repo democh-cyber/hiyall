@@ -16,6 +16,9 @@ enum ChatMenuAction {
   safety,
   report,
   block,
+
+  /// A group's menu: Group info (members, safety numbers, leave).
+  groupInfo,
 }
 
 /// Opens the conversation menu and returns the chosen action, or null.
@@ -26,6 +29,7 @@ Future<ChatMenuAction?> showChatSafetyMenu(
   bool verified = false,
   bool pinned = false,
   bool autoTranslate = false,
+  bool group = false,
 }) {
   final t = ChatTokens.of(context);
   return showModalBottomSheet<ChatMenuAction>(
@@ -44,6 +48,7 @@ Future<ChatMenuAction?> showChatSafetyMenu(
       verified: verified,
       pinned: pinned,
       autoTranslate: autoTranslate,
+      group: group,
     ),
   );
 }
@@ -59,6 +64,10 @@ class ChatSafetyMenu extends StatelessWidget {
 
   /// This chat is pinned to the top of the list; auto-translate is on for it (this phone only).
   final bool pinned, autoTranslate;
+
+  /// The menu of a group: Group info instead of the person's profile, safety number and block (those are per
+  /// member, in Group info), and no report of the whole chat (a message is reported from its own menu).
+  final bool group;
   const ChatSafetyMenu({
     super.key,
     required this.muted,
@@ -66,6 +75,7 @@ class ChatSafetyMenu extends StatelessWidget {
     this.verified = false,
     this.pinned = false,
     this.autoTranslate = false,
+    this.group = false,
   });
 
   @override
@@ -103,27 +113,41 @@ class ChatSafetyMenu extends StatelessWidget {
                   ? 'Turn off auto-translate'
                   : 'Auto-translate',
               subtitle: autoTranslate
-                  ? 'Their messages are translated on your phone.'
-                  : 'Translate their messages on your phone. Kept only on this phone.',
+                  ? (group
+                        ? 'Messages are translated on your phone.'
+                        : 'Their messages are translated on your phone.')
+                  : (group
+                        ? 'Translate messages on your phone. Kept only on this phone.'
+                        : 'Translate their messages on your phone. Kept only on this phone.'),
               onTap: () => Navigator.pop(context, ChatMenuAction.autoTranslate),
             ),
-            _Tile(
-              key: const Key('chat-profile'),
-              icon: Icons.person_outline_rounded,
-              title: 'View $peerName’s profile',
-              onTap: () => Navigator.pop(context, ChatMenuAction.profile),
-            ),
-            _Tile(
-              key: const Key('chat-safety'),
-              icon: verified
-                  ? Icons.verified_user_rounded
-                  : Icons.shield_outlined,
-              title: 'Safety number',
-              subtitle: verified
-                  ? 'Verified. It shows again if their keys change.'
-                  : 'Not verified. Compare it with $peerName in person.',
-              onTap: () => Navigator.pop(context, ChatMenuAction.safety),
-            ),
+            if (group)
+              _Tile(
+                key: const Key('chat-group-info'),
+                icon: Icons.groups_rounded,
+                title: 'Group info',
+                subtitle: 'Members, safety numbers and leaving the group.',
+                onTap: () => Navigator.pop(context, ChatMenuAction.groupInfo),
+              )
+            else ...[
+              _Tile(
+                key: const Key('chat-profile'),
+                icon: Icons.person_outline_rounded,
+                title: 'View $peerName’s profile',
+                onTap: () => Navigator.pop(context, ChatMenuAction.profile),
+              ),
+              _Tile(
+                key: const Key('chat-safety'),
+                icon: verified
+                    ? Icons.verified_user_rounded
+                    : Icons.shield_outlined,
+                title: 'Safety number',
+                subtitle: verified
+                    ? 'Verified. It shows again if their keys change.'
+                    : 'Not verified. Compare it with $peerName in person.',
+                onTap: () => Navigator.pop(context, ChatMenuAction.safety),
+              ),
+            ],
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
               child: Divider(
@@ -135,7 +159,9 @@ class ChatSafetyMenu extends StatelessWidget {
               key: const Key('chat-clear'),
               icon: Icons.cleaning_services_outlined,
               title: 'Clear history on this phone',
-              subtitle: 'Removes the messages here. $peerName keeps theirs.',
+              subtitle: group
+                  ? 'Removes the messages here. The others keep theirs.'
+                  : 'Removes the messages here. $peerName keeps theirs.',
               onTap: () => Navigator.pop(context, ChatMenuAction.clearHistory),
             ),
             _Tile(
@@ -146,29 +172,35 @@ class ChatSafetyMenu extends StatelessWidget {
                   'Takes it out of your list. You can restore it for 30 days.',
               onTap: () => Navigator.pop(context, ChatMenuAction.deleteChat),
             ),
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
-              child: Divider(
-                height: 1,
-                color: t.hairline.withValues(alpha: .6),
+            if (!group) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  vertical: 6,
+                  horizontal: 16,
+                ),
+                child: Divider(
+                  height: 1,
+                  color: t.hairline.withValues(alpha: .6),
+                ),
               ),
-            ),
-            _Tile(
-              key: const Key('chat-report'),
-              icon: Icons.flag_outlined,
-              title: 'Report',
-              subtitle: 'Tell us what is wrong. You can also block from there.',
-              danger: true,
-              onTap: () => Navigator.pop(context, ChatMenuAction.report),
-            ),
-            _Tile(
-              key: const Key('chat-block'),
-              icon: Icons.block_rounded,
-              title: 'Block $peerName',
-              subtitle: 'They can’t message you, and the chat closes.',
-              danger: true,
-              onTap: () => Navigator.pop(context, ChatMenuAction.block),
-            ),
+              _Tile(
+                key: const Key('chat-report'),
+                icon: Icons.flag_outlined,
+                title: 'Report',
+                subtitle:
+                    'Tell us what is wrong. You can also block from there.',
+                danger: true,
+                onTap: () => Navigator.pop(context, ChatMenuAction.report),
+              ),
+              _Tile(
+                key: const Key('chat-block'),
+                icon: Icons.block_rounded,
+                title: 'Block $peerName',
+                subtitle: 'They can’t message you, and the chat closes.',
+                danger: true,
+                onTap: () => Navigator.pop(context, ChatMenuAction.block),
+              ),
+            ],
           ],
         ),
       ),

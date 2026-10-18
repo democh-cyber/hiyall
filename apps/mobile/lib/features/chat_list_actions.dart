@@ -8,6 +8,7 @@ import '../core/chat/chat_engine.dart';
 import '../shared/chat_tokens.dart';
 import '../shared/press_scale.dart';
 import '../shared/widgets.dart' show showMessage;
+import 'chat_groups_data.dart';
 import 'chat_parts.dart';
 
 // Chat list actions: swipe a row for pin, mute and delete, an edit mode with bulk select, and the Deleted chats
@@ -438,7 +439,17 @@ class _DeletedChatsScreenState extends State<DeletedChatsScreen> {
 
   Future<void> load() async {
     try {
-      final next = await widget.engine.hiddenConversations();
+      final chats = await widget.engine.hiddenConversations();
+      // Deleted groups are listed with the chats; a failure to read them leaves the chats as they are.
+      var groups = const <ChatConversation>[];
+      try {
+        final me = widget.engine.userId;
+        groups = [
+          for (final g in await widget.engine.hiddenGroups())
+            groupAsConversation(g, me),
+        ];
+      } catch (_) {}
+      final next = [...chats, ...groups];
       if (mounted) {
         setState(() {
           items = next;
@@ -590,12 +601,16 @@ class _DeletedChatsScreenState extends State<DeletedChatsScreen> {
 class ChatListToolbar extends StatelessWidget {
   final bool editing, canEdit;
   final VoidCallback onToggleEdit, onDeleted;
+
+  /// Starts a group chat; null leaves the button out.
+  final VoidCallback? onNewGroup;
   const ChatListToolbar({
     super.key,
     required this.editing,
     required this.canEdit,
     required this.onToggleEdit,
     required this.onDeleted,
+    this.onNewGroup,
   });
 
   @override
@@ -618,6 +633,17 @@ class ChatListToolbar extends StatelessWidget {
             ),
             child: Text(editing ? 'Done' : 'Edit'),
           ),
+          if (onNewGroup != null)
+            TextButton.icon(
+              key: const Key('chats-new-group'),
+              onPressed: editing ? null : onNewGroup,
+              icon: const Icon(Icons.group_add_outlined, size: 18),
+              label: const Text('New group'),
+              style: TextButton.styleFrom(
+                minimumSize: const Size(ChatMetrics.hit, ChatMetrics.hit),
+                foregroundColor: t.accent,
+              ),
+            ),
           TextButton.icon(
             key: const Key('chats-deleted-link'),
             onPressed: onDeleted,

@@ -14,6 +14,7 @@ import 'core/deep_link.dart';
 import 'core/location_sync.dart';
 import 'core/state.dart';
 import 'features/chat.dart';
+import 'features/chat_groups_info.dart';
 import 'features/help_safety.dart';
 import 'l10n/l10n.dart';
 import 'features/home.dart';
@@ -323,6 +324,14 @@ final routerProvider = Provider<GoRouter>((ref) {
                     ),
                   );
                 },
+                routes: [
+                  // A group's info: members, safety numbers, add, remove, leave.
+                  GoRoute(
+                    path: 'info',
+                    builder: (context, state) =>
+                        GroupInfoScreen(id: state.pathParameters['id']!),
+                  ),
+                ],
               ),
             ],
           ),

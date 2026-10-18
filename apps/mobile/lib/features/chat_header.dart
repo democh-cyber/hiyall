@@ -24,6 +24,14 @@ class ChatHeader extends StatelessWidget {
   final DateTime? now;
   final VoidCallback onBack, onSafety, onOptions;
   final VoidCallback? onProfile;
+
+  /// A group's header: [leading] (the stack of member photos) replaces the person's photo, [subtitle] ("5
+  /// members") replaces the presence line, [profileLabel] says what a tap opens (Group info), and there is no
+  /// safety shield for one person (the safety numbers are per member in Group info). A group has no presence
+  /// and no typing line.
+  final Widget? leading;
+  final String? subtitle, profileLabel;
+  final bool showSafety;
   const ChatHeader({
     super.key,
     required this.name,
@@ -39,6 +47,10 @@ class ChatHeader extends StatelessWidget {
     this.online = false,
     this.lastSeenAt,
     this.now,
+    this.leading,
+    this.subtitle,
+    this.profileLabel,
+    this.showSafety = true,
   });
 
   static const height = ChatMetrics.headerHeight;
@@ -81,7 +93,7 @@ class ChatHeader extends StatelessWidget {
                       key: const Key('chat-header-profile'),
                       onTap: onProfile,
                       borderRadius: BorderRadius.circular(18),
-                      semanticLabel: 'Open $name’s profile',
+                      semanticLabel: profileLabel ?? 'Open $name’s profile',
                       child: Padding(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 4,
@@ -89,31 +101,34 @@ class ChatHeader extends StatelessWidget {
                         ),
                         child: Row(
                           children: [
-                            Stack(
-                              clipBehavior: Clip.none,
-                              children: [
-                                PersonAvatar(
-                                  name: name,
-                                  avatarUrl: avatarUrl,
-                                  userId: userId,
-                                  radius: narrow ? 17 : 20,
-                                  initialStyle: const TextStyle(
-                                    fontFamily: 'SpaceGrotesk',
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                                if (online)
-                                  Positioned(
-                                    right: -2,
-                                    bottom: -2,
-                                    child: PresenceDot(
-                                      key: const Key('chat-online-dot'),
-                                      size: 14,
-                                      ringColor: t.bg,
+                            if (leading != null)
+                              leading!
+                            else
+                              Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  PersonAvatar(
+                                    name: name,
+                                    avatarUrl: avatarUrl,
+                                    userId: userId,
+                                    radius: narrow ? 17 : 20,
+                                    initialStyle: const TextStyle(
+                                      fontFamily: 'SpaceGrotesk',
+                                      fontWeight: FontWeight.w700,
                                     ),
                                   ),
-                              ],
-                            ),
+                                  if (online)
+                                    Positioned(
+                                      right: -2,
+                                      bottom: -2,
+                                      child: PresenceDot(
+                                        key: const Key('chat-online-dot'),
+                                        size: 14,
+                                        ringColor: t.bg,
+                                      ),
+                                    ),
+                                ],
+                              ),
                             const SizedBox(width: 10),
                             Expanded(child: _titles(context, t)),
                           ],
@@ -134,10 +149,11 @@ class ChatHeader extends StatelessWidget {
                         ),
                       ),
                     ),
-                  SafetyShieldButton(
-                    key: const Key('safety-number-button'),
-                    onTap: canAct ? onSafety : null,
-                  ),
+                  if (showSafety)
+                    SafetyShieldButton(
+                      key: const Key('safety-number-button'),
+                      onTap: canAct ? onSafety : null,
+                    ),
                   ChatIconButton(
                     key: const Key('chat-options'),
                     icon: Icons.more_vert_rounded,
@@ -176,8 +192,20 @@ class ChatHeader extends StatelessWidget {
         key: const Key('chat-header-subtitle'),
         height: 18,
         child: Align(
-          alignment: Alignment.centerLeft,
-          child: typing
+          alignment: AlignmentDirectional.centerStart,
+          child: subtitle != null
+              ? Text(
+                  subtitle!,
+                  key: const Key('chat-header-members'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: t.textSecondary,
+                  ),
+                )
+              : typing
               ? Text(
                   'typing…',
                   maxLines: 1,
