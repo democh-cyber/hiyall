@@ -112,6 +112,38 @@ describe('case', () => {
     expect(screen.getByText('Your role can read cases but not act on them.')).toBeInTheDocument()
   })
 
+  it('shows the roster of a reported group and nothing else about it', async () => {
+    mockApi({
+      ...signedIn('viewer'),
+      [`GET /reports/${id}`]: () => ({
+        data: theCase({
+          targetType: 'message',
+          group: {
+            groupId: 'g-1', name: 'weekend crew', ownerId: 'u-3', ownerUsername: 'olga',
+            members: [
+              { userId: 'u-3', username: 'olga', role: 'owner', state: 'active' },
+              { userId: 'u-1', username: 'bob', role: 'member', state: 'active' },
+              { userId: 'u-4', username: 'cleo', role: 'member', state: 'invited' },
+            ],
+          },
+        }),
+      }),
+    })
+    renderAt(`/reports/${id}`)
+    expect(await screen.findByRole('heading', { name: 'Group' })).toBeInTheDocument()
+    expect(screen.getByText('weekend crew')).toBeInTheDocument()
+    expect(screen.getByText('2 active, 1 invited')).toBeInTheDocument()
+    expect(screen.getByText('@cleo')).toBeInTheDocument()
+    expect(screen.getByText(/staff never see them/)).toBeInTheDocument()
+  })
+
+  it('shows no group section for a report about something else', async () => {
+    mockApi({ ...signedIn('viewer'), [`GET /reports/${id}`]: () => ({ data: theCase() }) })
+    renderAt(`/reports/${id}`)
+    await screen.findByText('the shared message text')
+    expect(screen.queryByRole('heading', { name: 'Group' })).not.toBeInTheDocument()
+  })
+
   it('needs a reason of at least 10 characters before a warning can be sent', async () => {
     const user = userEvent.setup()
     const { calls } = mockApi({

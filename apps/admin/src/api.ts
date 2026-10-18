@@ -80,6 +80,15 @@ export interface ModAction {
   createdAt: string
 }
 
+/** Roster metadata of a reported group: who runs it and who is in it. Never anything that was said. */
+export interface GroupMeta {
+  groupId: string
+  name: string
+  ownerId: string
+  ownerUsername: string
+  members: { userId: string; username: string; role: 'owner' | 'member'; state: 'active' | 'invited' }[]
+}
+
 export interface Case extends ReportRow {
   description: string
   disclosureConsent: boolean
@@ -90,6 +99,8 @@ export interface Case extends ReportRow {
   heldImages: HeldImage[]
   priorReports: ReportRef[]
   actions: ModAction[]
+  /** Present when the report is about a group or a message in one. */
+  group?: GroupMeta
 }
 
 export interface UserView extends Member {

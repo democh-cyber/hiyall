@@ -88,6 +88,26 @@ export function Case() {
         )}
       </section>
 
+      {c.group && (
+        <section aria-labelledby="group-title">
+          <h2 id="group-title">Group</h2>
+          <p className="hint">Who is in the group and who runs it. Group messages are end-to-end encrypted: staff never see them, only what the reporter shared above.</p>
+          <dl className="facts">
+            <dt>Name</dt><dd>{c.group.name || <em>(none)</em>}</dd>
+            <dt>Owner</dt><dd>@{c.group.ownerUsername || 'unknown'}</dd>
+            <dt>People</dt><dd>{c.group.members.filter((m) => m.state === 'active').length} active, {c.group.members.filter((m) => m.state === 'invited').length} invited</dd>
+          </dl>
+          <table>
+            <thead><tr><th scope="col">Member</th><th scope="col">Role</th><th scope="col">State</th></tr></thead>
+            <tbody>
+              {c.group.members.map((m) => (
+                <tr key={m.userId}><td>@{m.username || 'unknown'}</td><td>{m.role}</td><td>{m.state}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+
       <section aria-labelledby="content-title">
         <h2 id="content-title">Reported content</h2>
         {!hasPreview(c.targetType) ? (
