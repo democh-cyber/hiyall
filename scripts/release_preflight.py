@@ -32,6 +32,12 @@ Environment:
   DEV_FIREBASE_PROJECT_ID / DEV_MEDIA_BUCKETS
                             extra comma lists added to config/environments.json (production must not equal any)
   PREFLIGHT_IMAGE           a built API image; when set and docker is present, its /migrations is compared
+  PLANS_ENFORCED / ADMOB_SSV_AD_UNIT_IDS
+                            gate s: mirrors of the production API setting. With either on (plans enforced, or rewarded-ad units
+                            configured on the server) the AdMob release inputs below must be real, else they only warn
+  ADMOB_APP_ID_ANDROID / ADMOB_APP_ID_IOS / ADMOB_REWARDED_ANDROID / ADMOB_REWARDED_IOS
+                            the AdMob app ids and rewarded ad unit ids of the release build (config/mobile-release.<env>.local.env
+                            or the environment; docs/mobile/18-shop-and-ads.md). Google's published test ids are refused (gate s)
   PREFLIGHT_WEB=1           also require the web build inputs (FIREBASE_WEB_APP_ID, FIREBASE_AUTH_DOMAIN,
                             WEB_CANONICAL_URL)
 Python 3.8+, standard library only.
@@ -289,7 +295,8 @@ def release_inputs():
     for k in list(values) + ["API_BASE_URL", "FIREBASE_PROJECT_ID", "FIREBASE_MESSAGING_SENDER_ID", "FIREBASE_API_KEY",
                              "FIREBASE_ANDROID_APP_ID", "FIREBASE_IOS_APP_ID", "FIREBASE_WEB_APP_ID", "FIREBASE_AUTH_DOMAIN",
                              "SENTRY_DSN", "SUPPORT_EMAIL", "SAFETY_EMAIL", "PRIVACY_EMAIL", "APP_STORE_URL", "PLAY_STORE_URL",
-                             "WEB_CANONICAL_URL", "APP_VERSION", "FIREBASE_IOS_BUNDLE_ID", "ENABLE_DEV_LOGIN"]:
+                             "WEB_CANONICAL_URL", "APP_VERSION", "FIREBASE_IOS_BUNDLE_ID", "ENABLE_DEV_LOGIN",
+                             "ADMOB_APP_ID_ANDROID", "ADMOB_APP_ID_IOS", "ADMOB_REWARDED_ANDROID", "ADMOB_REWARDED_IOS"]:
         if os.environ.get(k):  # the environment wins, as in scripts/build-release.sh
             values[k] = os.environ[k]
     return env_name, path, values
@@ -561,7 +568,7 @@ def gate_ids(g):
     modes = re.search(r"<key>UIBackgroundModes</key>\s*<array>(.*?)</array>", plist, re.S)
     if not modes or re.findall(r"<string>([^<]*)</string>", modes.group(1)) != ["remote-notification"]:
         g.bad("UIBackgroundModes is not exactly [remote-notification]", "remove other background modes; App Review asks for a reason for each")
-    for key in ("NSLocationWhenInUseUsageDescription", "NSPhotoLibraryUsageDescription", "NSCameraUsageDescription"):
+    for key in ("NSLocationWhenInUseUsageDescription", "NSPhotoLibraryUsageDescription", "NSCameraUsageDescription", "NSMicrophoneUsageDescription"):
         m = re.search(r"<key>%s</key>\s*<string>([^<]*)</string>" % key, plist)
         if not m or len(m.group(1).strip()) < 20:
             g.bad("Info.plist %s is missing or too short" % key, "write an honest one-sentence purpose")
@@ -1038,6 +1045,76 @@ def gate_ios_signing(g):
               "add them (docs/deployment/11-environments.md item 9), or leave ios out of the RELEASE_PLATFORMS variable")
     else:
         g.note("not checked outside CI: the release workflow sets PREFLIGHT_IOS_SIGNING_IN_CI from its secrets. The first iOS archive must be rehearsed on a Mac (docs/mobile/16-release-and-reliability.md)")
+
+
+# --------------------------------------------------------------------------------------------------------------
+# AdMob. Google publishes test ids that serve test ads and earn nothing; every one of them uses this publisher. A release build
+# that carries one (or none, or a malformed one) either crashes at start (Android, no app id) or shows test ads that credit
+# nothing. It is a hard failure only when ads can actually be reached: the owner switched PLANS_ENFORCED on, or configured the
+# server's rewarded ad units (ADMOB_SSV_AD_UNIT_IDS). Otherwise it is a printed warning, because a release without ads is allowed.
+# docs/mobile/18-shop-and-ads.md names the variables; the Android Gradle build refuses an empty or test app id on its own.
+ADMOB_TEST_PUBLISHER = "ca-app-pub-3940256099942544"
+ADMOB_APP_ID_RE = re.compile(r"^ca-app-pub-(\d{16})~\d{10}$")
+ADMOB_UNIT_ID_RE = re.compile(r"^ca-app-pub-(\d{16})/(\d{10})$")
+ADMOB_PLATFORM_VARS = {"android": ("ADMOB_APP_ID_ANDROID", "ADMOB_REWARDED_ANDROID"), "ios": ("ADMOB_APP_ID_IOS", "ADMOB_REWARDED_IOS")}
+
+
+def admob_strict(plans_enforced, ssv_units):
+    """True when ads or paid plans are on in production, so AdMob problems fail the release."""
+    return bool(plans_enforced) or bool(ssv_units)
+
+
+def admob_problems(values, platforms, ssv_units=()):
+    """(message, fix) for every problem with the AdMob release inputs of the given platforms. values: the release inputs;
+    ssv_units: the server's ADMOB_SSV_AD_UNIT_IDS (full ids or only the part after the slash)."""
+    out = []
+    for platform in sorted(platforms):
+        if platform not in ADMOB_PLATFORM_VARS:
+            continue
+        app_var, unit_var = ADMOB_PLATFORM_VARS[platform]
+        app, unit = (values.get(app_var) or "").strip(), (values.get(unit_var) or "").strip()
+        publishers = {}
+        for name, val, regex, shape, fix in (
+                (app_var, app, ADMOB_APP_ID_RE, "ca-app-pub-<publisher>~<app>", "AdMob console > Apps > App settings: the App ID of the %s app; set %s in config/mobile-release.<env>.local.env or as a repository variable (docs/mobile/18-shop-and-ads.md)" % (platform, app_var)),
+                (unit_var, unit, ADMOB_UNIT_ID_RE, "ca-app-pub-<publisher>/<unit>", "AdMob console > Ad units: the ID of the %s rewarded unit; set %s (it is passed to the build as --dart-define, docs/mobile/18-shop-and-ads.md)" % (platform, unit_var))):
+            if not val:
+                out.append(("%s is not set (the %s release has %s)" % (name, platform, "no AdMob app id" if name == app_var else "no rewarded ads"), fix))
+            elif val.startswith(ADMOB_TEST_PUBLISHER):
+                out.append(("%s is one of Google's published TEST ids (%s): a release build must use the real AdMob id" % (name, val), fix))
+            elif not regex.match(val):
+                out.append(("%s is not an AdMob id of the form %s (got %r)" % (name, shape, val[:40]), fix))
+            else:
+                publishers[name] = regex.match(val).group(1)
+        if len(set(publishers.values())) > 1:
+            out.append(("%s and %s belong to different AdMob publishers" % (app_var, unit_var), "take both from the same AdMob account"))
+        if ssv_units and unit and ADMOB_UNIT_ID_RE.match(unit) and not unit.startswith(ADMOB_TEST_PUBLISHER):
+            allowed = {x.strip() for x in ssv_units}
+            if unit not in allowed and unit.split("/")[-1] not in allowed:
+                out.append(("%s is not listed in the server's ADMOB_SSV_AD_UNIT_IDS: the server would never credit coins for ads from this unit" % unit_var,
+                            "add the unit id to ADMOB_SSV_AD_UNIT_IDS on the API (docs/deployment/10-deploy-guide.md, section 12)"))
+    return out
+
+
+@gate("s", "AdMob release configuration is real when ads are enabled")
+def gate_admob(g):
+    api_values = parse_env_file(os.environ.get("HIYALL_API_ENV_FILE") or p("config/api.production.env"))
+    plans = (os.environ.get("PLANS_ENFORCED") or api_values.get("PLANS_ENFORCED", "")).strip().lower() == "true"
+    ssv = [x.strip() for x in (os.environ.get("ADMOB_SSV_AD_UNIT_IDS") or api_values.get("ADMOB_SSV_AD_UNIT_IDS", "")).split(",") if x.strip()]
+    strict = admob_strict(plans, ssv)
+    _, _, values = release_inputs()
+    problems = admob_problems(values, release_platforms(), ssv)
+    if strict:
+        g.note("ads or paid plans are on (%s): AdMob problems fail the release" % ", ".join(x for x in ("PLANS_ENFORCED=true" if plans else "", "ADMOB_SSV_AD_UNIT_IDS set" if ssv else "") if x))
+    else:
+        g.note("PLANS_ENFORCED is off and no ADMOB_SSV_AD_UNIT_IDS is set (in this run's environment or config/api.production.env): AdMob problems are warnings. "
+               "In CI set the repository variables PLANS_ENFORCED and ADMOB_SSV_AD_UNIT_IDS to mirror production, or this gate cannot know ads are on")
+    for msg, fix in problems:
+        if strict:
+            g.bad(msg, fix)
+        else:
+            g.note("warning: %s" % msg)
+    if not strict and "android" in release_platforms() and not (values.get("ADMOB_APP_ID_ANDROID") or "").strip():
+        g.note("warning: the Android release build still needs ADMOB_APP_ID_ANDROID even with ads off: Gradle refuses a release build without it (google_mobile_ads needs an app id at start)")
 
 
 # --------------------------------------------------------------------------------------------------------------

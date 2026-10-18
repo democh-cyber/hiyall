@@ -91,6 +91,14 @@ jobs:
       # scanner, and then also RELEASE_ACK_UNSCANNED=I_ACCEPT_UNSCANNED_PHOTOS (gate q; docs/deployment/12, step 0).
       SCAN_ALLOW_NONE: ${{ vars.SCAN_ALLOW_NONE }}
       RELEASE_ACK_UNSCANNED: ${{ vars.RELEASE_ACK_UNSCANNED }}
+      # Mirrors of the production API settings for gate s: with PLANS_ENFORCED=true, or ADMOB_SSV_AD_UNIT_IDS set (the rewarded ad
+      # units the server credits), the AdMob ids below must be real and not Google's test ids; otherwise they only warn.
+      PLANS_ENFORCED: ${{ vars.PLANS_ENFORCED }}
+      ADMOB_SSV_AD_UNIT_IDS: ${{ vars.ADMOB_SSV_AD_UNIT_IDS }}
+      ADMOB_APP_ID_ANDROID: ${{ vars.ADMOB_APP_ID_ANDROID }}
+      ADMOB_APP_ID_IOS: ${{ vars.ADMOB_APP_ID_IOS }}
+      ADMOB_REWARDED_ANDROID: ${{ vars.ADMOB_REWARDED_ANDROID }}
+      ADMOB_REWARDED_IOS: ${{ vars.ADMOB_REWARDED_IOS }}
       API_BASE_URL: ${{ vars.API_BASE_URL }}
       SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
       FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
@@ -333,6 +341,9 @@ jobs:
           PRIVACY_EMAIL: ${{ vars.PRIVACY_EMAIL }}
           FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
           FIREBASE_MESSAGING_SENDER_ID: ${{ vars.FIREBASE_MESSAGING_SENDER_ID }}
+          # AdMob (docs/mobile/18-shop-and-ads.md): Gradle refuses a release build without the app id; the unit id goes in as a dart-define.
+          ADMOB_APP_ID_ANDROID: ${{ vars.ADMOB_APP_ID_ANDROID }}
+          ADMOB_REWARDED_ANDROID: ${{ vars.ADMOB_REWARDED_ANDROID }}
         run: scripts/build-release.sh android
       - name: Upload Dart debug symbols to Sentry
         # Obfuscated crashes are unreadable without these. Skipped, with a notice on the run, until the three
@@ -434,6 +445,9 @@ jobs:
           PRIVACY_EMAIL: ${{ vars.PRIVACY_EMAIL }}
           FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
           FIREBASE_MESSAGING_SENDER_ID: ${{ vars.FIREBASE_MESSAGING_SENDER_ID }}
+          # AdMob (docs/mobile/18-shop-and-ads.md): the app id goes to the git-ignored Admob.xcconfig, the unit id in as a dart-define.
+          ADMOB_APP_ID_IOS: ${{ vars.ADMOB_APP_ID_IOS }}
+          ADMOB_REWARDED_IOS: ${{ vars.ADMOB_REWARDED_IOS }}
         run: scripts/build-release.sh ios
       - name: Upload Dart debug symbols to Sentry
         # Obfuscated crashes are unreadable without these. Skipped, with a notice on the run, until the three

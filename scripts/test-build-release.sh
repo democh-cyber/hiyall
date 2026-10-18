@@ -78,4 +78,13 @@ sed -i.bak 's/^FIREBASE_MESSAGING_SENDER_ID = 1  $/FIREBASE_MESSAGING_SENDER_ID=
 out="$(env -i PATH="$PATH" HOME="$HOME" HIYALL_RELEASE_ENV=quoted APP_VERSION=1.2.3 APP_BUILD_NUMBER=7 "$tmp/scripts/build-release.sh" android --check 2>&1)"; status=$?
 if [[ $status -eq 0 ]] && grep -q "flutter build appbundle" <<<"$out"; then echo "ok: a fully quoted release env file is accepted"
 else echo "FAIL: fully quoted env file (status $status)"; echo "$out" | sed 's/^/    /'; fail=1; fi
+
+# AdMob (docs/mobile/18-shop-and-ads.md): the rewarded unit id of the platform being built is a dart-define; Google's test ids only warn here
+# (release gate s decides whether they fail); the iOS app id file is git-ignored.
+expect "the rewarded unit id is passed as a dart-define" ok "ADMOB_REWARDED_ANDROID" ADMOB_REWARDED_ANDROID=ca-app-pub-1234567890123456/2222222222 ADMOB_APP_ID_ANDROID=ca-app-pub-1234567890123456~1111111111
+expect "a test AdMob id only warns in the build script" ok "published TEST ids" ADMOB_APP_ID_ANDROID=ca-app-pub-3940256099942544~3347511713
+expect "a malformed AdMob id only warns" ok "is not an AdMob ad unit id" ADMOB_REWARDED_ANDROID=REPLACE_ME
+expect "no AdMob id warns that Gradle will refuse an Android release" ok "Gradle"
+if git -C "$root" check-ignore -q apps/mobile/ios/Flutter/Admob.xcconfig; then echo "ok: Admob.xcconfig is git-ignored"; else echo "FAIL: Admob.xcconfig is not git-ignored"; fail=1; fi
+if grep -q '^#include? "Admob.xcconfig"$' "$root/apps/mobile/ios/Flutter/Release.xcconfig"; then echo "ok: Release.xcconfig includes the optional Admob.xcconfig"; else echo "FAIL: Release.xcconfig lacks #include? \"Admob.xcconfig\""; fail=1; fi
 exit $fail

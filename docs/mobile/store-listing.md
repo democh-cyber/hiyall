@@ -3,7 +3,9 @@
 Inputs for App Store Connect (App Privacy), the Play Console (Data safety) and review notes, derived from
 what the code sends. Re-derive them whenever a feature adds or changes data; the code references are the
 source of truth. **Everything marked "decide" or "uncertain" needs the owner or counsel; none of this is
-legal advice.** The same facts are declared in `ios/Runner/PrivacyInfo.xcprivacy`.
+legal advice.** The same facts are declared in `ios/Runner/PrivacyInfo.xcprivacy`. The step-by-step submission list, with every
+owner-account item, is [13-store-submission-checklist.md](../deployment/13-store-submission-checklist.md). Features that exist in the code but
+are switched off (`PLANS_ENFORCED=false`: coins, Premium, rewarded ads) are marked "when paid features are on"; answer the forms for the state you ship.
 
 ## Listing fields (owner completes; preflight gate i fails while a field is unfinished)
 
@@ -17,7 +19,7 @@ Unfinished fields are marked with the word in capitals that gate i searches for;
 | App name (both stores) | Hiyall |
 | Apple subtitle (30) | Say hi to y'all |
 | Play short description (80) | Meet people near you and everywhere. Private chats. Ages 13+. |
-| Full description (draft; no claim that is not built) | Hiyall is a social app for meeting people. Find people in Discover, follow friends, share photos and stories, join spaces, and chat one to one with end-to-end encrypted messages and photos. Nearby is opt-in and only ever shows a rounded distance. Block and report on every profile and chat. For ages 13 and up. |
+| Full description (draft; no claim that is not built) | Hiyall is a social app for meeting people. Find people in Discover, follow friends, share photos and stories, join spaces, and chat one to one with end-to-end encrypted messages, photos, voice messages and videos, and translate messages on your device. Nearby is opt-in and only ever shows a rounded distance. Block and report on every profile and chat. For ages 13 and up. |
 | Apple keywords (100) | TODO: owner |
 | Primary category | Social Networking (Apple) / Social (Play) |
 | Support URL | TODO: https page with a working contact (Apple tests it) |
@@ -41,9 +43,20 @@ Unfinished fields are marked with the word in capitals that gate i searches for;
 | Email address, sign-in provider id | Sign-up and sign-in (Firebase Auth) | In Firebase and as the account's identity | `core/auth/*`, `identity/` |
 | Birth date | Onboarding age step | **Yes, stored privately** on the server (never shown to other members; it sets the age band and the age shown in years) and deleted with the account. A date under 13 is refused and only the sign-in identifier, a count and a time are kept (7 days of cooldown, deleted after 30 days; no date) | `completeOnboarding`, `age_gate_refusals` |
 | Display name, username, bio, headline, profession, education, pronouns, gender, country, region, city, languages, interests, links | Profile editor | Yes, shown per the member's audience settings | `core/api.dart` `updateProfile` |
-| Profile, post, story photos | Upload | Yes (R2), metadata stripped | `avatar_upload.dart`, `pulse.dart` |
+| Profile and gallery photos (up to 8), post and story photos | Upload | Yes (R2), metadata stripped | `avatar_upload.dart`, `pulse.dart`, `core/profile_v2.dart` |
+| Language levels, personality tags, about me, hometown (a minor's: 40 characters, confirmed same-band friends only, hidden by default), optional birthday (adults, month and day) | Profile editor and Settings | Yes, shown per the audience settings | `core/profile_v2.dart`, `docs/api/25-profile-and-discovery-v2.md` |
+| Local time and distance display choices, who can see visitors (adults only, off by default) | Settings | Yes | `features/settings_sharing.dart` |
+| Profile visits and "Places I've visited" | Opening a profile | Yes (pair rows, first and last visit); clearing the history deletes them | `internal/store/profilev2.go`, `internal/store/social.go` |
+| Voice notes on posts and stories (up to 60 s, audio) | Posting | Yes (R2) as uploaded; **not scanned**; deleted with the post or story | `core/voice.dart`, `internal/media/audio.go` |
+| Saved Discover filters | Using Discover | **No: on the device only** (secure storage, removed at sign-out) | `core/discover_prefs.dart` |
 | Posts, comments, story text, space discussions and members | Posting | Yes | `core/pulse.dart`, `core/spaces.dart` |
-| Chat messages and chat photos | Sending a chat | Ciphertext only (end-to-end encrypted); the server also sees who talks to whom and when | `core/chat/*` |
+| Chat messages, photos, voice messages (up to 5 min) and videos (up to 60 s) | Sending a chat | Ciphertext only (end-to-end encrypted; blobs kept 30 days after the message); the server also sees who talks to whom and when. The microphone (and the camera for a video) is used only while recording | `core/chat/*`, `docs/api/26-chat-voice-video-and-list.md` |
+| Pinned chats, chats deleted from the list (restorable 30 days) | Using chat | Yes, per member; the other person is not told | `internal/store/chatlist.go` |
+| Translation language packs | The first translation into a language, after asking | The app downloads a pack from Google (ML Kit). **Message text never leaves the phone and is not sent to us** (uncertain: ML Kit's own usage metrics; check Google's ML Kit data disclosure) | `core/translate/*` |
+| Messages to support | Settings > Help & Safety | **Plaintext** on our server, readable by staff, kept 365 days after the thread closes, in the data export, deleted with the account | `core/support.dart`, `docs/api/27-stories-notices-support.md` |
+| Notification choices, notice board read time | Settings | Yes; the notice pointer is one time per member, nothing per notice | `core/notification_prefs.dart`, `core/notices.dart` |
+| Coin balance and ledger, purchases and subscription (**when paid features are on**) | A store purchase | Yes; store transaction ids kept only as a SHA-256 hash, no receipts or tokens; payment details never reach us; in the export; deleted with the account; a live subscription is cancelled in the store | `core/billing/*`, `docs/api/28-billing.md` |
+| Rewarded ads (**when paid features are on**, adults only, after Google's consent message) | Watching an ad | Google AdMob handles the ad and reads the advertising ID and ad interactions itself. We send AdMob only the account id and a one-time code; ad sessions are kept 3 days. Minors never get the SDK started | `core/billing/ads_service.dart` |
 | Approximate location | Only when the person turns Nearby on (after the explainer; off by default for everyone, also from Settings) and when they ask to refresh; there is no automatic refresh and no background reading | Offset and rounded server-side (about 1 km; about 11 km under 18), shared for 24 h, deleted after 7 days if not refreshed, deleted at once when Nearby is turned off. Sign-out asks the server to delete it (best effort); if that fails, or the session is ended elsewhere, the position stops being shown within 24 h and is deleted within 7 days | `core/nearby.dart`, `features/nearby_optin.dart` |
 | Push token, chat device key, platform | Notifications consent, first chat | Yes, until signed out or the token is rejected; chat devices unused for 35 days are removed (a removed device registers again when the app returns) | `core/push/*` |
 | Notification content sent through Google (FCM) and, on iPhones, Apple (APNs) | Each push | Not stored by us beyond delivery. A visible notification: title "Hiyall"; a chat shows "New message" and carries the conversation id, never message text; friend request, follow and space invitation notices can include another member's display name; device notices and "Account deletion scheduled" say so; Google and Apple see that a notification was sent, when, and what it shows | `internal/push/push.go` |
@@ -53,8 +66,11 @@ Unfinished fields are marked with the word in capitals that gate i searches for;
 | Abuse-prevention records | Using the app | Counters (rate limits, daily limits), a 24 hour idempotency key on posting, keyed hashes of the account, the network address and the Nearby search centre for 3 days (also used to cap how many accounts search Nearby from one address), a short-lived queue of account ids for recounting follower numbers (normally cleared within an hour) | `internal/ratelimit`, `internal/store/idempotency.go` |
 | IP address, user agent | Every request | In server logs only (retention is the host's) | uncertain: confirm host log retention |
 
-Not collected: contacts, calendar, microphone, advertising id, browsing history, precise GPS history,
-financial data, health data. No third-party analytics or advertising SDKs. **Tracking: none.**
+Not collected: contacts, calendar, browsing history, precise GPS history, health data, payment details (the stores take them). The microphone
+and camera are used only while the member records or takes a photo, never in the background. No third-party analytics SDK. The build contains
+Google's AdMob SDK (rewarded ads), which is not started while `PLANS_ENFORCED` is off and is never started for a member under 18; the Android
+merge brings in the advertising-ID permission with it (see the checklist). **Tracking: none declared** while ads are off; the app never asks for App
+Tracking Transparency. Decide with the owner whether that still holds once AdMob is on (uncertain: Google's AdMob guidance for the App Privacy form).
 
 ## Apple: App Privacy ("nutrition label")
 
@@ -67,13 +83,17 @@ not linked).
 | Contact Info: Name | Yes | Display name |
 | Identifiers: User ID | Yes | |
 | Identifiers: Device ID | Yes | Push token and chat device key. Uncertain whether Apple wants a push token here; declared to be safe |
-| User Content: Photos or Videos | Yes | |
+| User Content: Photos or Videos | Yes | Photos, gallery, and chat videos (the chat ones are end-to-end encrypted) |
+| User Content: Audio Data | Yes | Voice notes on posts and stories, and chat voice messages (the chat ones are ciphertext). Declared in the manifest |
 | User Content: Other User Content | Yes | Posts, comments, stories, bio |
-| User Content: Emails or Text Messages | Yes (decide) | Chat is end-to-end encrypted and unreadable to us, but the server stores the ciphertext and delivery metadata. Apple's guidance on "collected" and E2EE is not explicit; declaring is the conservative reading |
+| User Content: Emails or Text Messages | Yes (decide) | Chat is end-to-end encrypted and unreadable to us, but the server stores the ciphertext and delivery metadata. Apple's guidance on "collected" and E2EE is not explicit; declaring is the conservative reading. Support messages are plaintext and are collected for certain |
+| User Content: Customer Support | Yes | Messages to the support team (plaintext, readable by staff) |
 | Location: Coarse Location | Yes | Opt-in. The phone asks the OS for an approximate fix, but sends the coordinates it gets and the server rounds them; if you would rather declare Precise Location, change both this and the manifest |
-| Other Data Types | Yes | Birth date (stored privately for the age band), gender, interests, languages |
+| Other Data Types | Yes | Birth date (stored privately for the age band), gender, interests, languages and levels, personality tags, about me, hometown, optional birthday (month and day) |
 | Diagnostics: Crash Data | Yes | Only with Sentry; not linked. Sentry is a service provider, not "sharing" |
-| Health, Financial, Sensitive Info, Contacts, Browsing/Search History, Purchases, Usage Data, Advertising | No | |
+| Health, Financial Info, Sensitive Info, Contacts, Browsing/Search History | No | Payment details never reach us |
+| Purchases: Purchase History | **When paid features are on: yes** (linked, App Functionality). No while they are off | Decide with the owner at launch |
+| Identifiers: Device ID, Usage Data: Advertising Data and Product Interaction, Diagnostics (AdMob) | **When rewarded ads are on: follow Google's AdMob App Privacy guidance** (third-party advertising purposes). No while ads are off | Owner decision at launch; the AdMob SDK ships its own privacy manifest, compare it in the Xcode privacy report |
 
 Privacy policy URL: the hosted copy of `assets/legal/privacy-policy.md`. Required fields in the listing: age
 rating 12+/13+ (the app is open to 13+ with user-generated content: answer "yes" to UGC and unrestricted web
@@ -108,14 +128,17 @@ Sentry for crash reports; declare these as service providers, not "sharing").
 | Personal info: Name, Email address, User IDs | Yes | No | Required | App functionality, Account management |
 | Personal info: Other (birth date, gender) | Yes | No | Required (birth date) / optional (gender) | App functionality |
 | Photos and videos | Yes | No | Optional | App functionality |
-| Messages: Other in-app messages | Yes (ciphertext) | No | Optional | App functionality |
+| Audio: Voice or sound recordings | Yes (voice notes; chat voice messages as ciphertext) | No | Optional | App functionality |
+| Messages: Other in-app messages | Yes (chat as ciphertext; support messages as plaintext) | No | Optional | App functionality, Customer support |
 | Other user-generated content (posts, comments, bio) | Yes | No | Optional | App functionality |
 | Location: Approximate location | Yes | No | Optional (opt-in) | App functionality |
-| App activity: Other actions (follows, reports) | Yes | No | Optional | App functionality |
+| App activity: Other actions (follows, reports, profile visits, in-app search text) | Yes | No | Optional | App functionality |
+| Financial info: Purchase history | **When paid features are on: yes**; no while off | No (Google Play and Apple keep their own records) | Optional | App functionality |
 | App info and performance: Crash logs | Yes (with Sentry) | No | Optional | Analytics |
 | Device or other IDs | Yes | No | Required for notifications | App functionality |
+| Device or other IDs: advertising ID (AdMob) | **When rewarded ads are on: yes**, collected and shared with Google AdMob (adults, after consent); no while ads are off | Yes, with AdMob | Optional | Advertising |
 
-Also answer: "Does your app let people create accounts?" Yes. "Account deletion URL": see below.
+Also answer: "Does your app let people create accounts?" Yes. "Account deletion URL": see below. "Contains ads": **no while rewarded ads are off, yes once on**; the build already merges the advertising-ID permission, so also complete the "Advertising ID" declaration (purposes: advertising). In-app purchases: the Play listing shows them once products exist; they are adults only.
 Content rating questionnaire: UGC, user interaction, shares location (approximate), no gambling, no
 violence by the app itself. Target audience includes 13 to 17: complete the Families/teen policy questions and
 note that adult and minor interaction limits exist (see `docs/legal/children-and-teens.md`).
@@ -140,6 +163,8 @@ with the operator tool `admin schedule-deletion`, which is audited.
   [COUNSEL/OPERATOR: response target]. No document in `docs/security/` states a number of hours, so none is claimed until the operator sets one and a person is on call to meet it (the marker keeps gate i red until then). Photo scanning, choose exactly ONE of the next two lines and delete the other (preflight gate q fails an unscanned release while the line that carries the hidden scanned-claim comment is still here):
   - Scanner configured: profile, post and story photos are compared, on upload, against a list of known illegal images (a hash list or provider); there is no filtering for nudity or any other content, and chat photos are end-to-end encrypted and are not checked. <!-- claim:scanned -->
   - Unscanned at launch (`SCAN_ALLOW_NONE=true` with `RELEASE_ACK_UNSCANNED=I_ACCEPT_UNSCANNED_PHOTOS`): uploaded photos are NOT scanned; moderation relies on member reports and staff review.
+- Support messages are plaintext and readable by staff (the app says so above the box); minors can use support. Chat is end-to-end encrypted, including voice and video; translation runs on the device.
+- Purchases and ads (**only when paid features are on**): adults only, decided by the server from the stored birth date; a member under 18 never sees a shop, is charged or gets the ads SDK started. Purchases use Google Play Billing and Apple In-App Purchase; reviewers can use the sandbox or a license tester. Rewarded ads are opt-in, with Google's consent message.
 - Location is opt-in (off by default for everyone, read only after the in-app explainer and only while Nearby is open),
   rounded; age and gender filters are off when either side is a minor; members under 18 are not discoverable by adults.
 - Encryption: see "Export compliance" in `16-release-and-reliability.md`.

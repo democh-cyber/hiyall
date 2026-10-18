@@ -8,7 +8,7 @@
     <!-- Microphone, only while a voice message is being recorded in a chat (the `record` plugin; asked at the first
          recording, never at launch). Nothing is recorded in the background. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
-    <!-- Google Play Billing (the in_app_purchase plugin): coin packs and Premium, adults only (docs/mobile/NN-shop-and-ads.md). -->
+    <!-- Google Play Billing (the in_app_purchase plugin): coin packs and Premium, adults only (docs/mobile/18-shop-and-ads.md). -->
     <uses-permission android:name="com.android.vending.BILLING"/>
     <!-- Permission audit (release): INTERNET, ACCESS_COARSE_LOCATION and POST_NOTIFICATIONS are the only ones this app
          asks for itself, plus RECORD_AUDIO for voice messages. Plugins add ACCESS_NETWORK_STATE and WAKE_LOCK (firebase_messaging) through manifest merge.

@@ -6,7 +6,7 @@ Version: 2026-10-01
 
 Effective date: [EFFECTIVE DATE]
 
-Hiyall is a place to find your people. These guidelines keep it a place people want to be. They apply everywhere in the app: profiles, posts, stories, comments, spaces and chats.
+Hiyall is a place to find your people. These guidelines keep it a place people want to be. They apply everywhere in the app: profiles, posts, stories, comments, spaces and chats, including photos, voice notes, voice messages and videos.
 
 ## The basics
 

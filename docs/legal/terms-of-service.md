@@ -35,15 +35,16 @@ By creating an account you agree to these Terms and to our Privacy Policy. If yo
 
 Hiyall is a place to meet people and make friends. It is open by design. Here is what that means in practice:
 
-- **Your profile is visible to other members.** Everyone who has finished setting up an account can find you in Discover and open your profile, as long as they are in your age group and neither of you has blocked the other. Your display name, username, photo, bio and the details you add (such as interests, languages and country) can be seen by them.
+- **Your profile is visible to other members.** Everyone who has finished setting up an account can find you in Discover and open your profile, as long as they are in your age group and neither of you has blocked the other. Your display name, username, photo (and your gallery of up to 8 photos), bio and the details you add (such as interests, personality tags, languages and the level you have in each, an about-me line, a hometown and country) can be seen by them. Your about-me line and hometown have their own audience setting. A member under 18 can add a hometown that only their confirmed friends in the same age group can see.
 - **Your age in years can be seen** by members in your age group who open your profile. We never show your date of birth.
-- **Profile views are visible to you, and your views are visible to others.** When you open another member's profile, that member can see your name in their list of profile visitors. Members cannot turn this off. The list shows who visited and when they first visited.
+- **Profile visits.** When you open another member's profile, that member can see your name in their own list of profile visitors. Members cannot hide their visits, but you can see your own history under "Places I've visited" and clear it, which deletes those visit records. Other members can see who visited you only if you are an adult and you switch on "Let people see who visited me" in Settings. It is off until you do, and a member under 18 cannot switch it on, so their list is visible only to them. You can also choose to be told when someone visits your profile (off by default).
 - **Followers can see connections.** For members aged 18 and over, anyone who follows them can open their followers and following lists. For members under 18, only their friends can.
 - **Online status and last seen.** Others can see when you are online and when you were last active, unless you turn this off in Settings. If you are under 18 it starts switched off.
 - **Nearby.** Nearby is off until you turn it on. Only if you do, and let the app read your location, can you appear in other members' Nearby lists, shown only as a rough distance. You can turn it off at any time. See the Privacy Policy for the detail.
 - **Anyone in your age group can message you.** There is no friend step, but a person can send only 3 messages to someone who has not replied yet (reactions and quiet messages count too). You can block or report anyone at any time.
-- **Posts, stories and spaces are not private.** Posts, stories and the discussions inside spaces can be read by the people who are allowed to see them, and by us. They are not end-to-end encrypted.
-- **Chats are different.** One-to-one chats are end-to-end encrypted. See the Privacy Policy for what that means and what it does not mean.
+- **Posts, stories and spaces are not private.** Posts, stories and the discussions inside spaces can be read by the people who are allowed to see them, and by us, and members who may see a post or story can find it by its words using search. They are not end-to-end encrypted. A post or story can carry a voice note of up to 60 seconds, which is played to the same people. We do not scan voice notes.
+- **Chats are different.** One-to-one chats, including voice messages and videos, are end-to-end encrypted. See the Privacy Policy for what that means and what it does not mean. Translating a message runs on your phone with a language pack you download.
+- **Messages to our support team are not end-to-end encrypted.** Our staff can read them, so do not send passwords or identity numbers. See the Privacy Policy.
 
 ## 5. What you post
 
@@ -71,18 +72,27 @@ You must not:
 - You can block, mute or restrict any member, and report people, chats and messages from the app.
 - Reports are looked at by people. Reports about serious harm go to the front of the queue. We can warn an account, remove content, or suspend an account.
 - [COUNSEL: scanning status at launch. Keep this item only if photos are scanned at launch; if not, replace it with: "We do not currently check uploaded photos against lists of known illegal images." Wording if live: Photos you upload for your profile, posts and stories are checked for known illegal images. If a photo is flagged, we do not show it, we keep it as evidence (even if you delete it or your account), we may suspend the account without telling you why, and we may report it to the authorities. The Privacy Policy and Data Retention document explain what is kept and for how long.]
-- Because chats are end-to-end encrypted, we cannot read them. A report about a chat only includes the messages and photos that you choose to include. Sending them is your choice.
+- Because chats are end-to-end encrypted, we cannot read them. A report about a chat only includes the messages, photos, voice messages and videos that you choose to include. Sending them is your choice.
+- Our staff publish notices in the app about safety, news and updates. You can write to the support team from Settings > Help & Safety. Support messages are not end-to-end encrypted and are kept as described in the Privacy Policy.
 - If you think we got a decision wrong, write to [APPEALS EMAIL] and tell us what happened. A person will look again. [OPERATOR: set a target response time.]
 - We may share information with the authorities or with others where the law requires, or where it is needed to protect someone from serious harm. [LEGAL REVIEW]
 - Hiyall is not an emergency service. If someone is in danger, contact your local emergency number.
 
-## 8. Cost
+## 8. Cost, purchases and ads
 
-Hiyall is free to use today and has no ads. If we add paid features in future, we will tell you clearly before you pay for anything. Using Hiyall may use data from your phone plan.
+Hiyall is free to use today. Nothing is charged and no ads are shown. If we add paid features, we will tell you clearly before you pay for anything. Paid features are only for members aged 18 and over: members under 18 are never charged, never shown a shop and never shown ads. Using Hiyall may use data from your phone plan.
+
+[COUNSEL: paid features at launch. Keep the next three paragraphs only if PLANS_ENFORCED is switched on at launch, remove their brackets, and replace the sentence "Nothing is charged and no ads are shown" above. Otherwise delete them.]
+
+[COUNSEL: paid features at launch. Wording if live: Coins and Premium. Adults can buy coins and a Premium subscription (1, 3 or 12 months, renewing automatically until you cancel it). Coins pay for starting chats beyond a free daily allowance and for seeing another member's detailed profile for a period. Premium removes those limits and unlocks premium features. We show the cost in coins and your balance, and ask you to confirm, before every spend. Coins have no cash value, cannot be transferred or exchanged, and are removed when your account is deleted.]
+
+[COUNSEL: paid features at launch. Wording if live: How you pay, refunds and cancelling. You pay Google Play or the Apple App Store, under their terms, using the price they show. Hiyall does not take your payment details. Refunds and cancelling a subscription are handled by the store, not by us: use the store's own subscription page (the app links to it from Manage or cancel Premium). If a store refunds a purchase, we take back the coins it gave. Deleting your account does not cancel a subscription, so cancel it in the store first. Your legal rights to cancel or to a refund where you live are not limited by this paragraph. Counsel to complete the consumer wording for each market.]
+
+[COUNSEL: paid features at launch. Wording if live: Rewarded ads. An adult can choose to watch a rewarded video ad for a few coins, up to a daily limit. Ads come from Google AdMob and are subject to Google's policies. Watching one is always your choice. We cannot promise any particular ad, and an ad may not always be available.]
 
 ## 9. Ending your account
 
-- You can stop using Hiyall at any time. In the app, go to **Settings > Account > Download my data** to get a copy of your information, and **Settings > Account > Delete account** to delete your account. The Data Retention document explains what is removed and when.
+- You can stop using Hiyall at any time. In the app, go to **Settings > Account > Download my data** to get a copy of your information (it includes your billing records and your support conversations, if you have any), and **Settings > Account > Delete account** to delete your account. The Data Retention document explains what is removed and when. Deleting your account removes your coins and purchase records from Hiyall. It does not cancel a subscription you bought from Google Play or Apple; cancel it in the store.
 - We may suspend or end an account that breaks these Terms or puts others at risk. Where we can, we will tell you why. We cannot always do so: for a safety or legal reason we may not be allowed to, or telling you could put someone at risk.
 - Some parts of these Terms keep applying after your account ends (for example, rules about liability and disputes).
 

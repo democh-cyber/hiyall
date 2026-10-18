@@ -40,7 +40,12 @@ When a teen finishes sign-up, these start stricter than the adult versions, and 
 - **Online and last seen is off.** Other members cannot see when a teen is online or was last active.
 - **Country is visible to friends only.**
 - **Followers and following lists are visible to friends only.** For adults, anyone who follows them can see their lists.
-- **Nearby is off** until the teen turns it on, as described above.
+- **Nearby is off** until the teen turns it on, as described above. The explanation at the end of sign-up is optional, and a teen can skip it.
+- **Local time and distance are off.** A teen's local time and, in Nearby, their distance are not shown unless the teen turns them on.
+- **Hometown and about me start hidden.** A teen can add a hometown of up to 40 characters. Only their confirmed friends in the same age group can see it, and it is never shown in Discover, search or Nearby. An about-me line can be shared with friends at most.
+- **No birthday and no shared visitor list.** A teen can never show a birthday, and can never let other members see who visited them: a teen's list of visitors is visible only to the teen.
+- **Names are hidden in notifications.** Notifications about followers, friend requests, comments, replies and reactions do not name the person, until the teen changes it. Visit notices are off unless the teen turns them on.
+- **No purchases and no ads.** A teen is never charged, never sees a shop and is never shown an ad. The server decides this from the date of birth it holds.
 
 A teen can make these settings stricter, never more open. When they turn 18 the adult choices become available.
 
@@ -51,8 +56,9 @@ Teens in Hiyall are still on an open, public-by-default service, so parents and 
 - A teen's profile can be found by other teens in Discover. It shows their name, username, photo, bio and whatever details they add.
 - Their **age in years** is shown on their profile to other teens who open it. The app has no setting to hide it.
 - **Other teens can message them** without being friends first. To limit unwanted contact, a person can send only 3 messages to someone who has not yet replied (reactions and quiet messages count too), and starting new chats is rate-limited. Teens can block and report.
-- **Members can see who viewed their profile.**
-- Posts, stories and discussions in spaces are not end-to-end encrypted and may be seen by Hiyall staff when needed for safety.
+- **Visits to a profile are recorded.** A teen can see who visited their own profile, and a teen who opens another teen's profile can be seen by that teen in their visitor list. No adult can see a teen's profile or visits, and nobody else can see a teen's list of visitors. A teen can see and clear "Places I've visited" (the profiles they opened in the last 30 days).
+- Posts, stories and discussions in spaces are not end-to-end encrypted and may be seen by Hiyall staff when needed for safety. Voice notes on posts and stories are not scanned by us.
+- A teen can write to Hiyall support from Settings. Those messages are **not** end-to-end encrypted and our staff can read them. Staff see the teen's age group and never ask a teen to move to another app or to share contact details.
 
 ## What the age check can and cannot guarantee
 
@@ -63,7 +69,7 @@ This matters, so we say it plainly.
 - **A false birth date defeats the protections.** A teen who types an adult birth date is treated as an adult and can be seen by, and can contact, adults. An adult who types a teen birth date can appear to teens.
 - **We cannot detect this automatically.** We have no tool that spots a false age. Reports are the main way we find out.
 - **The birth date cannot be changed after sign-up.** We keep the first date entered, privately, until the account is erased.
-- **We cannot read chats.** Chats are end-to-end encrypted. We cannot scan them for harm or for illegal images. Reports include only what the reporter chooses to send.
+- **We cannot read chats.** Chats, including voice messages and videos, are end-to-end encrypted. We cannot scan them for harm or for illegal images. Reports include only what the reporter chooses to send.
 - **Location can be faked.** Someone who fakes where they are could work out roughly where a person is to within a few kilometres.
 - **We do not verify parental consent.** Hiyall does not currently ask for a parent's permission. [LEGAL REVIEW: some countries need verifiable parental consent for people under 13 to 16, depending on the country, and for location data.]
 

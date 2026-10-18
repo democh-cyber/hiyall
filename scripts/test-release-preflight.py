@@ -10,6 +10,7 @@ spans with a lowercase tail, and lower or mixed case keywords. Python 3.8+, stan
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -391,6 +392,148 @@ class EnvDocsTests(unittest.TestCase):
         for n in ("DATABASE_URL", "SENTRY_DSN", "ADMIN_DATA_KEY", "TRUSTED_PROXY_CIDRS"):
             self.assertIn(n, names)
         self.assertNotIn("CHANGE_ME", names)
+
+
+class AdMobTests(unittest.TestCase):
+    """Gate s: AdMob release inputs. Real-looking ids pass, Google's published test ids and malformed or missing ones do not;
+    it is a hard failure only when ads or paid plans are on."""
+    REAL = {"ADMOB_APP_ID_ANDROID": "ca-app-pub-1234567890123456~1111111111", "ADMOB_REWARDED_ANDROID": "ca-app-pub-1234567890123456/2222222222",
+            "ADMOB_APP_ID_IOS": "ca-app-pub-1234567890123456~3333333333", "ADMOB_REWARDED_IOS": "ca-app-pub-1234567890123456/4444444444"}
+    BOTH = {"android", "ios"}
+
+    def vars_of(self, problems):
+        return " | ".join(m for m, _ in problems)
+
+    def test_real_ids_pass(self):
+        self.assertEqual(rp.admob_problems(self.REAL, self.BOTH), [])
+
+    def test_every_published_google_test_id_is_refused(self):
+        for name, test_id in (("ADMOB_APP_ID_ANDROID", "ca-app-pub-3940256099942544~3347511713"),
+                              ("ADMOB_APP_ID_IOS", "ca-app-pub-3940256099942544~1458002511"),
+                              ("ADMOB_REWARDED_ANDROID", "ca-app-pub-3940256099942544/5224354917"),
+                              ("ADMOB_REWARDED_IOS", "ca-app-pub-3940256099942544/1712485313"),
+                              ("ADMOB_REWARDED_ANDROID", "ca-app-pub-3940256099942544/5354046379")):
+            values = dict(self.REAL, **{name: test_id})
+            found = rp.admob_problems(values, self.BOTH)
+            self.assertTrue(any(name in m and "TEST" in m for m, _ in found), (name, found))
+
+    def test_the_ids_the_app_and_gradle_treat_as_test_ids_are_the_ones_refused(self):
+        dart = slurp("apps/mobile/lib/core/billing/ads_service.dart")
+        gradle = slurp("apps/mobile/android/app/build.gradle.kts")
+        xcconfig = slurp("apps/mobile/ios/Flutter/Debug.xcconfig")
+        for text in (dart, gradle, xcconfig):
+            ids = [i for i in re.findall(r"ca-app-pub-\d{16}[~/]\d{10}", text)]
+            self.assertTrue(ids)
+            for i in ids:
+                self.assertTrue(i.startswith(rp.ADMOB_TEST_PUBLISHER), i)
+
+    def test_missing_and_malformed_ids_are_reported_per_platform(self):
+        found = rp.admob_problems({}, {"android"})
+        self.assertEqual(len(found), 2)
+        self.assertIn("ADMOB_APP_ID_ANDROID", self.vars_of(found))
+        self.assertIn("ADMOB_REWARDED_ANDROID", self.vars_of(found))
+        self.assertNotIn("IOS", self.vars_of(found))
+        for bad in ("ca-app-pub-<publisher>~<app>", "ca-app-pub-123~456", "REPLACE_ME", "ca-app-pub-1234567890123456/2222222222"):
+            self.assertTrue(rp.admob_problems(dict(self.REAL, ADMOB_APP_ID_ANDROID=bad), {"android"}), bad)
+
+    def test_an_app_id_where_a_unit_id_belongs_is_refused(self):
+        found = rp.admob_problems(dict(self.REAL, ADMOB_REWARDED_IOS="ca-app-pub-1234567890123456~4444444444"), {"ios"})
+        self.assertIn("ADMOB_REWARDED_IOS", self.vars_of(found))
+
+    def test_ids_of_two_publishers_on_one_platform_are_refused(self):
+        found = rp.admob_problems(dict(self.REAL, ADMOB_REWARDED_ANDROID="ca-app-pub-9999999999999999/2222222222"), {"android"})
+        self.assertIn("different AdMob publishers", self.vars_of(found))
+
+    def test_a_platform_not_shipped_is_not_checked(self):
+        self.assertEqual(rp.admob_problems(self.REAL, set()), [])
+        self.assertEqual(rp.admob_problems({}, set()), [])
+        found = rp.admob_problems(dict(self.REAL, ADMOB_APP_ID_IOS="", ADMOB_REWARDED_IOS=""), {"android"})
+        self.assertEqual(found, [])
+
+    def test_the_server_must_list_the_rewarded_unit(self):
+        full = ["ca-app-pub-1234567890123456/2222222222"]
+        self.assertEqual(rp.admob_problems(self.REAL, {"android"}, full), [])
+        self.assertEqual(rp.admob_problems(self.REAL, {"android"}, ["2222222222"]), [])  # the server accepts the id after the slash
+        found = rp.admob_problems(self.REAL, {"android"}, ["ca-app-pub-1234567890123456/9999999999"])
+        self.assertIn("ADMOB_SSV_AD_UNIT_IDS", self.vars_of(found))
+
+    def test_strict_only_when_plans_or_ad_units_are_on(self):
+        self.assertFalse(rp.admob_strict(False, []))
+        self.assertTrue(rp.admob_strict(True, []))
+        self.assertTrue(rp.admob_strict(False, ["ca-app-pub-1234567890123456/2222222222"]))
+
+    def run_gate(self, env, release_env=None):
+        """Runs the gate with a clean environment and the given release inputs; returns the Gate."""
+        keys = ("PLANS_ENFORCED", "ADMOB_SSV_AD_UNIT_IDS", "RELEASE_PLATFORMS", "HIYALL_API_ENV_FILE", "HIYALL_RELEASE_ENV") + tuple(self.REAL)
+        saved = {k: os.environ.get(k) for k in keys}
+        tmp = tempfile.mkdtemp()
+        try:
+            for k in keys:
+                os.environ.pop(k, None)
+            os.environ["HIYALL_API_ENV_FILE"] = os.path.join(tmp, "none.env")  # a file that does not exist
+            os.environ["HIYALL_RELEASE_ENV"] = "no-such-env"
+            os.environ.update(env)
+            g = rp.Gate("s", "x")
+            rp.gate_admob(g)
+            return g
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_gate_warns_but_passes_while_ads_are_off(self):
+        g = self.run_gate({"ADMOB_APP_ID_ANDROID": "ca-app-pub-3940256099942544~3347511713"})
+        self.assertEqual(g.problems, [])
+        self.assertTrue(any(n.startswith("warning:") and "TEST" in n for n in g.notes))
+
+    def test_gate_fails_hard_when_plans_are_enforced_without_real_ids(self):
+        g = self.run_gate({"PLANS_ENFORCED": "true"})
+        self.assertTrue(g.problems)
+        g = self.run_gate(dict(self.REAL, PLANS_ENFORCED="true"))
+        self.assertEqual(g.problems, [])
+
+    def test_gate_fails_hard_when_ad_units_are_configured_and_the_build_carries_a_test_id(self):
+        env = dict(self.REAL, ADMOB_SSV_AD_UNIT_IDS="ca-app-pub-1234567890123456/2222222222,ca-app-pub-1234567890123456/4444444444",
+                   ADMOB_REWARDED_IOS="ca-app-pub-3940256099942544/1712485313")
+        g = self.run_gate(env)
+        self.assertTrue(any("ADMOB_REWARDED_IOS" in m and "TEST" in m for m, _ in g.problems), g.problems)
+        env["ADMOB_REWARDED_IOS"] = "ca-app-pub-1234567890123456/4444444444"
+        self.assertEqual(self.run_gate(env).problems, [])
+
+    def test_the_gate_reads_the_api_env_file_too(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            api = os.path.join(tmp, "api.env")
+            with open(api, "w") as f:
+                f.write("PLANS_ENFORCED=true\n")
+            g = self.run_gate({"HIYALL_API_ENV_FILE": api})
+            self.assertTrue(g.problems)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_a_platform_left_out_of_release_platforms_is_not_required(self):
+        env = {"PLANS_ENFORCED": "true", "RELEASE_PLATFORMS": "android", "ADMOB_APP_ID_ANDROID": self.REAL["ADMOB_APP_ID_ANDROID"],
+               "ADMOB_REWARDED_ANDROID": self.REAL["ADMOB_REWARDED_ANDROID"]}
+        self.assertEqual(self.run_gate(env).problems, [])
+
+    def test_the_documented_variable_names_are_the_ones_every_file_uses(self):
+        """docs/mobile/18-shop-and-ads.md names the variables; the build files and the example env must use the same names, and the
+        docs file they point at must exist."""
+        for rel in ("apps/mobile/android/app/build.gradle.kts", "apps/mobile/android/app/src/main/AndroidManifest.xml"):
+            text = slurp(rel)
+            self.assertNotIn("NN-shop-and-ads", text, rel)
+            self.assertNotIn("docs/mobile/NN-", text, rel)
+            self.assertTrue(os.path.isfile(os.path.join(ROOT, "docs/mobile/18-shop-and-ads.md")))
+        shop = slurp("docs/mobile/18-shop-and-ads.md")
+        example = slurp("config/mobile-release.example.env")
+        for name in ("ADMOB_APP_ID_ANDROID", "ADMOB_APP_ID_IOS", "ADMOB_REWARDED_ANDROID", "ADMOB_REWARDED_IOS"):
+            self.assertIn(name, shop)
+            self.assertIn(name, example)
+            self.assertIn(name, slurp("scripts/build-release.sh"))
+            self.assertIn(name, slurp(".github/workflows/release.yml"))
 
 
 class PlatformTests(unittest.TestCase):

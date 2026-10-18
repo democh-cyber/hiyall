@@ -25,7 +25,8 @@ The preflight fails loudly on each of these; nothing in the repository fakes the
 | Photo scanning: a hash list or provider, **or** the written acknowledgement below | API environment | q, d |
 | Evidence bucket (owner action before launch): a bucket of its own with three separate credentials (the API's, meant to be write-only; the console's read-only one; the console purge job's delete one), and an **R2 bucket-lock retention rule of at least `EVIDENCE_RETENTION_DAYS` (365)** because R2 cannot make the API's token write-only. `EVIDENCE_ALLOW_API_DELETE=true` is your statement that the lock is in place, and the canary verifies it (the probe must survive a delete by the API's credential; the rule must cover `canary/` too) | Cloudflare R2, production API and console environments | d (`check-config -release -net` runs the canary) |
 | A production Firebase project and buckets that are not the development ones | `config/environments.json` lists the development values | c, d |
-| Store listing fields, privacy answers, reviewer accounts | `docs/mobile/store-listing.md` | i |
+| Store listing fields, privacy answers, reviewer accounts | `docs/mobile/store-listing.md`; the owner items are in [13-store-submission-checklist.md](13-store-submission-checklist.md) | i |
+| Only when paid features or ads go live: AdMob app ids and rewarded unit ids (`ADMOB_APP_ID_*`, `ADMOB_REWARDED_*`), the store products, the In-App Purchase capability, the `PLANS_ENFORCED` and `ADMOB_SSV_AD_UNIT_IDS` mirrors | repository variables or `config/mobile-release.production.local.env`; [deploy guide section 12](10-deploy-guide.md) | s |
 | Production Firebase project, buckets, database, DNS and TLS, separate from development | [environments](11-environments.md) | d |
 | Moderator on call, CSAM runbook owner, hash-list or scanning provider | `docs/security/16-csam-and-illegal-content.md` | d (scanner), q |
 | Database roles and grants (`database/roles/roles.sql` once, then `grants.sql` after every migration; the release step does the second, as `hiyall_migrate`; the API itself runs as `hiyall_api`) | production database | see steps 2 and 5 |
@@ -195,7 +196,7 @@ Submit only after step 6: the review notes and the store forms name reviewer acc
    Accounts created as a personal developer account recently may need a closed test with a minimum number of testers
    for a minimum number of days before production access; the Console says so on the Dashboard. Check it early.
 2. App content declarations (Policy and programs > App content): privacy policy URL; **App access**: restricted, give the
-   reviewer instructions (see step 6 (Reviewer accounts)); ads: none; **Content rating** questionnaire (user generated
+   reviewer instructions (see step 6 (Reviewer accounts)); ads: none while `PLANS_ENFORCED` is off, **yes** once rewarded ads are on (the build already carries the AdMob SDK and the advertising-ID permission; see the [checklist](13-store-submission-checklist.md)); **Content rating** questionnaire (user generated
    content and user interaction yes; shares location yes, approximate; no gambling, no violence by the app); **Target
    audience**: 13 and up, so complete the teen questions and state that minors and adults are kept apart and that
    location is off by default for teens (`docs/legal/children-and-teens.md`); news, government, health, financial
