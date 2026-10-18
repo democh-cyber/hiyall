@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -11,6 +13,8 @@ import '../../shared/avatar_sheet.dart';
 import '../../shared/person_avatar.dart';
 import '../../shared/widgets.dart';
 import '../legal_screens.dart' show LegalLink;
+import '../nearby_optin.dart' show NearbyExplanation, shareNearby;
+import '../../core/location_sync.dart' show locationProblemProvider;
 import '../profile_editor.dart' show pickProfileLabel;
 
 const _interestSuggestions = [
@@ -95,6 +99,16 @@ bool meetsMinimumAge(DateTime birth, DateTime today) {
   return age >= minimumAge;
 }
 
+/// Whether someone born on [birth] is under 18 on [today] (the stricter Nearby wording is for them).
+bool isMinorBirth(DateTime birth, DateTime today) {
+  var age = today.year - birth.year;
+  if (today.month < birth.month ||
+      (today.month == birth.month && today.day < birth.day)) {
+    age--;
+  }
+  return age < 18;
+}
+
 String isoDate(DateTime date) =>
     '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
 
@@ -121,13 +135,17 @@ class OnboardingScreen extends ConsumerStatefulWidget {
 }
 
 class _OnboardingState extends ConsumerState<OnboardingScreen> {
-  static const steps = 5;
+  static const steps = 6;
   final nameForm = GlobalKey<FormState>();
   final name = TextEditingController(), username = TextEditingController();
   final customInterest = TextEditingController();
   int step = 0;
   DateTime? birth;
   bool agreed = false, busy = false, underage = false, cooldown = false;
+
+  /// The person tapped "Turn on Nearby" on the last step. Nearby needs a finished onboarding, so it is switched
+  /// on right after, and nothing about it can stop anyone entering the app.
+  bool wantNearby = false;
   String? usernameError, error, checkedUsername, country, vibe, gender;
   final languages = <String>[];
   final interests = <String>[];
@@ -210,7 +228,6 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
       if (!await _usernameFree()) return;
     }
     if (step == 0 && !await _checkAge()) return;
-    if (step == steps - 1) return submit();
     setState(() => step++);
   }
 
@@ -336,6 +353,7 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
           avatar.photo != null && !await _attachPhoto(api, session);
       container.invalidate(profileProvider);
       container.read(sessionProvider.notifier).markOnboarded();
+      if (wantNearby) unawaited(_turnOnNearby(container, session));
       if (photoFailed) {
         messenger
           ..hideCurrentSnackBar()
@@ -370,6 +388,26 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
     }
   }
 
+  /// Switches Nearby on once onboarding is complete, after the person said yes on the last step. The system
+  /// permission prompt appears here, and only because they tapped. Never throws: whatever goes wrong (a refused
+  /// permission, a dropped connection) leaves Nearby off or without an area, and Discover's Nearby view says so.
+  Future<void> _turnOnNearby(
+    ProviderContainer container,
+    Session session,
+  ) async {
+    try {
+      await shareNearby(
+        api: container.read(apiProvider),
+        session: session,
+        account: container.read(sessionProvider.notifier),
+        locator: container.read(locationServiceProvider),
+        setProblem: container.read(locationProblemProvider.notifier).set,
+      );
+    } catch (_) {
+      // Not needed for anything but the Nearby tab.
+    }
+  }
+
   Future<void> signOut() async {
     try {
       await ref.read(sessionProvider.notifier).logout();
@@ -395,6 +433,7 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
       'Add a photo',
       'A bit about you',
       'What you’re into',
+      'Find people near you',
     ];
     final subtitles = [
       'Hiyall is for people 13 and over. We use your date of birth to keep younger members safe and to power the age filter. It never appears on your profile.',
@@ -402,13 +441,15 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
       'Optional. A friendly face helps people recognise you.',
       'Optional. This helps you meet people who share your background.',
       'Pick at least three. They shape who and what you see.',
+      'Optional. Nearby lists people close to you. Nothing is shared until you turn it on, and it is never needed to use Hiyall.',
     ];
     final body = switch (step) {
       0 => _ageStep(context),
       1 => _nameStep(context),
       2 => _photoStep(context),
       3 => _whereStep(context),
-      _ => _interestsStep(context),
+      4 => _interestsStep(context),
+      _ => _nearbyStep(context),
     };
     return Scaffold(
       body: SafeArea(
@@ -500,17 +541,40 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
                             style: TextStyle(color: scheme.error),
                           ),
                         ),
-                      FilledButton(
-                        key: Key(step == steps - 1 ? 'onb-finish' : 'onb-next'),
-                        onPressed: busy || !canContinue ? null : next,
-                        child: Text(
-                          busy
-                              ? (step == steps - 1
-                                    ? 'Setting up…'
-                                    : 'Checking…')
-                              : (step == steps - 1 ? 'Finish' : 'Continue'),
+                      if (step == steps - 1) ...[
+                        FilledButton(
+                          key: const Key('onb-nearby-on'),
+                          style: FilledButton.styleFrom(
+                            minimumSize: const Size(48, 48),
+                          ),
+                          onPressed: busy
+                              ? null
+                              : () {
+                                  wantNearby = true;
+                                  submit();
+                                },
+                          child: Text(busy ? 'Setting up…' : 'Turn on Nearby'),
                         ),
-                      ),
+                        const SizedBox(height: 8),
+                        OutlinedButton(
+                          key: const Key('onb-finish'),
+                          style: OutlinedButton.styleFrom(
+                            minimumSize: const Size(48, 48),
+                          ),
+                          onPressed: busy
+                              ? null
+                              : () {
+                                  wantNearby = false;
+                                  submit();
+                                },
+                          child: const Text('Not now'),
+                        ),
+                      ] else
+                        FilledButton(
+                          key: const Key('onb-next'),
+                          onPressed: busy || !canContinue ? null : next,
+                          child: Text(busy ? 'Checking…' : 'Continue'),
+                        ),
                       if (step == 3 || (step == 2 && avatar.photo == null))
                         TextButton(
                           key: const Key('onb-skip'),
@@ -527,6 +591,26 @@ class _OnboardingState extends ConsumerState<OnboardingScreen> {
       ),
     );
   }
+
+  /// "Find people near you": what Nearby shares, with the same words as the explainer sheet, and no pressure.
+  Widget _nearbyStep(BuildContext context) => Column(
+    key: const Key('onb-nearby-step'),
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      NearbyExplanation(
+        minor: birth != null && isMinorBirth(birth!, DateTime.now()),
+        title: false,
+      ),
+      Text(
+        'Choosing “Not now” changes nothing else: you can turn Nearby on later from Discover.',
+        style: TextStyle(
+          fontSize: 13.5,
+          height: 1.4,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+    ],
+  );
 
   Widget _ageStep(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;

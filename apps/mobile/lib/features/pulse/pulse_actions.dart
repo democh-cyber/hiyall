@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api.dart';
+import '../../core/pulse7.dart';
 import '../../core/state.dart';
 
 /// Every server call the Pulse widgets (posts, comments, stories) make, so a
@@ -29,6 +30,25 @@ class PulseActions {
   Future<ApiPage<PostComment>> comments(String postId, String? cursor) async =>
       _api.comments(_session, postId, cursor);
 
+  Pulse7Client get _p7 => _ref.read(pulse7Provider);
+
+  /// The top-level comments of a post, each with its reply count.
+  Future<ApiPage<PostComment>> topComments(String postId, String? cursor) =>
+      _p7.topComments(_session, postId, cursor);
+
+  /// The replies to one comment.
+  Future<ApiPage<PostComment>> replies(
+    String postId,
+    String commentId,
+    String? cursor,
+  ) => _p7.replies(_session, postId, commentId, cursor);
+
+  /// Uploads a recorded voice note and returns it ready to attach.
+  Future<VoiceUpload> uploadVoice(
+    Uint8List bytes, {
+    void Function(double progress)? onProgress,
+  }) => _p7.uploadVoice(_session, bytes, onProgress: onProgress);
+
   Future<PostComment> addComment(
     String postId,
     String text, {
@@ -48,12 +68,23 @@ class PulseActions {
     required String body,
     required String audience,
     required List<String> mediaIds,
-  }) async => _api.createPost(
-    _session,
-    body: body,
-    audience: audience,
-    mediaIds: mediaIds,
-  );
+    String? topic,
+    String? voiceMediaId,
+  }) async => topic == null && voiceMediaId == null
+      ? _api.createPost(
+          _session,
+          body: body,
+          audience: audience,
+          mediaIds: mediaIds,
+        )
+      : _p7.createPost(
+          _session,
+          body: body,
+          audience: audience,
+          mediaIds: mediaIds,
+          topic: topic,
+          voiceMediaId: voiceMediaId,
+        );
 
   Future<String> uploadPhoto(
     Uint8List bytes, {

@@ -14,8 +14,11 @@ import 'account_data.dart' show AccountDataSettingsGroup;
 import 'help_safety.dart' show HelpSettingsGroup;
 import 'legal_screens.dart' show LegalSettingsGroup;
 import 'nearby_setting.dart' show NearbySettingsGroup;
+import 'chat_translate_ui.dart' show ChatLanguageSettingsGroup;
 import 'notification_settings.dart' show NotificationSettingsGroup;
 import 'safety.dart';
+import 'settings_sharing.dart';
+import 'shop/settings_billing_tile.dart' show BillingSettingsGroup;
 
 /// "Just now", "5 min ago", "3 h ago", "2 days ago", then a date.
 String timeAgo(DateTime at, [DateTime? now]) {
@@ -216,6 +219,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     ),
             ),
             const _Link(
+              Icons.history_rounded,
+              'My activity',
+              'Comments and likes you’ve made',
+              '/profile/activity',
+            ),
+            const _Link(
               Icons.devices_outlined,
               'Where you’re signed in',
               'See sessions and sign out remotely',
@@ -230,6 +239,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ]),
           const _Group('Status', [_OnlineTile()]),
           const NearbySettingsGroup(),
+          const ProfileSharingSettingsGroup(),
+          const BillingSettingsGroup(),
           const _Group('Safety', [
             _Link(
               Icons.block_rounded,
@@ -295,6 +306,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           const AccountDataSettingsGroup(),
           const HelpSettingsGroup(),
           const LegalSettingsGroup(),
+          const ChatLanguageSettingsGroup(),
           const SizedBox(height: 24),
           OutlinedButton.icon(
             key: const Key('sign-out'),

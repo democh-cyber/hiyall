@@ -203,7 +203,7 @@ void main() {
         );
         // Without a context line they lead, and the bio still follows.
         expect(texts(who(bio: 'Quiet', langs: ['en']), focus: true), [
-          'Speaks English',
+          'English · Conversational',
           'Quiet',
         ]);
         // Nothing to show for a person with no languages.
@@ -216,20 +216,21 @@ void main() {
 
     test('languages fill a row that would otherwise be empty', () {
       final lines = discoverRowLines(who(langs: ['ja']));
-      expect([for (final l in lines) l.text], ['Speaks Japanese']);
+      expect([for (final l in lines) l.text], ['Japanese · Conversational']);
       expect(lines.single.kind, RowLineKind.languages);
       expect(texts(who()), isEmpty);
     });
   });
 
   group('language summary', () {
-    List<ProfileLanguage> langs(List<String> codes, [String level = '']) => [
+    List<ProfileLanguage> langs(List<String> codes, [int level = 3]) => [
       for (final c in codes) ProfileLanguage(c, level),
     ];
     test('one, two, three or more, none', () {
-      expect(languageSummary(langs(['en'])), 'Speaks English');
+      // Every language has a level now (a bare tag reads as Conversational), so one language shows it.
+      expect(languageSummary(langs(['en'])), 'English · Conversational');
       expect(
-        languageSummary([const ProfileLanguage('en', 'native')]),
+        languageSummary([const ProfileLanguage('en', 6)]),
         'English · Native',
       );
       expect(languageSummary(langs(['en', 'hi'])), 'Speaks English, Hindi');
@@ -244,7 +245,10 @@ void main() {
       expect(languageSummary(const []), isNull);
     });
     test('the same language twice is said once; codes never show', () {
-      expect(languageSummary(langs(['en', 'en-GB'])), 'Speaks English');
+      expect(
+        languageSummary(langs(['en', 'en-GB'])),
+        'English · Conversational',
+      );
       expect(languageSummary(langs(['ar', 'ja'])), 'Speaks Arabic, Japanese');
       expect(languageSummary(langs(['en'])), isNot(contains('EN')));
     });
@@ -332,12 +336,13 @@ void main() {
     );
 
     testWidgets(
-      'the first three people are fully visible and a fourth shows at 390x844',
+      'the first two people are fully visible and a third shows at 390x844',
       (tester) async {
         await mountDiscover(tester, DiscoverFake(people: busyPeople()));
-        // The floating dock starts about 112 px above the bottom edge.
+        // The floating dock starts about 112 px above the bottom edge. A row with language chips and a local
+        // time is a little taller than one without, so two rows fit and the third starts above the dock.
         const dockTop = 844 - 112.0;
-        for (final id in ['mira', 'arjun', 'jules']) {
+        for (final id in ['mira', 'arjun']) {
           expect(
             tester.getRect(find.byKey(Key('person-$id'))).bottom,
             lessThanOrEqualTo(dockTop),
@@ -345,7 +350,7 @@ void main() {
           );
         }
         expect(
-          tester.getRect(find.byKey(const Key('person-noor'))).top,
+          tester.getRect(find.byKey(const Key('person-jules'))).top,
           lessThan(dockTop),
         );
       },
@@ -375,6 +380,12 @@ void main() {
         expect(find.byKey(const Key('online-text-jules')), findsNothing);
         expect(find.byType(PresenceDot), findsWidgets);
         // Missing details keep the row clean: Noor has her initial and her name, nothing else.
+        await tester.scrollUntilVisible(
+          find.byKey(const Key('person-noor')),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.pump();
         expect(
           find.descendant(
             of: find.byKey(const Key('person-noor')),
@@ -747,10 +758,15 @@ void main() {
         await tester.pumpAndSettle();
         await tester.tap(find.byKey(const Key('filter-online')));
         await tester.pumpAndSettle();
-        expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+        // Two switches now (same country and online): look at the online one.
+        final online = find.descendant(
+          of: find.byKey(const Key('filter-online')),
+          matching: find.byType(Switch),
+        );
+        expect(tester.widget<Switch>(online).value, isTrue);
         await tester.tap(find.text('Reset all'));
         await tester.pumpAndSettle();
-        expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+        expect(tester.widget<Switch>(online).value, isFalse);
         expect(find.byKey(const Key('filter-sheet-count')), findsNothing);
       },
     );

@@ -10,12 +10,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hiyall/core/app_info.dart' show FeatureFlags;
 import 'package:hiyall/app.dart';
 import 'package:hiyall/core/api.dart';
+import 'package:hiyall/core/discover_prefs.dart';
+import 'package:hiyall/core/discovery.dart' show PeopleFilters;
 import 'package:hiyall/core/home_prefs.dart';
 import 'package:hiyall/core/state.dart';
 import 'package:hiyall/core/theme.dart';
 import 'package:hiyall/features/home.dart';
 import 'package:hiyall/features/live_sync.dart';
-import 'package:hiyall/features/discovery.dart' show FindPeopleScreen;
+import 'package:hiyall/features/discovery.dart'
+    show FindPeopleScreen, discoverFiltersProvider;
 import 'package:hiyall/features/pulse.dart'
     show ComposePostScreen, postPhotoFactory;
 import 'package:hiyall/shared/person_avatar.dart';
@@ -43,6 +46,10 @@ class HomeApi extends FakeApi {
   bool complete = false;
   List<Post> everyone = [];
 
+  /// Overrides what possibleMatches answers with (null: the three default people).
+  List<Map<String, dynamic>>? matchItems;
+  ApiFailure? matchFailure;
+
   @override
   Future<ApiPage<Post>> feed(Session s, String mode, [String? cursor]) async {
     feedModes.add(mode);
@@ -50,12 +57,21 @@ class HomeApi extends FakeApi {
   }
 
   @override
-  Future<Map<String, dynamic>> searchPeople(
-    Session s,
-    Map<String, dynamic> filters,
-  ) async {
-    searches.add(filters);
-    return {
+  Future<ApiPage<Profile>> possibleMatches(
+    Session s, {
+    int limit = 20,
+    bool excludeFollowing = false,
+    String? cursor,
+  }) async {
+    searches.add({'limit': limit, 'excludeFollowing': excludeFollowing});
+    if (matchFailure != null) throw matchFailure!;
+    if (matchItems != null) {
+      return ApiPage.fromJson({
+        'items': matchItems,
+        'nextCursor': null,
+      }, Profile.fromJson);
+    }
+    return ApiPage.fromJson({
       'items': [
         // The server never returns the viewer, but Home must not show them.
         {'userId': anjaliId, 'username': 'anjali', 'displayName': 'Anjali'},
@@ -65,6 +81,7 @@ class HomeApi extends FakeApi {
           'displayName': 'Niko',
           'currentVibe': 'Film photos and late trains',
           'interests': ['Music', 'Photography'],
+          'reasons': ['interests'],
         },
         {
           'userId': miraId,
@@ -72,10 +89,11 @@ class HomeApi extends FakeApi {
           'displayName': 'Mira',
           'headline': 'Illustrator',
           'interests': ['Art', 'Music'],
+          'reasons': ['personality'],
         },
       ],
       'nextCursor': null,
-    };
+    }, Profile.fromJson);
   }
 
   @override
@@ -189,6 +207,7 @@ Future<Launched> launch(
   DateTime? now,
   int unread = 0,
   MemoryHomePrefsStore? prefs,
+  MemoryDiscoverPrefsStore? discoverPrefs,
   Widget Function(Widget app)? wrap,
 }) async {
   tester.view.devicePixelRatio = 1;
@@ -205,6 +224,9 @@ Future<Launched> launch(
       apiProvider.overrideWithValue(api),
       sessionProvider.overrideWith(SignedIn.new),
       homePrefsStoreProvider.overrideWithValue(store),
+      discoverPrefsStoreProvider.overrideWithValue(
+        discoverPrefs ?? MemoryDiscoverPrefsStore(),
+      ),
       homeClockProvider.overrideWithValue(
         () => now ?? DateTime(2026, 10, 12, 9),
       ),
@@ -561,14 +583,10 @@ void main() {
       double y(String key) => tester.getTopLeft(find.byKey(Key(key))).dy;
       expect(y('post-p3'), lessThan(y('home-suggestions')));
       expect(y('home-suggestions'), lessThan(y('post-p4')));
-      expect(find.text('People you might vibe with'), findsOneWidget);
-      // Home reuses Discover's unfiltered query rather than a wider one.
-      expect(api.searches.single, {
-        'interests': [],
-        'languages': [],
-        'country': '',
-        'vibe': '',
-      });
+      // The heading and, the first time, the tip's title.
+      expect(find.text('People you may like'), findsNWidgets(2));
+      // Home asks for the best possible matches, at most twelve, leaving out people already followed.
+      expect(api.searches.single, {'limit': 12, 'excludeFollowing': true});
       // Never the viewer.
       expect(find.byKey(const Key('home-person-$anjaliId')), findsNothing);
       expect(find.text('1 in common'), findsNWidgets(2));
@@ -1017,5 +1035,128 @@ Future<void> capture(
     await file.parent.create(recursive: true);
     await file.writeAsBytes(bytes!.buffer.asUint8List());
     img.dispose();
+  });
+
+  group('People you may like', () {
+    List<Map<String, dynamic>> many(int n) => [
+      for (var i = 0; i < n; i++)
+        {
+          'userId':
+              '019a4000-0000-7000-8000-0000000009${i.toString().padLeft(2, '0')}',
+          'username': 'match$i',
+          'displayName': 'Match $i',
+          'interests': ['Music'],
+          'reasons': ['personality'],
+        },
+    ];
+
+    testWidgets(
+      'shows the best matches with a reason, and a tip the first time',
+      (tester) async {
+        final store = MemoryDiscoverPrefsStore();
+        await launch(
+          tester,
+          HomeApi(),
+          size: const Size(390, 3600),
+          discoverPrefs: store,
+        );
+        expect(find.text('People you may like'), findsWidgets);
+        expect(
+          find.byKey(const ValueKey('coach-tip-home.people_you_may_like')),
+          findsOneWidget,
+        );
+        expect(find.text('Similar personality'), findsOneWidget);
+        await tester.tap(find.byTooltip('Dismiss tip'));
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const ValueKey('coach-tip-home.people_you_may_like')),
+          findsNothing,
+        );
+        expect(await store.dismissedTips(anjaliId), {
+          'home.people_you_may_like',
+        });
+      },
+    );
+
+    testWidgets('a dismissed tip stays away on the next visit', (tester) async {
+      final store = MemoryDiscoverPrefsStore();
+      await store.dismissTip(anjaliId, 'home.people_you_may_like');
+      await launch(
+        tester,
+        HomeApi(),
+        size: const Size(390, 3600),
+        discoverPrefs: store,
+      );
+      expect(find.text('People you may like'), findsWidgets);
+      expect(
+        find.byKey(const ValueKey('coach-tip-home.people_you_may_like')),
+        findsNothing,
+      );
+    });
+
+    testWidgets('never more than twelve, however many the server sends', (
+      tester,
+    ) async {
+      final api = HomeApi()..matchItems = many(15);
+      await launch(tester, api, size: const Size(390, 3600));
+      expect(api.searches.single['limit'], 12);
+      final cards = find.byWidgetPredicate(
+        (w) => w.key is ValueKey && '${w.key}'.contains('home-person-'),
+      );
+      await reveal(tester, find.byKey(const Key('home-suggestions')));
+      var seen = 0;
+      for (var i = 0; i < 15; i++) {
+        final id =
+            '019a4000-0000-7000-8000-0000000009${i.toString().padLeft(2, '0')}';
+        final card = find.byKey(Key('home-person-$id'));
+        if (card.evaluate().isNotEmpty) seen++;
+      }
+      expect(seen, lessThanOrEqualTo(12));
+      expect(cards, findsWidgets);
+    });
+
+    testWidgets('empty or failed: the strip is simply not there, no banner', (
+      tester,
+    ) async {
+      final empty = HomeApi()..matchItems = [];
+      await launch(tester, empty, size: const Size(390, 3600));
+      expect(find.byKey(const Key('home-suggestions')), findsNothing);
+      expect(find.text('People you may like'), findsNothing);
+      final broken = HomeApi()
+        ..matchFailure = const ApiFailure('Try again later', 500);
+      await launch(tester, broken, size: const Size(390, 3600));
+      expect(find.byKey(const Key('home-suggestions')), findsNothing);
+      expect(find.textContaining('Try again'), findsNothing);
+    });
+
+    testWidgets('See all opens Discover in possible-matches mode', (
+      tester,
+    ) async {
+      final launched = await launch(
+        tester,
+        HomeApi(),
+        size: const Size(390, 3600),
+      );
+      await reveal(tester, find.byKey(const Key('home-suggestions')));
+      await tester.tap(find.text('See all').first);
+      await tester.pumpAndSettle();
+      expect(location(launched.container), '/discover');
+      expect(launched.container.read(discoverFiltersProvider).possible, isTrue);
+      expect(
+        PeopleFilters(possible: true)
+            .sameAs(launched.container.read(discoverFiltersProvider)),
+        isTrue,
+      );
+    });
+
+    testWidgets('fits 320 px at text scale 2.0', (tester) async {
+      await launch(
+        tester,
+        HomeApi(),
+        size: const Size(320, 3600),
+        textScale: 2,
+      );
+      expect(tester.takeException(), isNull);
+    });
   });
 }

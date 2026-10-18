@@ -44,8 +44,9 @@ class DioBlobTransport implements ChatBlobTransport {
            Dio(
              BaseOptions(
                connectTimeout: const Duration(seconds: 15),
-               sendTimeout: const Duration(minutes: 2),
-               receiveTimeout: const Duration(minutes: 2),
+               // A 40 MiB video on a slow uplink must finish inside the signed URL's 15 minutes.
+               sendTimeout: const Duration(minutes: 12),
+               receiveTimeout: const Duration(minutes: 5),
              ),
            ),
        _wait = wait ?? Future.delayed;

@@ -6,6 +6,7 @@ const activityGroups = {
   'like': 'Social',
   'reaction': 'Social',
   'comment': 'Social',
+  'visit': 'Social',
   'follow': 'Connections',
   'friend_request': 'Connections',
   'community': 'Circles',

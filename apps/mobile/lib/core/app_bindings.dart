@@ -1,3 +1,4 @@
+import 'package:flutter/widgets.dart' show BuildContext;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'chat/chat_engine.dart' show ChatEngine;
@@ -25,3 +26,10 @@ final routeOpenerProvider = Provider<void Function(String location)>(
 /// (`chat_wipe_hook.dart`). Null (nothing to wipe) until `lib/bindings.dart`
 /// binds the platform keystore.
 final chatWipeStoreProvider = Provider<ChatStore?>((ref) => null);
+
+/// Explains a Premium feature (the sheet of the shop feature) when the server answers 402 PREMIUM_REQUIRED; null (a plain message) until
+/// `lib/bindings.dart` binds it.
+final premiumRequiredHandlerProvider =
+    Provider<void Function(BuildContext context, String feature)?>(
+      (ref) => null,
+    );

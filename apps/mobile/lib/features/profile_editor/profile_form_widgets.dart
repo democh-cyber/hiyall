@@ -24,6 +24,9 @@ class ProfileTextField extends StatelessWidget {
   final String? Function(String?)? validator;
   final String? prefix;
   final int lines;
+
+  /// A quiet line under the field, before the counter.
+  final String? helper;
   const ProfileTextField(
     this.controller,
     this.label,
@@ -33,6 +36,7 @@ class ProfileTextField extends StatelessWidget {
     this.validator,
     this.prefix,
     this.lines = 1,
+    this.helper,
   });
 
   @override
@@ -44,7 +48,12 @@ class ProfileTextField extends StatelessWidget {
       maxLength: max,
       minLines: lines,
       maxLines: lines == 1 ? 1 : 6,
-      decoration: InputDecoration(labelText: label, prefixText: prefix),
+      decoration: InputDecoration(
+        labelText: label,
+        prefixText: prefix,
+        helperText: helper,
+        helperMaxLines: 3,
+      ),
       validator: validator,
     ),
   );

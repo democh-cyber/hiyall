@@ -5,6 +5,7 @@ import 'package:cached_network_image/cached_network_image.dart'
 import 'package:flutter/painting.dart' show PaintingBinding;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'discover_prefs.dart';
 import 'home_prefs.dart';
 import 'picked_file.dart';
 import 'push/push_prefs.dart';
@@ -60,6 +61,7 @@ Future<void> Function() accountResidueHook(
     await step(() => ref.read(storyDraftStoreProvider).forget(uid));
     await step(() => ref.read(homePrefsStoreProvider).forget(uid));
     await step(() => ref.read(sayHiPrefsStoreProvider).forget(uid));
+    await step(() => ref.read(discoverPrefsStoreProvider).forget(uid));
     await step(() => ref.read(pushPrefsStoreProvider).forget(uid));
   }
   await step(() => ref.read(imageCachesWipeProvider)());

@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/pulse7.dart';
 import '../../core/state.dart';
 
 /// The server calls the story composer makes. Reads [apiProvider] and the session at call
@@ -15,17 +16,38 @@ class StoryActions {
     required int lifetimeHours,
     required String? mediaId,
     required String audience,
-  }) => _ref
-      .read(apiProvider)
-      .createStory(
-        _ref.read(sessionProvider).asData!.value!,
-        body: body,
-        background: background,
-        textStyle: textStyle,
-        lifetimeHours: lifetimeHours,
-        mediaId: mediaId,
-        audience: audience,
-      );
+    String? topic,
+    String? voiceMediaId,
+  }) {
+    final session = _ref.read(sessionProvider).asData!.value!;
+    // A topic or a voice note goes through the newer call; a plain story keeps the first one.
+    if (topic != null || voiceMediaId != null) {
+      return _ref
+          .read(pulse7Provider)
+          .createStory(
+            session,
+            body: body,
+            background: background,
+            textStyle: textStyle,
+            lifetimeHours: lifetimeHours,
+            mediaId: mediaId,
+            audience: audience,
+            topic: topic,
+            voiceMediaId: voiceMediaId,
+          );
+    }
+    return _ref
+        .read(apiProvider)
+        .createStory(
+          session,
+          body: body,
+          background: background,
+          textStyle: textStyle,
+          lifetimeHours: lifetimeHours,
+          mediaId: mediaId,
+          audience: audience,
+        );
+  }
 }
 
 final storyActionsProvider = Provider<StoryActions>(StoryActions.new);

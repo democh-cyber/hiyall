@@ -59,6 +59,16 @@ dependencies:
   # "Download my data": the system share sheet on a phone (web downloads through package:web).
   share_plus: ^13.3.1
   web: ^1.1.1
+  record: ^7.1.2
+  just_audio: ^0.10.6
+  audio_session: ^0.2.4
+  video_player: ^2.14.1
+  flutter_tts: ^4.2.5
+  google_mlkit_translation: ^0.15.1
+  google_mlkit_language_id: ^0.15.1
+  pro_video_editor: ^2.39.0
+  in_app_purchase: 3.3.1
+  google_mobile_ads: 9.1.0
 
 dev_dependencies:
   flutter_test:

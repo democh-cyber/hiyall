@@ -274,7 +274,12 @@ void main() {
       await tester.tap(find.text('Music'));
       await tester.pumpAndSettle();
       await showPeople(tester);
-      expect(find.text('Music'), findsOneWidget);
+      // The row's own context line and the active-filter chip under the categories.
+      expect(find.text('Music'), findsNWidgets(2));
+      expect(
+        find.byKey(const Key('active-filter-interest-Music')),
+        findsOneWidget,
+      );
       expect(find.textContaining('% match'), findsNothing);
       api.items = [
         {

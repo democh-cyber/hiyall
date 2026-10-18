@@ -14,6 +14,8 @@ import 'package:hiyall/core/chat/chat_local_data.dart';
 import 'package:hiyall/core/chat/chat_store.dart';
 import 'package:hiyall/core/chat_wipe_hook.dart';
 import 'package:hiyall/core/data_delivery.dart';
+import 'package:hiyall/core/discover_prefs.dart';
+import 'package:hiyall/core/discovery.dart' show PeopleFilters;
 import 'package:hiyall/core/home_prefs.dart';
 import 'package:hiyall/core/last_user.dart';
 import 'package:hiyall/core/picked_file.dart';
@@ -109,6 +111,9 @@ class Rig {
     }
     drafts.drafts[anjaliId] = const StoryDraft(text: 'unsent').encode();
     homePrefs.hidden.add(anjaliId);
+    discoverPrefs.filters[anjaliId] = PeopleFilters(interests: ['Music']);
+    discoverPrefs.tips[anjaliId] = {'home.people_you_may_like'};
+    discoverPrefs.filters[nikoId] = PeopleFilters(online: true);
     sayHi.confirmedBy.add(anjaliId);
     sayHi.sentBy[anjaliId] = {'x': DateTime.utc(2026, 1, 1)};
     push.off.add(anjaliId);
@@ -125,6 +130,7 @@ class Rig {
         exportWipeProvider.overrideWithValue(() async {}),
         storyDraftStoreProvider.overrideWithValue(drafts),
         homePrefsStoreProvider.overrideWithValue(homePrefs),
+        discoverPrefsStoreProvider.overrideWithValue(discoverPrefs),
         sayHiPrefsStoreProvider.overrideWithValue(sayHi),
         pushPrefsStoreProvider.overrideWithValue(push),
         imageCachesWipeProvider.overrideWithValue(() async => imageWipes++),
@@ -140,6 +146,7 @@ class Rig {
   final ChatStore store;
   final drafts = MemoryStoryDraftStore();
   final homePrefs = MemoryHomePrefsStore();
+  final discoverPrefs = MemoryDiscoverPrefsStore();
   final sayHi = MemorySayHiPrefsStore();
   final push = MemoryPushPrefsStore();
   int imageWipes = 0;
@@ -168,6 +175,8 @@ class Rig {
   bool get residueGone =>
       drafts.drafts[anjaliId] == null &&
       !homePrefs.hidden.contains(anjaliId) &&
+      !discoverPrefs.filters.containsKey(anjaliId) &&
+      !discoverPrefs.tips.containsKey(anjaliId) &&
       !sayHi.confirmedBy.contains(anjaliId) &&
       sayHi.sentBy[anjaliId] == null &&
       !push.off.contains(anjaliId) &&
@@ -439,6 +448,7 @@ void main() {
           exportWipeProvider.overrideWithValue(() async {}),
           storyDraftStoreProvider.overrideWithValue(_ThrowingDrafts()),
           homePrefsStoreProvider.overrideWithValue(rig.homePrefs),
+          discoverPrefsStoreProvider.overrideWithValue(rig.discoverPrefs),
           sayHiPrefsStoreProvider.overrideWithValue(rig.sayHi),
           pushPrefsStoreProvider.overrideWithValue(rig.push),
           imageCachesWipeProvider.overrideWithValue(
@@ -450,6 +460,7 @@ void main() {
       await broken.read(sessionProvider.notifier).logout();
       expect(broken.read(sessionProvider).asData?.value, isNull);
       expect(rig.homePrefs.hidden, isNot(contains(anjaliId)));
+      expect(rig.discoverPrefs.filters, isNot(contains(anjaliId)));
       expect(rig.push.off, isNot(contains(anjaliId)));
       expect(rig.imageWipes, 1);
     });

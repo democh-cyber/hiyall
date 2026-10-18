@@ -923,13 +923,34 @@ const languageNames = <String, String>{
   "zxx": "No linguistic content",
   "zza": "Zaza",
 };
-const languageLevels = <String, String>{
-  "": "Not specified",
-  "basic": "Basic",
-  "conversational": "Conversational",
-  "fluent": "Fluent",
-  "native": "Native",
-};
+
+/// The six levels of a language, by number (1 to 6); index 0 is not a level.
+const languageLevelNames = <String>[
+  "Not specified",
+  "Just starting",
+  "Beginner",
+  "Conversational",
+  "Fluent",
+  "Advanced",
+  "Native",
+];
+
+/// What each level means, one short line for the picker.
+const languageLevelHints = <String>[
+  "",
+  "A few words and phrases",
+  "Simple sentences, slowly",
+  "Everyday chat, with some gaps",
+  "Comfortable in most conversations",
+  "Nearly natural, rarely stuck",
+  "My first language, or as good as",
+];
+
+/// The name of a level; a number outside 1 to 6 reads as "Not specified".
+String languageLevelName(int level) =>
+    level >= 1 && level < languageLevelNames.length
+    ? languageLevelNames[level]
+    : languageLevelNames[0];
 String languageLabel(String code) =>
     languageNames[code.toLowerCase()] ??
     languageNames[code.split("-").first.toLowerCase()] ??

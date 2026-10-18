@@ -118,8 +118,10 @@ class ChatReply {
     required this.kind,
   });
 
-  static const kinds = {'text', 'image'};
+  static const kinds = {'text', 'image', 'voice', 'video'};
   bool get isImage => kind == 'image';
+  bool get isVoice => kind == 'voice';
+  bool get isVideo => kind == 'video';
 
   Map<String, dynamic> toJson() => {
     'id': id,

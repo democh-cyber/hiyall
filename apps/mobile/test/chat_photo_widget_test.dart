@@ -384,7 +384,12 @@ void main() {
       ]);
       expect(find.byKey(const Key('photo-failed-m3')), findsOneWidget);
       expect(find.text('Not sent'), findsOneWidget);
-      expect(find.text('You can send photos once they reply.'), findsOneWidget);
+      expect(
+        find.text(
+          'You can send photos, voice messages and videos once they reply.',
+        ),
+        findsOneWidget,
+      );
       await tester.tap(find.byKey(const Key('photo-send-retry-m3')));
       await tester.pump();
       expect(engine.retried, ['m3']);
@@ -525,14 +530,19 @@ void main() {
       await choose(tester, 'attach-gallery');
       await tester.tap(find.byKey(const Key('photo-send')));
       await tester.pumpAndSettle();
-      expect(find.text('You can send photos once they reply.'), findsOneWidget);
+      expect(
+        find.text(
+          'You can send photos, voice messages and videos once they reply.',
+        ),
+        findsOneWidget,
+      );
     });
 
     spec('the text composer is unchanged', (tester) async {
       await open(tester, []);
       expect(find.byKey(const Key('chat-input')), findsOneWidget);
       expect(find.byKey(const Key('chat-send')), findsOneWidget);
-      expect(find.byTooltip('Attach photo'), findsOneWidget);
+      expect(find.byTooltip('Attach photo or video'), findsOneWidget);
     });
   });
 
@@ -698,7 +708,10 @@ void main() {
         200,
         scrollable: find.byType(Scrollable).last,
       );
-      expect(find.text('Also share the photo itself'), findsOneWidget);
+      expect(
+        find.text('Also share the photo, voice message or video itself'),
+        findsOneWidget,
+      );
       expect(find.textContaining('key to open the photo'), findsOneWidget);
       await tick(tester, 'report-photo-consent');
       await submit(tester);

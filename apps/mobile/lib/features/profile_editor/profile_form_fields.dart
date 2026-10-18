@@ -12,12 +12,21 @@ class ProfileFormFields {
       bio,
       profession,
       pronouns,
-      vibe;
+      vibe,
+      aboutMe,
+      hometown;
   final interest = TextEditingController();
   String gender;
   String? country;
   final List<ProfileLanguage> languages;
   final List<String> interests;
+
+  /// Ids of the chosen personality tags (none, or three to five).
+  final List<String> personalityTags;
+
+  /// Audiences the person changed in this form, by field (`aboutMe`, `hometown`, `personality`). Only
+  /// these are sent to the privacy settings; a field left alone keeps its saved audience.
+  final Map<String, String> audienceChanges = {};
   String accent, pattern, frame;
 
   ProfileFormFields(Profile p)
@@ -29,12 +38,15 @@ class ProfileFormFields {
       profession = TextEditingController(text: p.profession),
       pronouns = TextEditingController(text: p.pronouns),
       vibe = TextEditingController(text: p.currentVibe),
+      aboutMe = TextEditingController(text: p.aboutMe),
+      hometown = TextEditingController(text: p.hometown),
       gender = const ['woman', 'man', 'nonbinary'].contains(p.gender)
           ? p.gender
           : '',
       country = p.country,
       languages = [...p.languages],
       interests = [...p.interests],
+      personalityTags = [...p.personalityTags],
       accent = ['lime', 'violet', 'cyan'].contains(p.profileAccent)
           ? p.profileAccent
           : 'lime',
@@ -58,6 +70,9 @@ class ProfileFormFields {
     'country': country,
     'languages': languages.map((v) => v.toJson()).toList(),
     'interests': interests,
+    'personalityTags': personalityTags,
+    'aboutMe': aboutMe.text.trim(),
+    'hometown': hometown.text.trim(),
     'currentVibe': vibe.text.trim(),
     'profileAccent': accent,
     'profilePattern': pattern,
@@ -74,6 +89,8 @@ class ProfileFormFields {
       profession,
       pronouns,
       vibe,
+      aboutMe,
+      hometown,
       interest,
     ]) {
       controller.dispose();

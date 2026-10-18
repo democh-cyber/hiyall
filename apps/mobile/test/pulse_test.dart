@@ -45,6 +45,32 @@ class PulseApi extends FakeApi {
     String? cursor,
   ]) async => ApiPage(comments_, null);
 
+  /// The comments sheet asks for top-level comments (`?parent=none`) through the generic call; this answers
+  /// it from [comments] so the older fixtures keep working. A parent id lists [replies_].
+  final replies_ = <String, List<PostComment>>{};
+  @override
+  Future<dynamic> send(
+    Session s,
+    String method,
+    String path, {
+    Object? body,
+  }) async {
+    final match = RegExp(r'^/v1/posts/([^/]+)/comments\?(.*)$')
+        .firstMatch(path);
+    if (method == 'GET' && match != null) {
+      final query = Uri.splitQueryString(match.group(2)!);
+      final parent = query['parent'];
+      final page = parent == null || parent == 'none'
+          ? await comments(s, match.group(1)!, query['cursor'])
+          : ApiPage(replies_[parent] ?? const <PostComment>[], null);
+      return {
+        'items': [for (final c in page.items) commentJson(c)],
+        'nextCursor': page.nextCursor,
+      };
+    }
+    return super.send(s, method, path, body: body);
+  }
+
   @override
   Future<PostComment> addComment(
     Session s,
@@ -141,6 +167,23 @@ class FakePicker extends ImagePicker {
     XFile.fromData(jpeg, name: 'b.jpg'),
   ];
 }
+
+Map<String, dynamic> commentJson(PostComment c) => {
+  'commentId': c.commentId,
+  'postId': c.postId,
+  'body': c.body,
+  'parentId': c.parentId,
+  'createdAt': c.createdAt.toIso8601String(),
+  'mine': c.mine,
+  'canDelete': c.canDelete,
+  'replyCount': c.replyCount,
+  'author': {
+    'userId': c.author.userId,
+    'username': c.author.username,
+    'displayName': c.author.displayName,
+    'avatarUrl': c.author.avatarUrl,
+  },
+};
 
 Post post(
   String id, {

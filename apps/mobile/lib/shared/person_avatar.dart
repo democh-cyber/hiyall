@@ -23,6 +23,11 @@ typedef AvatarImageFactory = ImageProvider Function(
 ImageProvider _cachedAvatar(String url, String cacheKey) =>
     CachedNetworkImageProvider(url, cacheKey: cacheKey);
 
+/// Any signed photo URL as an [ImageProvider] under [cacheKey] (a gallery photo: `photo:<media id>`), through the
+/// same loader as avatars, so tests replace both at once.
+ImageProvider photoProvider(String url, String cacheKey) =>
+    PersonAvatar.imageFactory(url, cacheKey);
+
 /// A person's photo as an [ImageProvider] cached by [avatarCacheKey], for
 /// places that take an image rather than a widget. Null without a URL.
 ImageProvider? avatarProvider(String userId, String? url) =>

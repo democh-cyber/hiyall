@@ -9,7 +9,16 @@ class ChatFailure implements Exception {
 
   /// How long the server asked the caller to wait (Retry-After), when it did.
   final Duration? retryAfter;
-  const ChatFailure(this.code, this.message, [this.status, this.retryAfter]);
+
+  /// The server's `error.details` (what a spend costs and what the member has, for a 402), when it sent any.
+  final Map<String, dynamic>? details;
+  const ChatFailure(
+    this.code,
+    this.message, [
+    this.status,
+    this.retryAfter,
+    this.details,
+  ]);
   @override
   String toString() => message;
 }
@@ -90,6 +99,7 @@ class ChatApi {
     String path, [
     Object? body,
     String? retryToken,
+    Map<String, String>? headers,
   ]) async {
     // The bearer token travels over https only (plain http to this machine in a debug build), like every
     // other client of the API (see isSecureTransport).
@@ -110,6 +120,7 @@ class ChatApi {
             'Authorization': 'Bearer $sent',
             'X-Client-Version': ?clientVersion,
             'X-Client-Platform': ?clientPlatform,
+            ...?headers,
           },
         ),
       );
@@ -133,7 +144,7 @@ class ChatApi {
         if (retryToken == null) {
           final fresh = await tokenRefresher?.call();
           if (fresh != null && fresh != sent) {
-            return _call(method, path, body, fresh);
+            return _call(method, path, body, fresh, headers);
           }
         }
         // Only the relay's explicit "unauthenticated" ends the session; any other 401 (a proxy's, one without
@@ -162,6 +173,9 @@ class ChatApi {
             : 'Could not reach the chat service. Check your connection.',
         status,
         _retryAfter(error.response?.headers.value('retry-after')),
+        failure is Map && failure['details'] is Map
+            ? Map<String, dynamic>.from(failure['details'] as Map)
+            : null,
       );
     }
   }
@@ -199,16 +213,53 @@ class ChatApi {
       '/v1/users/${Uri.encodeComponent(userId)}/devices/${Uri.encodeComponent(deviceId)}/claim',
     ) as Map,
   );
-  Future<Map<String, dynamic>> openConversation(String userId) async =>
-      Map<String, dynamic>.from(
-        await _call('POST', '/v1/conversations', {'userId': userId}) as Map,
-      );
+
+  /// Opens (or reopens) the direct conversation with [userId]. [confirmCost] is the price in coins the member
+  /// confirmed for a conversation past the free allowance (the `Spend-Confirm` header; 402
+  /// SPEND_CONFIRMATION_REQUIRED says the price when it is missing, docs/api/28-billing.md).
+  Future<Map<String, dynamic>> openConversation(
+    String userId, {
+    int? confirmCost,
+  }) async => Map<String, dynamic>.from(
+    await _call(
+      'POST',
+      '/v1/conversations',
+      {'userId': userId},
+      null,
+      confirmCost == null ? null : {'Spend-Confirm': '$confirmCost'},
+    ) as Map,
+  );
   Future<Map<String, dynamic>> conversation(String id) async =>
       Map<String, dynamic>.from(
         await _call('GET', '/v1/conversations/$id') as Map,
       );
   Future<List<Map<String, dynamic>>> conversations({int limit = 50}) async =>
       _items(await _call('GET', '/v1/conversations?limit=$limit'));
+
+  /// Pins or unpins this chat in the caller's list (409 PIN_LIMIT past five).
+  Future<void> pinConversation(String id, bool pinned) =>
+      _call('PUT', '/v1/conversations/$id/pin', {'pinned': pinned});
+
+  /// Deletes this chat from the caller's list (restorable for 30 days; nothing is removed anywhere).
+  Future<void> hideConversation(String id) =>
+      _call('POST', '/v1/conversations/$id/hide');
+
+  /// Brings a deleted chat back.
+  Future<void> restoreConversation(String id) =>
+      _call('POST', '/v1/conversations/$id/restore');
+
+  /// The Deleted chats, and the ids of chats closed for the caller whose local history is to be wiped.
+  Future<({List<Map<String, dynamic>> items, List<String> closedIds})>
+  hiddenConversations() async {
+    final data = await _call('GET', '/v1/conversations/hidden') as Map;
+    return (
+      items: _items(data),
+      closedIds: [
+        for (final id in (data['closedIds'] as List? ?? const []))
+          if (id is String) id,
+      ],
+    );
+  }
 
   /// Mutes this chat for the caller only, until [until] or until unmuted.
   Future<void> muteConversation(String id, bool muted, {DateTime? until}) =>

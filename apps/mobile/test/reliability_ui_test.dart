@@ -418,12 +418,20 @@ void main() {
           300,
           scrollable: find.byType(Scrollable).first,
         );
+        // The row may be built (in the cache extent) yet below the screen: bring it into view.
+        await tester.ensureVisible(row);
+        await tester.pumpAndSettle();
         await tester.tap(row);
         await tester.pumpAndSettle();
         expect(find.text('Help & Safety'), findsWidgets);
         expect(find.byType(SelectableText), findsWidgets);
         expect(find.text('support@hiyall.example'), findsOneWidget);
         expect(find.text('safety@hiyall.example'), findsOneWidget);
+        await tester.scrollUntilVisible(
+          find.text('Staying safe'.toUpperCase()),
+          300,
+          scrollable: find.byType(Scrollable).first,
+        );
         expect(find.text('Staying safe'.toUpperCase()), findsOneWidget);
         await tester.scrollUntilVisible(
           find.text('Block or report someone'.toUpperCase()),
@@ -450,6 +458,15 @@ void main() {
       (tester) async {
         captureClipboard(tester);
         await open(tester, FakeApi(), '/profile/help');
+        await tester.scrollUntilVisible(
+          find.byTooltip('Copy support@hiyall.example'),
+          300,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.ensureVisible(
+          find.byTooltip('Copy support@hiyall.example'),
+        );
+        await tester.pumpAndSettle();
         await tester.tap(find.byTooltip('Copy support@hiyall.example'));
         await tester.pump();
         expect(copied, 'support@hiyall.example');
@@ -463,6 +480,10 @@ void main() {
         };
         addTearDown(() => mailLauncher = (uri) => launchUrl(uri));
         copied = null;
+        await tester.ensureVisible(
+          find.byKey(const Key('help-contact-Safety concerns')),
+        );
+        await tester.pumpAndSettle();
         await tester.tap(find.byKey(const Key('help-contact-Safety concerns')));
         await tester.pumpAndSettle();
         expect(opened?.scheme, 'mailto');
@@ -471,6 +492,10 @@ void main() {
 
         // No mail app: the address is copied instead.
         mailLauncher = (uri) async => false;
+        await tester.ensureVisible(
+          find.byKey(const Key('help-contact-Safety concerns')),
+        );
+        await tester.pumpAndSettle();
         await tester.tap(find.byKey(const Key('help-contact-Safety concerns')));
         await tester.pumpAndSettle();
         expect(copied, 'safety@hiyall.example');
@@ -479,6 +504,10 @@ void main() {
         // A platform error counts the same.
         copied = null;
         mailLauncher = (uri) async => throw PlatformException(code: 'x');
+        await tester.ensureVisible(
+          find.byKey(const Key('help-contact-Help and feedback')),
+        );
+        await tester.pumpAndSettle();
         await tester.tap(
           find.byKey(const Key('help-contact-Help and feedback')),
         );
@@ -514,6 +543,9 @@ void main() {
         300,
         scrollable: find.byType(Scrollable).first,
       );
+      // The row may be built (in the cache extent) yet below the screen: bring it into view.
+      await tester.ensureVisible(row);
+      await tester.pumpAndSettle();
       await tester.tap(row);
       await tester.pumpAndSettle();
       expect(find.byType(LicensePage), findsOneWidget);

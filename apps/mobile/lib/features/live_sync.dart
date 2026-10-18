@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/activity_state.dart';
 import '../core/realtime/realtime_client.dart';
+import '../core/support.dart' show supportSignalProvider;
 import '../core/state.dart';
 import 'chat.dart';
 import 'notification_settings.dart' show PushHost;
@@ -225,6 +226,9 @@ class _LiveSyncState extends ConsumerState<LiveSync> {
         if (id != null) ref.read(typingProvider.notifier).mark(id);
       case 'activity':
         quietly(() => ref.read(activityProvider.notifier).refresh());
+      case 'support':
+        // The team replied: the dot, the list and an open conversation read again.
+        ref.read(supportSignalProvider.notifier).bump();
     }
   }
 

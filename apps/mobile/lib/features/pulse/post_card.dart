@@ -6,6 +6,7 @@ import '../../core/api.dart';
 import '../../core/feed_state.dart';
 import '../../core/theme.dart';
 import '../../core/user_error.dart';
+import '../../core/voice.dart' show ClipSource;
 import '../../shared/person_link.dart';
 import '../../shared/press_scale.dart';
 import 'comments_sheet.dart';
@@ -13,6 +14,9 @@ import 'post_action_pill.dart';
 import 'post_media_carousel.dart';
 import 'post_menu.dart';
 import 'pulse_common.dart';
+import 'topic_widgets.dart';
+import 'translate_button.dart';
+import 'voice_player.dart';
 
 /// One post in Pulse. Changes go through the feed it belongs to.
 class PostCard extends ConsumerWidget {
@@ -52,7 +56,34 @@ class PostCard extends ConsumerWidget {
           children: [
             _PostHeader(post: post, mode: mode),
             if (post.body.isNotEmpty)
-              _PostBody(body: post.body, statement: statement),
+              TranslateScope(
+                id: post.postId,
+                text: post.body,
+                builder: (context, shown, button) => Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _PostBody(body: shown, statement: statement),
+                    if (button != null)
+                      Padding(
+                        padding: const EdgeInsetsDirectional.only(
+                          start: 14,
+                          bottom: 4,
+                        ),
+                        child: button,
+                      ),
+                  ],
+                ),
+              ),
+            if (post.voice != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+                child: VoicePlayerBar(
+                  id: post.voice!.mediaId,
+                  source: ClipSource.url(post.voice!.url),
+                  duration: post.voice!.duration,
+                  label: 'Voice note from ${post.author.name}',
+                ),
+              ),
             if (post.media.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -63,6 +94,17 @@ class PostCard extends ConsumerWidget {
                     onDoubleTap: () {
                       if (post.myReaction == null) react('heart');
                     },
+                  ),
+                ),
+              ),
+            if (post.topic != null)
+              Padding(
+                padding: const EdgeInsetsDirectional.fromSTEB(18, 8, 18, 0),
+                child: Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: TopicLabel(
+                    post.topic!,
+                    key: Key('post-topic-${post.postId}'),
                   ),
                 ),
               ),

@@ -18,10 +18,14 @@
 	<string>Hiyall uses a photo you choose as your profile picture or in your posts. Photos are only shared when you pick them.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Hiyall uses the camera so you can take a profile picture, a photo for a post or story, or a photo to send in a chat. Nothing is shared until you confirm it.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Hiyall uses the microphone only while you record a voice message or a video to send in a chat. It is encrypted on your phone before it is sent, and nothing is recorded in the background.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Hiyall uses your approximate location to show people near you. Others only ever see a rounded distance, never where you are.</string>
 	<key>NSLocationDefaultAccuracyReduced</key>
 	<true/>
+	<key>GADApplicationIdentifier</key>
+	<string>$(ADMOB_APP_ID_IOS)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<true/>
 	<key>CFBundleName</key>

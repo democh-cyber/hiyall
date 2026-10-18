@@ -48,6 +48,31 @@ class FakeApi extends ApiClient {
   // Widget tests never open network sockets.
   @override
   RealtimeClient? realtime(Session s) => null;
+  // Home's "People you may like" strip loads on its own: none here.
+  @override
+  Future<ApiPage<Profile>> possibleMatches(
+    Session s, {
+    int limit = 20,
+    bool excludeFollowing = false,
+    String? cursor,
+  }) async => const ApiPage<Profile>([], null);
+  // The dot on Help & Safety reads this on its own; a real request would leave a timer behind.
+  @override
+  Future<dynamic> send(
+    Session s,
+    String method,
+    String path, {
+    Object? body,
+  }) async {
+    if (method == 'GET' && path == '/v1/support/unread') {
+      return <String, dynamic>{'unreadCount': 0};
+    }
+    // Home's pinned safety banner reads the notice summary the same way.
+    if (method == 'GET' && path.startsWith('/v1/notices/summary')) {
+      return <String, dynamic>{'unreadCount': 0, 'pinned': <dynamic>[]};
+    }
+    return super.send(s, method, path, body: body);
+  }
 
   List<Post> posts = [];
   List<StoryGroup> stories = [];

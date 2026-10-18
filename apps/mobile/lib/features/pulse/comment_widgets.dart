@@ -1,97 +1,160 @@
 import 'package:flutter/material.dart';
 
 import '../../core/api.dart';
+import '../../shared/chat_tokens.dart';
+import '../../shared/press_scale.dart';
 import 'pulse_common.dart';
+import 'translate_button.dart';
 
-/// The scrolling list of a post's comments, with "Show more" at the end.
-class CommentList extends StatelessWidget {
-  final List<PostComment> items;
-  final bool hasMore, loadingMore;
-  final VoidCallback onShowMore;
-  final void Function(PostComment) onOptions;
-  const CommentList({
+/// Whether a comment is still waiting for the server to take it (shown at once, then replaced).
+bool isPendingComment(PostComment c) => c.commentId.startsWith('pending-');
+
+/// One comment or reply, with its actions: Reply, and for a top-level comment "View N replies".
+class CommentTile extends StatelessWidget {
+  final PostComment comment;
+
+  /// A reply is drawn indented under its comment.
+  final bool isReply;
+  final bool repliesOpen, loadingReplies;
+  final VoidCallback onOptions, onReply;
+  final VoidCallback? onToggleReplies;
+  const CommentTile({
     super.key,
-    required this.items,
-    required this.hasMore,
-    required this.loadingMore,
-    required this.onShowMore,
+    required this.comment,
     required this.onOptions,
+    required this.onReply,
+    this.isReply = false,
+    this.repliesOpen = false,
+    this.loadingReplies = false,
+    this.onToggleReplies,
   });
 
   @override
   Widget build(BuildContext context) {
-    final byId = {for (final c in items) c.commentId: c};
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      itemCount: items.length + (hasMore ? 1 : 0),
-      itemBuilder: (context, i) {
-        if (i == items.length) {
-          return TextButton(
-            onPressed: loadingMore ? null : onShowMore,
-            child: const Text('Show more'),
-          );
-        }
-        final c = items[i];
-        final parent = c.parentId == null ? null : byId[c.parentId];
-        return CommentTile(
-          comment: c,
-          replyingTo: parent,
-          onOptions: () => onOptions(c),
-        );
-      },
+    final t = ChatTokens.of(context);
+    final c = comment;
+    final pending = isPendingComment(c);
+    final n = c.replyCount;
+    final toggleLabel = repliesOpen
+        ? 'Hide replies'
+        : n == 1
+        ? 'View 1 reply'
+        : 'View $n replies';
+    return Opacity(
+      opacity: pending ? .6 : 1,
+      child: Padding(
+        key: Key('comment-${c.commentId}'),
+        padding: EdgeInsetsDirectional.only(
+          start: isReply ? 52 : 12,
+          end: 4,
+          top: 6,
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            PulseAvatar.of(c.author, radius: isReply ? 13 : 16),
+            const SizedBox(width: 10),
+            Expanded(
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onLongPress: pending ? null : onOptions,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text.rich(
+                      TextSpan(
+                        children: [
+                          TextSpan(
+                            text: c.author.name,
+                            style: const TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                          TextSpan(
+                            text: pending
+                                ? '  Sending…'
+                                : '  ${shortAgo(c.createdAt)}',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: t.textSecondary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    TranslateScope(
+                      id: c.commentId,
+                      text: c.body,
+                      builder: (context, shown, button) => Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            shown,
+                            style: TextStyle(color: t.text, height: 1.4),
+                          ),
+                          ?button,
+                        ],
+                      ),
+                    ),
+                    if (!pending)
+                      Wrap(
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          _TextAction(
+                            key: Key('reply-${c.commentId}'),
+                            label: 'Reply',
+                            onTap: onReply,
+                          ),
+                          if (!isReply && n > 0 && onToggleReplies != null)
+                            _TextAction(
+                              key: Key('replies-${c.commentId}'),
+                              label: loadingReplies
+                                  ? 'Loading replies…'
+                                  : toggleLabel,
+                              onTap: loadingReplies ? null : onToggleReplies,
+                            ),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            if (!pending)
+              IconButton(
+                key: Key('comment-options-${c.commentId}'),
+                tooltip: 'Comment options',
+                icon: const Icon(Icons.more_vert_rounded, size: 18),
+                onPressed: onOptions,
+              ),
+          ],
+        ),
+      ),
     );
   }
 }
 
-class CommentTile extends StatelessWidget {
-  final PostComment comment;
-
-  /// The comment this one answers, when it is on screen.
-  final PostComment? replyingTo;
-  final VoidCallback onOptions;
-  const CommentTile({
-    super.key,
-    required this.comment,
-    required this.replyingTo,
-    required this.onOptions,
-  });
+/// A quiet text button at least 48 high, for Reply and the replies toggle.
+class _TextAction extends StatelessWidget {
+  final String label;
+  final VoidCallback? onTap;
+  const _TextAction({super.key, required this.label, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final c = comment;
-    return ListTile(
-      key: Key('comment-${c.commentId}'),
-      contentPadding: EdgeInsetsDirectional.only(
-        start: c.parentId == null ? 4 : 40,
-        end: 4,
-      ),
-      leading: PulseAvatar.of(c.author, radius: 16),
-      title: Text.rich(
-        TextSpan(
-          children: [
-            TextSpan(
-              text: c.author.name,
-              style: const TextStyle(fontWeight: FontWeight.w800),
-            ),
-            TextSpan(
-              text: '  ${shortAgo(c.createdAt)}',
-              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
-            ),
-          ],
+    final t = ChatTokens.of(context);
+    return PressScale(
+      minHeight: 48,
+      semanticLabel: label,
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            color: t.textSecondary,
+          ),
         ),
-      ),
-      subtitle: Text(
-        c.parentId != null && replyingTo != null
-            ? '@${replyingTo!.author.username} ${c.body}'
-            : c.body,
-        style: TextStyle(color: scheme.onSurface, height: 1.4),
-      ),
-      onLongPress: onOptions,
-      trailing: IconButton(
-        tooltip: 'Comment options',
-        icon: const Icon(Icons.more_vert_rounded, size: 18),
-        onPressed: onOptions,
       ),
     );
   }
@@ -124,11 +187,13 @@ class CommentInput extends StatelessWidget {
   final TextEditingController controller;
   final bool sending;
   final VoidCallback onSend;
+  final FocusNode? focusNode;
   const CommentInput({
     super.key,
     required this.controller,
     required this.sending,
     required this.onSend,
+    this.focusNode,
   });
 
   @override
@@ -142,6 +207,7 @@ class CommentInput extends StatelessWidget {
             child: TextField(
               key: const Key('comment-input'),
               controller: controller,
+              focusNode: focusNode,
               maxLength: 1000,
               minLines: 1,
               maxLines: 4,

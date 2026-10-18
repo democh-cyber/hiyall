@@ -9,6 +9,7 @@ import '../safety.dart';
 import 'pulse_actions.dart';
 import 'pulse_common.dart';
 import 'story_viewer_parts.dart';
+import 'story_extras.dart';
 
 /// Full-screen stories: tap right for next, left for previous, hold to pause.
 class StoryViewer extends ConsumerStatefulWidget {
@@ -74,6 +75,13 @@ class _StoryViewerState extends ConsumerState<StoryViewer>
         actions.viewStory(story.storyId).catchError((_) {});
       }
     }
+    // A story with a voice note stays up for as long as the note plays (and a moment more).
+    final voice = story.voice;
+    timer.duration = voice == null
+        ? shownFor
+        : voice.duration + const Duration(seconds: 1) > shownFor
+        ? voice.duration + const Duration(seconds: 1)
+        : shownFor;
     timer.forward(from: 0);
   }
 
@@ -198,6 +206,14 @@ class _StoryViewerState extends ConsumerState<StoryViewer>
               timer: timer,
               onMenu: () => menu(story, g),
               onClose: close,
+            ),
+            // The voice note, the topic and a translate button sit above the seen-by line, clear of the tap areas.
+            Positioned.directional(
+              textDirection: Directionality.of(context),
+              start: 16,
+              end: 16,
+              bottom: g.mine ? 72 : 24,
+              child: StoryExtras(story: story, author: g.author.name),
             ),
             if (g.mine)
               StorySeenByButton(

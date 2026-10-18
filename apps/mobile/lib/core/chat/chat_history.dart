@@ -283,6 +283,21 @@ class ChatHistory {
     await _save(conversationId, list);
   });
 
+  /// Deletes this device's whole copy of one conversation (the messages, the reactions waiting for messages
+  /// that had not arrived, and through [onDropped] the cached files of its photos, voice messages and videos).
+  /// Used by "Clear history" and when a chat deleted from the list passes its 30 days. Nothing on the relay or
+  /// on the peer's phone changes.
+  Future<int> clear(String conversationId) => _serial(() async {
+    final list = [...await _load(conversationId)];
+    await store.delete(keyOf(conversationId));
+    await store.delete(_pendingKey(conversationId));
+    _lists[conversationId] = [];
+    _pending.remove(conversationId);
+    if (list.isNotEmpty) onDropped?.call(conversationId, list, const []);
+    onChange?.call(conversationId);
+    return list.length;
+  });
+
   /// Swaps the message with the same id, if it is still there.
   Future<void> replace(String conversationId, ChatMessage message) =>
       _serial(() async {

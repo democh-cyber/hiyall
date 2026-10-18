@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -17,6 +18,14 @@ import 'features/help_safety.dart';
 import 'l10n/l10n.dart';
 import 'features/home.dart';
 import 'features/legal_screens.dart';
+import 'features/notices.dart';
+import 'features/pulse/my_activity.dart';
+import 'features/pulse/post_screen.dart';
+import 'features/pulse/pulse_search.dart';
+import 'features/support/new_thread.dart';
+import 'features/support/support_home.dart';
+import 'features/support/support_thread_screen.dart';
+import 'core/support.dart' show SupportCategory;
 import 'features/live_sync.dart';
 import 'features/account_data.dart'
     show DeletionScheduledScreen, PendingDeletionScreen;
@@ -28,9 +37,11 @@ import 'features/profile.dart';
 import 'features/pulse.dart';
 import 'features/safety.dart';
 import 'features/settings.dart';
+import 'features/shop/shop_screen.dart' show ShopScreen;
 import 'features/spaces.dart';
 import 'features/discovery.dart' show FindPeopleScreen;
 import 'features/people_lists.dart';
+import 'features/visit_lists.dart';
 import 'shared/person_avatar.dart';
 import 'shared/widgets.dart';
 import 'shared/navigation_dock.dart';
@@ -174,6 +185,15 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/story/new',
         builder: (context, state) => const StoryComposerScreen(),
+      ), // Search over posts and stories, and one post opened by its id (from a search result or My activity).
+      GoRoute(
+        path: '/search',
+        builder: (context, state) => const PulseSearchScreen(),
+      ),
+      GoRoute(
+        path: '/post/:id',
+        builder: (context, state) =>
+            PostScreen(postId: state.pathParameters['id']!),
       ),
       GoRoute(
         path: '/spaces/new',
@@ -202,6 +222,15 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/person/:id',
         builder: (context, state) => Scaffold(
           body: SafeArea(child: PersonScreen(id: state.pathParameters['id']!)),
+        ),
+      ),
+      // Who visited a member who shares it (outside the dock, like their other lists).
+      GoRoute(
+        path: '/person/:id/visitors',
+        builder: (context, state) => Scaffold(
+          body: SafeArea(
+            child: RecentVisitorsScreen(userId: state.pathParameters['id']!),
+          ),
         ),
       ),
       // Another member's lists, outside the dock so they open above any profile.
@@ -312,6 +341,12 @@ final routerProvider = Provider<GoRouter>((ref) {
             path: '/notifications',
             builder: (context, state) => const NotificationsScreen(),
           ),
+          // Adults who may shop only: the screen sends everyone else away, and there is no shop on the web.
+          GoRoute(
+            path: '/shop',
+            redirect: (context, state) => kIsWeb ? '/home' : null,
+            builder: (context, state) => const ShopScreen(),
+          ),
           GoRoute(
             path: '/profile',
             builder: (context, state) => const ProfileScreen(),
@@ -355,12 +390,50 @@ final routerProvider = Provider<GoRouter>((ref) {
                 builder: (context, state) => const SettingsScreen(),
               ),
               GoRoute(
+                path: 'places',
+                builder: (context, state) => const PlacesVisitedScreen(),
+              ),
+              GoRoute(
                 path: 'help',
                 builder: (context, state) => const HelpSafetyScreen(),
               ),
               GoRoute(
                 path: 'reports',
                 builder: (context, state) => const ReportsScreen(),
+              ),
+              GoRoute(
+                path: 'activity',
+                builder: (context, state) => const MyActivityScreen(),
+              ),
+              GoRoute(
+                path: 'notices',
+                builder: (context, state) => const NoticesScreen(),
+              ),
+              GoRoute(
+                path: 'support',
+                builder: (context, state) => const SupportHomeScreen(),
+                routes: [
+                  GoRoute(
+                    path: 'new',
+                    builder: (context, state) => NewSupportThreadScreen(
+                      category: SupportCategory.values
+                          .where(
+                            (c) =>
+                                c.name == state.uri.queryParameters['category'],
+                          )
+                          .firstOrNull,
+                    ),
+                  ),
+                  GoRoute(
+                    path: ':id',
+                    builder: (context, state) => SupportThreadScreen(
+                      state.pathParameters['id']!,
+                      draft: state.extra is String
+                          ? state.extra as String
+                          : null,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),

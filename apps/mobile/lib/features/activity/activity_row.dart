@@ -9,6 +9,7 @@ import 'activity_labels.dart';
 (IconData, Color) _typeStyle(String type) => switch (type) {
   'like' || 'reaction' => (Icons.favorite_border_rounded, VibeColors.pink),
   'comment' => (Icons.chat_bubble_outline_rounded, VibeColors.lilac),
+  'visit' => (Icons.visibility_outlined, VibeColors.mint),
   'follow' ||
   'friend_request' => (Icons.person_add_alt_1_outlined, VibeColors.lime),
   'community' => (Icons.groups_outlined, VibeColors.lime),

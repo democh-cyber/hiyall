@@ -1,6 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'api.dart';
+import 'pulse7.dart';
+import 'pulse_tabs.dart';
 import 'state.dart';
 
 class FeedState {
@@ -42,12 +44,25 @@ class FeedController extends AsyncNotifier<FeedState> {
   @override
   Future<FeedState> build() async {
     _epoch++;
-    final page = await ref.watch(apiProvider).feed(requireSession(ref), mode);
+    // A topic chosen on this tab narrows the feed; choosing another starts the list over.
+    final topic = ref.watch(pulseTopicProvider(mode));
+    final session = requireSession(ref);
+    final page = topic == null
+        ? await ref.watch(apiProvider).feed(session, mode)
+        : await ref.watch(pulse7Provider).feedTopic(session, mode, topic);
     return FeedState(page.items, nextCursor: page.nextCursor);
   }
 
+  /// A page of the feed for the topic now chosen on this tab (the plain feed when there is none).
+  Future<ApiPage<Post>> _fetch([String? cursor]) {
+    final topic = ref.read(pulseTopicProvider(mode));
+    return topic == null
+        ? _api.feed(_session, mode, cursor)
+        : ref.read(pulse7Provider).feedTopic(_session, mode, topic, cursor);
+  }
+
   Future<void> refresh() async {
-    final page = await _api.feed(_session, mode);
+    final page = await _fetch();
     _epoch++;
     state = AsyncData(FeedState(page.items, nextCursor: page.nextCursor));
   }
@@ -60,7 +75,7 @@ class FeedController extends AsyncNotifier<FeedState> {
     final epoch = _epoch;
     state = AsyncData(current.copyWith(loadingMore: true));
     try {
-      final page = await _api.feed(_session, mode, current.nextCursor);
+      final page = await _fetch(current.nextCursor);
       // The list was reloaded meanwhile; this page continues the old one.
       if (epoch != _epoch) return;
       // Merge into the newest state so reactions, saves, new posts and
@@ -139,6 +154,9 @@ class FeedController extends AsyncNotifier<FeedState> {
     if (current == null || current.items.any((p) => p.postId == post.postId)) {
       return;
     }
+    // A list narrowed to a topic only takes posts of that topic.
+    final topic = ref.read(pulseTopicProvider(mode));
+    if (topic != null && post.topic != topic) return;
     state = AsyncData(current.copyWith(items: [post, ...current.items]));
   }
 
@@ -162,7 +180,10 @@ class FeedController extends AsyncNotifier<FeedState> {
 }
 
 /// Active stories from the viewer's circle, own first.
-final storyTrayProvider = FutureProvider<List<StoryGroup>>(
-  (ref) => ref.watch(apiProvider).storyTray(requireSession(ref)),
-  retry: apiReadRetry,
-);
+final storyTrayProvider = FutureProvider<List<StoryGroup>>((ref) {
+  final session = requireSession(ref);
+  final topic = ref.watch(pulseTopicProvider(pulseFollowing));
+  return topic == null
+      ? ref.watch(apiProvider).storyTray(session)
+      : ref.watch(pulse7Provider).storyTrayTopic(session, topic);
+}, retry: apiReadRetry);

@@ -7,7 +7,9 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/app_info.dart';
 import '../core/legal_documents.dart';
 import '../l10n/l10n.dart';
+import '../shared/unread_dot.dart';
 import '../shared/widgets.dart';
+import 'support/help_entries.dart';
 import 'legal_screens.dart' show openLegal;
 
 /// Contact addresses, set per build (`--dart-define=SUPPORT_EMAIL=...`). The
@@ -167,6 +169,7 @@ class HelpSafetyScreen extends ConsumerWidget {
           ),
           const SizedBox(height: 6),
           Text(l10n.helpIntro, style: muted),
+          const HelpHiyallSection(),
           const _ContactSection(),
           const _SafetyTipsSection(),
           const _BlockReportSection(),
@@ -356,10 +359,10 @@ class _RulesSection extends StatelessWidget {
 
 /// The Settings group that leads here, plus the open-source licence page.
 /// Settings holds one line for it: `const HelpSettingsGroup()`.
-class HelpSettingsGroup extends StatelessWidget {
+class HelpSettingsGroup extends ConsumerWidget {
   const HelpSettingsGroup({super.key});
   @override
-  Widget build(BuildContext context) => _Section('Help', [
+  Widget build(BuildContext context, WidgetRef ref) => _Section('Help', [
     ListTile(
       key: const Key('settings-help'),
       minTileHeight: 56,
@@ -369,7 +372,17 @@ class HelpSettingsGroup extends StatelessWidget {
         style: TextStyle(fontWeight: FontWeight.w700),
       ),
       subtitle: const Text('Contact us, safety tips, block and report'),
-      trailing: const Icon(Icons.chevron_right_rounded),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // A notice or a support reply is waiting.
+          if (ref.watch(helpUnreadProvider)) ...[
+            const UnreadDot(key: Key('settings-help-unread'), label: 'New'),
+            const SizedBox(width: 8),
+          ],
+          const Icon(Icons.chevron_right_rounded),
+        ],
+      ),
       onTap: () => context.push('/profile/help'),
     ),
     ListTile(

@@ -19,6 +19,8 @@ import '../shared/person_link.dart';
 import '../shared/widgets.dart';
 import '../shared/profile_space.dart';
 import '../core/user_error.dart';
+import 'shop/profile_details_card.dart';
+import 'shop/spend_gate.dart';
 
 class NotificationsScreen extends ConsumerWidget {
   const NotificationsScreen({super.key});
@@ -65,6 +67,9 @@ class NotificationsScreen extends ConsumerWidget {
           }
           if (item['event'] == 'space.requested') {
             context.push('/spaces/${item['targetId']}/members?state=pending');
+          } else if (item['event'] == 'comment.replied') {
+            // A reply to your comment opens the post it is on.
+            context.push('/post/${item['targetId']}');
           } else if (item['targetType'] == 'space') {
             context.push('/spaces/${item['targetId']}');
           } else {
@@ -150,7 +155,14 @@ class _PersonState extends ConsumerState<PersonScreen> {
     setState(() => busy = true);
     try {
       final engine = await ref.read(chatEngineProvider.future);
-      final id = await engine!.open(widget.id);
+      // Past the free allowance a new chat costs coins: asks first (billing, adults only).
+      if (!mounted) return;
+      final id = await openChatConfirmingSpend(
+        context,
+        ref,
+        open: (cost) => engine!.open(widget.id, confirmCost: cost),
+      );
+      if (id == null) return;
       if (mounted) {
         context.go(
           '/chats/$id?peer=${Uri.encodeQueryComponent(widget.id)}&name=${Uri.encodeQueryComponent(name)}',
@@ -186,6 +198,11 @@ class _PersonState extends ConsumerState<PersonScreen> {
                 extra: SayHiProfileButton(person: profile),
               ),
               SayHiNote(userId: profile.userId),
+              if (profile.detailsLocked)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: ProfileDetailsLockedCard(userId: profile.userId),
+                ),
             ],
           );
           return SayHiEffects(announce: true, child: _body(profile, actions));

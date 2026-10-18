@@ -295,6 +295,14 @@ void main() {
     Future<void> openSheet(WidgetTester tester) async {
       await tester.tap(find.text('Filters'));
       await tester.pumpAndSettle();
+      // The sheet grew (same country, minimum level, personality): bring the age section into view.
+      if (find.byKey(const Key('filter-age')).evaluate().isEmpty) {
+        try {
+          await reveal(tester, find.byKey(const Key('filter-age')));
+        } on StateError {
+          // A sheet with no age section (a minor's) has nothing to reveal.
+        }
+      }
     }
 
     Future<void> showPeople(WidgetTester tester) async {
@@ -506,6 +514,9 @@ void main() {
       await openDiscover(tester, api, FakeLocation());
       await tester.ensureVisible(find.byKey(const Key('chip-nearby')));
       await tester.tap(find.byKey(const Key('chip-nearby')));
+      await tester.pumpAndSettle();
+      // The chips scrolled to Nearby; bring Everyone back into view first.
+      await tester.ensureVisible(find.text('Everyone'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Everyone'));
       await tester.pumpAndSettle();

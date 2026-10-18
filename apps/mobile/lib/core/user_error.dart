@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../shared/widgets.dart' show showMessage;
 import 'api.dart';
+import 'app_bindings.dart' show premiumRequiredHandlerProvider;
 import 'auth/auth_gateway.dart';
 import 'error_reporting.dart';
 
@@ -29,5 +31,20 @@ String friendlyError(Object? error, {StackTrace? stack}) {
 }
 
 /// A snack bar for a failed action, worded by [friendlyError].
-void showFailure(BuildContext context, Object error, [StackTrace? stack]) =>
-    showMessage(context, friendlyError(error, stack: stack));
+///
+/// A 402 PREMIUM_REQUIRED (the server sends it only to an adult whose plan lacks the feature, while plans are enforced) opens the sheet that explains
+/// Premium instead, when the app has bound one (`lib/bindings.dart`).
+void showFailure(BuildContext context, Object error, [StackTrace? stack]) {
+  if (error is ApiFailureDetails && error.code == 'PREMIUM_REQUIRED') {
+    final feature = error.details['feature'];
+    final open = ProviderScope.containerOf(
+      context,
+      listen: false,
+    ).read(premiumRequiredHandlerProvider);
+    if (open != null && feature is String) {
+      open(context, feature);
+      return;
+    }
+  }
+  showMessage(context, friendlyError(error, stack: stack));
+}

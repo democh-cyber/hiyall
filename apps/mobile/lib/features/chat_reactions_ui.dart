@@ -36,11 +36,22 @@ class BubbleActions {
 
   /// Copies the message's text.
   final void Function(ChatMessage message) onCopy;
+
+  /// Reads the message's text aloud on the phone; null leaves the action out.
+  final void Function(ChatMessage message)? onReadAloud;
+
+  /// Translates the message on the phone, or hides its translation when [isTranslated] says it is shown; null
+  /// leaves the action out.
+  final void Function(ChatMessage message)? onTranslate;
+  final bool Function(ChatMessage message)? isTranslated;
   const BubbleActions({
     required this.onReact,
     required this.onReply,
     required this.onQuoteTap,
     required this.onCopy,
+    this.onReadAloud,
+    this.onTranslate,
+    this.isTranslated,
   });
 }
 
@@ -299,7 +310,13 @@ double quoteNaturalWidth(
 }
 
 /// What a quote shows on its line: the snippet, or "Photo" for an image.
-String quoteLine(ChatReply reply) => reply.isImage ? 'Photo' : reply.snippet;
+String quoteLine(ChatReply reply) => reply.isImage
+    ? 'Photo'
+    : reply.isVoice
+    ? 'Voice message'
+    : reply.isVideo
+    ? 'Video'
+    : reply.snippet;
 
 /// A quote ready to draw: who, one line, whether it is a photo, and the id of
 /// the original when it is loaded (what a tap scrolls to), else null.
@@ -747,7 +764,16 @@ class _BubbleInteractionsState extends State<BubbleInteractions>
       anchor: anchor,
       mine: _mine,
       alignEnd: widget.alignEnd,
-      canCopy: m.text.trim().isNotEmpty && !m.isPhoto,
+      canCopy: m.text.trim().isNotEmpty && !m.isMedia,
+      canReadAloud:
+          widget.actions.onReadAloud != null &&
+          m.text.trim().isNotEmpty &&
+          !m.isMedia,
+      canTranslate:
+          widget.actions.onTranslate != null &&
+          m.text.trim().isNotEmpty &&
+          !m.isMedia,
+      translated: widget.actions.isTranslated?.call(m) ?? false,
     );
     if (!mounted || choice == null) return;
     switch (choice) {
@@ -757,6 +783,10 @@ class _BubbleInteractionsState extends State<BubbleInteractions>
         widget.actions.onReply(m);
       case MenuCopy():
         widget.actions.onCopy(m);
+      case MenuReadAloud():
+        widget.actions.onReadAloud?.call(m);
+      case MenuTranslate():
+        widget.actions.onTranslate?.call(m);
     }
   }
 
@@ -920,6 +950,16 @@ class MenuCopy extends MenuChoice {
   const MenuCopy();
 }
 
+/// Read the message's text aloud, on the phone.
+class MenuReadAloud extends MenuChoice {
+  const MenuReadAloud();
+}
+
+/// Translate the message on the phone (or hide the translation it already shows).
+class MenuTranslate extends MenuChoice {
+  const MenuTranslate();
+}
+
 /// The compact menu over a message: the six quick reactions in a pill, and
 /// Reply and Copy below. Everything except the message dims, so the pill reads
 /// as belonging to it. Returns the choice, or null if it was dismissed.
@@ -928,6 +968,9 @@ Future<MenuChoice?> showReactionMenu(
   required Rect anchor,
   required String? mine,
   required bool canCopy,
+  bool canReadAloud = false,
+  bool canTranslate = false,
+  bool translated = false,
   bool alignEnd = false,
 }) {
   final still = MediaQuery.disableAnimationsOf(context);
@@ -944,6 +987,9 @@ Future<MenuChoice?> showReactionMenu(
       anchor: anchor,
       mine: mine,
       canCopy: canCopy,
+      canReadAloud: canReadAloud,
+      canTranslate: canTranslate,
+      translated: translated,
       alignEnd: alignEnd,
     ),
     transitionBuilder: (context, animation, _, child) {
@@ -974,11 +1020,15 @@ class ReactionMenuScene extends StatelessWidget {
   final Rect anchor;
   final String? mine;
   final bool canCopy, alignEnd;
+  final bool canReadAloud, canTranslate, translated;
   const ReactionMenuScene({
     super.key,
     required this.anchor,
     required this.mine,
     required this.canCopy,
+    this.canReadAloud = false,
+    this.canTranslate = false,
+    this.translated = false,
     this.alignEnd = false,
   });
 
@@ -1000,7 +1050,9 @@ class ReactionMenuScene extends StatelessWidget {
       size.width - 2 * edge,
     );
     // Tiles, 4 dp of padding above and below, and the 1 dp edge.
-    final actionsHeight = tileHeight * (canCopy ? 2 : 1) + 10;
+    final tiles =
+        1 + (canCopy ? 1 : 0) + (canReadAloud ? 1 : 0) + (canTranslate ? 1 : 0);
+    final actionsHeight = tileHeight * tiles + 10;
 
     double clampX(double x, double width) =>
         x.clamp(edge, math.max(edge, size.width - edge - width)).toDouble();
@@ -1069,7 +1121,13 @@ class ReactionMenuScene extends StatelessWidget {
               top: actionsTop,
               width: actionsWidth,
               height: actionsHeight,
-              child: _Actions(canCopy: canCopy, tokens: t),
+              child: _Actions(
+                canCopy: canCopy,
+                canReadAloud: canReadAloud,
+                canTranslate: canTranslate,
+                translated: translated,
+                tokens: t,
+              ),
             ),
           ],
         ),
@@ -1196,9 +1254,15 @@ class _PillEmoji extends StatelessWidget {
 }
 
 class _Actions extends StatelessWidget {
-  final bool canCopy;
+  final bool canCopy, canReadAloud, canTranslate, translated;
   final ChatTokens tokens;
-  const _Actions({required this.canCopy, required this.tokens});
+  const _Actions({
+    required this.canCopy,
+    required this.canReadAloud,
+    required this.canTranslate,
+    required this.translated,
+    required this.tokens,
+  });
   @override
   Widget build(BuildContext context) {
     final t = tokens;
@@ -1235,6 +1299,22 @@ class _Actions extends StatelessWidget {
               label: 'Copy',
               tokens: t,
               onTap: () => Navigator.pop(context, const MenuCopy()),
+            ),
+          if (canReadAloud)
+            _ActionTile(
+              key: const Key('menu-read-aloud'),
+              icon: Icons.volume_up_rounded,
+              label: 'Read aloud',
+              tokens: t,
+              onTap: () => Navigator.pop(context, const MenuReadAloud()),
+            ),
+          if (canTranslate)
+            _ActionTile(
+              key: const Key('menu-translate'),
+              icon: Icons.translate_rounded,
+              label: translated ? 'Hide translation' : 'Translate',
+              tokens: t,
+              onTap: () => Navigator.pop(context, const MenuTranslate()),
             ),
         ],
       ),

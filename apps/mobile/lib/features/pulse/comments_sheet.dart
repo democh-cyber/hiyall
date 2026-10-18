@@ -35,11 +35,17 @@ class _CommentsSheet extends ConsumerStatefulWidget {
 
 class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
   final input = TextEditingController();
+  final focus = FocusNode();
   List<PostComment>? items;
   String? next;
   Object? error;
   PostComment? replyTo;
   bool sending = false, loadingMore = false;
+
+  /// The replies loaded for each top-level comment, the cursor for more, and which threads are open or loading.
+  final replies = <String, List<PostComment>>{};
+  final repliesNext = <String, String?>{};
+  final open = <String>{}, loadingReplies = <String>{};
 
   PulseActions get actions => ref.read(pulseActionsProvider);
 
@@ -52,6 +58,7 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
   @override
   void dispose() {
     input.dispose();
+    focus.dispose();
     super.dispose();
   }
 
@@ -60,7 +67,7 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
     if (more && (loadingMore || next == null)) return;
     if (more) setState(() => loadingMore = true);
     try {
-      final page = await actions.comments(
+      final page = await actions.topComments(
         widget.post.postId,
         more ? next : null,
       );
@@ -79,6 +86,43 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
     }
   }
 
+  /// Opens or closes the replies of a top-level comment, loading the first page the first time.
+  Future<void> toggleReplies(PostComment top, {bool more = false}) async {
+    if (!more && open.contains(top.commentId)) {
+      setState(() => open.remove(top.commentId));
+      return;
+    }
+    if (loadingReplies.contains(top.commentId)) return;
+    setState(() => loadingReplies.add(top.commentId));
+    try {
+      final page = await actions.replies(
+        widget.post.postId,
+        top.commentId,
+        more ? repliesNext[top.commentId] : null,
+      );
+      if (!mounted) return;
+      setState(() {
+        final kept = more
+            ? replies[top.commentId] ?? const <PostComment>[]
+            : const <PostComment>[];
+        final seen = {for (final c in kept) c.commentId};
+        replies[top.commentId] = [
+          ...kept,
+          ...page.items.where((c) => seen.add(c.commentId)),
+        ];
+        repliesNext[top.commentId] = page.nextCursor;
+        open.add(top.commentId);
+      });
+    } catch (e) {
+      if (mounted) showFailure(context, e);
+    } finally {
+      if (mounted) setState(() => loadingReplies.remove(top.commentId));
+    }
+  }
+
+  /// The top-level comment a comment belongs to: itself, or its parent.
+  String _rootOf(PostComment c) => c.parentId ?? c.commentId;
+
   /// Read before an await: the sheet may be closed when the server answers.
   FeedController get _feed => ref.read(feedProvider(widget.mode).notifier);
 
@@ -87,18 +131,33 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
     if (text.isEmpty || sending) return;
     setState(() => sending = true);
     final feed = _feed;
+    final target = replyTo;
     try {
       final comment = await actions.addComment(
         widget.post.postId,
         text,
-        parentId: replyTo?.commentId,
+        parentId: target?.commentId,
       );
       feed.commentCountChanged(widget.post.postId, 1);
       if (!mounted) return;
       input.clear();
       setState(() {
-        // New comments land at the end once every older page is loaded.
-        if (next == null) items = [...?items, comment];
+        if (target == null) {
+          // New comments land at the end once every older page is loaded.
+          if (next == null) items = [...?items, comment];
+        } else {
+          // One level deep: an answer to a reply joins its top-level comment's thread.
+          final root = _rootOf(target);
+          items = [
+            for (final c in items ?? const <PostComment>[])
+              c.commentId == root
+                  ? c.copyWith(replyCount: c.replyCount + 1)
+                  : c,
+          ];
+          if (open.contains(root) && repliesNext[root] == null) {
+            replies[root] = [...?replies[root], comment];
+          }
+        }
         replyTo = null;
       });
     } catch (e) {
@@ -106,6 +165,11 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
     } finally {
       if (mounted) setState(() => sending = false);
     }
+  }
+
+  void startReply(PostComment c) {
+    setState(() => replyTo = c);
+    focus.requestFocus();
   }
 
   Future<void> options(PostComment c) async {
@@ -118,18 +182,37 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
     if (!mounted || choice == null) return;
     switch (choice) {
       case 'reply':
-        setState(() => replyTo = c);
+        startReply(c);
       case 'delete':
         final feed = _feed;
         try {
           await actions.deleteComment(c.commentId);
-          feed.commentCountChanged(widget.post.postId, -1);
-          if (mounted) {
-            setState(
-              () =>
-                  items = [...?items?.where((x) => x.commentId != c.commentId)],
-            );
-          }
+          // A top-level comment takes its replies with it; the post's count follows.
+          feed.commentCountChanged(
+            widget.post.postId,
+            -(1 + (c.parentId == null ? c.replyCount : 0)),
+          );
+          if (!mounted) return;
+          setState(() {
+            if (c.parentId == null) {
+              items = [...?items?.where((x) => x.commentId != c.commentId)];
+              replies.remove(c.commentId);
+              open.remove(c.commentId);
+            } else {
+              replies[c.parentId!] = [
+                ...?replies[c.parentId!]?.where(
+                  (x) => x.commentId != c.commentId,
+                ),
+              ];
+              items = [
+                for (final x in items ?? const <PostComment>[])
+                  x.commentId == c.parentId
+                      ? x.copyWith(replyCount: x.replyCount - 1)
+                      : x,
+              ];
+            }
+            if (replyTo?.commentId == c.commentId) replyTo = null;
+          });
         } catch (e) {
           if (mounted) showFailure(context, e);
         }
@@ -142,6 +225,53 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
           name: c.author.name,
         );
     }
+  }
+
+  List<Widget> _tiles(List<PostComment> list) {
+    final out = <Widget>[];
+    for (final c in list) {
+      final isOpen = open.contains(c.commentId);
+      out.add(
+        CommentTile(
+          comment: c,
+          onOptions: () => options(c),
+          onReply: () => startReply(c),
+          repliesOpen: isOpen,
+          loadingReplies: loadingReplies.contains(c.commentId),
+          onToggleReplies: () => toggleReplies(c),
+        ),
+      );
+      if (isOpen) {
+        for (final r in replies[c.commentId] ?? const <PostComment>[]) {
+          out.add(
+            CommentTile(
+              comment: r,
+              isReply: true,
+              onOptions: () => options(r),
+              onReply: () => startReply(r),
+            ),
+          );
+        }
+        if (repliesNext[c.commentId] != null) {
+          out.add(
+            Align(
+              alignment: AlignmentDirectional.centerStart,
+              child: Padding(
+                padding: const EdgeInsetsDirectional.only(start: 52),
+                child: TextButton(
+                  key: Key('more-replies-${c.commentId}'),
+                  onPressed: loadingReplies.contains(c.commentId)
+                      ? null
+                      : () => toggleReplies(c, more: true),
+                  child: const Text('Show more replies'),
+                ),
+              ),
+            ),
+          );
+        }
+      }
+    }
+    return out;
   }
 
   @override
@@ -171,12 +301,18 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
                       style: TextStyle(color: scheme.onSurfaceVariant),
                     ),
                   )
-                : CommentList(
-                    items: list,
-                    hasMore: next != null,
-                    loadingMore: loadingMore,
-                    onShowMore: () => load(more: true),
-                    onOptions: options,
+                : ListView(
+                    children: [
+                      ..._tiles(list),
+                      if (next != null)
+                        TextButton(
+                          key: const Key('comments-more'),
+                          onPressed: loadingMore
+                              ? null
+                              : () => load(more: true),
+                          child: const Text('Show more'),
+                        ),
+                    ],
                   ),
           ),
           if (replyTo != null)
@@ -184,7 +320,12 @@ class _CommentsSheetState extends ConsumerState<_CommentsSheet> {
               name: replyTo!.author.name,
               onCancel: () => setState(() => replyTo = null),
             ),
-          CommentInput(controller: input, sending: sending, onSend: send),
+          CommentInput(
+            controller: input,
+            focusNode: focus,
+            sending: sending,
+            onSend: send,
+          ),
         ],
       ),
     );

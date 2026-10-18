@@ -16,6 +16,7 @@ part 'pulse.dart';
 part 'spaces.dart';
 part 'nearby.dart';
 part 'people.dart';
+part 'profile_v2.dart';
 part 'account.dart';
 
 const apiBaseUrl = String.fromEnvironment('API_BASE_URL');
@@ -86,19 +87,91 @@ class ApiFailure implements Exception {
   String toString() => displayMessage;
 }
 
+/// An [ApiFailure] that also carries the server's `error.details`: what a spend costs and what the member has
+/// (`cost`, `balance`, `reason`), or which Premium `feature` was asked for (HTTP 402).
+class ApiFailureDetails extends ApiFailure {
+  final Map<String, dynamic> details;
+  const ApiFailureDetails(
+    super.message,
+    super.status,
+    super.code,
+    this.details,
+  );
+}
+
+/// One language of a profile and how well the member speaks it: [level] is 1 (just starting) to 6 (native); the
+/// words for the levels are in `profile_labels.dart`. A language sent without a level (a bare tag, an older
+/// server) reads as [defaultLanguageLevel].
 class ProfileLanguage {
-  final String code, level;
-  const ProfileLanguage(this.code, [this.level = '']);
-  factory ProfileLanguage.fromJson(Object value) => value is String
-      ? ProfileLanguage(value)
-      : ProfileLanguage(
-          (value as Map<String, dynamic>)['code'] as String,
-          value['level'] as String? ?? '',
-        );
-  Map<String, String> toJson() => {
-    'code': code,
-    if (level.isNotEmpty) 'level': level,
-  };
+  final String code;
+  final int level;
+  const ProfileLanguage(this.code, [this.level = defaultLanguageLevel]);
+  factory ProfileLanguage.fromJson(Object value) {
+    if (value is String) return ProfileLanguage(value);
+    final json = value as Map<String, dynamic>;
+    final raw = json['level'];
+    final level = raw is num
+        ? raw.toInt().clamp(minLanguageLevel, maxLanguageLevel)
+        : (const {
+                'basic': 2,
+                'conversational': 3,
+                'fluent': 4,
+                'native': 6,
+              }[raw] ??
+              defaultLanguageLevel);
+    return ProfileLanguage(json['code'] as String, level);
+  }
+  Map<String, Object> toJson() => {'code': code, 'level': level};
+
+  /// The same language at another level.
+  ProfileLanguage withLevel(int level) => ProfileLanguage(code, level);
+}
+
+/// The lowest, the highest and the starting level of a language.
+const minLanguageLevel = 1, maxLanguageLevel = 6, defaultLanguageLevel = 3;
+
+/// The local time of a member as the server sees it now: an offset from UTC (so daylight saving is right) and a
+/// label such as "UTC+5:30". The app adds the offset to its own clock; see `core/local_time.dart`.
+class LocalTimeInfo {
+  final int utcOffsetMinutes;
+  final String label;
+  const LocalTimeInfo(this.utcOffsetMinutes, this.label);
+  static LocalTimeInfo? fromJson(Object? json) => json is Map
+      ? LocalTimeInfo(
+          (json['utcOffsetMinutes'] as num).toInt(),
+          json['label'] as String? ?? '',
+        )
+      : null;
+}
+
+/// A birthday as month and day; the year is never sent.
+class Birthday {
+  final int month, day;
+  const Birthday(this.month, this.day);
+  static Birthday? fromJson(Object? json) => json is Map
+      ? Birthday((json['month'] as num).toInt(), (json['day'] as num).toInt())
+      : null;
+}
+
+/// One photo of a profile gallery with signed URLs for the full size and the thumbnail. The first photo of a
+/// gallery is the profile photo. Cache images by [mediaId], never by URL (URLs expire after about an hour).
+class GalleryPhoto {
+  final String mediaId, url, thumbUrl;
+  final int width, height;
+  const GalleryPhoto(
+    this.mediaId,
+    this.url,
+    this.thumbUrl, [
+    this.width = 0,
+    this.height = 0,
+  ]);
+  factory GalleryPhoto.fromJson(Map json) => GalleryPhoto(
+    json['mediaId'] as String,
+    json['url'] as String? ?? '',
+    json['thumbUrl'] as String? ?? '',
+    (json['width'] as num?)?.toInt() ?? 0,
+    (json['height'] as num?)?.toInt() ?? 0,
+  );
 }
 
 /// Display data only. Account identities, credentials and wallet data are never
@@ -203,6 +276,29 @@ class Profile {
   final List<String> sharedInterests;
   final List<ProfileLanguage> languages;
 
+  /// Ids of the personality tags (see `core/personality.dart`), at most five.
+  final List<String> personalityTags;
+
+  /// Possible matches only: why this person was suggested, as the server's kinds (`interests`, `personality`,
+  /// `languages`, `country`). Empty everywhere else.
+  final List<String> reasons;
+
+  /// Optional short texts. [hometown] is shown only to the people its audience admits (a minor's only to
+  /// confirmed friends).
+  final String aboutMe, hometown;
+
+  /// The member's local time, only when they let this viewer see it.
+  final LocalTimeInfo? localTime;
+
+  /// Month and day, only when an adult chose to show it to this viewer. Never the year.
+  final Birthday? birthday;
+
+  /// The gallery in order; the first photo is the profile photo. Empty on a locked card.
+  final List<GalleryPhoto> photos;
+
+  /// True when this member lets people who can open their profile see who visited it in the last 30 days.
+  final bool visitorsVisible;
+
   /// Present only when viewing someone else.
   final Relationship? relationship;
 
@@ -212,6 +308,10 @@ class Profile {
   /// Whether the viewer may open this member's followers and following lists.
   /// Only sent with someone else's profile; false when the server did not say.
   final bool canSeeConnections;
+
+  /// True when the server left this member's detailed fields out because the viewer's plan does not include them
+  /// (plans enforced, docs/api/28-billing.md). Always false for a member who cannot buy anything.
+  final bool detailsLocked;
 
   /// Set only when the person is online and lets this viewer see it: true while
   /// they are, false never. Null means "not shared", so no dot is drawn.
@@ -250,12 +350,21 @@ class Profile {
     this.interests = const [],
     this.sharedInterests = const [],
     this.languages = const [],
+    this.personalityTags = const [],
+    this.reasons = const [],
+    this.aboutMe = '',
+    this.hometown = '',
+    this.localTime,
+    this.birthday,
+    this.photos = const [],
+    this.visitorsVisible = false,
     this.profileAccent = 'lime',
     this.profilePattern = 'glow',
     this.avatarFrame = 'minimal',
     this.relationship,
     this.locked = false,
     this.canSeeConnections = false,
+    this.detailsLocked = false,
     this.online,
     this.lastSeenAt,
     this.distanceKm,
@@ -299,6 +408,22 @@ class Profile {
         (v) => ProfileLanguage.fromJson(v as Object),
       ),
     ),
+    personalityTags: List<String>.unmodifiable(
+      (json['personalityTags'] as List? ?? const []).whereType<String>(),
+    ),
+    reasons: List<String>.unmodifiable(
+      (json['reasons'] as List? ?? const []).whereType<String>(),
+    ),
+    aboutMe: json['aboutMe'] as String? ?? '',
+    hometown: json['hometown'] as String? ?? '',
+    localTime: LocalTimeInfo.fromJson(json['localTime']),
+    birthday: Birthday.fromJson(json['birthday']),
+    photos: List<GalleryPhoto>.unmodifiable(
+      (json['photos'] as List? ?? const []).map(
+        (v) => GalleryPhoto.fromJson(v as Map),
+      ),
+    ),
+    visitorsVisible: json['visitorsVisible'] as bool? ?? false,
     profileAccent: json['profileAccent'] as String? ?? 'lime',
     profilePattern: json['profilePattern'] as String? ?? 'glow',
     avatarFrame: json['avatarFrame'] as String? ?? 'minimal',
@@ -307,6 +432,7 @@ class Profile {
         : Relationship.fromJson(json['relationship'] as Map<String, dynamic>),
     locked: json['locked'] as bool? ?? false,
     canSeeConnections: json['canSeeConnections'] as bool? ?? false,
+    detailsLocked: json['detailsLocked'] as bool? ?? false,
     online: json['online'] is bool ? json['online'] as bool : null,
     lastSeenAt: parseLastSeen(json['lastSeenAt']),
     distanceKm: (json['distanceKm'] as num?)?.toInt(),
@@ -409,8 +535,25 @@ const _policyCodes = {
   'AGE_REQUIREMENT_NOT_MET',
   'PROFILE_INCOMPLETE',
   'INVALID_CURSOR',
+  'PHOTOS_FULL',
+  'VISITORS_PRIVATE',
+  'COUNTRY_NOT_SET',
+  'MINOR_SETTING_LOCKED',
   'REAUTH_REQUIRED',
   'DELETION_WINDOW_CLOSED',
+  'SUPPORT_THREAD_OPEN',
+  'SUPPORT_THREAD_CLOSED',
+  'DAILY_LIMIT',
+  // Plans, coins and purchases (docs/api/28-billing.md): the server words these for people.
+  'SPEND_CONFIRMATION_REQUIRED',
+  'INSUFFICIENT_COINS',
+  'PREMIUM_REQUIRED',
+  'AGE_RESTRICTED',
+  'BILLING_NOT_CONFIGURED',
+  'STORE_UNAVAILABLE',
+  'PURCHASE_INVALID',
+  'PURCHASE_CLAIMED',
+  'ADS_UNAVAILABLE',
 };
 
 /// Reported on sign-in so the sessions list can say where each one is.
@@ -422,7 +565,8 @@ String get clientPlatform => kIsWeb
         _ => 'unknown',
       };
 
-class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
+class ApiClient
+    with PulseApi, SpacesApi, NearbyApi, PeopleApi, ProfileV2Api, AccountApi {
   final Dio _dio;
 
   /// Sends photo bytes straight to object storage; no API base URL or token.
@@ -563,8 +707,17 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
       // Policy refusals carry server copy written to be shown as-is.
       if ((_policyCodes.contains(code) ||
               (path == '/v1/me/deletion' && code == 'VALIDATION') ||
-              (path.startsWith('/v1/spaces') && code == 'VALIDATION')) &&
+              (path.startsWith('/v1/spaces') && code == 'VALIDATION') ||
+              (path.startsWith('/v1/support') && code == 'VALIDATION')) &&
           failure['message'] is String) {
+        if (status == 402 && failure['details'] is Map) {
+          throw ApiFailureDetails(
+            failure['message'] as String,
+            status,
+            code,
+            Map<String, dynamic>.from(failure['details'] as Map),
+          );
+        }
         throw ApiFailure(
           failure['message'] as String,
           status,
@@ -580,6 +733,11 @@ class ApiClient with PulseApi, SpacesApi, NearbyApi, PeopleApi, AccountApi {
       );
     }
   }
+
+  /// A signed-in call for features that keep their own client (notices, support, notification
+  /// choices): the same sign-in, token refresh and error wording as every other call.
+  Future<dynamic> send(Session s, String method, String path, {Object? body}) =>
+      _request(method, path, token: s.token, body: body);
 
   static Duration? _retryAfter(DioException error) {
     final wait = int.tryParse(

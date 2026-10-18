@@ -28,18 +28,18 @@ use std::io::Cursor;
 use zeroize::Zeroizing;
 
 const INFO_VERSION: &str = "hiyall-chat-blob/v1";
-const ROLES: [&str; 2] = ["full", "thumb"];
-// Phase 1 is JPEG only (the app re-encodes everything it sends).
-const MIMES: [&str; 1] = ["image/jpeg"];
+/// Role and mime travel together: a role only ever seals its own kind of bytes. Photos (`full`, `thumb`) are
+/// JPEG, a voice message is AAC in an MP4 container, a video is MP4 (the app re-encodes everything it sends).
+const ROLE_MIMES: [(&str, &str); 4] = [("full", "image/jpeg"), ("thumb", "image/jpeg"), ("voice", "audio/mp4"), ("video", "video/mp4")];
 const TAG_LEN: usize = 16;
 const KEY_LEN: usize = 32;
 const NONCE_PREFIX_LEN: usize = 19;
 
 const MIN_CHUNK: u32 = 4 * 1024;
 const MAX_CHUNK: u32 = 1024 * 1024;
-/// Largest plaintext this format accepts. The server caps the full image at 4 MiB;
-/// the larger bound here keeps room for phase 2 without a format change.
-const MAX_PLAIN_LEN: u32 = 16 * 1024 * 1024;
+/// Largest plaintext this format accepts. The server caps a video's ciphertext at 40 MiB, a voice message at
+/// 8 MiB and a photo at 4 MiB (the roles' own caps are stricter than this bound).
+const MAX_PLAIN_LEN: u32 = 40 * 1024 * 1024;
 const MAX_ID_LEN: usize = 128;
 
 const MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
@@ -97,7 +97,7 @@ pub fn generate_blob_key() -> Vec<u8> {
     key.to_vec()
 }
 
-/// Seals `plaintext` for one blob. `role` is `full` or `thumb`, `mime` `image/jpeg`,
+/// Seals `plaintext` for one blob. `role` is `full`, `thumb`, `voice` or `video` with the mime that goes with it (`image/jpeg`, `image/jpeg`, `audio/mp4`, `video/mp4`),
 /// `chunk_size` a power of two from 4 KiB to 1 MiB (64 KiB by default).
 pub fn encrypt_blob(
     key: Vec<u8>,
@@ -278,10 +278,10 @@ struct Layout {
 
 impl Context<'_> {
     fn validate(&self) -> Result<(), String> {
-        if !ROLES.contains(&self.role) {
+        let Some((_, mime)) = ROLE_MIMES.iter().find(|(role, _)| *role == self.role) else {
             return Err("unknown blob role".into());
-        }
-        if !MIMES.contains(&self.mime) {
+        };
+        if self.mime != *mime {
             return Err("unsupported blob mime type".into());
         }
         valid_id(self.blob_id, "blob id")?;
@@ -679,6 +679,54 @@ mod tests {
 
     // ---- limits and validation ----------------------------------------------------------
 
+    /// Voice and video blobs: each role only seals its own mime, the whole format round trips, and the
+    /// size bound that holds the 40 MiB video cap is enforced.
+    #[test]
+    fn voice_and_video_roles_round_trip_and_pair_with_their_mime() {
+        let seal_as = |role: &str, mime: &str, chunk: u32, plain: Vec<u8>| {
+            encrypt_blob(key(), role.into(), BLOB.into(), CONV.into(), mime.into(), chunk, plain)
+        };
+        for (role, mime, len) in [("voice", "audio/mp4", 100_000usize), ("video", "video/mp4", 3_000_000)] {
+            let plain = data(len);
+            let sealed = seal_as(role, mime, 65_536, plain.clone()).unwrap();
+            let back = decrypt_blob(
+                key(),
+                role.into(),
+                BLOB.into(),
+                CONV.into(),
+                mime.into(),
+                65_536,
+                len as u32,
+                sealed.ct_sha256.clone(),
+                sealed.ciphertext.clone(),
+            )
+            .unwrap();
+            assert_eq!(back, plain, "{role}");
+            // A different role (even with its own right mime) cannot open it.
+            let other = if role == "voice" { ("video", "video/mp4") } else { ("voice", "audio/mp4") };
+            assert!(decrypt_blob(
+                key(),
+                other.0.into(),
+                BLOB.into(),
+                CONV.into(),
+                other.1.into(),
+                65_536,
+                len as u32,
+                sealed.ct_sha256.clone(),
+                sealed.ciphertext.clone(),
+            )
+            .is_err());
+        }
+        // Role and mime must pair.
+        assert!(seal_as("voice", "video/mp4", CHUNK, vec![1]).is_err());
+        assert!(seal_as("video", "audio/mp4", CHUNK, vec![1]).is_err());
+        assert!(seal_as("video", "image/jpeg", CHUNK, vec![1]).is_err());
+        assert!(seal_as("full", "video/mp4", CHUNK, vec![1]).is_err());
+        assert!(seal_as("thumb", "audio/mp4", CHUNK, vec![1]).is_err());
+        // The video cap: 40 MiB of plaintext is accepted, one byte more is refused.
+        assert!(seal_as("video", "video/mp4", MAX_CHUNK, vec![0; MAX_PLAIN_LEN as usize + 1]).is_err());
+    }
+
     #[test]
     fn parameters_are_validated() {
         let enc = |key: Vec<u8>, role: &str, blob: &str, conv: &str, mime: &str, chunk: u32, plain: Vec<u8>| {
@@ -689,10 +737,10 @@ mod tests {
         for bad in [0, 1, 2048, 4095, 5000, 65_535, 3 * 4096, MAX_CHUNK * 2, u32::MAX] {
             assert!(ok(bad).is_err(), "chunk size {bad}");
         }
-        for role in ["", "video", "poster", "FULL", "full "] {
+        for role in ["", "poster", "audio", "FULL", "full ", "VIDEO", "voice "] {
             assert!(enc(key(), role, BLOB, CONV, "image/jpeg", CHUNK, vec![]).is_err(), "role {role:?}");
         }
-        for mime in ["", "image/png", "image/webp", "video/mp4", "IMAGE/JPEG", "image/jpeg; x=1"] {
+        for mime in ["", "image/png", "image/webp", "video/mp4", "audio/mp4", "IMAGE/JPEG", "image/jpeg; x=1"] {
             assert!(enc(key(), "full", BLOB, CONV, mime, CHUNK, vec![]).is_err(), "mime {mime:?}");
         }
         for id in ["", "a b", "a|b\n", "é", &"x".repeat(129)] {

@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 
 import '../../core/theme.dart';
+import '../../core/topics.dart';
 import '../pulse.dart' show audienceLabels;
 import 'story_audience_panel.dart';
 import 'story_tap.dart';
 
-enum StoryTool { colour, text, vibes, time, who }
+enum StoryTool { colour, text, vibes, time, who, topic, voice }
 
 /// The row of tabs under the canvas: colour, text, vibes, time and audience.
 class StoryToolTabs extends StatelessWidget {
@@ -14,6 +15,10 @@ class StoryToolTabs extends StatelessWidget {
   final int hours;
   final String audience;
   final ValueChanged<StoryTool> onOpen;
+
+  /// The topic chosen for the story and whether a voice note is attached, shown on their tabs.
+  final String? topic;
+  final bool voiceAttached;
   const StoryToolTabs({
     super.key,
     required this.tools,
@@ -21,12 +26,24 @@ class StoryToolTabs extends StatelessWidget {
     required this.hours,
     required this.audience,
     required this.onOpen,
+    this.topic,
+    this.voiceAttached = false,
   });
 
   (String, String, String) _look(StoryTool t) => switch (t) {
     StoryTool.colour => ('🎨', 'Colour', 'Colour'),
     StoryTool.text => ('Aa', 'Text', 'Text style'),
     StoryTool.vibes => ('✨', 'Vibes', 'Vibes'),
+    StoryTool.topic => (
+      topic == null ? '#' : '✓',
+      topic == null ? 'Topic' : topicLabel(topic!),
+      topic == null ? 'Topic' : 'Topic: ${topicLabel(topic!)}',
+    ),
+    StoryTool.voice => (
+      '🎙️',
+      voiceAttached ? 'Voice ✓' : 'Voice',
+      voiceAttached ? 'Voice note added' : 'Voice note',
+    ),
     StoryTool.time => ('⏳', '${hours}h', 'Lasts $hours hours'),
     StoryTool.who => (
       storyAudienceEmoji[audience]!,

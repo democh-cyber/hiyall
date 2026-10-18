@@ -4,6 +4,9 @@ import 'package:flutter/material.dart';
 class ProfileSaveBar extends StatelessWidget {
   final String? error;
   final bool conflict, busy, canSave;
+
+  /// Why Save waits, when the form is not ready (shown above the button).
+  final String? waiting;
   final VoidCallback onReload;
   final VoidCallback onSave;
   const ProfileSaveBar({
@@ -12,6 +15,7 @@ class ProfileSaveBar extends StatelessWidget {
     required this.conflict,
     required this.busy,
     required this.canSave,
+    this.waiting,
     required this.onReload,
     required this.onSave,
   });
@@ -33,6 +37,17 @@ class ProfileSaveBar extends StatelessWidget {
         TextButton(
           onPressed: onReload,
           child: const Text('Reload latest profile'),
+        ),
+      if (waiting != null)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Text(
+            waiting!,
+            key: const Key('save-waiting'),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
         ),
       FilledButton(
         onPressed: canSave ? onSave : null,

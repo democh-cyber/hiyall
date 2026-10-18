@@ -4,6 +4,7 @@
 library;
 
 import 'package:flutter_riverpod/misc.dart' show Override;
+import 'package:hiyall/core/discover_prefs.dart';
 import 'package:hiyall/core/home_prefs.dart';
 import 'package:hiyall/core/push/push_prefs.dart';
 import 'package:hiyall/core/say_hi_prefs.dart';
@@ -13,6 +14,7 @@ import 'package:hiyall/core/story_draft.dart';
 List<Override> signOutStubs() => [
   storyDraftStoreProvider.overrideWithValue(MemoryStoryDraftStore()),
   homePrefsStoreProvider.overrideWithValue(MemoryHomePrefsStore()),
+  discoverPrefsStoreProvider.overrideWithValue(MemoryDiscoverPrefsStore()),
   sayHiPrefsStoreProvider.overrideWithValue(MemorySayHiPrefsStore()),
   pushPrefsStoreProvider.overrideWithValue(MemoryPushPrefsStore()),
   imageCachesWipeProvider.overrideWithValue(() async {}),

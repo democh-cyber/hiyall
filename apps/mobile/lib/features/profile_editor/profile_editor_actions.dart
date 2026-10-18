@@ -36,6 +36,39 @@ class ProfileEditorActions {
     Profile current,
     String? mediaId,
   ) => _ref.read(apiProvider).setAvatar(session, current, mediaId);
+
+  /// The newest own profile: a change of the first gallery photo moves its version on.
+  Future<Profile> readProfile(Session session) =>
+      _ref.read(apiProvider).profile(session);
+
+  Future<Gallery> gallery(Session session) =>
+      _ref.read(apiProvider).gallery(session);
+
+  Future<Gallery> addPhoto(Session session, String mediaId) =>
+      _ref.read(apiProvider).addGalleryPhoto(session, mediaId);
+
+  Future<Gallery> replacePhoto(Session session, String old, String mediaId) =>
+      _ref.read(apiProvider).replaceGalleryPhoto(session, old, mediaId);
+
+  Future<Gallery> deletePhoto(Session session, String mediaId) =>
+      _ref.read(apiProvider).deleteGalleryPhoto(session, mediaId);
+
+  Future<Gallery> reorderPhotos(Session session, List<String> mediaIds) =>
+      _ref.read(apiProvider).reorderGallery(session, mediaIds);
+
+  /// Saves the chosen field audiences (`aboutMe`, `hometown`, `personality`) with the newest
+  /// privacy version, then makes the privacy screens read it again.
+  Future<void> saveAudiences(Map<String, String> audiences) async {
+    final session = this.session;
+    if (session == null || audiences.isEmpty) return;
+    final api = _ref.read(apiProvider);
+    final privacy = await _ref.read(privacyProvider.future);
+    try {
+      await api.updatePrivacy(session, privacy, {'fieldAudiences': audiences});
+    } finally {
+      _ref.invalidate(privacyProvider);
+    }
+  }
 }
 
 final profileEditorActionsProvider = Provider<ProfileEditorActions>(

@@ -8,6 +8,7 @@ import '../shared/person_avatar.dart';
 import '../shared/presence_dot.dart';
 import '../shared/press_scale.dart';
 import 'chat_parts.dart' show clampedChrome;
+import 'discover_chips.dart';
 import 'discover_header.dart';
 import 'discover_style.dart';
 
@@ -45,6 +46,9 @@ class ContextLine {
   }
 
   static ContextLine? of(Profile person) {
+    // Possible matches say why the person was suggested, from what the row carries.
+    final reason = possibleReasonLine(person);
+    if (reason != null) return ContextLine(reason, shared: true);
     final phrase = sharedPhrase(person.sharedInterests);
     if (phrase != null) return ContextLine(phrase, shared: true);
     final own = [
@@ -54,6 +58,37 @@ class ContextLine {
     if (own.isEmpty) return null;
     return ContextLine(own.join(' · '), shared: false);
   }
+}
+
+/// "Shares your interest in Music and Travel · Similar personality": why a possible match was suggested, in at
+/// most two parts, built only from what the row carries (the server's `reasons` and the interests both share).
+/// Null when the row has no reasons (every list but Possible matches).
+String? possibleReasonLine(Profile person) {
+  if (person.reasons.isEmpty) return null;
+  final shared = [
+    for (final i in person.sharedInterests)
+      if (i.trim().isNotEmpty) i.trim(),
+  ].take(3).toList();
+  String interests() {
+    if (shared.isEmpty) return 'Shares your interests';
+    final list = shared.length == 1
+        ? shared.first
+        : '${shared.take(shared.length - 1).join(', ')} and ${shared.last}';
+    return 'Shares your interest in $list';
+  }
+
+  final parts = <String>[];
+  for (final reason in person.reasons) {
+    final part = switch (reason) {
+      'interests' => interests(),
+      'personality' => 'Similar personality',
+      'languages' => 'Good language match',
+      'country' => 'Same country',
+      _ => null,
+    };
+    if (part != null && !parts.contains(part)) parts.add(part);
+  }
+  return parts.isEmpty ? null : parts.take(2).join(' · ');
 }
 
 /// What a secondary line of a row is, which decides how it is drawn.
@@ -112,9 +147,9 @@ String? languageSummary(List<ProfileLanguage> languages) {
     if (names.contains(name)) continue;
     names.add(name);
     if (names.length == 1 &&
-        languageLevels[l.level] != null &&
-        l.level.isNotEmpty) {
-      level = languageLevels[l.level];
+        l.level >= minLanguageLevel &&
+        l.level <= maxLanguageLevel) {
+      level = languageLevelName(l.level);
     }
   }
   if (names.isEmpty) return null;
@@ -437,6 +472,15 @@ class DiscoverPersonTile extends StatelessWidget {
               sayHi,
               const SizedBox(width: 2),
             ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsetsDirectional.only(
+            start: _inset + _pad + _avatar * 2 + _gap,
+          ),
+          child: Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: DiscoverRowExtras(person: person),
           ),
         ),
         if (note != null)

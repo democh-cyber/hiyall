@@ -7,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../core/feed_state.dart';
 import '../../core/picked_file.dart';
+import '../../core/pulse7.dart' show VoiceUpload;
 import '../../core/state.dart';
 import '../../core/user_error.dart';
 import '../../shared/widgets.dart';
@@ -14,6 +15,8 @@ import 'pending_photo.dart';
 import 'profile_content.dart';
 import 'pulse_actions.dart';
 import 'pulse_common.dart';
+import 'topic_widgets.dart';
+import 'voice_recorder.dart';
 
 /// Writing a post: text, up to 10 photos, and who sees it.
 class ComposePostScreen extends ConsumerStatefulWidget {
@@ -29,6 +32,10 @@ class _ComposePostScreenState extends ConsumerState<ComposePostScreen> {
   String? audience;
   bool sharing = false;
 
+  /// The optional topic and voice note of the post.
+  String? topic;
+  VoiceUpload? voice;
+
   ImagePicker get picker => widget.picker ?? ImagePicker();
 
   @override
@@ -40,10 +47,11 @@ class _ComposePostScreenState extends ConsumerState<ComposePostScreen> {
   bool get ready =>
       !sharing &&
       photos.every((p) => p.done) &&
-      (body.text.trim().isNotEmpty || photos.isNotEmpty);
+      (body.text.trim().isNotEmpty || photos.isNotEmpty || voice != null);
 
-  /// Text or photos that leaving would throw away.
-  bool get dirty => body.text.trim().isNotEmpty || photos.isNotEmpty;
+  /// Text, photos or a voice note that leaving would throw away.
+  bool get dirty =>
+      body.text.trim().isNotEmpty || photos.isNotEmpty || voice != null;
 
   void close() => context.canPop() ? context.pop() : context.go('/home');
 
@@ -54,7 +62,9 @@ class _ComposePostScreenState extends ConsumerState<ComposePostScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Discard this post?'),
-        content: const Text('What you wrote and any photos will be lost.'),
+        content: const Text(
+          'What you wrote, and any photos or voice note, will be lost.',
+        ),
         actions: [
           TextButton(
             key: const Key('keep-editing'),
@@ -111,6 +121,8 @@ class _ComposePostScreenState extends ConsumerState<ComposePostScreen> {
             body: body.text.trim(),
             audience: chosen,
             mediaIds: [for (final p in photos) p.mediaId!],
+            topic: topic,
+            voiceMediaId: voice?.mediaId,
           );
       ref.read(feedProvider('following').notifier).prepend(post);
       ref.invalidate(profilePostsProvider);
@@ -200,7 +212,22 @@ class _ComposePostScreenState extends ConsumerState<ComposePostScreen> {
                 onRetry: retry,
                 onRemove: (p) => setState(() => photos.remove(p)),
               ),
+              const SizedBox(height: 12),
+              VoiceNoteField(
+                value: voice,
+                onChanged: (v) => setState(() => voice = v),
+              ),
               const SizedBox(height: 20),
+              Text(
+                'Topic (optional)',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 4),
+              TopicPicker(
+                selected: topic,
+                onChanged: (t) => setState(() => topic = t),
+              ),
+              const SizedBox(height: 16),
               Text(
                 'Who can see this?',
                 style: Theme.of(context).textTheme.titleMedium,

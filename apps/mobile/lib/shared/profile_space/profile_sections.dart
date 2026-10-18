@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../../core/api.dart';
 import '../../core/profile_labels.dart';
-import '../../core/theme.dart';
+import '../local_time_label.dart';
+import 'profile_details.dart';
 
 /// An uppercase section label with an optional trailing action.
 class ProfileSectionTitle extends StatelessWidget {
@@ -38,7 +39,8 @@ class ProfileSectionTitle extends StatelessWidget {
   );
 }
 
-/// Country, profession, pronouns, education and website rows.
+/// About me, hometown, local time, birthday, country, profession, pronouns, education and website. Everything
+/// but the country and the website is shown only when the server sent it for this viewer.
 class ProfileAbout extends StatelessWidget {
   final Profile profile;
   final bool isOwner;
@@ -55,6 +57,9 @@ class ProfileAbout extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = profile;
+    final aboutMe = p.aboutMe.trim();
+    final hometown = p.hometown.trim();
+    final birthday = birthdayText(p.birthday);
     final rows = <(IconData, String, bool)>[
       if (p.country != null && countryNames.containsKey(p.country))
         (Icons.public_rounded, countryNames[p.country]!, false),
@@ -65,7 +70,13 @@ class ProfileAbout extends StatelessWidget {
       if (p.education.isNotEmpty) (Icons.school_outlined, p.education, false),
       if (p.websiteUrl != null) (Icons.link_rounded, p.websiteUrl!, false),
     ];
-    if (rows.isEmpty && !isOwner) return const SizedBox.shrink();
+    final nothing =
+        rows.isEmpty &&
+        aboutMe.isEmpty &&
+        hometown.isEmpty &&
+        birthday == null &&
+        p.localTime == null;
+    if (nothing && !isOwner) return const SizedBox.shrink();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -82,10 +93,44 @@ class ProfileAbout extends StatelessWidget {
                 )
               : null,
         ),
-        if (rows.isEmpty)
+        if (nothing)
           Text(
             'A few details, a little more you.',
             style: TextStyle(fontSize: 13, height: 1.5, color: muted),
+          ),
+        if (aboutMe.isNotEmpty)
+          Padding(
+            key: const Key('profile-about-me'),
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              aboutMe,
+              style: const TextStyle(fontSize: 14, height: 1.5),
+            ),
+          ),
+        if (hometown.isNotEmpty)
+          ProfileFactRow(
+            key: const Key('profile-hometown'),
+            icon: Icons.home_outlined,
+            label: 'From',
+            value: hometown,
+            muted: muted,
+          ),
+        if (p.localTime != null)
+          Padding(
+            key: const Key('profile-local-time'),
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Align(
+              alignment: AlignmentDirectional.centerStart,
+              child: LocalTimeLabel(time: p.localTime!, full: true),
+            ),
+          ),
+        if (birthday != null)
+          ProfileFactRow(
+            key: const Key('profile-birthday'),
+            icon: Icons.cake_outlined,
+            label: 'Birthday',
+            value: birthday,
+            muted: muted,
           ),
         for (final (icon, value, editable) in rows)
           if (isOwner && editable)
@@ -127,21 +172,18 @@ class _AboutRow extends StatelessWidget {
   );
 }
 
-/// Interest chips, or a prompt for an owner who has none yet.
+/// Interest chips (each opens Discover filtered by it), or a prompt for an owner who has none yet.
 class ProfileInterests extends StatelessWidget {
   final Profile profile;
   final bool isOwner;
   final VoidCallback? onEdit;
-  final Color accent, muted;
-  final bool dark;
+  final Color muted;
   const ProfileInterests({
     super.key,
     required this.profile,
     required this.isOwner,
     required this.onEdit,
-    required this.accent,
     required this.muted,
-    required this.dark,
   });
 
   @override
@@ -162,14 +204,7 @@ class ProfileInterests extends StatelessWidget {
               : null,
         ),
         if (interests.isNotEmpty)
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (var i = 0; i < interests.length; i++)
-                _InterestChip(interests[i], i, dark, accent),
-            ],
-          )
+          InterestChips(interests: interests)
         else
           Text(
             'What are you into?',
@@ -180,39 +215,27 @@ class ProfileInterests extends StatelessWidget {
   }
 }
 
-class _InterestChip extends StatelessWidget {
-  final String name;
-  final int index;
-  final bool dark;
-  final Color accent;
-  const _InterestChip(this.name, this.index, this.dark, this.accent);
+/// Personality tags as chips; nothing at all when there are none.
+class ProfilePersonality extends StatelessWidget {
+  final List<String> tags;
+  final Color muted;
+  const ProfilePersonality({
+    super.key,
+    required this.tags,
+    required this.muted,
+  });
 
   @override
-  Widget build(BuildContext context) {
-    final color = [
-      accent,
-      VibeColors.lilac,
-      const Color(0xff9bded6),
-    ][index % 3];
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: dark ? .09 : .25),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Text(
-        name,
-        style: const TextStyle(
-          fontSize: 12,
-          height: 1.5,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      ProfileSectionTitle('PERSONALITY', muted: muted),
+      PersonalityChips(tags: tags),
+    ],
+  );
 }
 
-/// Spoken languages with their proficiency level.
+/// Spoken languages: a chip each, with the level in words.
 class ProfileLanguages extends StatelessWidget {
   final List<ProfileLanguage> languages;
   final Color muted;
@@ -227,30 +250,7 @@ class ProfileLanguages extends StatelessWidget {
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       ProfileSectionTitle('LANGUAGES', muted: muted),
-      Wrap(
-        spacing: 24,
-        runSpacing: 12,
-        children: [
-          for (final language in languages)
-            Text.rich(
-              TextSpan(
-                children: [
-                  TextSpan(
-                    text: languageLabel(language.code),
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                  if (language.level.isNotEmpty)
-                    TextSpan(
-                      text:
-                          ' · ${languageLevels[language.level] ?? 'Not specified'}',
-                      style: TextStyle(color: muted),
-                    ),
-                ],
-              ),
-              style: const TextStyle(fontSize: 13, height: 1.5),
-            ),
-        ],
-      ),
+      ProfileLanguageChips(languages: languages),
     ],
   );
 }

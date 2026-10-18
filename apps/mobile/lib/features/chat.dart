@@ -16,6 +16,13 @@ import '../core/app_info.dart';
 import '../core/avatar_upload.dart';
 import '../core/chat/chat_api.dart';
 import '../core/chat/chat_attachment.dart';
+import '../core/chat/chat_av_outbox.dart' show PreparedVideo, VoiceClip;
+import '../core/chat/chat_voice_capture.dart';
+import '../core/chat/chat_voice_player.dart' show VoicePlayback;
+import '../core/chat/chat_prefs.dart';
+import '../core/translate/speech_service.dart';
+import '../core/translate/translation_memory.dart';
+import '../core/translate/translation_service.dart';
 import '../core/chat/chat_backup_exclusion.dart';
 import '../core/chat/chat_engine.dart';
 import '../core/chat/chat_local_data.dart';
@@ -32,11 +39,16 @@ import '../shared/chat_tokens.dart';
 import '../shared/person_link.dart';
 import '../shared/widgets.dart';
 import '../src/rust/frb_generated.dart';
+import 'chat_av_providers.dart';
 import 'chat_format.dart';
+import 'chat_list_actions.dart';
 import 'chat_list.dart';
 import 'chat_menu.dart';
 import 'chat_photo.dart';
 import 'chat_thread.dart';
+import 'chat_translate_ui.dart';
+import 'chat_video_ui.dart';
+import 'chat_voice_ui.dart';
 import 'live_sync.dart';
 import 'safety.dart';
 
@@ -323,12 +335,12 @@ Future<ChatEngine?> _openChatEngine(Ref ref) async {
 
 /// Words for the reasons a photo could not be sent, or null for any other code.
 String? photoFailureText(String? code) => switch (code) {
-  'ATTACHMENTS_NOT_ALLOWED' => 'You can send photos once they reply.',
+  'ATTACHMENTS_NOT_ALLOWED' =>
+    'You can send photos, voice messages and videos once they reply.',
   'PHOTO_TOO_LARGE' ||
   'TOO_LARGE' => 'That photo is too large to send. Try a smaller one.',
-  'QUOTA' => 'You’ve sent a lot of photos today. Try again later.',
-  'CHAT_MEDIA_UNAVAILABLE' =>
-    'Photos aren’t available right now. Try again later.',
+  'QUOTA' => 'You’ve sent a lot of media today. Try again later.',
+  'CHAT_MEDIA_UNAVAILABLE' => 'Photos, voice messages and videos aren’t available right now. Try again later.',
   'BLOB_NOT_READY' ||
   'BLOB_SIZE_MISMATCH' ||
   'BLOB_EXPIRED' => 'The upload didn’t finish. Try again.',
@@ -426,6 +438,16 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
   String query = '';
   ChatFilter filter = ChatFilter.all;
 
+  /// Edit mode: the chats ticked for a bulk pin, mute or delete.
+  bool editing = false;
+  final selected = <String>{};
+
+  /// Chats whose decrypted history on this phone matches [query] (never asked of the server), with the newest
+  /// matching message.
+  Map<String, ChatSearchHit> hits = const {};
+  int _searchRun = 0;
+  bool _closedChecked = false;
+
   Future<void> load() async {
     final current = engine;
     if (current == null) return;
@@ -436,6 +458,8 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
           items = next;
           error = null;
         });
+        _wipeExpired();
+        if (query.trim().isNotEmpty) unawaited(_searchHistory());
         // Discover reads this to show Message instead of Say hi.
         ref.read(chatPeersProvider.notifier).load({
           for (final c in next)
@@ -452,25 +476,193 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     changes?.cancel();
     engine = next;
     changes = next?.changes.listen((_) => load());
+    _closedChecked = false;
     load();
+  }
+
+  /// Chats deleted from the list more than 30 days ago lose this phone's copy of their history. The engine
+  /// does it as it reads the Deleted chats list; once per start is enough.
+  void _wipeExpired() {
+    final current = engine;
+    if (current == null || _closedChecked) return;
+    _closedChecked = true;
+    unawaited(current.hiddenConversations().then((_) {}, onError: (_) {}));
+  }
+
+  Future<void> _searchHistory() async {
+    final current = engine, all = items;
+    final text = query.trim();
+    final run = ++_searchRun;
+    if (current == null || all == null || text.isEmpty) {
+      if (hits.isNotEmpty) setState(() => hits = const {});
+      return;
+    }
+    final found = await current.searchHistory(text, [
+      for (final c in all) c.id,
+    ]);
+    if (mounted && run == _searchRun) setState(() => hits = found);
+  }
+
+  void toggleEdit() => setState(() {
+    editing = !editing;
+    selected.clear();
+  });
+
+  void toggleSelected(ChatConversation c) => setState(() {
+    if (!selected.add(c.id)) selected.remove(c.id);
+  });
+
+  List<ChatConversation> get _selectedChats => [
+    for (final c in items ?? const <ChatConversation>[])
+      if (selected.contains(c.id)) c,
+  ];
+
+  Future<void> _refreshAfterChange() async {
+    ref.read(chatSignalProvider.notifier).bump();
+    await ref.read(chatUnreadProvider.notifier).refresh();
+    await load();
+  }
+
+  /// Pins or unpins one chat; says why when the limit of five stops it.
+  Future<bool> pinChat(ChatConversation c, {bool refresh = true}) async {
+    try {
+      await engine!.pinConversation(c.id, !c.pinned);
+      if (refresh) await _refreshAfterChange();
+      return true;
+    } catch (e) {
+      if (mounted) {
+        showMessage(
+          context,
+          e is ChatFailure && e.code == 'PIN_LIMIT'
+              ? 'You can pin up to 5 chats. Unpin one first.'
+              : chatError(e),
+        );
+      }
+      return false;
+    }
+  }
+
+  Future<void> muteChat(
+    ChatConversation c, {
+    DateTime? until,
+    bool refresh = true,
+  }) async {
+    try {
+      await engine!.api.muteConversation(c.id, !c.muted, until: until);
+      if (refresh) await _refreshAfterChange();
+    } catch (e) {
+      if (mounted) showMessage(context, chatError(e));
+    }
+  }
+
+  Future<void> toggleMute(ChatConversation c) async {
+    DateTime? until;
+    if (!c.muted) {
+      final picked = await pickMuteDuration(
+        context,
+        title: 'Mute ${c.peerName}',
+      );
+      if (picked == null) return;
+      until = picked.until;
+    }
+    await muteChat(c, until: until);
+  }
+
+  Future<void> deleteChats(List<ChatConversation> chats) async {
+    if (chats.isEmpty) return;
+    final one = chats.length == 1;
+    final yes = await confirmChatAction(
+      context,
+      title: one ? 'Delete this chat?' : 'Delete ${chats.length} chats?',
+      body: 'They leave your list. You can bring them back from Deleted chats for 30 days; after that this phone’s copy is removed. Nobody is told.',
+      action: 'Delete',
+    );
+    if (!yes || !mounted) return;
+    try {
+      for (final c in chats) {
+        await engine!.hideConversation(c.id);
+      }
+      selected.clear();
+      if (mounted) {
+        showMessage(
+          context,
+          one ? 'Chat deleted.' : '${chats.length} chats deleted.',
+        );
+      }
+    } catch (e) {
+      if (mounted) showMessage(context, chatError(e));
+    }
+    await _refreshAfterChange();
+  }
+
+  Future<void> bulkPin() async {
+    final chats = _selectedChats;
+    final unpin = chats.isNotEmpty && chats.every((c) => c.pinned);
+    for (final c in chats) {
+      if (c.pinned == unpin) {
+        if (!await pinChat(c, refresh: false)) break;
+      }
+    }
+    await _refreshAfterChange();
+  }
+
+  Future<void> bulkMute() async {
+    final chats = _selectedChats;
+    final unmute = chats.isNotEmpty && chats.every((c) => c.muted);
+    DateTime? until;
+    if (!unmute) {
+      final picked = await pickMuteDuration(context, title: 'Mute these chats');
+      if (picked == null) return;
+      until = picked.until;
+    }
+    for (final c in chats) {
+      if (c.muted == unmute) await muteChat(c, until: until, refresh: false);
+    }
+    await _refreshAfterChange();
+  }
+
+  Future<void> openDeleted() async {
+    final current = engine;
+    if (current == null) return;
+    await Navigator.of(context, rootNavigator: true).push(
+      MaterialPageRoute<void>(
+        builder: (_) => DeletedChatsScreen(
+          engine: current,
+          clock: ref.read(chatClockProvider),
+          onRestored: () => unawaited(_refreshAfterChange()),
+        ),
+      ),
+    );
+    if (mounted) await load();
   }
 
   /// Filters 200 ms after the last keystroke; emptying the field is immediate.
   void onSearch(String text) {
     _debounce?.cancel();
     if (text.trim().isEmpty) {
-      if (query.isNotEmpty) setState(() => query = '');
+      if (query.isNotEmpty) {
+        setState(() {
+          query = '';
+          hits = const {};
+        });
+      }
       return;
     }
     _debounce = Timer(chatSearchDebounce, () {
-      if (mounted) setState(() => query = text);
+      if (mounted) {
+        setState(() => query = text);
+        unawaited(_searchHistory());
+      }
     });
   }
 
   void clearSearch() {
     _debounce?.cancel();
     search.clear();
-    setState(() => query = '');
+    setState(() {
+      query = '';
+      hits = const {};
+    });
   }
 
   @override
@@ -529,12 +721,17 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
     final all = items;
     final shown = all == null
         ? null
-        : filterChats(all, query: query, filter: filter);
+        : filterChats(
+            all,
+            query: query,
+            filter: filter,
+            textHits: hits.keys.toSet(),
+          );
     // The app shell already prints "Chats" above wide layouts.
     final wide = MediaQuery.sizeOf(context).width >= 900;
     final hasChats = all != null && all.isNotEmpty;
     final narrowed = query.trim().isNotEmpty || filter != ChatFilter.all;
-    return RefreshIndicator(
+    final list = RefreshIndicator(
       onRefresh: () async {
         await engine?.pollNow();
         await load();
@@ -547,6 +744,13 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
           // few widgets, the rows are built lazily.
           final leading = <Widget>[
             ChatsHeading(subtitle: chatsSubtitle(all), showTitle: !wide),
+            if (engine != null)
+              ChatListToolbar(
+                editing: editing,
+                canEdit: hasChats,
+                onToggleEdit: toggleEdit,
+                onDeleted: openDeleted,
+              ),
             if (engine != null) NewDeviceBanner(engine: engine!),
             if (hasChats) ...[
               Padding(
@@ -631,20 +835,105 @@ class _ChatsScreenState extends ConsumerState<ChatsScreen> {
                 );
               }
               final chat = rows[row];
-              return ChatRow(
+              final hit = hits[chat.id];
+              final line = ChatRow(
                 key: ValueKey(chat.id),
                 chat: chat,
                 now: now,
                 typing: typing[chat.id]?.isAfter(DateTime.now()) ?? false,
                 showDivider: row < rows.length - 1,
-                onTap: () => open(chat),
+                selecting: editing,
+                selected: selected.contains(chat.id),
+                snippet: hit == null || query.trim().isEmpty
+                    ? null
+                    : _snippetFor(hit, query),
+                onTap: () => editing ? toggleSelected(chat) : open(chat),
+                onLongPress: editing
+                    ? null
+                    : () => setState(() {
+                        editing = true;
+                        selected
+                          ..clear()
+                          ..add(chat.id);
+                      }),
+              );
+              return SwipeActionRow(
+                key: ValueKey('swipe-${chat.id}'),
+                enabled: !editing,
+                leading: [
+                  SwipeAction(
+                    key: Key('swipe-pin-${chat.id}'),
+                    label: chat.pinned ? 'Unpin' : 'Pin',
+                    icon: chat.pinned
+                        ? Icons.push_pin_outlined
+                        : Icons.push_pin,
+                    color: ChatTokens.of(context).lime,
+                    onColor: ChatTokens.of(context).onLime,
+                    onTap: () => unawaited(pinChat(chat)),
+                  ),
+                ],
+                trailing: [
+                  SwipeAction(
+                    key: Key('swipe-mute-${chat.id}'),
+                    label: chat.muted ? 'Unmute' : 'Mute',
+                    icon: chat.muted
+                        ? Icons.notifications_active_outlined
+                        : Icons.notifications_off_outlined,
+                    color: ChatTokens.of(context).surface,
+                    onColor: ChatTokens.of(context).text,
+                    onTap: () => unawaited(toggleMute(chat)),
+                  ),
+                  SwipeAction(
+                    key: Key('swipe-delete-${chat.id}'),
+                    label: 'Delete',
+                    icon: Icons.delete_outline_rounded,
+                    color: ChatTokens.of(context).error,
+                    onColor: ChatTokens.of(context).onError,
+                    onTap: () => unawaited(deleteChats([chat])),
+                  ),
+                ],
+                child: line,
               );
             },
           );
         },
       ),
     );
+    if (!editing) return list;
+    final picked = _selectedChats;
+    return Column(
+      children: [
+        Expanded(child: list),
+        ChatEditBar(
+          selected: picked.length,
+          total: items?.length ?? 0,
+          allPinned: picked.isNotEmpty && picked.every((c) => c.pinned),
+          allMuted: picked.isNotEmpty && picked.every((c) => c.muted),
+          onPin: () => unawaited(bulkPin()),
+          onMute: () => unawaited(bulkMute()),
+          onDelete: () => unawaited(deleteChats(picked)),
+          onSelectAll: () => setState(() {
+            final all = items ?? const <ChatConversation>[];
+            if (selected.length == all.length) {
+              selected.clear();
+            } else {
+              selected
+                ..clear()
+                ..addAll(all.map((c) => c.id));
+            }
+          }),
+        ),
+      ],
+    );
   }
+}
+
+/// The line a chat row shows for a message found by the search of the local history.
+String? _snippetFor(ChatSearchHit hit, String query) {
+  final m = hit.newest;
+  final text = m.attachment != null ? m.attachment!.caption : m.text;
+  final line = searchSnippet(text, query);
+  return line.isEmpty ? null : (m.mine ? 'You: $line' : line);
 }
 
 class _ChatNotice extends StatelessWidget {
@@ -910,7 +1199,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   /// this phone could not know from its own history (after a reinstall).
   bool serverAwaiting = false;
   DateTime? peerReadAt;
-  DateTime? mutedUntil;
+  DateTime? mutedUntil, pinnedAt;
 
   /// History has been read at least once, so "empty" is a fact.
   bool loaded = false;
@@ -953,6 +1242,22 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
 
   /// The message a tapped quote brought into view, lit for a moment.
   String? litId;
+
+  /// Voice recording for the composer (made once the engine is there), the one playing message and the
+  /// choices this phone keeps for the chat.
+  VoiceCapture? capture;
+  VoicePlayback? _playback;
+  StreamSubscription<ChatPrefsData>? _prefsSub;
+  ChatPrefsData chatPrefs = const ChatPrefsData();
+
+  /// Translations shown under messages (by message id), in memory only: a translation is a second copy of a
+  /// message's text and is never written anywhere. Pending and failed ones are tracked too.
+  final translations = <String, TranslationResult>{};
+  final _translating = <String>{}, _translateFailed = <String>{};
+  bool _autoRunning = false;
+
+  /// The message being read aloud, if any.
+  String? speakingId;
 
   /// A global key per message row built so far, to scroll to a quoted one.
   final _rowKeys = <String, GlobalKey>{};
@@ -1143,10 +1448,12 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         });
         engine?.showDeviceNotices(widget.id, peerId).catchError((_) {});
       }
-      if (at != peerReadAt || muted != mutedUntil) {
+      final pinned = DateTime.tryParse(c['pinnedAt'] as String? ?? '');
+      if (at != peerReadAt || muted != mutedUntil || pinned != pinnedAt) {
         setState(() {
           peerReadAt = at;
           mutedUntil = muted;
+          pinnedAt = pinned;
         });
       }
     } catch (_) {
@@ -1176,6 +1483,8 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
       muted: muted,
       peerName: peerName,
       verified: engine?.isVerified(peerId) ?? false,
+      pinned: pinnedAt != null,
+      autoTranslate: chatPrefs.autoTranslate.contains(widget.id),
     );
     if (!mounted || choice == null || engine == null) return;
     switch (choice) {
@@ -1200,6 +1509,14 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         } catch (e) {
           if (mounted) showMessage(context, chatError(e));
         }
+      case ChatMenuAction.pin:
+        await togglePin();
+      case ChatMenuAction.autoTranslate:
+        await setAutoTranslate(!chatPrefs.autoTranslate.contains(widget.id));
+      case ChatMenuAction.clearHistory:
+        await clearHistory();
+      case ChatMenuAction.deleteChat:
+        await deleteChat();
       case ChatMenuAction.profile:
         openPerson(context, peerId);
       case ChatMenuAction.safety:
@@ -1208,6 +1525,86 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         await reportPeer();
       case ChatMenuAction.block:
         await blockPeer();
+    }
+  }
+
+  /// Pins or unpins this chat (the relay enforces five).
+  Future<void> togglePin() async {
+    final current = engine;
+    if (current == null) return;
+    try {
+      await current.pinConversation(widget.id, pinnedAt == null);
+      await loadReceipt();
+      ref.read(chatSignalProvider.notifier).bump();
+      if (mounted) {
+        showMessage(
+          context,
+          pinnedAt == null ? 'Chat unpinned.' : 'Chat pinned.',
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      showMessage(
+        context,
+        e is ChatFailure && e.code == 'PIN_LIMIT'
+            ? 'You can pin up to 5 chats. Unpin one first.'
+            : chatError(e),
+      );
+    }
+  }
+
+  /// Removes this phone's copy of the messages, after asking. The relay and the other person are untouched.
+  Future<void> clearHistory() async {
+    final current = engine;
+    if (current == null) return;
+    final yes = await confirmChatAction(
+      context,
+      title: 'Clear history on this phone?',
+      body:
+          'The messages, photos, voice messages and videos of this chat are removed from this phone. $peerName keeps theirs, and new messages still arrive.',
+      action: 'Clear history',
+    );
+    if (!yes || !mounted) return;
+    try {
+      await current.clearHistory(widget.id);
+      ref.read(translationMemoryProvider).clear(conversationId: widget.id);
+      if (mounted) {
+        setState(() {
+          translations.clear();
+          messages = [];
+        });
+        showMessage(context, 'History cleared on this phone.');
+      }
+    } catch (e) {
+      if (mounted) showMessage(context, chatError(e));
+    }
+  }
+
+  /// Takes the chat out of the list. The history stays on this phone for the 30 days it can be restored.
+  Future<void> deleteChat() async {
+    final current = engine;
+    if (current == null) return;
+    final yes = await confirmChatAction(
+      context,
+      title: 'Delete this chat?',
+      body:
+          'It leaves your list. You can bring it back from Deleted chats for 30 days; after that this phone’s copy is removed. $peerName isn’t told, and a new message from them brings it back.',
+      action: 'Delete chat',
+    );
+    if (!yes || !mounted) return;
+    try {
+      await current.hideConversation(widget.id);
+      ref.read(chatSignalProvider.notifier).bump();
+      await ref.read(chatUnreadProvider.notifier).refresh();
+      if (mounted) {
+        showMessage(
+          context,
+          'Chat deleted. You can restore it from Deleted chats.',
+        );
+        context.go('/chats');
+      }
+    } catch (e) {
+      if (mounted) showMessage(context, chatError(e));
     }
   }
 
@@ -1359,6 +1756,25 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   void attach(ChatEngine? next) {
     if (next == null || identical(next, engine)) return;
     engine = next;
+    final files = next.playFiles;
+    if (files != null) {
+      capture = VoiceCapture(
+        recorder: ref.read(voiceRecorderProvider),
+        files: files,
+      )..onLimit = _sendClip;
+      capture!.onLimitFailed = _voiceProblem;
+    }
+    _playback = ref.read(voicePlaybackProvider);
+    unawaited(
+      next.prefs.read().then((p) {
+        if (mounted) setState(() => chatPrefs = p);
+        _autoTranslate();
+      }),
+    );
+    _prefsSub = next.prefs.changes.listen((p) {
+      if (mounted) setState(() => chatPrefs = p);
+      _autoTranslate();
+    });
     changes = next.changes
         .where((id) => id == widget.id)
         .listen((_) => reload());
@@ -1443,13 +1859,27 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     focus.requestFocus();
   }
 
-  /// Choose or take a photo, preview it with an optional caption, then send.
-  /// The message appears at once; the upload carries on in the background.
+  /// Choose or take a photo or a video. A photo is previewed with an optional caption first; a video is
+  /// prepared (scaled to 720p at most, re-encoded, its location and other tags removed) and then sent. The
+  /// message appears at once; the upload carries on in the background.
   Future<void> attachPhoto() async {
     final current = engine;
     if (current == null || peerId.isEmpty || attaching) return;
-    final source = await showAttachSheet(context);
-    if (source == null || !mounted) return;
+    final choice = await showAttachSheet(context);
+    if (choice == null || !mounted) return;
+    switch (choice) {
+      case AttachChoice.photoGallery:
+        await _sendPickedPhoto(current, PhotoSource.gallery);
+      case AttachChoice.photoCamera:
+        await _sendPickedPhoto(current, PhotoSource.camera);
+      case AttachChoice.videoGallery:
+        await _sendPickedVideo(current, PhotoSource.gallery);
+      case AttachChoice.videoCamera:
+        await _sendPickedVideo(current, PhotoSource.camera);
+    }
+  }
+
+  Future<void> _sendPickedPhoto(ChatEngine current, PhotoSource source) async {
     setState(() => attaching = true);
     Uint8List? bytes;
     try {
@@ -1474,6 +1904,278 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
       if (mounted) setState(() => replyingTo = null);
     } catch (e) {
       if (mounted) showMessage(context, chatError(e, peerName: peerName));
+    }
+  }
+
+  Future<void> _sendPickedVideo(ChatEngine current, PhotoSource source) async {
+    final preparer = ref.read(videoPreparerProvider);
+    if (preparer == null) {
+      showMessage(context, 'Videos can only be sent from the Hiyall app.');
+      return;
+    }
+    setState(() => attaching = true);
+    String? path;
+    try {
+      path = await pickChatVideo(ref.read(imagePickerProvider), source);
+    } catch (e) {
+      if (mounted) showMessage(context, videoFailureText(e));
+      return;
+    } finally {
+      if (mounted) setState(() => attaching = false);
+    }
+    if (path == null || !mounted) return;
+    final progress = ValueNotifier<double>(0);
+    final navigator = Navigator.of(context, rootNavigator: true);
+    // A calm, modal "Preparing video": re-encoding takes a few seconds.
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        useRootNavigator: true,
+        builder: (_) =>
+            PopScope(canPop: false, child: PreparingVideo(progress: progress)),
+      ),
+    );
+    PreparedVideo? prepared;
+    Object? failure;
+    try {
+      prepared = await preparer.prepare(
+        path,
+        onProgress: (v) => progress.value = v,
+      );
+    } catch (e) {
+      failure = e;
+    }
+    if (navigator.mounted && navigator.canPop()) navigator.pop();
+    progress.dispose();
+    if (!mounted) return;
+    if (prepared == null) {
+      showMessage(context, videoFailureText(failure ?? ''));
+      return;
+    }
+    try {
+      await current.sendVideo(widget.id, peerId, prepared, replyTo: replyingTo);
+      if (mounted) setState(() => replyingTo = null);
+    } catch (e) {
+      if (mounted) showMessage(context, chatError(e, peerName: peerName));
+    }
+  }
+
+  // ------------------------------------------------------- voice messages
+
+  void _voiceProblem(Object error) {
+    if (!mounted) return;
+    showMessage(
+      context,
+      error is ChatFailure
+          ? chatError(error, peerName: peerName)
+          : 'That recording couldn’t be sent.',
+    );
+  }
+
+  /// Sends a finished recording; the message is in the thread as sending at once.
+  Future<void> _sendClip(VoiceClip clip) async {
+    final current = engine;
+    if (current == null || peerId.isEmpty) return;
+    unawaited(sendHaptic());
+    final reply = replyingTo;
+    setState(() => replyingTo = null);
+    try {
+      await current.sendVoice(widget.id, peerId, clip, replyTo: reply);
+    } catch (e) {
+      if (mounted) showMessage(context, chatError(e, peerName: peerName));
+    }
+  }
+
+  /// Letting go of the microphone, or tapping send: stops the recording and sends it.
+  Future<void> finishVoice() async {
+    final c = capture;
+    if (c == null) return;
+    try {
+      final clip = await c.finish();
+      if (clip != null) await _sendClip(clip);
+    } catch (e) {
+      _voiceProblem(e);
+    }
+  }
+
+  VoiceControls? get voiceControls {
+    final c = capture;
+    if (c == null || engine == null || peerId.isEmpty) return null;
+    return VoiceControls(
+      capture: c,
+      onFinish: finishVoice,
+      onProblem: (m) {
+        if (mounted) showMessage(context, m);
+      },
+    );
+  }
+
+  // -------------------------------------------- translation, reading aloud
+
+  /// Translates one message on the phone and shows the result under it; or hides it when it is shown.
+  Future<void> translateMessage(ChatMessage message) async {
+    final current = engine;
+    if (current == null) return;
+    if (translations.containsKey(message.messageId)) {
+      setState(() => translations.remove(message.messageId));
+      return;
+    }
+    final service = ref.read(translationServiceProvider);
+    if (!service.supported) {
+      showMessage(context, 'Translation works in the Android and iOS apps.');
+      return;
+    }
+    final to = translationTarget(chatPrefs);
+    final from = await service.detectLanguage(message.text);
+    if (!mounted) return;
+    if (from == null) {
+      showMessage(context, 'Couldn’t tell which language that is.');
+      return;
+    }
+    if (from == to) {
+      showMessage(context, 'That message is already in ${languageName(to)}.');
+      return;
+    }
+    if (!await ensureTranslationPacks(context, ref, current, [from, to]) ||
+        !mounted) {
+      return;
+    }
+    await _translateOne(message, to: to, from: from, announce: true);
+  }
+
+  Future<void> _translateOne(
+    ChatMessage message, {
+    required String to,
+    String? from,
+    bool announce = false,
+  }) async {
+    final service = ref.read(translationServiceProvider);
+    final memory = ref.read(translationMemoryProvider);
+    final key = TranslationMemory.keyOf(widget.id, message.messageId, to);
+    final hit = memory.get(key);
+    if (hit != null) {
+      if (mounted) setState(() => translations[message.messageId] = hit);
+      return;
+    }
+    setState(() {
+      _translating.add(message.messageId);
+      _translateFailed.remove(message.messageId);
+    });
+    try {
+      final result = await service.translate(message.text, to: to, from: from);
+      memory.put(key, result);
+      if (mounted) setState(() => translations[message.messageId] = result);
+    } on TranslationException catch (e) {
+      if (!mounted) return;
+      if (e.problem != TranslationProblem.nothingToTranslate) {
+        setState(() => _translateFailed.add(message.messageId));
+        if (announce) showMessage(context, 'Couldn’t translate that message.');
+      }
+    } finally {
+      if (mounted) setState(() => _translating.remove(message.messageId));
+    }
+  }
+
+  /// With auto-translate on for this chat, incoming text is translated as it arrives, when the language packs
+  /// are already on the phone (nothing is downloaded by surprise). At most the newest 30 incoming messages.
+  void _autoTranslate() {
+    if (_autoRunning || !chatPrefs.autoTranslate.contains(widget.id)) return;
+    final service = ref.read(translationServiceProvider);
+    if (!service.supported) return;
+    _autoRunning = true;
+    unawaited(() async {
+      try {
+        final to = translationTarget(chatPrefs);
+        final todo = [
+          for (final m in messages.reversed.take(60))
+            if (!m.mine &&
+                !m.notice &&
+                !m.isMedia &&
+                m.text.trim().isNotEmpty &&
+                m.text.length <= 1000 &&
+                !isEmojiOnly(m.text) &&
+                !translations.containsKey(m.messageId) &&
+                !_translateFailed.contains(m.messageId))
+              m,
+        ].take(30).toList();
+        for (final m in todo) {
+          if (!mounted || !chatPrefs.autoTranslate.contains(widget.id)) break;
+          final from = await service.detectLanguage(m.text);
+          if (from == null || from == to) {
+            _translateFailed.add(m.messageId);
+            continue;
+          }
+          if ((await service.missingPacks(from, to)).isNotEmpty) {
+            continue;
+          }
+          await _translateOne(m, to: to, from: from);
+        }
+      } finally {
+        _autoRunning = false;
+      }
+    }());
+  }
+
+  /// Turns auto-translate for this chat on or off. Switching it on makes sure the language pack is there
+  /// (asking first); the choice is kept only on this phone.
+  Future<void> setAutoTranslate(bool on) async {
+    final current = engine;
+    if (current == null) return;
+    if (on) {
+      final service = ref.read(translationServiceProvider);
+      if (!service.supported) {
+        showMessage(context, 'Translation works in the Android and iOS apps.');
+        return;
+      }
+      final to = translationTarget(chatPrefs);
+      if (!await ensureTranslationPacks(context, ref, current, [to]) ||
+          !mounted) {
+        return;
+      }
+    } else if (mounted) {
+      setState(() {
+        translations.clear();
+        _translateFailed.clear();
+      });
+    }
+    await current.prefs.setAutoTranslate(widget.id, on);
+  }
+
+  Future<void> readAloud(ChatMessage message) async {
+    final speech = ref.read(speechServiceProvider);
+    if (speakingId == message.messageId) {
+      await speech.stop();
+      if (mounted) setState(() => speakingId = null);
+      return;
+    }
+    if (!speech.supported) {
+      showMessage(context, 'Reading aloud works in the Android and iOS apps.');
+      return;
+    }
+    await speech.stop();
+    final translated = translations[message.messageId];
+    final text = translated?.text ?? message.text;
+    final service = ref.read(translationServiceProvider);
+    final language =
+        translated?.to ?? await service.detectLanguage(message.text);
+    if (!mounted) return;
+    setState(() => speakingId = message.messageId);
+    try {
+      await speech.speak(text, language: language);
+    } on SpeechException catch (e) {
+      if (mounted) {
+        showMessage(
+          context,
+          e.problem == SpeechProblem.noOfflineVoice
+              ? 'No voice for ${language == null ? 'that language' : languageName(language)} is installed on this phone. Add one in your phone’s text-to-speech settings. Hiyall only reads aloud with voices that work on the phone.'
+              : 'Couldn’t read that aloud.',
+        );
+      }
+    } finally {
+      if (mounted && speakingId == message.messageId) {
+        setState(() => speakingId = null);
+      }
     }
   }
 
@@ -1603,6 +2305,39 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     });
   }
 
+  Future<void> retryAv(ChatMessage message) async {
+    try {
+      await engine?.retryAv(widget.id, message.messageId);
+    } catch (e) {
+      if (mounted) showMessage(context, chatError(e));
+    }
+  }
+
+  Future<void> deleteAv(ChatMessage message) async {
+    try {
+      await engine?.discardAv(widget.id, message.messageId);
+    } catch (e) {
+      if (mounted) showMessage(context, chatError(e));
+    }
+  }
+
+  /// What the bubble of [m] draws under its text: a translation that is shown, or on its way, or failed.
+  BubbleTranslation? _translationFor(ChatMessage m) {
+    final done = translations[m.messageId];
+    if (done != null) {
+      return BubbleTranslation(
+        text: done.text,
+        from: done.from,
+        onHide: () => setState(() => translations.remove(m.messageId)),
+      );
+    }
+    if (_translating.contains(m.messageId)) {
+      return const BubbleTranslation(pending: true);
+    }
+    // A failure is only drawn for a message the person asked about, never for an automatic attempt.
+    return null;
+  }
+
   Future<void> retryPhoto(ChatMessage message) async {
     try {
       await engine?.retryPhoto(widget.id, message.messageId);
@@ -1630,6 +2365,9 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     _noticeTimer?.cancel();
     _litTimer?.cancel();
     changes?.cancel();
+    _prefsSub?.cancel();
+    unawaited(_playback?.stop());
+    capture?.dispose();
     scroll.removeListener(_onScroll);
     input.dispose();
     focus.dispose();
@@ -1642,6 +2380,9 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
     onReply: startReply,
     onQuoteTap: showOriginal,
     onCopy: copyMessage,
+    onReadAloud: readAloud,
+    onTranslate: translateMessage,
+    isTranslated: (m) => translations.containsKey(m.messageId),
   );
 
   /// The bar and the notice above the composer.
@@ -1660,8 +2401,14 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         if (reply != null)
           ReplyBar(
             who: reply.mine ? 'You' : peerName,
-            line: reply.isPhoto ? 'Photo' : snippetOf(reply.text),
-            image: reply.isPhoto,
+            line: reply.isPhoto
+                ? 'Photo'
+                : reply.isVoice
+                ? 'Voice message'
+                : reply.isVideo
+                ? 'Video'
+                : snippetOf(reply.text),
+            image: reply.isMedia,
             onCancel: () => setState(() => replyingTo = null),
           ),
       ],
@@ -1682,7 +2429,14 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   ) {
     switch (row) {
       case DayRow(:final day):
-        return DayChip(chatDayLabel(day, now), key: ValueKey('day-$day'));
+        return DayChip(
+          chatDayLabel(
+            day,
+            now,
+            locale: Localizations.localeOf(context).toString(),
+          ),
+          key: ValueKey('day-$day'),
+        );
       case NoticeRow(:final message):
         return NoticeChip(message.text, key: ValueKey(message.messageId));
       case UnreadRow():
@@ -1708,6 +2462,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
           actions: engine == null || peerId.isEmpty ? null : _actions,
           quote: quoteFor(m),
           highlight: litId == m.messageId,
+          translation: _translationFor(m),
         );
         if (fresh.contains(m.messageId)) {
           bubble = BubbleEntrance(
@@ -1725,7 +2480,26 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               bubble,
+              if (m.messageId == newestMine &&
+                  m.mine &&
+                  m.status == SendStatus.sent &&
+                  peerReadAt != null)
+                ReceiptLine(seen: _seen(m)),
               if (m.mine &&
+                  (m.voice != null || m.video != null) &&
+                  m.status == SendStatus.failed)
+                FailedPhotoActions(
+                  keyPrefix: 'av',
+                  message: m,
+                  error:
+                      photoFailureText(m.failure) ??
+                      (m.voice != null
+                          ? 'This voice message wasn’t sent.'
+                          : 'This video wasn’t sent.'),
+                  onRetry: () => retryAv(m),
+                  onDelete: () => deleteAv(m),
+                )
+              else if (m.mine &&
                   m.attachment != null &&
                   m.status == SendStatus.failed)
                 FailedPhotoActions(
@@ -1736,7 +2510,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
                   onDelete: () => deletePhoto(m),
                 )
               else if (m.mine &&
-                  !m.isPhoto &&
+                  !m.isMedia &&
                   !m.notice &&
                   m.status == SendStatus.failed)
                 FailedPhotoActions(
@@ -1875,6 +2649,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
             onSend: send,
             onAttach: attachPhoto,
             above: _aboveComposer(),
+            voice: voiceControls,
           ),
         ],
       ),
@@ -2037,4 +2812,33 @@ class _ChatDevicesState extends ConsumerState<ChatDevicesScreen> {
       ),
     );
   }
+}
+
+/// A plain yes/no before something that removes data from this phone or from the list.
+Future<bool> confirmChatAction(
+  BuildContext context, {
+  required String title,
+  required String body,
+  required String action,
+}) async {
+  final yes = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(title),
+      content: Text(body),
+      actions: [
+        TextButton(
+          key: const Key('confirm-cancel'),
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const Key('confirm-yes'),
+          onPressed: () => Navigator.pop(context, true),
+          child: Text(action),
+        ),
+      ],
+    ),
+  );
+  return yes ?? false;
 }
