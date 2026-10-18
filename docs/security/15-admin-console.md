@@ -79,6 +79,35 @@ JSON under `/admin/v1`, same envelope as the public API: `{"success":true,"data"
 
 Resolve and restore call the same store methods as `cmd/moderate` (`ResolveReportWith`, `RestoreUserWith`). Suspend sets the account to `suspended`, revokes every member session and sends the realtime disconnect notice, in one transaction with the audit entry.
 
+## Notices and support
+
+The console has two more pages, both listed for every role: **Notices** (`/notices`) and **Support** (`/support`, `/support/{id}`). Server code: `services/api/internal/admin/social.go`; member side and data: [27](../api/27-stories-notices-support.md).
+
+| Page | viewer | moderator | admin |
+|---|---|---|---|
+| Notices | read the list | read the list | publish, edit, unpublish (a reason each time) |
+| Support inbox and threads | read (opening a thread is audited) | read, reply, close, reopen, assign | the same as a moderator |
+
+**Endpoints** (JSON under `/admin/v1`, the envelope above; detail in [27](../api/27-stories-notices-support.md#admin-console-endpoints)):
+
+| Method and path | Role |
+|---|---|
+| `GET /notices?status=all\|live\|scheduled\|ended\|unpublished&cursor=` | viewer |
+| `POST /notices`, `PUT /notices/{id}`, `POST /notices/{id}/unpublish` | admin; body carries `reason` (10 to 1000 characters) |
+| `GET /support/threads?status=open\|closed\|all&category=&waiting=true&assigned=me\|none&sort=oldest\|newest&cursor=` | viewer; no message text |
+| `GET /support/threads/{id}` | viewer; audited before any text is read |
+| `POST /support/threads/{id}/reply`, `/close`, `/reopen`, `/assign` | moderator |
+
+**Audit actions**, each written in the same transaction as the change: `notice_publish`, `notice_edit`, `notice_unpublish` (with the reason), `support_thread_view` (written before the thread is read; a thread that cannot be audited is not shown), `support_reply`, `support_close`, `support_reopen`, `support_assign`. The audit entry of a reply holds the message id and its length, **never its text**.
+
+**What staff see of a member in the inbox:** username, display name, **age band** (`minor` or `adult`, shown prominently: replies to a member under 18 stay inside Hiyall, with no request for contact details or off-platform contact) and account status. Nothing else. The inbox lists no message text; the thread page says that support messages are plain text the member knows staff can read. The console only inserts and renders text as text (no HTML), and offers canned replies that are **inserted into the reply box for editing, never sent automatically**. Notice text uses only paragraphs, `**bold**` and https links, drawn by a small renderer that turns everything else into plain text (`apps/admin/src/noticeMarkup.tsx`, tested); the server refuses anything else on save.
+
+**Database role** (`database/roles/grants.sql`): `hiyall_admin` has `SELECT, INSERT, UPDATE` on `notices`, `SELECT, UPDATE` on `support_threads` and `SELECT, INSERT` on `support_messages`, and **no `DELETE`** on any of them. Closed threads are removed by the API's maintenance job, not the console.
+
+**Push.** The console has no push sender. A reply waits as a `support_messages` row with `pushed_at IS NULL`; the API nodes claim such rows and send the content-free "Support replied" push to the member.
+
+**Retention.** A closed thread is purged **365 days after it was closed**; an open thread is kept while open; the member's account deletion removes their threads at once.
+
 ## What staff can and cannot see
 
 **A case shows:** the report (reason, severity, status, description, target type and id); the reported member and the reporter in summary (display name, username, **age band** `minor` or `adult`, account status, how often they were reported and how often they reported); whether a minor is involved; the messages the reporter chose to share with the sender side and time taken from the relay's records; the held encrypted images as **blob id, role, size and SHA-256 only**; the subject's other reports and earlier moderation actions.

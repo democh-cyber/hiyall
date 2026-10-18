@@ -254,6 +254,24 @@ Tests added: Go 15 (`internal/httpapi/chat_limits_test.go` 12, `internal/push` 3
 
 EXPLAIN on synthetic data (rolled back; 77,000 undelivered envelopes, 50,000 idle devices, 250 blocks): a send to a device holding 1,999 envelopes took 44 ms and 25.6k buffers with `interaction_barred` per row, and takes 0.4 ms and 40 buffers in the usual case, 5.5 ms and 21k buffers when the device is at a cap (no scan of `messages`). The hourly sweep over 50,000 idle devices took 51 ms and 100.8k buffers (a probe per device) and takes 12 ms and 14k buffers (one barred-only candidate); the first run after a large backlog (50 candidates, all revoked) now takes 138 ms and 468k buffers because every candidate is counted exactly.
 
+## On-device translation and reading aloud (Wave 7)
+
+Chat is end-to-end encrypted, so every language feature runs on the phone. **No plaintext reaches a server or a third party**: not for translation, not for language detection, not for text-to-speech, not for search.
+
+- **Translation** uses Google ML Kit's on-device translation (`google_mlkit_translation`, MIT; the models run locally) behind `TranslationService` (`lib/core/translate/translation_service.dart`), with `FakeTranslationService` for tests and for the story and comment translation that will reuse it. The only network traffic is the one-time download of a language pack (about 30 MB per language, English is built in; ML Kit pivots through English, so a pair needs both packs). The download carries no text. A pack is never fetched by surprise: the first translation shows a consent sheet that names the packs and the size and says the words stay on the phone, with a Wi-Fi-only switch; declining translates nothing. Packs are listed and deleted in Settings, Chat language.
+- **Language detection** uses ML Kit language identification (`google_mlkit_language_id`, MIT), also local.
+- **Translate to**: the person's choice, else the phone's language when a model exists, else English. Kept in the sealed local store.
+- **Auto-translate** is a per-chat switch kept **only on this phone** (`ChatPrefs`, key `prefs` inside the sealed snapshot, so sign-out wipes it). It is never sent to the relay or the peer. It translates incoming text only when the packs are already installed (it never downloads by itself) and at most the newest 30 messages.
+- **Where translations live: memory only.** A translation is a second copy of a message's text. Storing it anywhere outside the sealed snapshot would put message content in a new place, and storing it inside would grow every history write, so translations are held only in memory (`TranslationMemory`, bounded, cleared when the account's engine changes) and made again on demand. Closing the app forgets them.
+- **Reading aloud** uses the platform engine through `flutter_tts` (MIT): Android TextToSpeech, iOS AVSpeechSynthesizer. Only a voice that works without the network is used (`pickOfflineVoice` skips Android voices flagged `network_required`); if none is installed for that language the person is told to install one in the phone's own settings. The text is spoken in the language detected (or the translation's language).
+- **Search** of the chat list reads the decrypted local history only (`ChatEngine.searchHistory`), never asks the relay, and skips voice messages and videos.
+- **Sentence correction** (grammar fixing by an online model, as other language-exchange apps offer) is **not built**: it needs a cloud model, which would have to receive the plaintext of a private message. An on-device correction model is not available with acceptable quality and size; revisit only if one appears.
+- Not run on a device: ML Kit, the text-to-speech engine and the downloads need a phone (the iOS Simulator on Apple Silicon is not supported by ML Kit).
+
+## Chat list: pins, deleted chats, local history (Wave 7)
+
+Pins, deletion and restore are flags on the caller's own member row ([API 26](../api/26-chat-voice-video-and-list.md)); the peer learns nothing. "Delete chat" hides it; this phone's history is kept for the 30 days it can be restored; a new message from the peer, or opening the chat, brings it back. After 30 days the relay closes it for that member (hourly job) and the app wipes its local history (`ChatEngine.hiddenConversations` wipes the ids the relay reports closed, and any listed chat whose window has passed on the phone's clock). "Clear history on this phone" (`ChatEngine.clearHistory`) removes the messages, the waiting reactions, the cached files and any unsent upload of one chat locally and changes nothing for the peer. Read receipts ("Seen" / "Not read yet" under the newest sent message) are drawn only when the relay sends the peer's read time, which it does only when both people have read receipts on; with either off nothing is claimed.
+
 ## Not done yet (before launch)
 
 - Independent review of this integration: key storage, device lists, envelope handling, gateway.
