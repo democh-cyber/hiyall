@@ -142,3 +142,13 @@ blockquote { margin: 0.5rem 0; padding: 0.5rem 1rem; border-left: 4px solid var(
 .proposals { list-style: none; padding: 0; margin: 0 0 0.5rem; }
 .proposals li { border-top: 1px solid var(--line); padding: 0.5rem 0; }
 .sensitive { background: var(--danger-bg); color: var(--danger); padding: 0.5rem 0.75rem; border-radius: 4px; }
+
+/* Notices and the support inbox. */
+.notice-body p { margin: 0.4rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.notice-form { margin-bottom: 1rem; }
+.notice-form .preview { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 0.25rem 0.75rem; }
+.problems { color: var(--danger); padding-left: 1.25rem; }
+details summary { cursor: pointer; color: var(--accent); font-size: 0.875rem; }
+.thread .from-staff { border-left: 4px solid var(--accent); }
+.thread .from-member { border-left: 4px solid var(--line); }
+.canned { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.5rem 0; }
