@@ -69,6 +69,7 @@ This matters, so we say it plainly.
 - **A false birth date defeats the protections.** A teen who types an adult birth date is treated as an adult and can be seen by, and can contact, adults. An adult who types a teen birth date can appear to teens.
 - **We cannot detect this automatically.** We have no tool that spots a false age. Reports are the main way we find out.
 - **The birth date cannot be changed after sign-up.** We keep the first date entered, privately, until the account is erased.
+- **Group chats stay within one age group.** A teen can only be added to a group chat whose other members are teens, and an adult only to one whose members are adults. Teens can only be added by someone they already chat with or follow, get an invite they can decline, and can leave at any time. Group chats are end-to-end encrypted too; we can see a group's name and member list but not what is said.
 - **We cannot read chats.** Chats, including voice messages and videos, are end-to-end encrypted. We cannot scan them for harm or for illegal images. Reports include only what the reporter chooses to send.
 - **Location can be faked.** Someone who fakes where they are could work out roughly where a person is to within a few kilometres.
 - **We do not verify parental consent.** Hiyall does not currently ask for a parent's permission. [LEGAL REVIEW: some countries need verifiable parental consent for people under 13 to 16, depending on the country, and for location data.]
