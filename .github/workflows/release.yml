@@ -112,7 +112,7 @@ jobs:
       FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
       FIREBASE_MESSAGING_SENDER_ID: ${{ vars.FIREBASE_MESSAGING_SENDER_ID }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # the preflight checks that the tag is on main
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -151,7 +151,7 @@ jobs:
       DATABASE_URL: postgresql://hiyall:ci-only-disposable@localhost:5432/hiyall_test?sslmode=disable
       TEST_DATABASE_URL: postgresql://hiyall:ci-only-disposable@localhost:5432/hiyall_test?sslmode=disable
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: services/api/go.mod
@@ -170,7 +170,7 @@ jobs:
       digest: ${{ steps.build.outputs.digest }}
       image: ${{ steps.name.outputs.image }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: name
         # GHCR names must be lower case. COMMIT is the 12-character commit stamped into the binary (startup log,
         # hiyall_build_info, the error tracker's release); VERSION is the tag.
@@ -219,7 +219,7 @@ jobs:
       digest: ${{ steps.build.outputs.digest }}
       image: ${{ steps.name.outputs.image }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: name
         run: |
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}/admin" >> "$GITHUB_OUTPUT"
@@ -296,7 +296,7 @@ jobs:
     timeout-minutes: 60
     environment: release
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Signing secrets are present
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -387,7 +387,7 @@ jobs:
     timeout-minutes: 60
     environment: release
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Signing secrets are present
         env:
           CERT_B64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
