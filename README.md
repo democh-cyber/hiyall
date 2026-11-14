@@ -40,6 +40,33 @@ These are rendered by the app's own widget tests with sample data (no real accou
 | `scripts` | Dev, test, release and operations scripts |
 | `docs` | Architecture, API, mobile, security, legal and deployment documents |
 
+## Set it up with an AI agent
+
+Clone the repo, open it in an AI coding agent that can run terminal commands (Claude Code, Codex, Cursor and similar), and paste this prompt. The agent does the setup and opens the app in a browser. It will stop and ask you for the few steps only you can do, such as signing in to Firebase.
+
+```text
+You are setting up the Hiyall project, which is in the current folder, so that I can open the working app UI in my browser. Read README.md first (the "Run it locally" section) and follow it. Work step by step, run the commands yourself, and fix problems you hit instead of stopping at the first error.
+
+Rules:
+- Never print, log, commit or paste secrets (API keys, tokens, passwords, service-account files). Never commit anything: do not run git commit or git push.
+- Do not type or guess passwords or verification codes. When a step needs me (a browser login, a code, a password), tell me exactly what to do and wait for me to say it is done.
+- Do not use sudo or change system settings. Install missing tools only under my home folder, and tell me before installing anything.
+- Do not create accounts or paid resources for me. Use only a Firebase project I create or name myself.
+- Everything stays local: the local database, the API on 127.0.0.1:8080 and the web app on localhost:49321.
+
+Do this:
+1. Check which of these tools are installed and at what version: Flutter 3.47.x, Go 1.27.x, PostgreSQL 16 (server and psql), Node.js 24, and Rust (cargo). Report what is missing. The scripts source scripts/env.sh, which expects the tools under $HIYALL_TOOLS_DIR (default ~/.local/share/hiyall-tools); if my tools are installed somewhere else, adjust env.sh locally (or set HIYALL_TOOLS_DIR) so it finds them, without committing the change.
+2. Install the missing tools in my home folder, with my approval, then run: npm ci, and flutter pub get in apps/mobile.
+3. Ask me for my Firebase project id (or help me create a project in the Firebase console), then have me run firebase login myself, and run ./scripts/firebase-setup.sh <project-id>. This creates config/firebase.local.json, which is git-ignored. Remind me to enable the sign-in methods the app offers (docs/mobile/14-sign-in-and-onboarding.md).
+4. Start the API with ./scripts/dev-api.sh in a background terminal. Wait until curl http://127.0.0.1:8080/healthz returns 200. Show me the last log lines if it fails.
+5. Start the web app with ./scripts/dev-mobile.sh in a background terminal. The first build takes about a minute. Wait until http://localhost:49321 loads, then open it in a browser and confirm the Hiyall Welcome screen shows (a dark screen with "Create account" and "Log in"). If the page stays blank, reload once the build has finished.
+6. Offer to run ./scripts/dev/seed-demo-people.sh so Discover has people in it, and explain that it only touches the local database.
+7. Tell me how to sign up in the browser, and that chat only works in the Android and iOS apps, not on web.
+8. Finish with a short summary: what is running, the URLs, how to stop it, and anything that still needs me.
+
+If something fails, read the relevant doc under docs/ (docs/development.md covers local setup) before changing anything, and explain what you changed.
+```
+
 ## Run it locally
 
 Nothing here needs a paid service. Secrets are never stored in the repository: you bring your own Firebase project, and photo storage is optional.
