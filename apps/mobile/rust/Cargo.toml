@@ -13,7 +13,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 # See docs/security/12-e2ee-library-evaluation.md before changing the version.
 vodozemac = "=0.11.1"
 flutter_rust_bridge = "=2.13.0"
-x25519-dalek = { version = "2", features = ["static_secrets"] }
+x25519-dalek = { version = "3", features = ["static_secrets"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 zeroize = "1"
 # Attachment crypto (docs/security/14-encrypted-chat-attachments.md). Pinned exactly like
