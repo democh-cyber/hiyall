@@ -1,46 +1,174 @@
-# Hiyall — global social + chat platform
+# Hiyall
 
-Hiyall is a provisional brand for an original, privacy-conscious social network and chat application for Flutter Android/iOS, with future web support. Brand/domain clearance is still needed before public launch.
+Hiyall is a social and chat app for Gen Z: meet people through shared interests and languages, post short stories, and talk in end-to-end encrypted chats. It is open to anyone who says they are 13 or older. Members under 18 and adults are kept apart, and every member can block and report.
 
-**Current status (15 October 2026): V1 release candidate, not launched.** The code, store files and release tooling are in place; the remaining work is the owner's accounts, credentials, legal text and real-device checks. Hiyall is for Gen Z and is open to anyone who declares they are 13 or over; every onboarded member is open and discoverable by default, Nearby is opt-in, and minors (13 to 17) and adults are kept apart wherever blocks apply, based on a birth date members type and that can be falsified. **What exists and is covered by automated tests:** Firebase sign-in and server-enforced onboarding; profiles and privacy; blocks, reports and safety controls; Discover and people search; coarse, expiring Nearby; follows and connections; Pulse stories; Spaces (Events and Moments are hidden for V1); one-to-one chat with end-to-end encrypted text and photos (a Rust core on audited Olm, a separate attachment bucket for ciphertext) over HTTP plus a realtime WebSocket; presence; push through FCM; account export and deletion with Sign in with Apple revocation; an admin and moderation console; upload scanning hooks; per-account limits enforced by the API; hourly cleanup; health, metrics, error reporting and container packaging. **Release machinery:** version `1.0.0+1`; Android adaptive and themed icons, notification icon, Android 12 splash, R8 rules, a permission audit and signing that refuses the debug key; iOS usage strings, privacy manifest, icons and launch screen; web SEO tags and manifest; `scripts/build-release.sh`; a tag-triggered release workflow whose first job is `scripts/release-preflight.sh`; and `api check-config -release`. **The preflight fails by design on this tree** until the owner supplies: final legal text (the five documents under `docs/legal` are drafts with `[BRACKET]` placeholders and a terms version to bump), the mobile release inputs (API URL, Firebase ids, Sentry DSN, store URLs, support/safety/privacy mailboxes), the production API environment and key files (cursor key, Firebase admin and FCM keys, Apple key, upload scanner), the Android upload keystore and Apple signing, the real GitHub owner and security contact, the store-listing fields and reviewer accounts, a web page for account deletion (Play), and a separate production Firebase project, buckets and database. **Not verified:** a real Firebase sign-up, a real-device chat and push test, any Gradle or Xcode build of the new Android and iOS files, a deployment, an independent E2EE review and a load test have not happened. **Next:** run `scripts/release-preflight.sh` and follow [the release runbook](docs/deployment/12-release-runbook.md): preflight, staging deploy, smoke tests, tag, store submission, production deploy, monitoring, rollback. See also [Remaining work and release boundary](docs/development.md#remaining-work-and-release-boundary).
+Flutter app (Android, iOS and a browser build) · Go API · PostgreSQL · Rust encryption core · React admin console.
 
-Run `./scripts/dev-api.sh` and `./scripts/dev-mobile.sh` in separate terminals. Open `http://localhost:49321`. To use real sign-in, run `firebase login` and then `./scripts/firebase-setup.sh <project-id>` once; see [sign-in and onboarding](docs/mobile/14-sign-in-and-onboarding.md#supplying-the-firebase-project). See [development setup, implemented behavior and release boundaries](docs/development.md). Toolchains were installed per-user and are recorded in [toolchains.lock.json](toolchains.lock.json).
+> **Status: V1 release candidate, not launched.** The code and the automated tests are in place. It has not been tried on real phones, no store accounts or production services exist yet, and the legal documents under `docs/legal` are drafts. See [Remaining work](docs/development.md#remaining-work-and-release-boundary).
 
-Sign-in and onboarding are described in [Sign-in and onboarding (app)](docs/mobile/14-sign-in-and-onboarding.md). Read [the brand, screen inventory, flows and interaction specification](docs/ux/08-gen-z-experience.md) for the design intent.
+## Screenshots
 
-## Review the architecture
+These are rendered by the app's own widget tests with sample data (no real accounts). Regenerate them with the capture tests in `apps/mobile/test`.
 
-Start with the [decision summary and requirement coverage](docs/architecture/10-review-and-traceability.md). Then review the requested starting deliverables:
+| Discover | Possible matches | Chat |
+|---|---|---|
+| ![Discover](docs/screenshots/discover.png) | ![Possible matches](docs/screenshots/possible-matches.png) | ![Encrypted chat](docs/screenshots/chat.png) |
 
-| Deliverable | Document |
+| Profile | Shop (adults only, switched off by default) |
 |---|---|
-| A. Product requirements | [Vision, personas, journeys, MVP and future scope](docs/architecture/01-product-requirements.md) |
-| B. Technical architecture | [Modules, diagrams, feed/chat/media/search/recommendations](docs/architecture/02-technical-architecture.md) |
-| C. Database design | [All 25 requested entities, ER diagram, keys/indexes/partitioning/growth, supporting schemas](docs/database/03-database-design.md) |
-| D. API design | [API rules and full roadmap inventory](docs/api/04-api-specification.md), [typed MVP OpenAPI contract](docs/api/openapi-mvp.json) |
-| E. Flutter mobile architecture | [State, routing, networking, storage, offline sync, push, i18n and accessibility](docs/mobile/05-mobile-architecture.md) |
-| UX/UI | [Screen inventory, navigation, flows, wireframes, tokens and components](docs/ux/07-ux-and-design-system.md) |
-| Security/privacy | [Threat model and privacy](docs/security/08-security-and-privacy.md), [mandatory E2EE and interception protections](docs/security/11-encryption-and-interception.md) |
-| Capacity/deployment | [1K→100M model, AWS/equivalent boundaries, SLOs, RPO/RTO, CI/CD and runbooks](docs/deployment/09-capacity-and-operations.md) |
-| Implementation plan | [Incremental slices, acceptance criteria and approval boundary](docs/architecture/06-implementation-plan.md) |
-| Plans and entitlements | [Per-member limits as data resolved per member; no paid plans yet](docs/architecture/11-plans-and-entitlements.md) |
+| ![Profile](docs/screenshots/profile.png) | ![Shop](docs/screenshots/shop.png) |
 
-## Proposed foundation
+## What is in it
 
-- Flutter + Riverpod + go_router today; platform secure storage for tokens and chat keys. Drift/SQLite is a later option, not built.
-- Go modular monolith with separate HTTP, WebSocket, worker/scheduler and admin processes; React/TypeScript admin.
-- PostgreSQL for everything today (including the realtime bus and rate limits), S3-compatible object storage (Cloudflare R2). OpenSearch, Redis, queues and a CDN are planned for later scale, not built.
-- One home region with Multi-AZ production deployment; extract services, ordered storage and regional cells from measured load and residency requirements.
-- Five tabs: Home, Chats, Discover, Notifications, Profile; stories on Home; opt-in Interest Passport and consent-based messaging.
-- Mandatory E2EE for direct chats/private chat media; reviewed network trust/pinning and secure local keys. No claim that a compromised endpoint or every request is impossible to inspect.
+- **People:** profiles with language levels, interests, personality tags and a photo gallery; Discover with filters and ranked "possible matches"; opt-in Nearby with coarse, expiring locations; follows, friends, visitors and places visited.
+- **Chat:** one-to-one and group chats (3 to 10 people) with end-to-end encryption (a Rust core on Olm), photos, voice messages, video, reactions, on-device translation, pinning and hiding chats.
+- **Pulse:** stories and posts with topics, search, voice notes, threaded replies and notification preferences.
+- **Safety:** age bands, blocks and reports, an admin and moderation console, notices board and a support inbox.
+- **Account:** sign-in with Firebase, data export, account deletion, push notifications.
+- **Money (built, off by default):** coins, premium and rewarded ads, adults only, behind `PLANS_ENFORCED`.
 
-## Verification status
+## Repository layout
 
-Run `./scripts/check.sh` for API unit/integration tests with the race detector, Flutter analysis/widget tests and contract checks. The implemented API is described in [openapi-foundation.json](docs/api/openapi-foundation.json); the larger MVP contract is a roadmap. See the development runbook for database setup and actual verification limitations.
+| Path | What |
+|---|---|
+| `apps/mobile` | Flutter app (`rust/` holds the encryption core) |
+| `apps/admin` | React and TypeScript moderation console |
+| `services/api` | Go API, migrations runner, admin server, workers |
+| `database` | SQL migrations and role grants |
+| `packages/api-contracts` | Generated TypeScript types for the API |
+| `config` | Example environment files (real ones are git-ignored) |
+| `scripts` | Dev, test, release and operations scripts |
+| `docs` | Architecture, API, mobile, security, legal and deployment documents |
 
+## Run it locally
 
-Run `python3 scripts/validate_architecture.py` for document links, required entity coverage and OpenAPI structural checks. These checks do **not** validate application behavior, full OpenAPI tooling compatibility, database migrations, security controls, device performance or 100M-user capacity. The [review record](docs/architecture/10-review-and-traceability.md) distinguishes checks run from required future tests.
+Nothing here needs a paid service. Secrets are never stored in the repository: you bring your own Firebase project, and photo storage is optional.
 
-## Next slices
+### 1. Install the tools
 
-In order: run chat and photos on real devices and fix what that finds; deploy a staging environment from the container image ([deploy guide](docs/deployment/10-deploy-guide.md)); get an independent review of the E2EE implementation; finish push notifications, account deletion/export and the admin and moderation tooling; publish reviewed Terms and a Privacy Policy; then a closed beta. Larger-scale pieces (separate worker and realtime services, search, caches, multi-region) follow measured load, not guesses. No backend secrets are included here.
+| Tool | Version used | For |
+|---|---|---|
+| Flutter | 3.47.6 (Dart 3.13) | the app |
+| Go | 1.27.2 | the API |
+| PostgreSQL | 16 (server and client binaries on `PATH`) | the database |
+| Node.js | 24 | admin console, API contract tooling, Firebase CLI |
+| Rust (stable) with `cargo` | 1.99 | the encryption core (needed for mobile builds and tests) |
+| JDK 21 and the Android SDK | | Android builds only |
+| Xcode and CocoaPods | | iOS builds only (macOS) |
+
+The scripts start with `source scripts/env.sh`, which expects the tools under `$HIYALL_TOOLS_DIR` (default `~/.local/share/hiyall-tools`, versions in [toolchains.lock.json](toolchains.lock.json)). If yours are installed elsewhere, set `HIYALL_TOOLS_DIR` or edit `scripts/env.sh` so it points at your installs.
+
+### 2. Get the code and dependencies
+
+```bash
+git clone https://github.com/democh-cyber/hiyall.git
+cd hiyall
+npm ci                                   # API contract tooling
+cd apps/mobile && flutter pub get && cd ../..
+```
+
+### 3. Create your own Firebase project (for sign-in)
+
+The app has no built-in test login, so real sign-in needs a Firebase project of your own.
+
+```bash
+npm install -g firebase-tools            # once
+firebase login
+./scripts/firebase-setup.sh <your-firebase-project-id>
+```
+
+This writes `config/firebase.local.json` (git-ignored). Enable the sign-in methods the app offers in the Firebase console; details are in [Sign-in and onboarding](docs/mobile/14-sign-in-and-onboarding.md#supplying-the-firebase-project). Without it the app still starts, but the Welcome screen says sign-in is not set up.
+
+### 4. Start the API (terminal 1)
+
+```bash
+./scripts/dev-api.sh
+```
+
+This creates and starts a local PostgreSQL under `.runtime/`, applies all migrations, and serves the API at `http://127.0.0.1:8080`. Check it with `curl http://127.0.0.1:8080/healthz`.
+
+### 5. Start the app in the browser (terminal 2)
+
+```bash
+./scripts/dev-mobile.sh
+```
+
+Open **http://localhost:49321**. The first load takes about a minute while the debug build compiles. Sign up with your Firebase project, finish onboarding, and you are in.
+
+Chat and group chat only run in the Android and iOS apps, not in the browser build.
+
+### 6. Optional: put people in Discover
+
+A fresh database is empty. This adds 18 fake demo people (16 adults, 2 minors) to the local database only:
+
+```bash
+./scripts/dev/seed-demo-people.sh
+```
+
+The script refuses to run against any database other than the local `hiyall`.
+
+### 7. Optional: run on an Android phone or emulator
+
+```bash
+source scripts/env.sh
+adb reverse tcp:8080 tcp:8080            # phone: lets the app reach your API
+cd apps/mobile
+flutter run \
+  --dart-define-from-file=../../config/firebase.local.json \
+  --dart-define=API_BASE_URL=http://127.0.0.1:8080
+```
+
+An emulator can use `API_BASE_URL=http://10.0.2.2:8080` and needs no `adb reverse`. Plain http is only accepted by debug builds, and only for these local addresses.
+
+### 8. Optional: the admin console
+
+```bash
+./scripts/dev-admin.sh operator-add -email you@example.com -role admin   # once: asks for a password, prints an authenticator secret
+./scripts/dev-admin.sh                                                  # builds and serves the console
+```
+
+Open **http://127.0.0.1:8081**. Staff sign in with a password and an authenticator code. See [Moderation console](docs/development.md#moderation-console).
+
+### 9. Optional: photos and push
+
+Profile photos and chat attachments use two Cloudflare R2 buckets; push uses a Firebase service-account key. Without them those features answer "unavailable" and the rest works. Copy `config/media.example.env`, `config/chat-media.example.env` and `config/fcm-service-account.example.json` to the matching `*.local.*` names (all git-ignored), fill in your own values, and restart the API.
+
+## Test it
+
+```bash
+source scripts/env.sh
+createdb -h "$PWD/.runtime/pgsocket" -p 55432 -U hiyall hiyall_test         # once
+createdb -h "$PWD/.runtime/pgsocket" -p 55432 -U hiyall hiyall_test_admin   # once, for the admin tests
+export ADMIN_TEST_DATABASE_URL="postgresql://hiyall@/hiyall_test_admin?host=$PWD/.runtime/pgsocket&port=55432&sslmode=disable"
+(cd services/api && DATABASE_URL="$ADMIN_TEST_DATABASE_URL" go run ./cmd/migrate)
+./scripts/check.sh
+```
+
+`check.sh` runs the Go tests with the race detector, the Flutter analysis and tests, the Rust tests, the admin console tests, and the API contract and document checks. It takes about ten minutes.
+
+## Release
+
+`scripts/release-preflight.sh` lists every gate with a one-line fix. It fails on this tree on purpose, until the owner supplies the final legal text, store listing, production environment, signing keys and accounts. Follow the [release runbook](docs/deployment/12-release-runbook.md) and the [store submission checklist](docs/deployment/13-store-submission-checklist.md).
+
+## Documentation
+
+Start with the [review and traceability summary](docs/architecture/10-review-and-traceability.md) and [development setup and release boundaries](docs/development.md).
+
+| Topic | Document |
+|---|---|
+| Product requirements | [Vision, personas, journeys, MVP](docs/architecture/01-product-requirements.md) |
+| Architecture | [Modules, feed, chat, media, search](docs/architecture/02-technical-architecture.md) |
+| Database | [Entities, indexes, growth](docs/database/03-database-design.md) |
+| API | [Rules and inventory](docs/api/04-api-specification.md), [implemented contract](docs/api/openapi-foundation.json) |
+| Mobile | [State, routing, storage, push, accessibility](docs/mobile/05-mobile-architecture.md) |
+| UX | [Screens, flows, design system](docs/ux/07-ux-and-design-system.md), [Gen Z experience spec](docs/ux/08-gen-z-experience.md) |
+| Security and privacy | [Threat model](docs/security/08-security-and-privacy.md), [encryption and interception](docs/security/11-encryption-and-interception.md), [group chat design](docs/mobile/19-group-chat.md) |
+| Plans and limits | [Entitlements](docs/architecture/11-plans-and-entitlements.md), [billing API](docs/api/28-billing.md), [shop and ads](docs/mobile/18-shop-and-ads.md) |
+| Operations | [Capacity and operations](docs/deployment/09-capacity-and-operations.md), [deploy guide](docs/deployment/10-deploy-guide.md) |
+| Legal drafts | [docs/legal](docs/legal) (drafts, not reviewed by a lawyer) |
+
+Run `python3 scripts/validate_architecture.py` to check document links and the OpenAPI structure.
+
+## Security
+
+Report vulnerabilities as described in [SECURITY.md](SECURITY.md). Do not commit keys, `*.local.*` files or anything under `.runtime/`; `.gitignore` already excludes them.
