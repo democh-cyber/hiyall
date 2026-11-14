@@ -53,7 +53,7 @@ dependencies:
   firebase_core: ^4.15.0
   firebase_auth: ^6.7.0
   # Push notifications (FCM on Android and iOS; every call is guarded, see lib/core/push).
-  firebase_messaging: ^16.7.0
+  firebase_messaging: ^16.7.1
   url_launcher: ^6.3.3
   geolocator: ^14.1.1
   # "Download my data": the system share sheet on a phone (web downloads through package:web).
