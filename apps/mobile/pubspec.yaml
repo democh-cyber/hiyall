@@ -50,7 +50,7 @@ dependencies:
   # App-private folder for the encrypted chat photo cache and outbox.
   path_provider: ^2.1.5
   cached_network_image: ^4.0.4
-  firebase_core: ^4.15.0
+  firebase_core: ^4.15.2
   firebase_auth: ^6.7.0
   # Push notifications (FCM on Android and iOS; every call is guarded, see lib/core/push).
   firebase_messaging: ^16.7.0
