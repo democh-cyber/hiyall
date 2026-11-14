@@ -16,7 +16,7 @@
   "license": "UNLICENSED",
   "type": "commonjs",
   "devDependencies": {
-    "@redocly/cli": "2.59.0",
+    "@redocly/cli": "2.77.0",
     "openapi-typescript": "7.13.0"
   },
   "private": true
