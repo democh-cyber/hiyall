@@ -9,7 +9,7 @@
 # says go 1.27.2) and gcr.io/distroless/static-debian13:nonroot. Move tag and digest together when go.mod's version
 # moves; Dependabot (docker ecosystem) proposes new digests.
 
-FROM golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d AS build
+FROM golang:1.27.3-alpine3.24@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS build
 # go.mod's version is the toolchain; never download another one during the build.
 ENV GOTOOLCHAIN=local CGO_ENABLED=0 GOFLAGS=-mod=readonly
 WORKDIR /src/services/api
