@@ -11,7 +11,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
 # Olm (Double Ratchet) from Matrix: Apache-2.0, independently audited.
 # See docs/security/12-e2ee-library-evaluation.md before changing the version.
-vodozemac = "=0.11.1"
+vodozemac = "=0.11.2"
 flutter_rust_bridge = "=2.13.0"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
@@ -22,7 +22,7 @@ zeroize = "1"
 aead-stream = { version = "=0.6.0", features = ["alloc"] }
 chacha20poly1305 = { version = "=0.11.0", features = ["zeroize"] }
 hkdf = "=0.13.0"
-sha2 = "=0.11.0"
+sha2 = "=0.11.1"
 # Image preparation: decode with limits, orient, resize, re-encode from pixels (strips metadata).
 image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 thumbhash = "=0.1.0"
